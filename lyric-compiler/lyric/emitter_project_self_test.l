@@ -3448,6 +3448,50 @@ test "emitProject a default expression calls a function only its declaring packa
   assertEqual(Str.trim(result.stdout), "14", "default callee MSIL: output")
 }
 
+// A default that calls a dot-named function (`Seed.base()`) of a package only
+// its declaring package imports: the consumer has no import of `EPDd.Dep`, so
+// the call has to bind to the declaring package's function (#8869).
+func dotNamedDefaultPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPDd.Dep",
+      "package EPDd.Dep\n" + "\n" + "pub record Seed {\n" + "  pub n: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Int {\n" +
+        "  7\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDd.Lib",
+      "package EPDd.Lib\n" + "\n" + "import EPDd.Dep\n" + "\n" + "pub func mk(x: in Int = Seed.base()): Int {\n" +
+        "  x\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDd.App",
+      "package EPDd.App\n" + "\n" + "import EPDd.Lib\n" + "\n" + "func main(): Unit {\n" + "  println(mk() + mk(1))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a default calling a dot-named function only its declaring package imports (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-dotdfl-jvm", dotNamedDefaultPkgs(), "EPDd")
+  assertEqualInt(result.exitCode, 0, "dot-named default JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "8", "dot-named default JVM: output")
+}
+
+test "emitProject a default calling a dot-named function only its declaring package imports (MSIL)" {
+  val result = runEmitProject("emitproj-dotdfl", dotNamedDefaultPkgs(), "EPDd")
+  assertEqualInt(result.exitCode, 0, "dot-named default MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "8", "dot-named default MSIL: output")
+}
+
 func chainedImportedCallPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(

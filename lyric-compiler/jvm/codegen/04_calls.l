@@ -4485,6 +4485,63 @@ func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, a
   None
 }
 
+// The signature registered for the dot-named function `dotName` of the package
+// `owner` (a `/`-separated path): its qualified key, then its package-scoped
+// one, each with the exact parameter count before without.
+func dotNamedSigOfOwnerJvm(ctx: in FuncCtx, owner: in String, dotName: in String, argc: in Int): Option[JvmFuncSig] {
+  val argcSuffix = "@" + toString(argc)
+  val keys: List[String] = newList()
+  keys.add(owner + "/" + dotName)
+  keys.add(owner + "::" + dotName)
+  for k in keys {
+    match mapGet(ctx.funcSigs, k + argcSuffix) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> ()
+    }
+    match mapGet(ctx.funcSigs, k) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> ()
+    }
+  }
+  None
+}
+
+// The signature of the dot-named function (`Type.member`) the checker resolved
+// the call at `siteKey` to (`~callee~<site key>`, a rendered
+// `Pkg::Type.member(P1,P2)`), found under the declaring package's qualified
+// key (D336).  `argc` is the parameter count the call binds.
+func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String, argc: in Int): Option[JvmFuncSig] {
+  val dp = match mapGet(ctx.externTypes, "~callee~" + siteKey) { case Some(d) -> d; case None -> return None }
+  val sep = match dp.indexOf("::") { case Some(i) -> i; case None -> return None }
+  val pkg = dp.substring(0, sep)
+  val rest = dp.substring(sep + 2, dp.length - sep - 2)
+  val name = match rest.indexOf("(") { case Some(j) -> rest.substring(0, j); case None -> rest }
+  if name != dotName {
+    return None
+  }
+  val owner = pkg.replace(".", "/")
+  dotNamedSigOfOwnerJvm(ctx, owner, dotName, argc)
+}
+
+// The dot-named function `Type.member` of the package that declares `Type`, as
+// the file's import-scoped type map names it (`externTypes[Type]` is the
+// dotted `Pkg.Type` of a type the file's own package or an import brings into
+// scope).  Used where the checker recorded no site (a dependency package
+// compiled without one), so a bare type name still binds to the package the
+// file sees it from, never to another package's same-named type.
+func typeOwnerDotNamedSigJvm(
+  ctx: in FuncCtx, typeName: in String, memberName: in String, argc: in Int
+): Option[JvmFuncSig] {
+  val fqn = match mapGet(ctx.externTypes, typeName) { case Some(f) -> f; case None -> return None }
+  val cut = lastIndexOfRaw(fqn, ".")
+  if cut <= 0 or fqn.substring(cut + 1, fqn.length - cut - 1) != typeName {
+    return None
+  }
+  val owner = fqn.substring(0, cut).replace(".", "/")
+  val dotName = typeName + "." + memberName
+  dotNamedSigOfOwnerJvm(ctx, owner, dotName, argc)
+}
+
 // The parameter count a call binds: the overload the type checker resolved it
 // to (its parameter count, the `~arity~` seed entry under the callee's site
 // key) when the call leaves out defaulted arguments (#8355), else the number
@@ -5517,15 +5574,21 @@ func lowerMethodCall(
       // The overload the type checker resolved the call to, by its parameter
       // count (#8355), before the first registered of its name.
       val dotCount = toString(resolvedArityJvm(ctx, siteKey, args.count))
-      val scopedDotSig = match mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey + "@" + dotCount) {
+      val scopedDotSig = match siteDotNamedSigJvm(ctx, siteKey, distinctDotKey, resolvedArityJvm(ctx, siteKey, args.count)) {
         case Some(sg) -> Some(value = sg)
-        case None -> mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
+        case None -> match mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey + "@" + dotCount) {
+          case Some(sg) -> Some(value = sg)
+          case None -> mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
+        }
       }
       val dotSig = match scopedDotSig {
         case Some(_) -> scopedDotSig
-        case None -> match mapGet(ctx.funcSigs, distinctDotKey + "@" + dotCount) {
+        case None -> match typeOwnerDotNamedSigJvm(ctx, lastSegment(path), memberName, resolvedArityJvm(ctx, siteKey, args.count)) {
           case Some(sg) -> Some(value = sg)
-          case None -> mapGet(ctx.funcSigs, distinctDotKey)
+          case None -> match mapGet(ctx.funcSigs, distinctDotKey + "@" + dotCount) {
+            case Some(sg) -> Some(value = sg)
+            case None -> mapGet(ctx.funcSigs, distinctDotKey)
+          }
         }
       }
       match dotSig {

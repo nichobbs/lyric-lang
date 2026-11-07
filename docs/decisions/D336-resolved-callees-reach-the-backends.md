@@ -130,8 +130,8 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    from the checker's sites (`qualifyCheckedCallees`, #8850). A plain function
    has no bundle-wide bare key any more: `closureInvokeRetType` and
    `funcSigRetType` read its signature through `resolveGeneralFuncSig` too. A
-   dot-named function (`Type.member`) keeps its bare dotted key for the
-   member-call lookups, and the package overlay (`importAwareRegistry`) now
+   dot-named function (`Type.member`) kept its bare dotted key for the
+   member-call lookups until item 10, and the package overlay (`importAwareRegistry`) now
    re-points enum cases and module vals only. The `println`/`print` and
    collection-intrinsic override check (`hasFuncOverrideJvm`) uses the same
    exact stage: a `Std.*` result never overrides an intrinsic, so a user
@@ -158,6 +158,38 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    already holds `|` is kept as it is. The re-check also checks the generic as
    written, not a specialisation, whose type arguments name the consumer's
    types (T0010).
+
+10. **The JVM's dot-named functions and bare function values no longer use
+   bundle-wide bare keys.** A call through a type, `Type.f(x)`, binds by the
+   checker's site first (`siteDotNamedSigJvm`: the rendered
+   `Pkg::Type.f(...)` names the declaring package, whose `pkg/Type.f` or
+   `pkg::Type.f` key answers), then the calling package's scoped key. A
+   function (a dot-named one included) registers no bare key; only a wire
+   factory (`AppWire.bootstrap`), which is not a function and has no checker
+   site, keeps its `Wire.method` key. The `bareref:` marker of a same-package
+   function used as a value is keyed `bareref:<package>::<name>` and read with
+   the calling package. `~byref~<name>` stays name-keyed on purpose: it only
+   decides whether a `var` argument gets a heap cell (never which function a
+   call binds) and runs before any call is resolved.
+
+   A call whose callee has no recorded site (a dependency package compiled
+   without one, or a default lowered in another package) binds through the
+   file's import-scoped type map (`typeOwnerDotNamedSigJvm`: `externTypes[Type]`
+   names the declaring package, so `Std.HttpHost`'s `Identity.rawHandle` binds
+   to `Std.Tls`), never a bundle-wide name. The rendered callee is
+   `Pkg::Type.member(P1,P2)`; `siteDotNamedSigJvm` and `qualifiedCalleeSegments`
+   (in `Lyric.Pipeline`) both read it by splitting at `::` and `(`.
+   `qualifyCheckedCallees`, shared by both backends, writes a dot-named callee
+   of a default as `Pkg.Type.f` the way it writes a bare one, and leaves a call
+   on a local (`w.f(x)`) alone because only a `Type` receiver has a site. Two
+   packages that each declare a same-named type with a same-named dot-named
+   function still bind by the checker's choice of callee (#8874).
+
+   Verified by the compiler-self-tests-jvm files (all but two that need CI's
+   `LYRIC_FFI_JARS` fixture and `config_block` environment variables),
+   `emitter_project_self_test.l` (a default calling a dot-named function of a
+   package only its declaring package imports, MSIL and JVM) and
+   `multi-file-package-merge-e2e.sh dotnet jvm`.
 
 ## Consequences
 
