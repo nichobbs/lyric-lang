@@ -1113,3 +1113,86 @@ test "a generic call inside a generic body carries the enclosing parameter" {
     case None -> assertTrue(false, "a direct call")
   }
 }
+
+// ─── Annotated bindings and implicit conversions (docs/70 §6.3, D396) ────────
+func firstLetInit(b: in Option[TExpr]): Option[TExpr] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(stmts, _) -> {
+        for st in stmts {
+          match st.kind {
+            case TsLet(_, init) -> return Some(value = init)
+            case TsVar(_, Some(init)) -> return Some(value = init)
+            case _ -> ()
+          }
+        }
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func convShape(e: in Option[TExpr]): String {
+  match e {
+    case Some(x) -> match x.kind {
+      case XConvert(CvWiden(_), _) -> "widen"
+      case XConvert(CvLiftNullable, _) -> "lift"
+      case XConvert(CvRangeCheck, _) -> "range"
+      case XConvert(CvUnrefine, _) -> "unrefine"
+      case XConvert(_, _) -> "other"
+      case _ -> "none"
+    }
+    case None -> "absent"
+  }
+}
+
+test "an annotated binding widens its initializer to the annotation" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Long {\n  val a: Long = n\n  a\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(convShape(firstLetInit(r.body)) == "widen", convShape(firstLetInit(r.body)))
+}
+
+test "an annotated binding that needs no conversion has none" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Int {\n  val a: Int = n\n  a\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(convShape(firstLetInit(r.body)) == "none", convShape(firstLetInit(r.body)))
+}
+
+test "a value bound to an optional annotation is lifted" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Int? {\n  val a: Int? = n\n  a\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(convShape(firstLetInit(r.body)) == "lift", convShape(firstLetInit(r.body)))
+}
+
+test "an annotated var and a let build the same way" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Long {\n  var a: Long = n\n  a\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(convShape(firstLetInit(r.body)) == "widen", convShape(firstLetInit(r.body)))
+}
+
+test "a binding annotated with the enclosing type parameter builds" {
+  val r = buildFirstFn("package App\nfunc f[T](x: in T): T {\n  val y: T = x\n  y\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "conversions are derived from the two types alone" {
+  val age = TRefined(underlying = tyInt(), lo = Some(value = 0L), hi = Some(value = 150L), hiInclusive = true)
+  assertTrue(
+    match convKindOf(tyInt(), age) { case Some(CvRangeCheck) -> true; case _ -> false },
+    "an Int into a range subtype is checked"
+  )
+  assertTrue(
+    match convKindOf(age, tyInt()) { case Some(CvUnrefine) -> true; case _ -> false },
+    "a range subtype used as its underlying type"
+  )
+  assertTrue(
+    match convKindOf(TirT.TNever, tyString()) { case Some(CvFromNever) -> true; case _ -> false },
+    "Never as a value"
+  )
+  assertTrue(convKindOf(tyString(), tyInt()).isNone(), "unrelated types have no conversion")
+}
