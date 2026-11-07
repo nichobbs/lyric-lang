@@ -10389,6 +10389,23 @@ func noteCtorZeroArgs(
   }
 }
 
+// Whether the qualifier `recv` names a config block of a package other than the
+// one being checked (config blocks are package-private, docs/25 2.2).
+func isForeignConfigBlock(tbl: in SymbolTable, recv: in Expr): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count < 2 {
+    return false
+  }
+  val pkg = qualifierOfSegs(segs)
+  if pkg == symTableScopePkg(tbl) {
+    return false
+  }
+  match symTableTryFindInPackage(tbl, pkg, segs[segs.count - 1]) {
+    case Some(sym) -> match sym.kind { case DKConfig(_) -> true; case _ -> false }
+    case None -> false
+  }
+}
+
 // Whether the package-qualified path `e` goes through a package other than the
 // one being checked that the file imports or that has symbols in the table.
 func memberOfImportedPackage(tbl: in SymbolTable, e: in Expr): Bool {
@@ -10474,7 +10491,14 @@ func shadowedQualifiedCallee(
         return false
       }
       match scopeTryFind(sc, segs[0]) {
-        case Some(_) -> {
+        case Some(headBinding) -> {
+          // A local of a primitive type has no members, so the path can only be
+          // the package's (the JVM lowering applies the same rule); a `String` or
+          // a record may hold the member and keeps its value chain.
+          match unrefine(headBinding.ty) {
+            case TyPrim(headPt) -> match headPt { case PtString -> return false; case _ -> () }
+            case _ -> return false
+          }
           // The package must be reachable: the one being checked, or one the
           // file imports (a local does not make an unimported one visible).
           val wantPkg = qualifierOfSegs(segs)
@@ -20679,6 +20703,16 @@ func inferExprCore(
               // `LogLevel.Info` with two enums named `LogLevel` in the program:
               // left to the backends, as `qualifiedEnumCaseType` documents.
               tyErrorUnresolved()
+            } else if d.index == 0 and isQualifierShape(sc, recv) and isForeignConfigBlock(tbl, recv) {
+              diag.add(
+                errorDiagnostic(
+                  "T0020",
+                  "unknown name '" + name +
+                    "': the config block is package-private (docs/25 2.2); another package reaches its value through a `pub func` of the declaring package",
+                  e.span
+                )
+              )
+              tyErrorFor(diag)
             } else if d.index == 0 and isQualifierShape(sc, recv) and memberOfImportedPackage(tbl, e) {
               // A member of a package the file imports whose declarations the
               // checker does not all see (a restored dependency's non-literal

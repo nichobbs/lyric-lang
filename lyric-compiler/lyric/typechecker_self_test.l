@@ -15240,6 +15240,32 @@ test "a generic protected field keeps its rigid type parameter, and an unimporte
   assertTrue(diagCodesOf(unimported) != "", "Lib.Rest is not imported: " + diagCodesOf(unimported))
 }
 
+test "another package's config block is package-private even when its package is imported (D359)" {
+  val lib = parse("package Lib.Worker\nconfig Cfg {\n  n: Int = 2\n}\npub func n(): Int { Cfg.n }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib.Worker",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val cr = checkWithImportedPackages(
+    parse("package App\nimport Lib.Worker\nfunc f(): Int {\n  Lib.Worker.Cfg.n\n}\n").file,
+    packages
+  )
+  assertTrue(
+    Str.contains(diagCodesOf(cr), "package-private"),
+    "the read is refused as package-private: " + diagCodesOf(cr)
+  )
+  val viaFunc = checkWithImportedPackages(
+    parse("package App\nimport Lib.Worker\nfunc f(): Int {\n  Lib.Worker.n()\n}\n").file,
+    packages
+  )
+  assertEqual(diagCodesOf(viaFunc), "", "the pub func is the way in: " + diagCodesOf(viaFunc))
+}
+
 test "a config field read through its package is typed (D359)" {
   val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))

@@ -5651,10 +5651,23 @@ func lowerMethodCall(
   val qualSegs = flattenPathExprSegsJvm(recv)
   val qualHeadIsLocal = qualSegs.count > 0 and
     match lookupSlot(ctx, qualSegs[0]) { case Some(_) -> true; case None -> false }
-  // A local shadowing only the first of two or more segments is no value chain
-  // (the same reasoning as the record construction below, #6838): the checker
-  // reads such a call as the package's (D359), so it lowers as one.
-  if qualSegs.count > 0 and (not qualHeadIsLocal or qualSegs.count >= 2) {
+  // A primitive-typed local shadowing only the first of two or more segments is
+  // no value chain, it has no members (the same reasoning as the record
+  // construction below, #6838): the checker reads such a call as the package's
+  // (D359), so it lowers as one.  A local of a reference type keeps the chain.
+  val qualHeadIsPrimitiveLocal = qualHeadIsLocal and
+    match lookupType(ctx, qualSegs[0]) {
+      case Some(JInt) -> true
+      case Some(JLong) -> true
+      case Some(JDouble) -> true
+      case Some(JFloat) -> true
+      case Some(JBoolean) -> true
+      case Some(JByte) -> true
+      case Some(JChar) -> true
+      case Some(JShort) -> true
+      case _ -> false
+    }
+  if qualSegs.count > 0 and (not qualHeadIsLocal or (qualSegs.count >= 2 and qualHeadIsPrimitiveLocal)) {
     val qualKey = joinSegments(qualSegs, "/") + "/" + memberName
     val qualArgcKey = qualKey + "@" + toString(args.count)
     val qualSigOpt = match mapGet(ctx.funcSigs, qualArgcKey) {
