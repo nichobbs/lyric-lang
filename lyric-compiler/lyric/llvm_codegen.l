@@ -2489,7 +2489,7 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
   // fails this check and the name lookups answer instead.
   // The declaration the site names has its own parameter count, which the
   // arguments written do not give when two overloads both take them (#8880).
-  val declared = declaredParamCountOfDefPath(rest)
+  val declared = if Str.contains(name, ".") { declaredParamCountOfDefPath(rest) } else { -1 }
   val written0 = Str.substring(key, slash, key.length - slash)
   val declaredSig = if declared >= 0 { mapGet(ctx.sigs, pkg + "." + name + "/" + toString(declared)) } else { None }
   val sig = match declaredSig {

@@ -23075,7 +23075,7 @@ func lowerMethodCallMsil(
         memberName,
         ModulePath(segments = sitedPath, span = recv.span),
         args,
-        siteDeclaredParamCountMsil(cctx, fctx, siteKey)
+        if dotNamedSiteMsil(cctx, fctx, siteKey) { siteDeclaredParamCountMsil(cctx, fctx, siteKey) } else { -1 }
       )
     }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
