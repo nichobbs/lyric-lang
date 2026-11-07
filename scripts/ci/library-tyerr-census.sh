@@ -5,8 +5,8 @@
 #
 # The stage 2 emit covers the compiler and the standard library; the ecosystem
 # libraries are checked by the same checker and the I0001 gate rejects a silent
-# site in any program, so each library manifest is
-# built, and every I0001 it reports is a site.  The count is zero
+# site in any program, so each library manifest is built and every I0001 it
+# reports is a site.  The count is zero
 # (D355), so any site fails the run: a new silent site is a regression of the
 # census, not a number to track.
 #
