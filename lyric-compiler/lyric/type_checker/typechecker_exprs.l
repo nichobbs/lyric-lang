@@ -12600,10 +12600,7 @@ func inferMatchExpr(
     }
     di = di + 1
   }
-  val scrutTy = match mapGet(tbl.exprTypes, scrutinee.nodeId) {
-    case Some(x) -> x
-    case None -> tyErrorSilent()
-  }
+  val scrutTy = match mapGet(tbl.exprTypes, scrutinee.nodeId) { case Some(x) -> x; case None -> tyErrorSilent() }
   recordMatchExhaustive(tbl, e, not missing and matchProvedExhaustive(tbl, scrutTy, arms))
   // Typed here without passing through `inferExpr`, so the node's type is
   // recorded here (D366).

@@ -979,12 +979,7 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   }
   match widenKind(t.ty, ty) {
     case Some(k) -> Some(
-      value = TExpr(
-        id = freshNodeId(env),
-        ty = ty,
-        span = t.span,
-        kind = XConvert(kind = k, inner = t)
-      )
+      value = TExpr(id = freshNodeId(env), ty = ty, span = t.span, kind = XConvert(kind = k, inner = t))
     )
     case None -> {
       noteUncovered(env, "a branch conversion")
