@@ -15113,6 +15113,16 @@ test "a distinct type's constructor call is typed, and its argument is checked (
   assertTrue(Str.contains(diagCodesOf(arity), "T0042"), "two arguments are T0042: " + diagCodesOf(arity))
 }
 
+test "a read of an open generic value is not a silent site, it is the named open hole (D359)" {
+  val pre = "package P\nrecord Cell[T] { var items: List[T] }\nfunc mk[T](): Cell[T] { Cell(items = []) }\n"
+  val plain = parseCheck(pre + "func f(): Int {\n  val c = mk()\n  c.items[0]\n}\n")
+  assertEqual(silentSiteKinds(plain), "", "a read of an open cell is named: " + silentSiteKinds(plain))
+  val viaTuple = parseCheck(pre + "func f(): Int {\n  val t = (mk(), 3)\n  val (c, n) = t\n  c.items[0] + n\n}\n")
+  assertEqual(silentSiteKinds(viaTuple), "", "a cell destructured from a tuple is named: " + silentSiteKinds(viaTuple))
+  assertTrue(isNamedUncheckedTyError(tyErrorOpen()), "tyErrorOpen is a named unchecked kind")
+  assertTrue(not isSilentTyError(tyErrorOpen()), "tyErrorOpen is not silent")
+}
+
 test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
