@@ -4009,11 +4009,13 @@ func paramHasDefault(p: in Param): Bool {
   }
 }
 
-// Marks reachable every function a call of the own files resolved to by the
-// type checker (`calleeSites`, rendered `Pkg::name(P1,P2)`), at any arity the
-// package declares: codegen binds a call to its site, so the function it names
-// has to be emitted whatever the name-based walk below resolves the same call
-// to (docs/70 phase 2d).
+// Marks reachable the function each call of a fully lowered own file resolved
+// to by the type checker (`calleeSites`, rendered `Pkg::name(P1,P2)`): exactly
+// the declaration whose parameter count the rendered list gives (a call that
+// leaves out defaulted arguments reaches it through the shorter-arity keys
+// `registerFileFns` adds).  Codegen binds a call to its site, so the function it
+// names has to be emitted whatever the name-based walk below resolves the same
+// call to (docs/70 phase 2d).
 func seedSitedCallees(
   callees: in Map[String, String],
   canonical: in Map[String, String],
