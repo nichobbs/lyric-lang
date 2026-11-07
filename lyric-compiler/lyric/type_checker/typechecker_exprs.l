@@ -759,8 +759,15 @@ func armCoversWholeCase(p: in Pattern): Bool {
 // names, not payloads.
 func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[MatchArm]): Bool {
   val noNames: List[String] = newList()
-  if armsHaveCatchAll(arms, noNames) {
-    return true
+  // Without the scrutinee's case names a bare capitalised name may be a case,
+  // so only `_` or a lowercase binding proves an arm matches everything.
+  for arm in arms {
+    match arm.guard {
+      case None -> if patternSurelyIrrefutable(arm.pattern, noNames) {
+        return true
+      }
+      case Some(_) -> ()
+    }
   }
   match finiteCaseNames(tbl, st) {
     case None -> false
