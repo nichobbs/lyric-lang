@@ -1549,7 +1549,10 @@ func aliasQualifiedPath(raw: in Map[String, TypeExpr], name: in String): Option[
 // The segments that stand for the alias head `name` in a call: the qualified
 // path of its target when the head is bare, else the aliased type's name.
 func aliasHeadSegments(
-  targets: in Map[String, String], qualified: in Map[String, List[String]], name: in String, bare: in Bool
+  targets: in Map[String, String],
+  qualified: in Map[String, List[String]],
+  name: in String,
+  bare: in Bool,
 ): List[String] {
   if bare {
     match mapGet(qualified, name) {
