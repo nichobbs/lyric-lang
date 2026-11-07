@@ -1418,3 +1418,52 @@ test "v0038 a record name declared twice is skipped and does not crash" {
   val exposedSrc = "package P\nexposed record R {\n  n: Int\n}\nref record R {\n  var n: Int\n}\nfunc f(r: in R): Unit {\n  r.n = 1\n}\n"
   assertTrue(not hasDiagCode(parseCheck(exposedSrc), "V0038"), "exposed and ref of one name: no V0038")
 }
+
+test "v0038 qualified and aliased imported value-record types" {
+  val pkgA = parse("package A.Sub\npub record Inner {\n  var n: Int\n}\npub record Outer {\n  var k: Int\n  inner: Inner\n}\n").file
+  val extra: List[Item] = newList()
+  for it in pkgA.items {
+    match it.kind {
+      case IRecord(d) -> {
+        if d.name == "Inner" {
+          extra.add(it.copy(kind = IRecord(decl = d.copy(name = "A.Sub.Inner"))))
+          extra.add(it.copy(kind = IRecord(decl = d.copy(name = "Alias.Inner"))))
+        } else if d.name == "Outer" {
+          val qMembers: List[RecordMember] = newList()
+          for m in d.members {
+            match m {
+              case RMField(f) -> if f.name == "inner" {
+                val segs: List[String] = newList()
+                segs.add("A.Sub.Inner")
+                val qTy = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = f.ty.span)), span = f.ty.span)
+                qMembers.add(RMField(field = f.copy(ty = qTy)))
+              } else {
+                qMembers.add(m)
+              }
+              case _ -> qMembers.add(m)
+            }
+          }
+          extra.add(it.copy(kind = IRecord(decl = d.copy(name = "A.Sub.Outer", members = qMembers))))
+          extra.add(it.copy(kind = IRecord(decl = d.copy(name = "Alias.Outer", members = qMembers))))
+          extra.add(it.copy(kind = IRecord(decl = d.copy(name = "Outer", members = qMembers))))
+        }
+      }
+      case _ -> ()
+    }
+  }
+  val srcQual = "package P\nfunc f(o: in A.Sub.Outer): Unit {\n  o.k = 1\n  o.inner.n = 2\n}\n"
+  val rQual = checkFileWithExtraItems(parse(srcQual).file, extra)
+  assertEqualInt(diagCodeCount(rQual, "V0038"), 2, "qualified A.Sub.Outer direct and nested writes: two V0038")
+
+  val srcAlias = "package P\nfunc f(o: in Alias.Outer): Unit {\n  o.k = 1\n  o.inner.n = 2\n}\n"
+  val rAlias = checkFileWithExtraItems(parse(srcAlias).file, extra)
+  assertEqualInt(diagCodeCount(rAlias, "V0038"), 2, "aliased Alias.Outer direct and nested writes: two V0038")
+
+  val srcSel = "package P\nfunc f(o: in Outer): Unit {\n  o.inner.n = 2\n}\n"
+  val rSel = checkFileWithExtraItems(parse(srcSel).file, extra)
+  assertEqualInt(
+    diagCodeCount(rSel, "V0038"),
+    1,
+    "selectively imported Outer nested write via canonical A.Sub.Inner: V0038"
+  )
+}

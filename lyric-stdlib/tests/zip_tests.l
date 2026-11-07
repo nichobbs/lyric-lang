@@ -541,6 +541,9 @@ func testHostileArchives(): Unit {
   assertTrue(readZipDirectory(encodeUtf8("not a zip"), defaultZipLimits()).isErr(), "not a zip at all")
   val few = ZipLimits(maxEntries = 2, maxEntrySize = 1048576i64, maxTotalSize = 1048576i64, maxRatio = 1000i64)
   assertTrue(readZipDirectory(archive, few).isErr(), "more entries than maxEntries")
+  val colonFiles: List[ZipFile] = newList()
+  colonFiles.add(ZipFile(name = "acme.tools-1.0.0/C:/outside.txt", data = encodeUtf8("bad")))
+  assertTrue(readZipDirectory(writeZip(colonFiles), defaultZipLimits()).isErr(), "a nested colon in an entry name")
 }
 
 func testWriteZipRoundTrip(): Unit {

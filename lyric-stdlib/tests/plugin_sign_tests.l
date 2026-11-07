@@ -130,6 +130,8 @@ test "listing path rules (D248 Decision 5, D263)" {
   assertTrue(listingPathProblem("./a").isSome(), "a '.' segment is refused")
   assertTrue(listingPathProblem("a/../b").isSome(), "a '..' segment is refused")
   assertTrue(listingPathProblem("a\\b").isSome(), "a backslash is refused")
+  assertTrue(listingPathProblem("C:/a").isSome(), "a colon is refused")
+  assertTrue(listingPathProblem("sub/C:/a").isSome(), "a nested colon is refused")
   assertTrue(listingPathProblem("é").isSome(), "a combining mark is refused")
   assertTrue(listingPathProblem("é.txt").isSome(), "a non-ASCII letter is refused")
   assertTrue(listingPathProblem("my plugin-1.0_x+y@z~.dll").isNone(), "printable ASCII with spaces is fine")
