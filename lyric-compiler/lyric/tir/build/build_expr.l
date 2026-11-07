@@ -1458,13 +1458,33 @@ func buildDirectCall(
   sig: in ResolvedSignature,
   args: in List[CallArg],
 ): Option[TExpr] {
+  var tyArgs: List[Ty] = newList()
+  var callSig = sig
   if sig.generics.count > 0 {
-    return uncoveredExpr(env, e, "a generic call")
+    val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
+      case Some(ts) -> ts
+      case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+    }
+    if checkerArgs.count != sig.generics.count {
+      return uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
+    }
+    for ta in checkerArgs {
+      match tyOfType(env.ctx, ta) {
+        case Ok(t) -> tyArgs.add(t)
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return None
+        }
+      }
+    }
+    val ps: List[ResolvedParam] = newList()
+    for p in sig.params {
+      ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
+    }
+    callSig = sig.copy(params = ps)
   }
-  match buildCallArgs(env, e, sig, args) {
-    case Some(targs) -> Some(
-      value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs))
-    )
+  match buildCallArgs(env, e, callSig, args) {
+    case Some(targs) -> Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
     case None -> None
   }
 }

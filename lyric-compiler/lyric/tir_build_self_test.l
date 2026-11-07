@@ -270,13 +270,13 @@ test "loops and string interpolation build" {
   assertTrue(r.body.isSome(), "a body")
 }
 
-test "a generic call is counted as uncovered, fails with I0002 and builds no body" {
-  val r = buildFirstFn("package App\nfunc m(): Int { id(1) }\nfunc id[T](x: T): T { x }\n")
+test "a generic function's own body is counted as uncovered and builds no body" {
+  val r = buildFirstFn("package App\nfunc id[T](x: T): T { x }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body for a call the builder has no case for")
+  assertTrue(not r.body.isSome(), "no body")
   assertTrue(r.env.errors.count >= 1, "an I0002")
   assertTrue(r.env.errors[0].startsWith("I0002"), "reported as I0002")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a generic call"), 1, "counted by kind")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a generic function"), 1, "counted by kind")
 }
 
 func mapGetOr0(m: in Map[String, Int], k: in String): Int {
@@ -1038,5 +1038,61 @@ test "the real MSIL metadata gives a static overload and static constructors" {
       }
     }
     case None -> assertTrue(false, "the metadata resolves the constructors")
+  }
+}
+
+// ─── Generic calls (docs/70 §6.3, D394) ──────────────────────────────────────
+func directTypeArgs(b: in Option[TExpr]): Option[List[Ty]] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XCall(Direct(_, targs), _) -> Some(value = targs)
+        case _ -> None
+      }
+      case XCall(Direct(_, targs), _) -> Some(value = targs)
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a call to a generic function carries the checker's instantiation" {
+  val r = buildFirstFn("package App\nfunc f(): Int {\n  id(3)\n}\nfunc id[T](x: in T): T { x }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match directTypeArgs(r.body) {
+    case Some(ts) -> {
+      assertEqualInt(ts.count, 1, "one type argument")
+      assertTrue(tyEq(ts[0], tyInt()), "T is Int")
+    }
+    case None -> assertTrue(false, "a direct call")
+  }
+}
+
+test "two type arguments are recorded in the callee's order" {
+  val r = buildFirstFn(
+    "package App\nfunc f(): String {\n  second(1, \"a\")\n}\nfunc second[A, B](a: in A, b: in B): B { b }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match directTypeArgs(r.body) {
+    case Some(ts) -> {
+      assertEqualInt(ts.count, 2, "two type arguments")
+      assertTrue(tyEq(ts[0], tyInt()), "A is Int")
+      assertTrue(tyEq(ts[1], tyString()), "B is String")
+    }
+    case None -> assertTrue(false, "a direct call")
+  }
+}
+
+test "an argument of a non-generic parameter is widened beside a generic one" {
+  val r = buildFirstFn(
+    "package App\nfunc f(): String {\n  tag(\"a\", 3)\n}\nfunc tag[T](x: in T, n: in Long): T { x }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match directTypeArgs(r.body) {
+    case Some(ts) -> assertTrue(tyEq(ts[0], tyString()), "T is String")
+    case None -> assertTrue(false, "a direct call")
   }
 }
