@@ -5592,6 +5592,11 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
     }
     case _ -> return
   }
+  // Only a method the interface declares is dispatched on it; a dot-named
+  // function `Feed.f(self, ...)` called on the value is a plain function.
+  if mp.fullSig.isSome() {
+    iface = None
+  }
   val declared = match mp.fullSig {
     case Some(full) -> if full.params.count > 0 { full.params[0].ty } else { recv }
     case None -> recv
