@@ -8906,7 +8906,8 @@ func resolvePropagateCallArgs(
                 valueGenericParamsOf(tbl, fn, cargs.count),
                 cargs,
                 boundArgTys,
-                fn.span
+                fn.span,
+                e.nodeId
               )
             }
             case _ -> ()
@@ -17306,7 +17307,8 @@ func directCallType(
         valueGenericParamsOf(tbl, dottedFn, args.count),
         args,
         argTypes,
-        fn.span
+        fn.span,
+        0
       )
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
@@ -17853,7 +17855,8 @@ func recordDottedGenericMethodCall(
     valueGenericParamsOf(tbl, dottedFn, fullArgs.count),
     fullArgs,
     fullArgTypes,
-    fn.span
+    fn.span,
+    0
   )
   bindValueGenericCall(tbl, diag, dottedFn, fullArgs, fullArgTypes, instRet)
 }
@@ -18130,6 +18133,35 @@ func anyErrorType(ts: in List[Type]): Bool {
   false
 }
 
+// Record the type arguments of the generic call at `callNode` (`genericArgsByNode`,
+// docs/70 6.3, D394): one per generic of the callee, in order.  Only a call with no
+// value generic parameter whose arguments are all closed, or mention only the
+// enclosing function's own type parameters, is recorded; a call checked again
+// leaves its last resolution, and an open one clears the entry.
+func recordGenericArgsNode(
+  tbl: in SymbolTable,
+  genericNames: in List[String],
+  valueParams: in List[String],
+  allTargs: in List[Type],
+  callNode: in Int,
+): Unit {
+  if callNode <= 0 {
+    return
+  }
+  if tbl.genericArgsByNode.containsKey(callNode) {
+    tbl.genericArgsByNode.remove(callNode)
+  }
+  if valueParams.count > 0 {
+    return
+  }
+  for ta in allTargs {
+    if not typeIsClosedOver(ta, genericNames) {
+      return
+    }
+  }
+  tbl.genericArgsByNode.add(callNode, allTargs)
+}
+
 // Record the type arguments the call to the generic function `sig` whose
 // callee is at `sp` binds (see `SymbolTable.genericCallTypeArgSites`, #7865).  Only a call whose
 // every type argument is closed and has a source spelling here is recorded;
@@ -18143,8 +18175,9 @@ func recordGenericCallTypeArgs(
   args: in List[CallArg],
   argTypes: in List[Type],
   sp: in Span,
+  callNode: in Int,
 ): Unit {
-  if sig.generics.count == 0 or isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+  if sig.generics.count == 0 {
     return
   }
   if args.count > sig.params.count {
@@ -18159,6 +18192,10 @@ func recordGenericCallTypeArgs(
   val noRecv: Option[Type] = None
   val allTargs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
   if allTargs.count != sig.generics.count {
+    return
+  }
+  recordGenericArgsNode(tbl, genericNames, valueParams, allTargs, callNode)
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
     return
   }
   recordGenericTypeArgsSite(tbl, genericNames, sig.generics, valueParams, allTargs, sp)
@@ -19993,7 +20030,8 @@ func inferExprCore(
                     valueGenericParamsOf(tbl, fn, args.count),
                     args,
                     boundArgTys,
-                    fn.span
+                    fn.span,
+                    e.nodeId
                   )
                 }
                 case _ -> ()
@@ -20203,7 +20241,8 @@ func inferExprCore(
                 valueGenericParamsOf(tbl, fn, args.count),
                 args,
                 argTypes,
-                fn.span
+                fn.span,
+                e.nodeId
               )
               noteUnsolvedCall(sc, tbl, fn, sig, args, argTypes, e.span)
               noteNestedCallFlow(sc, tbl, sig, args, argTypes, e.span)

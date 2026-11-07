@@ -743,6 +743,10 @@ pub record SymbolTable {
   /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
   /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
   genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
+  /// The type arguments of the generic call at a `NodeId`, one per generic of the callee
+  /// in order (docs/70 6.3, D394): only a call with no value generic parameter whose
+  /// arguments are closed or mention only the enclosing function's own parameters.
+  genericArgsByNode: Map[Int, List[Type]]
   /// Each call to a generic dot-named function (`func Box.get[T](self: in
   /// Box[T])`), written as a method call (`b.get()`) or through its type
   /// (`Box.get(b)`), keyed by `recordCopySiteKey` of the callee's span.
@@ -1265,6 +1269,7 @@ pub func newSymbolTable(): SymbolTable {
     lambdaReturnFrames = newList(),
     lambdaExpectedReturns = newList(),
     genericCallTypeArgSites = newMap(),
+    genericArgsByNode = newMap(),
     dottedGenericCallSites = newMap(),
     byRefDotCallSites = newMap(),
     dotNameRenames = newMap(),
