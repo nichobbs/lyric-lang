@@ -332,7 +332,7 @@ func renamedImportAliasPkgs(): List[Emitter.ProjectPackage] {
     mkProjectPkg(
       "AliasRen.App",
       "package AliasRen.App\n\nimport AliasRen.One\nimport AliasRen.Two as T\n\nalias Pick = T.Seed\n\n" +
-        "func main(): Unit {\n  val s = Pick(n = 0)\n  println(s.base())\n}\n"
+        "func main(): Unit {\n  println(Pick.base())\n}\n"
     )
   )
   pkgs
