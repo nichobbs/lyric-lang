@@ -15170,6 +15170,14 @@ test "a protected field's type is read in the declaring package's scope (D359)" 
   assertEqual(diagCodesOf(parseCheck(src)), "", "the own-package read is typed")
 }
 
+test "a call of a protected function-valued field from outside is T0221 (D359)" {
+  val decl = "package P\nprotected type Holder {\n  var cb: (Int) -> Int = { x -> x }\n  entry run(v: in Int): Int { cb(v) }\n}\n"
+  val outside = parseCheck(decl + "func call(h: in Holder): Int {\n  h.cb(1)\n}\n")
+  assertTrue(Str.contains(diagCodesOf(outside), "T0221"), "an outside call is refused: " + diagCodesOf(outside))
+  val inside = parseCheck(decl)
+  assertTrue(not Str.contains(diagCodesOf(inside), "T0221"), "the type's own member may call it: " + diagCodesOf(inside))
+}
+
 test "a config field read through its package is typed (D359)" {
   val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
