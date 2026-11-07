@@ -774,8 +774,17 @@ builder (I0002) rather than on the current checker.
   (`<package>|<key>`), and defaults mean the declaring package's names; the JVM
   binds a call to its site, scoped key or qualified key, and a default
   expression's callees are qualified where their package is checked (#8850); a
-  plain function has no bare key on the JVM any more (dot-named functions
-  keep theirs). The native bridge, #8752 and #8690 remain.
+  plain function has no bare key on the JVM any more, and neither has a
+  dot-named one (#8869: `Type.f(x)` binds by its site, then the file's
+  import-scoped type map; only a wire factory keeps a `Wire.method` key), and a
+  `Type.f` call binds the function of the package whose `Type` is in scope on
+  both backends (#8878). Remaining: the JVM's import-scope maps for bare
+  constructors and cases (`~ctor-import~`, `~selimport~`, and
+  `importAwareRegistry`'s enum case and module val overlay, which need the
+  checker to record a constructor site), the native bridge (it has no callee
+  sites at all; inventory on #8612), #8752 (alias targets in the resolver; a
+  renamed-import alias target is still resolved by name), #8690, and two
+  overload gaps (#8880).
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 
