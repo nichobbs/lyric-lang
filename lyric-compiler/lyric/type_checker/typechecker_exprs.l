@@ -12257,9 +12257,7 @@ func bindPatternTyped(
               case Some(cs) -> {
                 var hasPayload = false
                 match cs.kind {
-                  case DKUnionCase(_, uc) -> if uc.fields.count > 0 {
-                    hasPayload = true
-                  }
+                  case DKUnionCase(_, uc) -> if uc.fields.count > 0 { hasPayload = true }
                   case _ -> ()
                 }
                 if not hasPayload {
