@@ -1816,31 +1816,35 @@ func pipeModeItemTag(it: in Item): String {
   }
 }
 
-func pipeQualifyRecordType(ty: in TypeExpr, pkgName: in String, pkgRecordNames: in Map[String, Bool]): TypeExpr {
+func pipeQualifyRecordType(ty: in TypeExpr, pkgTypeTargets: in Map[String, String]): TypeExpr {
   match ty.kind {
-    case TRef(p) -> if p.segments.count == 1 and pkgRecordNames.containsKey(p.segments[0]) {
-      val segs: List[String] = newList()
-      segs.add(pkgName + "." + p.segments[0])
-      TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = ty.span)), span = ty.span)
+    case TRef(p) -> if p.segments.count > 0 {
+      val spelled = Str.joinList(".", p.segments)
+      match mapGet(pkgTypeTargets, spelled) {
+        case Some(canon) -> {
+          val segs: List[String] = newList()
+          segs.add(canon)
+          TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = ty.span)), span = ty.span)
+        }
+        case None -> ty
+      }
     } else {
       ty
     }
     case TParen(inner) -> {
-      val qInner = pipeQualifyRecordType(inner, pkgName, pkgRecordNames)
+      val qInner = pipeQualifyRecordType(inner, pkgTypeTargets)
       TypeExpr(kind = TParen(inner = qInner), span = ty.span)
     }
     case _ -> ty
   }
 }
 
-func pipeQualifyRecordFields(
-  members: in List[RecordMember], pkgName: in String, pkgRecordNames: in Map[String, Bool]
-): List[RecordMember] {
+func pipeQualifyRecordFields(members: in List[RecordMember], pkgTypeTargets: in Map[String, String]): List[RecordMember] {
   val res: List[RecordMember] = newList()
   for m in members {
     match m {
       case RMField(f) -> {
-        val newTy = pipeQualifyRecordType(f.ty, pkgName, pkgRecordNames)
+        val newTy = pipeQualifyRecordType(f.ty, pkgTypeTargets)
         res.add(RMField(field = f.copy(ty = newTy)))
       }
       case _ -> res.add(m)
@@ -1849,15 +1853,15 @@ func pipeQualifyRecordFields(
   res
 }
 
-func pipeRenameModeItem(it: in Item, newName: in String, pkgName: in String, pkgRecordNames: in Map[String, Bool]): Item {
+func pipeRenameModeItem(it: in Item, newName: in String, pkgTypeTargets: in Map[String, String]): Item {
   match it.kind {
     case IFunc(fn) -> it.copy(kind = IFunc(decl = fn.copy(name = newName)))
     case IRecord(d) -> {
-      val qMembers = pipeQualifyRecordFields(d.members, pkgName, pkgRecordNames)
+      val qMembers = pipeQualifyRecordFields(d.members, pkgTypeTargets)
       it.copy(kind = IRecord(decl = d.copy(name = newName, members = qMembers)))
     }
     case IExposedRec(d) -> {
-      val qMembers = pipeQualifyRecordFields(d.members, pkgName, pkgRecordNames)
+      val qMembers = pipeQualifyRecordFields(d.members, pkgTypeTargets)
       it.copy(kind = IExposedRec(decl = d.copy(name = newName, members = qMembers)))
     }
     case IImpl(d) -> {
@@ -1887,7 +1891,7 @@ func pipeEmitModeItemOnce(
   pkgName: in String,
   targetName: in String,
   it: in Item,
-  pkgRecordNames: in Map[String, Bool],
+  pkgTypeTargets: in Map[String, String],
 ): Unit {
   val tag = pipeModeItemTag(it)
   if tag == "" or targetName == "" {
@@ -1898,7 +1902,7 @@ func pipeEmitModeItemOnce(
     return
   }
   emitted.add(key, true)
-  acc.add(pipeRenameModeItem(it, targetName, pkgName, pkgRecordNames))
+  acc.add(pipeRenameModeItem(it, targetName, pkgTypeTargets))
 }
 
 pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[ImportedPackage]): List[Item] {
@@ -1918,43 +1922,123 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
   }
   val acc: List[Item] = newList()
   val emitted: Map[String, Bool] = newMap()
-  val pkgRecordsByPkg: Map[String, Map[String, Bool]] = newMap()
+  val pkgRecordSet: Map[String, Bool] = newMap()
   for pkg in importedPkgs {
     if pkg.name != "" {
-      val recMap = match mapGet(pkgRecordsByPkg, pkg.name) {
-        case Some(m) -> m
-        case None -> {
-          val fresh: Map[String, Bool] = newMap()
-          pkgRecordsByPkg.add(pkg.name, fresh)
-          fresh
-        }
-      }
       for it in pkg.items {
         match it.kind {
-          case IRecord(d) -> if not recMap.containsKey(d.name) { recMap.add(d.name, true) }
-          case IExposedRec(d) -> if not recMap.containsKey(d.name) { recMap.add(d.name, true) }
+          case IRecord(d) -> {
+            val key = pkg.name + "|" + d.name
+            if not pkgRecordSet.containsKey(key) {
+              pkgRecordSet.add(key, true)
+            }
+          }
+          case IExposedRec(d) -> {
+            val key = pkg.name + "|" + d.name
+            if not pkgRecordSet.containsKey(key) {
+              pkgRecordSet.add(key, true)
+            }
+          }
           case _ -> ()
         }
       }
     }
   }
   for pkg in importedPkgs {
-    val pkgRecordNames: Map[String, Bool] = match mapGet(pkgRecordsByPkg, pkg.name) {
-      case Some(m) -> m
-      case None -> newMap()
+    val pkgTypeTargets: Map[String, String] = newMap()
+    if pkg.name != "" {
+      for it in pkg.items {
+        match it.kind {
+          case IRecord(d) -> if not pkgTypeTargets.containsKey(d.name) { pkgTypeTargets.add(d.name, pkg.name + "." + d.name) }
+          case IExposedRec(d) -> if not pkgTypeTargets.containsKey(d.name) {
+            pkgTypeTargets.add(d.name, pkg.name + "." + d.name)
+          }
+          case _ -> ()
+        }
+      }
+      for imp in pkg.importDecls {
+        if not imp.isExtern and imp.path.segments.count > 0 {
+          val impPkg = Str.joinList(".", imp.path.segments)
+          match imp.selector {
+            case Some(sel) -> {
+              for item in pipeImportItemsOfSelector(sel) {
+                if pkgRecordSet.containsKey(impPkg + "|" + item.name) {
+                  val localName = match item.asAlias { case Some(a) -> a; case None -> item.name }
+                  if not pkgTypeTargets.containsKey(localName) {
+                    pkgTypeTargets.add(localName, impPkg + "." + item.name)
+                  }
+                }
+              }
+            }
+            case None -> match imp.asAlias {
+              case Some(alias) -> {
+                for otherPkg in importedPkgs {
+                  if otherPkg.name == impPkg {
+                    for oit in otherPkg.items {
+                      val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
+                      if recName != "" {
+                        val aliased = alias + "." + recName
+                        if not pkgTypeTargets.containsKey(aliased) {
+                          pkgTypeTargets.add(aliased, impPkg + "." + recName)
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              case None -> {
+                for otherPkg in importedPkgs {
+                  if otherPkg.name == impPkg {
+                    for oit in otherPkg.items {
+                      val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
+                      if recName != "" and not pkgTypeTargets.containsKey(recName) {
+                        pkgTypeTargets.add(recName, impPkg + "." + recName)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      for sel in pkg.selectedImports {
+        match Str.indexOf(sel, "::") {
+          case Some(idx) -> if idx > 0 {
+            val impPkg = Str.substring(sel, 0, idx)
+            val recName = Str.substring(sel, idx + 2, sel.length - idx - 2)
+            if pkgRecordSet.containsKey(impPkg + "|" + recName) and not pkgTypeTargets.containsKey(recName) {
+              pkgTypeTargets.add(recName, impPkg + "." + recName)
+            }
+          }
+          case None -> ()
+        }
+      }
+      for wPkg in pkg.wholeImports {
+        for otherPkg in importedPkgs {
+          if otherPkg.name == wPkg {
+            for oit in otherPkg.items {
+              val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
+              if recName != "" and not pkgTypeTargets.containsKey(recName) {
+                pkgTypeTargets.add(recName, wPkg + "." + recName)
+              }
+            }
+          }
+        }
+      }
     }
     if pkg.name == "" {
       for it in pkg.items {
         val itemName = pipeModeItemName(it)
         if itemName != "" {
-          pipeEmitModeItemOnce(acc, emitted, "", itemName, it, pkgRecordNames)
+          pipeEmitModeItemOnce(acc, emitted, "", itemName, it, pkgTypeTargets)
         }
       }
     } else {
       for it in pkg.items {
         val itemName = pipeModeItemName(it)
         if itemName != "" {
-          pipeEmitModeItemOnce(acc, emitted, pkg.name, pkg.name + "." + itemName, it, pkgRecordNames)
+          pipeEmitModeItemOnce(acc, emitted, pkg.name, pkg.name + "." + itemName, it, pkgTypeTargets)
         }
       }
       for imp in file.imports {
@@ -1975,10 +2059,10 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
                   for it in pkg.items {
                     val itemName = pipeModeItemName(it)
                     if itemName == item.name {
-                      pipeEmitModeItemOnce(acc, emitted, pkg.name, localName, it, pkgRecordNames)
+                      pipeEmitModeItemOnce(acc, emitted, pkg.name, localName, it, pkgTypeTargets)
                     } else if Str.startsWith(itemName, hoistedPrefix) {
                       val suffix = Str.substring(itemName, hoistedPrefix.length, itemName.length - hoistedPrefix.length)
-                      pipeEmitModeItemOnce(acc, emitted, pkg.name, localName + "." + suffix, it, pkgRecordNames)
+                      pipeEmitModeItemOnce(acc, emitted, pkg.name, localName + "." + suffix, it, pkgTypeTargets)
                     }
                   }
                 }
@@ -1988,7 +2072,7 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
                   for it in pkg.items {
                     val itemName = pipeModeItemName(it)
                     if itemName != "" {
-                      pipeEmitModeItemOnce(acc, emitted, pkg.name, alias + "." + itemName, it, pkgRecordNames)
+                      pipeEmitModeItemOnce(acc, emitted, pkg.name, alias + "." + itemName, it, pkgTypeTargets)
                     }
                   }
                 }
@@ -2001,7 +2085,7 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
                         case None -> itemName
                       }
                       if not selectedBareNames.containsKey(ownerName) {
-                        pipeEmitModeItemOnce(acc, emitted, pkg.name, itemName, it, pkgRecordNames)
+                        pipeEmitModeItemOnce(acc, emitted, pkg.name, itemName, it, pkgTypeTargets)
                       }
                     }
                   }

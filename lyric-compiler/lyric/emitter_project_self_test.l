@@ -3809,4 +3809,20 @@ test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fie
     )
   )
   assertEmitProjectRejected("mode-imported-renamed-hoisted", pkgsRenamedHoisted, "ModeImpRenamedHoisted")
+
+  val pkgsThreePkgRenamedField: List[Emitter.ProjectPackage] = newList()
+  pkgsThreePkgRenamedField.add(mkProjectPkg("Leaf", "package Leaf\npub record Deep {\n  var n: Int\n}\n"))
+  pkgsThreePkgRenamedField.add(
+    mkProjectPkg(
+      "Mid",
+      "package Mid\nimport Leaf.{Deep as D}\nimport Leaf.{Deep}\npub record Holder {\n  var deep: D\n  var plain: Deep\n}\n"
+    )
+  )
+  pkgsThreePkgRenamedField.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport Mid.{Holder}\nfunc bad(h: in Holder): Unit {\n  h.plain.n = 1\n}\nfunc main(): Unit { () }\n"
+    )
+  )
+  assertEmitProjectRejected("mode-imported-three-pkg-renamed-field", pkgsThreePkgRenamedField, "ModeImpThreePkg")
 }

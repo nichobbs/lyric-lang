@@ -576,14 +576,17 @@ func translateResolvedCall(
 
   // Requires clauses → side conditions.
   val preConds: List[Term] = newList()
-  var pii = 0
-  while pii < decl.params.count and pii < argTerms.count {
-    val pp0 = decl.params[pii]
-    val checkEntryInv = match pp0.mode { case PMOut -> false; case _ -> true }
-    if checkEntryInv {
-      appendTermList(preConds, recordInvariantObligations(env, argTerms[pii], paramSorts[pii], callSpan, allArgDiags))
+  val calleeBoundary = isInvariantBoundary(decl)
+  if calleeBoundary {
+    var pii = 0
+    while pii < decl.params.count and pii < argTerms.count {
+      val pp0 = decl.params[pii]
+      val checkEntryInv = match pp0.mode { case PMOut -> false; case _ -> true }
+      if checkEntryInv {
+        appendTermList(preConds, recordInvariantObligations(env, argTerms[pii], paramSorts[pii], callSpan, allArgDiags))
+      }
+      pii = pii + 1
     }
-    pii = pii + 1
   }
   var ci = 0
   while ci < decl.contracts.count {
@@ -714,11 +717,13 @@ func translateResolvedCall(
   appendTermList(asList, pureUnfold)
   // The callee proves its result is in its declared range (#7872).
   appendTermList(asList, valueFactsForTerm(callTerm, resultInfo))
-  appendTermList(asList, recordInvariantFacts(env, callTerm, resultInfo.sort))
-  var opi = 0
-  while opi < outPostTerms.count {
-    appendTermList(asList, recordInvariantFacts(env, outPostTerms[opi], outPostSorts[opi]))
-    opi = opi + 1
+  if calleeBoundary {
+    appendTermList(asList, recordInvariantFacts(env, callTerm, resultInfo.sort))
+    var opi = 0
+    while opi < outPostTerms.count {
+      appendTermList(asList, recordInvariantFacts(env, outPostTerms[opi], outPostSorts[opi]))
+      opi = opi + 1
+    }
   }
   // A goal this call reaches without its body is reported as V0027 when it
   // is not discharged (`unfoldSkippedMarker`).

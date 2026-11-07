@@ -4809,13 +4809,13 @@ test "record invariant is checked at construction in @proof_required" {
   )
 }
 
-test "exposed record and opaque type invariants are checked at construction and assumed on parameters" {
+test "exposed record and opaque type invariants are checked at construction and enforced at public boundaries" {
   assertRefuted(
     "exposed record ExpPos {\n  x: Int\n  invariant: x > 0\n}\nfunc bad(): ExpPos {\n  ExpPos(x = 0)\n}\n",
     "exposed-record-invariant-violated"
   )
   assertDischarged(
-    "exposed record ExpPos {\n  x: Int\n  invariant: x > 0\n  func get(self: in ExpPos): Int\n    ensures: result > 0\n  {\n    self.x\n  }\n}\nfunc good(p: in ExpPos): Int\n  ensures: result > 0\n{\n  p.get()\n}\n",
+    "pub exposed record ExpPos {\n  x: Int\n  invariant: x > 0\n  func get(self: in ExpPos): Int\n    ensures: result > 0\n  {\n    self.x\n  }\n}\npub func good(p: in ExpPos): Int\n  ensures: result > 0\n{\n  p.get()\n}\n",
     "exposed-record-invariant-assumed-and-method-callee"
   )
   assertRefuted(
@@ -4823,15 +4823,26 @@ test "exposed record and opaque type invariants are checked at construction and 
     "opaque-invariant-violated"
   )
   assertDischarged(
-    "opaque type OpaquePos {\n  x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in OpaquePos): Int\n  ensures: result > 0\n{\n  p.x\n}\n",
+    "pub opaque type OpaquePos {\n  x: Int\n  invariant: x > 0\n}\npub func readPos(p: in OpaquePos): Int\n  ensures: result > 0\n{\n  p.x\n}\n",
     "opaque-invariant-assumed-on-param"
   )
   assertRefuted(
-    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc breakReturn(p: in Pos): Pos {\n  var q = p\n  q.x = 0\n  q\n}\n",
-    "record-invariant-checked-on-return"
+    "pub record Pos {\n  var x: Int\n  invariant: x > 0\n}\n@axiom\nfunc setZero(p: inout Pos): Unit\n  ensures: p.x == 0\npub func breakReturn(p: in Pos): Pos {\n  var q = p\n  setZero(q)\n  q\n}\n",
+    "record-invariant-checked-on-pub-return"
   )
   assertRefuted(
-    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in Pos): Int\n  ensures: result > 0\n{\n  p.x\n}\nfunc breakCall(p: in Pos): Int {\n  var q = p\n  q.x = 0\n  readPos(q)\n}\n",
-    "record-invariant-checked-at-call-site"
+    "pub record Pos {\n  var x: Int\n  invariant: x > 0\n}\n@axiom\nfunc setZero(p: inout Pos): Unit\n  ensures: p.x == 0\npub func readPos(p: in Pos): Int\n  ensures: result > 0\n{\n  p.x\n}\npub func breakCall(p: in Pos): Int {\n  var q = p\n  setZero(q)\n  readPos(q)\n}\n",
+    "record-invariant-checked-at-pub-call-site"
+  )
+  assertDischarged(
+    "pub record Pos {\n  var x: Int\n  invariant: x > 0\n}\n@axiom\nfunc setZero(p: inout Pos): Unit\n  ensures: p.x == 0\nfunc clear(p: inout Pos): Unit\n  ensures: p.x == 0\n{\n  setZero(p)\n}\npub func clearAndRestore(p: inout Pos): Unit\n  ensures: p.x == 1\n{\n  clear(p)\n  p = Pos(x = 1)\n}\n",
+    "private-helper-may-temporarily-break-invariant-before-pub-restore"
+  )
+  val brokenExit = provePkg(
+    "pub record Pos {\n  var x: Int\n  invariant: x > 0\n}\n@axiom\nfunc setZero(p: inout Pos): Unit\n  ensures: p.x == 0\nfunc clear(p: inout Pos): Unit\n  ensures: p.x == 0\n{\n  setZero(p)\n}\npub func clearWithoutRestore(p: inout Pos): Unit {\n  clear(p)\n}\n"
+  )
+  assertTrue(
+    summaryHasCounterexample(brokenExit),
+    "pub-boundary-must-restore-invariant-after-private-helper: " + diagnosticMessages(brokenExit)
   )
 }
