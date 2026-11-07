@@ -16827,15 +16827,22 @@ func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
 // The declared type of field `name` of the config block `recv` names
 // (`SecretCache.ttlSeconds`); None when `recv` is not a bare config name.
 func configFieldReadType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Type] {
-  val cname = match recv.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
-    case _ -> return None
+  // `Cfg.field`, or the block named through its package (`Pkg.Cfg.field`, D359).
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
   }
-  match scopeTryFind(sc, cname) {
+  match scopeTryFind(sc, segs[0]) {
     case Some(_) -> return None
     case None -> ()
   }
-  val sym = match symTableTryFindOne(tbl, cname) { case Some(s) -> s; case None -> return None }
+  val cname = segs[segs.count - 1]
+  val found = if segs.count == 1 {
+    symTableTryFindOne(tbl, cname)
+  } else {
+    symTableTryFindInPackage(tbl, qualifierOfSegs(segs), cname)
+  }
+  val sym = match found { case Some(s) -> s; case None -> return None }
   val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
   for f in cd.fields {
     if f.name == name {
