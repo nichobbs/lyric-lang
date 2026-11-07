@@ -534,6 +534,29 @@ test "qualified function call survives a local shadowing only the package's firs
   )
 }
 
+test "qualified function call survives a Unit local shadowing the package's first segment (JVM, D359)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add("package QualUnitShadowJvm.Sub\n" + "\n" + "pub func answer(x: Int): Int {\n" + "  x + 40\n" + "}\n")
+  pkgSrcs.add(
+    "package QualUnitShadowJvm.App\n" + "\n" + "import QualUnitShadowJvm.Sub\n" + "\n" + "func main(): Int {\n" +
+      "  val QualUnitShadowJvm = ()\n" +
+      "  println(QualUnitShadowJvm.Sub.answer(2))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("qualunitshadow-jvm", pkgSrcs, "QualUnitShadowJvm.App")
+  assertEqualInt(
+    result.exitCode,
+    0,
+    "qualified_function_call_survives_unit_shadow_jvm: exit 0 (stderr=" + result.stderr + ")"
+  )
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "qualified_function_call_survives_unit_shadow_jvm: stdout matches expected"
+  )
+}
+
 // ─── #6972 JVM parity: a union case's field type must resolve under the
 // case's OWN declaring package, not the caller's ───────────────────────────
 // The MSIL analogue of this fix (`msil_project_bridge_self_test.l`'s
