@@ -1934,6 +1934,36 @@ pub func methodCallPathKey(path: in ModulePath): String {
   recordCopySiteKey(path.span) + ":" + last
 }
 
+/// The number of parameters in a rendered DefPath `Pkg::name(P1,P2)` (or its
+/// tail `name(P1,P2)`), counted at the top nesting level: `Map[String,Int]`,
+/// `(A,B)` and `(Int)->Int` are one parameter each.  -1 when there is no
+/// parameter list.  The `>` of a function type's `->` closes nothing.
+pub func defPathParamCount(dp: in String): Int {
+  val open = match Str.indexOf(dp, "(") { case Some(i) -> i; case None -> return -1 }
+  if not Str.endsWith(dp, ")") {
+    return -1
+  }
+  val inner = Str.substring(dp, open + 1, dp.length - open - 2)
+  if inner.length == 0 {
+    return 0
+  }
+  var depth = 0
+  var n = 1
+  var i = 0
+  while i < inner.length {
+    val c = Str.substring(inner, i, 1)
+    if c == "[" or c == "(" {
+      depth = depth + 1
+    } else if c == "]" or c == ")" {
+      depth = depth - 1
+    } else if c == "," and depth == 0 {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
 /// The callee a method call binds to, as the type checker resolved it: a
 /// dot-named function (`func T.m(self, ...)`) or the receiver type's own
 /// method, and its parameter count with the receiver not counted.

@@ -2489,7 +2489,7 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
   // fails this check and the name lookups answer instead.
   // The declaration the site names has its own parameter count, which the
   // arguments written do not give when two overloads both take them (#8880).
-  val declared = if Str.contains(name, ".") { declaredParamCountOfDefPath(rest) } else { -1 }
+  val declared = if Str.contains(name, ".") { defPathParamCount(rest) } else { -1 }
   val written0 = Str.substring(key, slash, key.length - slash)
   val declaredSig = if declared >= 0 { mapGet(ctx.sigs, pkg + "." + name + "/" + toString(declared)) } else { None }
   val sig = match declaredSig {
@@ -2507,34 +2507,6 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
     return None
   }
   Some(value = sig)
-}
-
-/// The number of parameters in a rendered DefPath tail `name(P1,P2)`, counted
-/// at the top nesting level (`Map[String,Int]` is one), else -1.
-func declaredParamCountOfDefPath(rest: in String): Int {
-  val open = match Str.indexOf(rest, "(") { case Some(i) -> i; case None -> return -1 }
-  if not Str.endsWith(rest, ")") {
-    return -1
-  }
-  val inner = Str.substring(rest, open + 1, rest.length - open - 2)
-  if inner.length == 0 {
-    return 0
-  }
-  var depth = 0
-  var n = 1
-  var i = 0
-  while i < inner.length {
-    val c = Str.substring(inner, i, 1)
-    if c == "[" or c == "(" or c == "<" {
-      depth = depth + 1
-    } else if c == "]" or c == ")" or c == ">" {
-      depth = depth - 1
-    } else if c == "," and depth == 0 {
-      n = n + 1
-    }
-    i = i + 1
-  }
-  n
 }
 
 /// The registry key for a call target, or "" when the callee shape is

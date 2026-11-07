@@ -38,4 +38,8 @@ checker resolved.
   `llvm_project_self_test.l` on native (ASan):
   `Seed.base(1)` is `1` and `Seed.base("a", 5)` is `105`.
 - Two overloads with the same parameter count still cannot be told apart by the
-  backends' `@count` keys; the checker records no site for them, as before.
+  backends' `@count` keys; the checker records no site for them, as before
+  (tracked in #8897).
+- The parameter count of a site's DefPath is read by one helper, `Lyric.Parser.defPathParamCount`,
+  for all three backends; `emitter_project_self_test.l`, `llvm_project_self_test.l`,
+  `typechecker_self_test.l` and `parser_self_test.l` cover it.

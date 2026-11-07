@@ -16985,34 +16985,6 @@ func calleeNameOfDefPathMsil(dp: in String): String {
   }
 }
 
-// The parameter count of the declaration a rendered DefPath `Pkg::name(P1,P2)`
-// names, counted at the top nesting level (`Map[String,Int]` is one), else -1.
-func calleeParamCountOfDefPathMsil(dp: in String): Int {
-  val open = match String.indexOf(dp, "(") { case Some(i) -> i; case None -> return -1 }
-  if not String.endsWith(dp, ")") {
-    return -1
-  }
-  val inner = String.substring(dp, open + 1, dp.length - open - 2)
-  if inner.length == 0 {
-    return 0
-  }
-  var depth = 0
-  var n = 1
-  var i = 0
-  while i < inner.length {
-    val c = String.substring(inner, i, 1)
-    if c == "[" or c == "(" or c == "<" {
-      depth = depth + 1
-    } else if c == "]" or c == ")" or c == ">" {
-      depth = depth - 1
-    } else if c == "," and depth == 0 {
-      n = n + 1
-    }
-    i = i + 1
-  }
-  n
-}
-
 // Whether the function the checker resolved the call at `siteKey` to is a
 // dot-named one (`Type.member`), whose overloads are told apart by their
 // declared parameter count (#8880).
@@ -17048,7 +17020,7 @@ func siteDeclaredParamCountMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: 
     cctx.calleeSites
   }
   match mapGet(sites, key) {
-    case Some(dp) -> calleeParamCountOfDefPathMsil(dp)
+    case Some(dp) -> defPathParamCount(dp)
     case None -> -1
   }
 }

@@ -2854,3 +2854,15 @@ test "the files of a package parse with their own file ids, lines and offset bas
   assertEqualInt(single.file.items[0].span.startPos.fileId, 0, "parse is file 0")
   assertEqualInt(single.file.items[0].span.startPos.offset, b.startPos.offset - first.length, "parse is base 0")
 }
+
+test "defPathParamCount counts the top-level parameters of a rendered DefPath" {
+  assertEqualInt(defPathParamCount("P::f()"), 0, "no parameters")
+  assertEqualInt(defPathParamCount("P::f(Int)"), 1, "one")
+  assertEqualInt(defPathParamCount("P::Seed.base(String,Int)"), 2, "two")
+  assertEqualInt(defPathParamCount("Seed.base(Int,Int,Int)"), 3, "a tail with no package")
+  assertEqualInt(defPathParamCount("P::g(Map[String,Int],Int)"), 2, "a generic argument's comma is nested")
+  assertEqualInt(defPathParamCount("P::h((A,B),C)"), 2, "a tuple's comma is nested")
+  assertEqualInt(defPathParamCount("P::k((Int)->Int,Int)"), 2, "the > of a function type closes nothing")
+  assertEqualInt(defPathParamCount("P::k(Int,(Int,Int)->Int,Int)"), 3, "a function type with two parameters")
+  assertEqualInt(defPathParamCount("P::name"), -1, "no parameter list")
+}
