@@ -11620,7 +11620,7 @@ func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTy
 // Infer the binding for a single generic `name` across all parameter/argument
 // pairs, returning `TyError` when unbound or when two occurrences disagree.
 func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
-  var bound: Type = tyErrorSilent()
+  var bound: Type = tyErrorOpen()
   var haveBinding = false
   // Whether every occurrence behind `bound` is a bare `T` parameter, whose
   // argument widens at the call like any numeric argument.
