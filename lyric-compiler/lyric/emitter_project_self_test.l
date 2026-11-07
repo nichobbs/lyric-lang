@@ -3492,6 +3492,95 @@ test "emitProject a default calling a dot-named function only its declaring pack
   assertEqual(Str.trim(result.stdout), "8", "dot-named default MSIL: output")
 }
 
+// Two packages declare a type named `Seed` with a dot-named `Seed.base()`; the
+// app imports only the second, so `Seed.base()` binds to that package's
+// function, not the first's (#8874).
+func dotNamedCollisionPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.One",
+      "package EPDc.One\n" + "\n" + "pub record Seed {\n" + "  pub n: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Int {\n" +
+        "  1\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.Two",
+      "package EPDc.Two\n" + "\n" + "pub record Seed {\n" + "  pub s: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Int {\n" +
+        "  2\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.App",
+      "package EPDc.App\n" + "\n" + "import EPDc.Two\n" + "\n" + "func main(): Unit {\n" + "  println(Seed.base())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a dot-named call binds to the imported package's same-named type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-dotcoll-jvm", dotNamedCollisionPkgs(), "EPDc")
+  assertEqualInt(result.exitCode, 0, "dot-named collision JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "dot-named collision JVM: output")
+}
+
+test "emitProject a dot-named call binds to the imported package's same-named type (MSIL)" {
+  val result = runEmitProject("emitproj-dotcoll", dotNamedCollisionPkgs(), "EPDc")
+  assertEqualInt(result.exitCode, 0, "dot-named collision MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "dot-named collision MSIL: output")
+}
+
+// The visible package's `Seed.base` takes a defaulted parameter, so the call
+// `Seed.base()` leaves it out; the other package's takes none (#8878 review).
+func dotNamedDefaultCollisionPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPDe.One",
+      "package EPDe.One\n" + "\n" + "pub record Seed {\n" + "  pub n: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Int {\n" +
+        "  1\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDe.Two",
+      "package EPDe.Two\n" + "\n" + "pub record Seed {\n" + "  pub s: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(x: in Int = 2): Int {\n" +
+        "  x\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDe.App",
+      "package EPDe.App\n" + "\n" + "import EPDe.Two\n" + "\n" + "func main(): Unit {\n" + "  println(Seed.base())\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a dot-named call with an omitted default binds the visible package's function (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-dotdefcoll-jvm", dotNamedDefaultCollisionPkgs(), "EPDe")
+  assertEqualInt(result.exitCode, 0, "dot-named default collision JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "dot-named default collision JVM: output")
+}
+
+test "emitProject a dot-named call with an omitted default binds the visible package's function (MSIL)" {
+  val result = runEmitProject("emitproj-dotdefcoll", dotNamedDefaultCollisionPkgs(), "EPDe")
+  assertEqualInt(result.exitCode, 0, "dot-named default collision MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "dot-named default collision MSIL: output")
+}
+
 func chainedImportedCallPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
