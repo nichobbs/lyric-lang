@@ -312,7 +312,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
       match refSite(env.ctx, e.nodeId) {
         case Some(r) -> match r.kind {
-          case RkNullaryCase -> return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+          case RkNullaryCase -> {
+            noteCaseSym(env, r.sym)
+            return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+          }
           case _ -> return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
         }
         case None -> ()
@@ -490,7 +493,10 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       match patSym(env.ctx, p.nodeId) {
         case Some(sym) -> {
           return match inner {
-            case None -> Some(value = mkPat(p, ty, TpCtor(sym = sym, args = newList())))
+            case None -> {
+              noteCaseSym(env, sym)
+              Some(value = mkPat(p, ty, TpCtor(sym = sym, args = newList())))
+            }
             case Some(_) -> uncoveredPat(env, p, "a case name with a sub-pattern")
           }
         }
@@ -517,10 +523,14 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
     case PConstructor(_, args) -> match patSym(env.ctx, p.nodeId) {
       case Some(sym) -> match buildPats(env, args) {
         case Some(ts) -> Some(
-          value = mkPat(
-            p,
-            ty,
-            TpCtor(sym = sym, args = ts)
+          value = withCaseSym(
+            env,
+            sym,
+            mkPat(
+              p,
+              ty,
+              TpCtor(sym = sym, args = ts)
+            )
           )
         )
         case None -> None
@@ -735,7 +745,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SFor(_, _, _, _) -> uncoveredStmt(env, s, "a for loop")
     case SAssign(t, op, v) -> {
-      val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = s.nodeId)
+      val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
         case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
         case None -> None
@@ -771,7 +781,7 @@ func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding):
       case _ -> uncoveredStmt(env, s, "a binding pattern")
     }
     case LBLet(name, ann, init) -> {
-      val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = s.nodeId)
+      val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = freshNodeId(env).id)
       buildLet(env, s, pat, name, ann, init)
     }
     case LBVar(name, ann, init) -> match init {

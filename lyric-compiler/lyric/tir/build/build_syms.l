@@ -128,3 +128,122 @@ func ownFnEntry(f: in TFnDecl): TSymEntry {
     mutable = false
   )
 }
+
+/// Fill `ctx.cases` once: every union and enum case symbol of the table by the
+/// `SymbolId` the checker gives it.
+func loadCases(ctx: in TyConvCtx): Unit {
+  if ctx.casesLoaded.count > 0 {
+    return
+  }
+  ctx.casesLoaded.add(true)
+  for s in ctx.tbl.symbols {
+    match s.kind {
+      case DKUnionCase(pid, uc) -> match caseSymbolId(ctx.tbl, s, pid, uc.name) {
+        case Some(id) -> if not ctx.cases.containsKey(id.id) { ctx.cases.add(id.id, s) }
+        case None -> ()
+      }
+      case DKEnumCase(pid, ec) -> match caseSymbolId(ctx.tbl, s, pid, ec.name) {
+        case Some(id) -> if not ctx.cases.containsKey(id.id) { ctx.cases.add(id.id, s) }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
+}
+
+/// The result type of a case of the union or enum `parent` with `n` type parameters.
+func caseResultTy(parent: in SymbolId, n: in Int): Ty {
+  val args: List[Ty] = newList()
+  var i = 0
+  while i < n {
+    args.add(TParam(owner = parent, index = i))
+    i = i + 1
+  }
+  TNamed(sym = parent, args = args)
+}
+
+/// Record the union or enum case `sym`, when it is one: a payload as parameters and
+/// fields, the union (under its own parameters) as the result.  The payload types are
+/// converted in a context where the union's parameters belong to the union.  A case
+/// whose payload cannot be converted leaves no entry.
+func noteCaseSym(env: in BuildEnv, sym: in SymbolId): Unit {
+  if env.syms.containsKey(sym.id) {
+    return
+  }
+  loadCases(env.ctx)
+  val s = match mapGet(env.ctx.cases, sym.id) { case Some(x) -> x; case None -> return }
+  val tbl = env.ctx.tbl
+  match s.kind {
+    case DKEnumCase(pid, _) -> env.syms.add(
+      sym.id,
+      TSymEntry(
+        sym = sym,
+        kind = TSkCase,
+        typeParamCount = 0,
+        sig = Some(
+          value = TSig(
+            typeParamCount = 0,
+            params = newList(),
+            ret = caseResultTy(pid, 0),
+            isAsync = false
+          )
+        ),
+        fields = newList(),
+        ty = None,
+        mutable = false
+      )
+    )
+    case DKUnionCase(pid, uc) -> {
+      val decl = match parentUnionDeclOf(tbl, pid) { case Some(d) -> d; case None -> return }
+      val names = unionDeclGenericNames(decl)
+      val ctx = newTyConvCtx(tbl)
+      val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+      if names.count > 0 {
+        tyConvBind(ctx, decl.name, pid, names)
+        gctxPushOwned(gc, names, decl.name)
+      }
+      val diag: List[Diagnostic] = newList()
+      val ps: List[TParamTy] = newList()
+      val fs: List[TFieldSig] = newList()
+      var i = 0
+      for f in uc.fields {
+        val fname = match f { case UFNamed(n, _, _) -> n; case UFPos(_, _) -> "_" + toString(i) }
+        val te = match f { case UFNamed(_, t, _) -> t; case UFPos(t, _) -> t }
+        match tyOfType(ctx, resolveType(tbl, gc, diag, te)) {
+          case Ok(t) -> {
+            ps.add(TParamTy(mode = TMIn, ty = t))
+            fs.add(TFieldSig(name = fname, ty = t, mutable = false))
+          }
+          case Err(_) -> return
+        }
+        i = i + 1
+      }
+      env.syms.add(
+        sym.id,
+        TSymEntry(
+          sym = sym,
+          kind = TSkCase,
+          typeParamCount = names.count,
+          sig = Some(
+            value = TSig(
+              typeParamCount = names.count,
+              params = ps,
+              ret = caseResultTy(pid, names.count),
+              isAsync = false
+            )
+          ),
+          fields = fs,
+          ty = None,
+          mutable = false
+        )
+      )
+    }
+    case _ -> ()
+  }
+}
+
+/// `p` after recording the case `sym` it matches.
+func withCaseSym(env: in BuildEnv, sym: in SymbolId, p: in TPat): TPat {
+  noteCaseSym(env, sym)
+  p
+}

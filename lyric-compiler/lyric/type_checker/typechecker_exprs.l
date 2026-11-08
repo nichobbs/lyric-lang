@@ -5144,7 +5144,7 @@ record MethodCallPick {
 // The `SymbolId` of the union or enum case `caseName` of the type `parentId`, the
 // DefPath the resolver interns (docs/70 4.2); a dependency's union has none, so
 // it is named by its package and type.
-func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
+pub func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
   match defPathKeyOf(tbl.interner, parentId) {
     case Some(parentKey) -> Some(value = internDefPathKey(tbl.interner, parentKey + "::" + caseName))
     // A dependency's union has no resolver DefPath: name the case by its
@@ -11481,7 +11481,7 @@ func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in SymbolId, scrutinee
   }
 }
 
-func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[UnionDecl] {
+pub func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[UnionDecl] {
   val key = toString(parentId.id)
   if not tbl.unionDeclIndex.containsKey(key) {
     return None
@@ -11491,7 +11491,7 @@ func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[Union
   Some(value = decl)
 }
 
-func unionDeclGenericNames(decl: in UnionDecl): List[String] {
+pub func unionDeclGenericNames(decl: in UnionDecl): List[String] {
   val names: List[String] = newList()
   match decl.generics {
     case None -> {
