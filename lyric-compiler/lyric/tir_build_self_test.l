@@ -1497,3 +1497,10 @@ test "a module value read verifies against its entry" {
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+test "an out argument builds as a place and a verifying call" {
+  val c = censusOf("package App\nfunc fill(q: out Int) { q = 1 }\nfunc f(): Int {\n  var r = 0\n  fill(r)\n  r\n}\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

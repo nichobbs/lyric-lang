@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# tir-census.sh - the typed-IR census (docs/70 §6.4, §12.2, D540) over the
+# tir-census.sh - the typed-IR census (docs/70 §6.4, §12.2, D542) over the
 # standard library's test programs.
 #
 # Each file is built with `lyric build --verify-ir`, which numbers its nodes,
