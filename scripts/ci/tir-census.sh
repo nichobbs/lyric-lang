@@ -48,6 +48,7 @@ trap 'rm -rf "$OUT"' EXIT
 i0003=0
 built=0
 total=0
+judged=0
 unchecked=()
 declare -A rules
 declare -A kinds
@@ -55,7 +56,7 @@ declare -A kinds
 cd "$REPO_ROOT"
 for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
-  LYRIC_VERIFY_IR=1 "$LYRIC" build "$f" -o "$OUT/out.dll" >"$log" 2>&1
+  "$LYRIC" build --verify-ir "$f" -o "$OUT/out.dll" >"$log" 2>&1
   rc=$?
   line="$(grep -m1 '^TIR build census' "$log" || true)"
   if [[ -z "$line" ]]; then
@@ -63,6 +64,7 @@ for f in "${FILES[@]}"; do
     continue
   fi
   # "TIR build census [x]: B of T function bodies built"
+  judged=$((judged + 1))
   b="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function bodies built.*/\1/' <<<"$line")"
   t="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function bodies built.*/\2/' <<<"$line")"
   built=$((built + b))
@@ -92,5 +94,12 @@ for k in "${!kinds[@]}"; do echo "  I0002 kind ${k}: ${kinds[$k]}"; done | sort 
 if [[ ${#unchecked[@]} -gt 0 ]]; then
   echo "UNCHECKED (the build stopped before the census):"
   printf '  %s\n' "${unchecked[@]}"
+fi
+# A build that exits 0 without a census line is not judged; if the line's format ever
+# changed, every program would be skipped and the job would still pass, so a census that
+# judged fewer than half of its programs fails.
+if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
+  echo "TIR census judged only $judged of ${#FILES[@]} program(s): the census line is missing from the build output" >&2
+  exit 1
 fi
 if [[ $i0003 -gt 0 || ${#unchecked[@]} -gt 0 ]]; then exit 1; fi
