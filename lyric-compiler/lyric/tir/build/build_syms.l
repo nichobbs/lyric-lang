@@ -207,6 +207,9 @@ func noteCaseSym(env: in BuildEnv, sym: in SymbolId): Unit {
       val ps: List[TParamTy] = newList()
       val fs: List[TFieldSig] = newList()
       var i = 0
+      // The payload names the declaring package's own types, resolved in its scope
+      // whatever the reading file imports.
+      val saved = enterDeclaringScopeIfForeign(tbl, s)
       for f in uc.fields {
         val fname = match f { case UFNamed(n, _, _) -> n; case UFPos(_, _) -> "_" + toString(i) }
         val te = match f { case UFNamed(_, t, _) -> t; case UFPos(t, _) -> t }
@@ -215,10 +218,14 @@ func noteCaseSym(env: in BuildEnv, sym: in SymbolId): Unit {
             ps.add(TParamTy(mode = TMIn, ty = t))
             fs.add(TFieldSig(name = fname, ty = t, mutable = false))
           }
-          case Err(_) -> return
+          case Err(_) -> {
+            restoreScope(tbl, saved)
+            return
+          }
         }
         i = i + 1
       }
+      restoreScope(tbl, saved)
       env.syms.add(
         sym.id,
         TSymEntry(
@@ -325,4 +332,24 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
     }
   }
   res
+}
+
+/// Record the module value or function value `sym` a body reads, with the type the checker
+/// gave the reading.  A `val` and a `const` are not assignable.
+func noteGlobalSym(env: in BuildEnv, sym: in SymbolId, ty: in Ty): Unit {
+  if env.syms.containsKey(sym.id) {
+    return
+  }
+  env.syms.add(
+    sym.id,
+    TSymEntry(
+      sym = sym,
+      kind = TSkVal,
+      typeParamCount = 0,
+      sig = None,
+      fields = newList(),
+      ty = Some(value = ty),
+      mutable = false
+    )
+  )
 }

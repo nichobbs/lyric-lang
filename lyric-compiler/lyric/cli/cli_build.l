@@ -1475,6 +1475,11 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--standalone" {
       sawStandaloneFlag = true
       i += 1
+    } else if arg == "--verify-ir" {
+      // docs/70 §6.4: number the nodes and report the TIR census (I0002, I0003) after
+      // the check; the pipeline reads the same switch from LYRIC_VERIFY_IR.
+      Environment.setVar("LYRIC_VERIFY_IR", "1")
+      i += 1
     } else if arg == "--define" {
       if i + 1 < argv.length {
         val kv = argv[i + 1]

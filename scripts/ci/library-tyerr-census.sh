@@ -169,3 +169,8 @@ if [[ "$checked" -eq 0 ]]; then
   exit 1
 fi
 rm -f "$sites_file" "$unchecked_file" "$known_file"
+
+# The typed-IR census (docs/70 §6.4, D542) runs here: this is the one job that already
+# has the built `lyric`, and ci.yml has no bytes to spare for a job of its own
+# (scripts/ci/check-workflow-size.sh).  Its exit status is this script's.
+bash "$REPO_ROOT/scripts/ci/tir-census.sh" "$LYRIC"

@@ -1082,6 +1082,9 @@ lyric build --no-restore               # build against the lock as-is (skip auto
 lyric build --package-version <ver>   # override the version string embedded in Lyric.Contract.*
                                        # metadata resources (instead of the version in lyric.toml);
                                        # used by publish pipelines to stamp the git release version
+lyric build --verify-ir <file.l>       # after the check, number the nodes and print the typed-IR census:
+                                       # I0002 per kind the builder cannot build yet, I0003 per verifier
+                                       # rule (docs/70 §6.4); LYRIC_VERIFY_IR=1 does the same
 lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @build_const("KEY")
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An
