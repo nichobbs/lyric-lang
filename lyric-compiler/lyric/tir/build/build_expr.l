@@ -39,6 +39,8 @@ pub record BuildEnv {
   /// The lambdas being built, innermost last: a local resolved from outside one is a
   /// capture of it.
   lambdas: List[LambdaFrame]
+  /// The declarations the body being built reaches, by `SymbolId`, for the verifier.
+  syms: Map[Int, TSymEntry] = newMap()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -840,17 +842,27 @@ func buildLet(
   }
 }
 
-/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
-/// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol.  A function with contracts is not covered yet.
-pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
+/// What building a function yields beyond its body: the parameters as declared locals
+/// with their modes and defaults, the return type, and the contract clauses.
+record FnCore {
+  sym: Option[SymbolId]
+  typeNames: List[String]
+  params: List[TParamDecl]
+  ret: Ty
+  pre: List[TExpr]
+  post: List[TExpr]
+  body: TExpr
+}
+
+func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool): Option[FnCore] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  val names = extractGenericNames(fn.generics)
+  val sym = symTableFuncSymOf(tbl, fn)
   match fn.generics {
     case Some(_) -> {
-      val names = extractGenericNames(fn.generics)
-      match symTableFuncSymOf(tbl, fn) {
-        case Some(sym) -> {
-          tyConvBind(env.ctx, fn.name, sym, names)
+      match sym {
+        case Some(sy) -> {
+          tyConvBind(env.ctx, fn.name, sy, names)
           gctxPushOwned(gc, names, fn.name)
         }
         case None -> {
@@ -862,19 +874,62 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
     }
     case None -> ()
   }
+  if wantSym and not isSome(sym) {
+    noteUncovered(env, "a function with no symbol")
+    env.errors.add("I0002: the builder has no symbol for the function: " + fn.name)
+    return None
+  }
   pushScope(env)
   env.generics.clear()
   env.generics.add(gc)
   val diag: List[Diagnostic] = newList()
   var ok = true
+  val params: List[TParamDecl] = newList()
   for p in fn.params {
+    var dflt: Option[TExpr] = None
+    match p.dflt {
+      case Some(dx) -> match buildExpr(env, dx) {
+        case Some(t) -> {
+          dflt = Some(value = t)
+        }
+        case None -> {
+          ok = false
+        }
+      }
+      case None -> ()
+    }
     match tyOfType(env.ctx, resolveType(tbl, gc, diag, p.ty)) {
       case Ok(t) -> {
-        val _ = declareLocal(env, p.name, t, false)
+        val d = declareLocal(env, p.name, t, false)
+        params.add(TParamDecl(local = d, mode = modeOfParam(p.mode), dflt = dflt))
       }
       case Err(msg) -> {
         env.errors.add(msg)
         ok = false
+      }
+    }
+  }
+  var ret: Ty = TPrim(kind = TPUnit)
+  match fn.ret {
+    case Some(te) -> match tyOfType(env.ctx, resolveType(tbl, gc, diag, te)) {
+      case Ok(t) -> {
+        ret = t
+      }
+      case Err(msg) -> {
+        env.errors.add(msg)
+        ok = false
+      }
+    }
+    case None -> ()
+  }
+  val pre: List[TExpr] = newList()
+  val post: List[TExpr] = newList()
+  if ok {
+    for c in fn.contracts {
+      match c {
+        case CCRequires(x, _) -> match buildExpr(env, x) { case Some(t) -> pre.add(t); case None -> { ok = false } }
+        case CCEnsures(x, _) -> match buildExpr(env, x) { case Some(t) -> post.add(t); case None -> { ok = false } }
+        case _ -> ()
       }
     }
   }
@@ -891,7 +946,60 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
     }
   }
   popScope(env)
-  res
+  match res {
+    case Some(b) -> Some(
+      value = FnCore(
+        sym = sym,
+        typeNames = names,
+        params = params,
+        ret = ret,
+        pre = pre,
+        post = post,
+        body = b
+      )
+    )
+    case None -> None
+  }
+}
+
+/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
+/// parameters become the outermost locals; a generic function binds its type
+/// parameters to its symbol.  Contracts are built with the body: a clause the
+/// builder has no case for fails it like any other expression.
+pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
+  match buildFnCore(env, fn, tbl, false) {
+    case Some(c) -> Some(value = c.body)
+    case None -> None
+  }
+}
+
+/// A function with a body as a `TFnDecl` (docs/70 §6.2): its symbol, type
+/// parameters (their bounds are not converted yet), parameters with modes and
+/// defaults, return type, contracts as `preconds`/`postconds`, and the body.
+pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
+  match buildFnCore(env, fn, tbl, true) {
+    case Some(c) -> {
+      val tps: List[TTypeParam] = newList()
+      for n in c.typeNames {
+        tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
+      }
+      val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
+      Some(
+        value = TFnDecl(
+          sym = sym,
+          typeParams = tps,
+          params = c.params,
+          ret = c.ret,
+          isAsync = fn.isAsync,
+          preconds = c.pre,
+          postconds = c.post,
+          body = Some(value = c.body),
+          span = fn.span
+        )
+      )
+    }
+    case None -> None
+  }
 }
 
 /// How many function bodies of a file the builder covers, and what it has no
@@ -903,11 +1011,15 @@ pub record BuildCensus {
   /// The first I0002 message of each body that did not build: the cause, where
   /// `uncovered` also counts the uses a failed binding leaves undefined.
   firstErrors: List[String] = newList()
+  /// The built functions as a package, with the declarations their bodies reach.
+  pkg: TPackage = TPackage(name = "", symbols = newList(), funcs = newList())
 }
 
 /// Build every function body of `file` that has one, each with a fresh
 /// `BuildEnv`, and total the outcome.
 pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): BuildCensus {
+  val funcs: List[TFnDecl] = newList()
+  val syms: Map[Int, TSymEntry] = newMap()
   var total = 0
   var built = 0
   val firstErrors: List[String] = newList()
@@ -920,14 +1032,24 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         case Some(_) -> {
           total = total + 1
           val env = newBuildEnvSharing(ctx, counter)
-          match buildFnBody(env, decl, tbl) {
-            case Some(_) -> {
+          match buildFnDecl(env, decl, tbl) {
+            case Some(fd) -> {
               built = built + 1
+              funcs.add(fd)
+              if not syms.containsKey(fd.sym.id) {
+                syms.add(fd.sym.id, ownFnEntry(fd))
+              }
             }
             case None -> {
               if env.errors.count > 0 {
                 firstErrors.add(decl.name + ": " + env.errors[0])
               }
+            }
+          }
+          for sk in mapKeys(env.syms) {
+            match mapGet(env.syms, sk) {
+              case Some(en) -> if not syms.containsKey(sk) { syms.add(sk, en) }
+              case None -> ()
             }
           }
           for k in mapKeys(env.uncovered) {
@@ -944,7 +1066,20 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
       case _ -> ()
     }
   }
-  BuildCensus(total = total, built = built, uncovered = sums, firstErrors = firstErrors)
+  val entries: List[TSymEntry] = newList()
+  for k in mapKeys(syms) {
+    match mapGet(syms, k) {
+      case Some(en) -> entries.add(en)
+      case None -> ()
+    }
+  }
+  BuildCensus(
+    total = total,
+    built = built,
+    uncovered = sums,
+    firstErrors = firstErrors,
+    pkg = TPackage(name = "", symbols = entries, funcs = funcs)
+  )
 }
 
 /// The uncovered kinds of `c`, most frequent first, as `kind x count`.
@@ -1836,7 +1971,10 @@ func buildDirectCall(
     callSig = sig.copy(params = ps)
   }
   match buildCallArgs(env, e, callSig, args) {
-    case Some(targs) -> Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+    case Some(targs) -> {
+      noteFuncSym(env, sym, sig, None, None, TSkFunc)
+      Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+    }
     case None -> None
   }
 }
@@ -1882,6 +2020,14 @@ func buildMethodCall(
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
     case None -> Direct(sym = sym, typeArgs = newList())
   }
+  noteFuncSym(
+    env,
+    sym,
+    site.sig,
+    Some(value = site.recvTy),
+    site.sig.recvMode,
+    if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
+  )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
 }
 
@@ -1904,6 +2050,7 @@ func buildConstructCall(
           case _ -> return uncoveredExpr(env, e, "a construction field passed by reference")
         }
       }
+      noteCtorSym(env, sym, sig)
       Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
     }
     case None -> None

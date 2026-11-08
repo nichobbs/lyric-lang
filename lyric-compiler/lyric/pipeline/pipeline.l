@@ -1808,10 +1808,38 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   for line in TirBuild.buildCensusLines(built, 12) {
     Console.error("  no builder case: " + line)
   }
+  pipeReportVerifyCensus(label, built.pkg)
   var k = 0
   while k < built.firstErrors.count and k < 8 {
     Console.error("  first error: " + built.firstErrors[k])
     k = k + 1
+  }
+}
+
+/// The I0003 census of the functions the builder built: the verifier's
+/// diagnostics by rule, most frequent first, and the first few in full.
+func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage): Unit {
+  val diags = TirVerify.verifyPackage(pkg, newList())
+  Console.error(
+    "I0003 census [" + label + "]: " + toString(diags.count) + " diagnostic(s) over " + toString(pkg.funcs.count) +
+      " built function(s)"
+  )
+  val counts: Map[String, Int] = newMap()
+  for d in diags {
+    val n = match mapGet(counts, d.rule) { case Some(k) -> k; case None -> 0 }
+    if counts.containsKey(d.rule) {
+      counts.remove(d.rule)
+    }
+    counts.add(d.rule, n + 1)
+  }
+  for r in mapKeys(counts) {
+    val n = match mapGet(counts, r) { case Some(k) -> k; case None -> 0 }
+    Console.error("  I0003 rule: " + r + " x " + toString(n))
+  }
+  var i = 0
+  while i < diags.count and i < 3 {
+    Console.error("  " + TirVerify.renderVerifyDiag("builder", diags[i]))
+    i = i + 1
   }
 }
 
