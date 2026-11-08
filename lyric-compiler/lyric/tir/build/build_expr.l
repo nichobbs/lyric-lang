@@ -977,8 +977,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   if ok {
     match fn.body {
       case Some(FBBlock(b)) -> {
-        // A function returning Unit discards its last expression, as a loop body does.
-        res = buildBlock(env, b, if isUnitTy(ret) { Some(value = ret) } else { None }, freshNodeId(env))
+        res = buildBlock(env, b, None, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
         res = buildExpr(env, x)
