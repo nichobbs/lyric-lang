@@ -1310,8 +1310,8 @@ test "a dependency package's names are resolved through the file that wrote them
   val two = parse("package Acme.Two\npub record Tag {\n  name: String\n}\n")
   collectPluginPackage(one.file, pkgs)
   collectPluginPackage(two.file, pkgs)
-  val da = "package Acme.Dep\nimport Acme.One as Types\n\npub record WrapA {\n  pos: Types.Pos\n}\n"
-  val db = "package Acme.Dep\nimport Acme.Two as Types\n\npub record WrapB {\n  tag: Types.Tag\n}\n"
+  val da = "package Acme.Dep\nimport Acme.One as Types\n\npub record WrapA {\n  pos: Types.Pos\n}\n\n@plugin_point(version = \"1.0\")\npub interface DepA {\n  func f(w: in WrapA): Result[Int, String]\n}\n"
+  val db = "package Acme.Dep\nimport Acme.Two as Types\n\npub record WrapB {\n  tag: Types.Tag\n}\n\n@plugin_point(version = \"1.0\")\npub interface DepB {\n  func g(w: in WrapB): Result[Int, String]\n}\n"
   collectPluginPackage(assembleTwoFiles("Acme.Dep", da, db), pkgs)
   val app = parse(
     "package Acme.App\nimport Acme.Dep\n\n@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(a: in WrapA, b: in WrapB): Result[Int, String]\n}\n"
