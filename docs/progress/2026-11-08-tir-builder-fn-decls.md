@@ -6,5 +6,6 @@ for each declaration a body reaches; `LYRIC_VERIFY_IR=1` now runs
 `Lyric.Tir.Verify` over the built functions and reports I0003 per rule, plus the
 first error of each body that does not build. The checker settles an annotated
 initialiser's type so `val xs: List[Int] = newList()` no longer leaves `xs`
-undeclared. Census over `collections_tests.l`: expression I0002 75 -> 58 of 568
-before the instantiation read-back; `tir_build_self_test.l` has two new cases.
+undeclared. I0003 is 0 over every built body of the four stdlib test files tried; the census also
+fixed the verifier's package-wide `LocalId` uniqueness, duplicate statement `NodeId`s
+and missing type and case entries. `tir_build_self_test.l` has two new cases.

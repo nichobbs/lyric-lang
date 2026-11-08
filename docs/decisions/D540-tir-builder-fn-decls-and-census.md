@@ -38,8 +38,22 @@ was counted as "a name that is not a local".
    instantiation back from that type (`genericArgsFromResult`) when
    `genericArgsByNode` has none.
 
+## Measured
+
+With `LYRIC_VERIFY_IR=1`, I0003 is 0 over every body the builder builds in
+`string_tests.l` (11 of 13), `json_value_tests.l` (12 of 12), `collections_tests.l`
+(4 of 13, was 1) and `core_tests.l` (2 of 10). The census found and this change
+fixed three defects: `Lyric.Tir.Verify` required a `LocalId` to be unique across
+the package where docs/70 §6.2 makes it dense within its function; the builder gave
+an assignment expression and a synthesised `let` pattern the `NodeId` of their
+statement; and no entry existed for named types or for union and enum cases
+(`typeEntries`, `noteCaseSym`; a record's fields are converted under the record's
+own binder).
+
 ## Not built yet
 
-Entries for records, fields, globals, interface methods of generic interfaces and
-generic constructions; type-parameter bounds; `Self`. The census names each as a
-`symbol-defined` or `field-exists` count so the order stays measured.
+Entries for globals, interface methods of generic interfaces and generic
+constructions; type-parameter bounds; `Self`. Over `collections_tests.l` the
+largest I0002 kind is now a member access that is not a record field (collection
+`count`, host properties), then the `for` loop and the untyped member and method
+calls. The census names each so the order stays measured.
