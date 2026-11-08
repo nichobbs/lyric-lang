@@ -48,6 +48,24 @@ record WideKey {
   d: Double
 }
 
+// A union deriving `Hash` hashes through a `match` whose arms `return`; that
+// shape used to fail JVM verification (#8828).
+@derive(Equals)
+@derive(Hash)
+union Shape {
+  case Circle(r: Int)
+  case Rect(w: Int, h: Int)
+  case Empty
+}
+
+test "a union deriving Hash hashes by case and fields (#8828)" {
+  assertEqualInt(Circle(r = 3).hash(), Circle(r = 3).hash(), "equal Circle values hash alike")
+  assertEqualInt(Rect(w = 2, h = 5).hash(), Rect(w = 2, h = 5).hash(), "equal Rect values hash alike")
+  assertEqualInt(Empty.hash(), Empty.hash(), "Empty hashes alike")
+  assertTrue(Circle(r = 3).hash() != Circle(r = 4).hash(), "different fields hash apart")
+  assertTrue(Circle(r = 3).hash() != Rect(w = 3, h = 3).hash(), "different cases hash apart")
+}
+
 test "field-equal record instance finds a Map entry (structural key)" {
   val m: Map[Point, String] = newMap()
   m[Point(x = 1, y = 2)] = "a"
