@@ -538,13 +538,25 @@ test "a bare case two unions share builds as the case of the expected union" {
   assertTrue(named == "App::Left::Idle", "the case of Left, not Right")
 }
 
-test "a generic nullary case whose type argument is unsolved is counted, not guessed" {
+test "a generic nullary case takes its type argument from the expected type" {
   val r = buildFirstFn(
     "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc f(): Maybe[Int] {\n  Nothing\n}\n"
   )
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertTrue(r.env.errors.count > 0, "an I0002")
+  assertEqualInt(r.env.errors.count, 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, Some(t)) -> match t.ty {
+        case TNamed(_, args) -> {
+          assertEqualInt(args.count, 1, "one type argument")
+          assertTrue(tyEq(args[0], TPrim(kind = TPInt)), "Int, from the return type")
+        }
+        case _ -> assertTrue(false, "a named type")
+      }
+      case _ -> assertTrue(false, "a block with a value")
+    }
+    case None -> assertTrue(false, "built")
+  }
 }
 
 func matchSummary(b: in Option[TExpr]): String {
