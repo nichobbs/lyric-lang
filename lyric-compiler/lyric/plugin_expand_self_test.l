@@ -1292,3 +1292,42 @@ test "a name is resolved through the importing file's own alias, not the package
   }
   assertEqualInt(errors, 0, "both files' boundary types resolve through their own `Types`: " + text)
 }
+
+func assembleTwoFiles(pkg: in String, a: in String, b: in String): SourceFile {
+  val none: List[String] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(a)
+  srcs.add(b)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  PM.assemblePackageFiles(pkg, srcs, paths, none, none, "dotnet").file
+}
+
+test "a dependency package's names are resolved through the file that wrote them (#8690)" {
+  val pkgs: Map[String, PluginPackage] = newMap()
+  val one = parse("package Acme.One\npub record Pos {\n  line: Int\n}\n")
+  val two = parse("package Acme.Two\npub record Tag {\n  name: String\n}\n")
+  collectPluginPackage(one.file, pkgs)
+  collectPluginPackage(two.file, pkgs)
+  val da = "package Acme.Dep\nimport Acme.One as Types\n\n@plugin_point(version = \"1.0\")\npub interface PtA {\n  func f(p: in Types.Pos): Result[Int, String]\n}\n"
+  val db = "package Acme.Dep\nimport Acme.Two as Types\n\n@plugin_point(version = \"1.0\")\npub interface PtB {\n  func g(t: in Types.Tag): Result[Int, String]\n}\n"
+  collectPluginPackage(assembleTwoFiles("Acme.Dep", da, db), pkgs)
+  val app = parse(
+    "package Acme.App\nimport Acme.Dep\nimport Acme.One\nimport Acme.Two\n\n@plugin(id = \"p.x\", version = \"1.0.0\", implements(PtA, PtB))\npub record X {\n}\n\nimpl PtA for X {\n  func f(p: in Pos): Result[Int, String] {\n    Ok(value = 1)\n  }\n}\n\nimpl PtB for X {\n  func g(t: in Tag): Result[Int, String] {\n    Ok(value = 2)\n  }\n}\n"
+  )
+  assertEqualInt(app.diagnostics.count, 0, "app parses")
+  val res = expandFile(app.file, pkgs)
+  var text = ""
+  var errors = 0
+  for d in res.diagnostics {
+    match d.severity {
+      case DiagError -> {
+        errors = errors + 1
+        text = text + d.code + " " + d.message + "; "
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(errors, 0, "both dependency files' boundary types resolve through their own `Types`: " + text)
+}
