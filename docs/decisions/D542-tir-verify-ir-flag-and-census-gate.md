@@ -30,6 +30,9 @@ produces verifies.
 
 ## Measured
 
-Over the 98 programs the census can judge: I0003 38 -> 0 expected after these
-fixes except one dependency union case whose payload does not convert yet
-(`H2Event.H2SettingsReceived`); bodies built 813 of 1165.
+`scripts/ci/tir-census.sh` over the 98 stdlib test programs it can judge (101, less
+the three it lists as skips): I0003 was 38 on the first run and is **0** after these
+fixes, bodies built 809 of 1165 (it was 813 before the return-type coercion: four
+bodies whose type needed an interface upcast or similar conversion are now counted as
+I0002 instead of being produced ill-formed). A dependency union case's payload
+(`H2Event.H2SettingsReceived`) is resolved in its declaring package's scope.
