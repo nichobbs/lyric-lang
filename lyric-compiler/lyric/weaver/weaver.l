@@ -4005,11 +4005,11 @@ func a0047TypeExprEqual(
 /// `scope` as the file `fileId` sees names: that file's own imports.  A
 /// synthesised node (no file) and a package of one unnumbered file keep the
 /// package's.
-func a0047ScopeAt(scope: in A0047Scope, fileId: in Int): A0047Scope {
-  if fileId < 0 or fileId >= scope.fileImports.count {
-    return scope
+func a0047ScopeAt(sc: in A0047Scope, fileId: in Int): A0047Scope {
+  if fileId < 0 or fileId >= sc.fileImports.count {
+    return sc
   }
-  scope.copy(imports = scope.fileImports[fileId])
+  sc.copy(imports = sc.fileImports[fileId])
 }
 
 func a0047UnwrapParen(te: in TypeExpr): TypeExpr {
