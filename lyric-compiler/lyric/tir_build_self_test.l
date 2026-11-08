@@ -1486,7 +1486,7 @@ test "a call with explicit type arguments builds as a direct generic call" {
 }
 
 test "a block ending in a return has type Never and an out parameter is assignable" {
-  val c = censusOf("package App\nfunc g(a: Int, out q: Int): Int {\n  q = a\n  return a\n}\n")
+  val c = censusOf("package App\nfunc g(a: Int, q: out Int): Int {\n  q = a\n  return a\n}\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
