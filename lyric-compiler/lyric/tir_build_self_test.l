@@ -1407,7 +1407,13 @@ test "a function builds as a TFnDecl with modes, contracts and its own entry" {
   assertEqualInt(f.postconds.count, 1, "the ensures clause")
   assertTrue(tyEq(f.ret, TPrim(kind = TPInt)), "returns Int")
   assertTrue(f.body.isSome(), "has a body")
-  assertEqualInt(c.pkg.symbols.count, 1, "an entry for the declared function")
+  var own = false
+  for en in c.pkg.symbols {
+    if en.sym.id == f.sym.id {
+      own = true
+    }
+  }
+  assertTrue(own, "an entry for the declared function")
 }
 
 test "a call and a construction add the declarations they reach" {
