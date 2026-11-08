@@ -3512,7 +3512,7 @@ func recordDeclGenericNames(rd: in RecordDecl): List[String] {
   names
 }
 
-func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
+pub func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {

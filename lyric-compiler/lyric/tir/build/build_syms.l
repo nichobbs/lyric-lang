@@ -248,3 +248,81 @@ func withCaseSym(env: in BuildEnv, sym: in SymbolId, p: in TPat): TPat {
   noteCaseSym(env, sym)
   p
 }
+
+func typeEntry(sym: in SymbolId, n: in Int, fields: in List[TFieldSig]): TSymEntry {
+  TSymEntry(sym = sym, kind = TSkType, typeParamCount = n, sig = None, fields = fields, ty = None, mutable = false)
+}
+
+/// The entry of every type the table declares, records with their fields: the
+/// oracle for a `TNamed` in any type and for a field read.  A record whose field
+/// types cannot be converted gets no entry, so a use of it is reported rather than
+/// checked against a partial field list.
+pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
+  val res: List[TSymEntry] = newList()
+  val seen: Map[Int, Bool] = newMap()
+  for s in tbl.symbols {
+    var id: Option[SymbolId] = None
+    var isRecord = false
+    match s.kind {
+      case DKRecord(i, _) -> {
+        id = Some(value = i)
+        isRecord = true
+      }
+      case DKExposedRec(i, _) -> {
+        id = Some(value = i)
+        isRecord = true
+      }
+      case DKUnion(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKEnum(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKOpaque(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKProtected(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKDistinctType(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKInterface(i, _) -> {
+        id = Some(value = i)
+      }
+      case DKExternType(i, _) -> {
+        id = Some(value = i)
+      }
+      case _ -> ()
+    }
+    match id {
+      case Some(sid) -> if not seen.containsKey(sid.id) {
+        seen.add(sid.id, true)
+        if isRecord {
+          val names = recordGenericNamesOf(tbl, sid)
+          val ctx = newTyConvCtx(tbl)
+          if names.count > 0 {
+            tyConvBind(ctx, s.name, sid, names)
+          }
+          val fs: List[TFieldSig] = newList()
+          var ok = true
+          for f in fieldsOfRecord(tbl, sid) {
+            match tyOfType(ctx, f.ty) {
+              case Ok(t) -> fs.add(TFieldSig(name = f.name, ty = t, mutable = false))
+              case Err(_) -> {
+                ok = false
+              }
+            }
+          }
+          if ok {
+            res.add(typeEntry(sid, names.count, fs))
+          }
+        } else {
+          res.add(typeEntry(sid, 0, newList()))
+        }
+      }
+      case None -> ()
+    }
+  }
+  res
+}

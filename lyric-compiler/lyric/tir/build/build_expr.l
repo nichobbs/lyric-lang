@@ -1076,6 +1076,11 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
       case _ -> ()
     }
   }
+  for te in typeEntries(tbl) {
+    if not syms.containsKey(te.sym.id) {
+      syms.add(te.sym.id, te)
+    }
+  }
   val entries: List[TSymEntry] = newList()
   for k in mapKeys(syms) {
     match mapGet(syms, k) {
