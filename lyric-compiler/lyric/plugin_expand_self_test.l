@@ -1306,15 +1306,19 @@ func assembleTwoFiles(pkg: in String, a: in String, b: in String): SourceFile {
 
 test "a dependency package's names are resolved through the file that wrote them (#8690)" {
   val pkgs: Map[String, PluginPackage] = newMap()
-  val one = parse("package Acme.One\npub record Pos {\n  line: Int\n}\n")
-  val two = parse("package Acme.Two\npub record Tag {\n  name: String\n}\n")
+  val one = parse(
+    "package Acme.One\npub record Pos {\n  line: Int\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtOne {\n  func f(p: in Pos): Result[Int, String]\n}\n"
+  )
+  val two = parse(
+    "package Acme.Two\npub record Tag {\n  name: String\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtTwo {\n  func g(t: in Tag): Result[Int, String]\n}\n"
+  )
   collectPluginPackage(one.file, pkgs)
   collectPluginPackage(two.file, pkgs)
-  val da = "package Acme.Dep\nimport Acme.One as Types\n\npub record WrapA {\n  pos: Types.Pos\n}\n\n@plugin_point(version = \"1.0\")\npub interface DepA {\n  func f(w: in WrapA): Result[Int, String]\n}\n"
-  val db = "package Acme.Dep\nimport Acme.Two as Types\n\npub record WrapB {\n  tag: Types.Tag\n}\n\n@plugin_point(version = \"1.0\")\npub interface DepB {\n  func g(w: in WrapB): Result[Int, String]\n}\n"
+  val da = "package Acme.Dep\nimport Acme.One as Types\n\npub alias PosA = Types.Pos\n"
+  val db = "package Acme.Dep\nimport Acme.Two as Types\n\npub alias TagB = Types.Tag\n"
   collectPluginPackage(assembleTwoFiles("Acme.Dep", da, db), pkgs)
   val app = parse(
-    "package Acme.App\nimport Acme.Dep\n\n@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(a: in WrapA, b: in WrapB): Result[Int, String]\n}\n"
+    "package Acme.App\nimport Acme.Dep\n\n@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(a: in PosA, b: in TagB): Result[Int, String]\n}\n"
   )
   assertEqualInt(app.diagnostics.count, 0, "app parses")
   val res = expandFile(app.file, pkgs)
@@ -1329,5 +1333,5 @@ test "a dependency package's names are resolved through the file that wrote them
       case _ -> ()
     }
   }
-  assertEqualInt(errors, 0, "both dependency files' boundary types resolve through their own `Types`: " + text)
+  assertEqualInt(errors, 0, "both dependency files' aliases resolve through their own `Types`: " + text)
 }
