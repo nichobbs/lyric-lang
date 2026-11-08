@@ -150,7 +150,7 @@ func noteUncovered(env: in BuildEnv, what: in String): Unit {
 }
 
 func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr] {
-  noteUncovered(env, what)
+  noteUncovered(env, what + " @" + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column))
   env.errors.add(
     "I0002: the builder has no case for " + what + " at " + toString(e.span.startPos.line) + ":" +
       toString(e.span.startPos.column)
