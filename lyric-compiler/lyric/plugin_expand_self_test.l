@@ -1346,11 +1346,11 @@ test "component glue resolves a type through the importing file's own alias (#86
   val a = "package Acme.Ui\nimport Acme.One as Types\n\npub func fa(p: in Types.Pos): Int {\n  p.line\n}\n"
   val b = "package Acme.Ui\nimport Acme.Two as Types\n\npub func fb(t: in Types.Tag): Int {\n  t.name.length\n}\n"
   val res = componentRewriteFile(assembleTwoFiles("Acme.Ui", a, b), peers)
-  assertEqualString(res.error, "", "no error")
+  assertEqual(res.error, "", "no error")
   var notes = ""
   for n in res.info.notes {
     notes = notes + n + "; "
   }
-  assertEqualString(notes, "", "both functions are exported, no W0040 note")
+  assertEqual(notes, "", "both functions are exported, no W0040 note")
   assertEqualInt(res.info.exports.count, 2, "both pub funcs are exports")
 }
