@@ -1808,6 +1808,75 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   for line in TirBuild.buildCensusLines(built, 12) {
     Console.error("  no builder case: " + line)
   }
+  pipeReportVerifyCensus(label, built.pkg, tcRes.symbols)
+  var k = 0
+  while k < built.firstErrors.count and k < 8 {
+    Console.error("  first error: " + built.firstErrors[k])
+    k = k + 1
+  }
+}
+
+/// The I0003 census of the functions the builder built: the verifier's
+/// diagnostics by rule, most frequent first, and the first few in full.
+func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage, tbl: in SymbolTable): Unit {
+  val diags = TirVerify.verifyPackage(pkg, newList())
+  Console.error(
+    "I0003 census [" + label + "]: " + toString(diags.count) + " diagnostic(s) over " + toString(pkg.funcs.count) +
+      " built function(s)"
+  )
+  val counts: Map[String, Int] = newMap()
+  for d in diags {
+    val n = match mapGet(counts, d.rule) { case Some(k) -> k; case None -> 0 }
+    if counts.containsKey(d.rule) {
+      counts.remove(d.rule)
+    }
+    counts.add(d.rule, n + 1)
+  }
+  val missing: Map[Int, Int] = newMap()
+  for d in diags {
+    if d.rule == "symbol-defined" {
+      match d.message.indexOf("#") {
+        case Some(i) -> {
+          var j = i + 1
+          var v = 0
+          var more = true
+          while more and j < d.message.length {
+            match "0123456789".indexOf(d.message.substring(j, 1)) {
+              case Some(dv) -> {
+                v = v * 10 + dv
+                j = j + 1
+              }
+              case None -> {
+                more = false
+              }
+            }
+          }
+          val n = match mapGet(missing, v) { case Some(k) -> k; case None -> 0 }
+          if missing.containsKey(v) {
+            missing.remove(v)
+          }
+          missing.add(v, n + 1)
+        }
+        case None -> ()
+      }
+    }
+  }
+  for id in mapKeys(missing) {
+    val n = match mapGet(missing, id) { case Some(k) -> k; case None -> 0 }
+    val nm = match defPathKeyOf(tbl.interner, SymbolId(id = id)) { case Some(k) -> k; case None -> "?" }
+    Console.error("  undefined symbol #" + toString(id) + " = " + nm + " x " + toString(n))
+  }
+  for r in mapKeys(counts) {
+    val n = match mapGet(counts, r) { case Some(k) -> k; case None -> 0 }
+    Console.error("  I0003 rule: " + r + " x " + toString(n))
+    var shown = 0
+    for d in diags {
+      if d.rule == r and shown < 2 {
+        Console.error("    e.g. " + TirVerify.renderVerifyDiag("builder", d))
+        shown = shown + 1
+      }
+    }
+  }
 }
 
 func pipeModeItemName(it: in Item): String {

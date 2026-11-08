@@ -3512,7 +3512,7 @@ func recordDeclGenericNames(rd: in RecordDecl): List[String] {
   names
 }
 
-func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
+pub func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
@@ -5144,7 +5144,7 @@ record MethodCallPick {
 // The `SymbolId` of the union or enum case `caseName` of the type `parentId`, the
 // DefPath the resolver interns (docs/70 4.2); a dependency's union has none, so
 // it is named by its package and type.
-func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
+pub func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
   match defPathKeyOf(tbl.interner, parentId) {
     case Some(parentKey) -> Some(value = internDefPathKey(tbl.interner, parentKey + "::" + caseName))
     // A dependency's union has no resolver DefPath: name the case by its
@@ -5197,7 +5197,14 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   if node <= 0 {
     return
   }
-  val closed = match unrefine(resultTy) { case TyUser(_, _, a) -> a.count == 0; case _ -> false }
+  // A record's fields are read from its declaration, so only a non-generic record has
+  // them; a union case's are instantiated from the result type, so a generic case whose
+  // result type is closed (`Some(value = 42)` as `Option[Int]`) has them too.
+  val isCase = match sym.kind { case DKUnionCase(_, _) -> true; case _ -> false }
+  val closed = match unrefine(resultTy) {
+    case TyUser(_, _, a) -> if isCase { typeIsClosed(resultTy) } else { a.count == 0 }
+    case _ -> false
+  }
   if not closed {
     return
   }
@@ -11481,7 +11488,7 @@ func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in SymbolId, scrutinee
   }
 }
 
-func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[UnionDecl] {
+pub func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[UnionDecl] {
   val key = toString(parentId.id)
   if not tbl.unionDeclIndex.containsKey(key) {
     return None
@@ -11491,7 +11498,7 @@ func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[Union
   Some(value = decl)
 }
 
-func unionDeclGenericNames(decl: in UnionDecl): List[String] {
+pub func unionDeclGenericNames(decl: in UnionDecl): List[String] {
   val names: List[String] = newList()
   match decl.generics {
     case None -> {
@@ -12053,6 +12060,18 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
     i = i + 1
   }
   bound
+}
+
+// The type arguments of a call to `sig` read back from its result type (docs/70
+// §6.3): `newList()` has no argument to bind `T` from, and the annotation that
+// settles the call's type (`val xs: List[Int] = newList()`) fixes it.  A
+// generic the result does not mention, or mentions inconsistently, is a hole.
+pub func genericArgsFromResult(sig: in ResolvedSignature, resultTy: in Type): List[Type] {
+  val ps: List[Type] = newList()
+  ps.add(sig.returnTy)
+  val rts: List[Type] = newList()
+  rts.add(resultTy)
+  inferGenericArgsDeep(sig.generics, ps, rts)
 }
 
 // `inferGenericArgsDeep` for a call to `sig`, where a bare `T` parameter an
@@ -18035,6 +18054,7 @@ func checkExplicitTypeArgCall(
   args: in List[CallArg],
   argTypes: in List[Type],
   sp: in Span,
+  callNode: in Int,
 ): Unit {
   if explicitGenericArgs(fn).count == 0 {
     return
@@ -18076,6 +18096,7 @@ func checkExplicitTypeArgCall(
   if found.isAsync or found.isGenerator or found.isExternFunc or found.generics.count == 0 {
     return
   }
+  recordCalleeSite(tbl, fn, found, callNode)
   match explicitCallTypeArgs(sc, tbl, fn, found) {
     case Some(targs) -> {
       val inst = instantiateSigAt(found, targs)
@@ -19868,7 +19889,7 @@ func inferExprCore(
       // and its callee types as an error; its arguments and lengths are
       // checked here and give the call its type.
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
-      checkExplicitTypeArgCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
+      checkExplicitTypeArgCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span, e.nodeId)
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
@@ -22355,8 +22376,10 @@ pub func inferExprExpected(
   val t = sharedEnumCaseAgainstExpected(sc, tbl, e, core, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
-  // `inferExpr`; the type settled on is the node's type (D366).
-  recordExprType(tbl, e, t)
+  // `inferExpr`; the type settled on is the node's type (D366).  An expression with
+  // no evidence of its own for a type argument (`newList()`, a bare `None`) is typed
+  // with a hole, and a closed expected type is what settles it (docs/70 §6.3).
+  recordExprType(tbl, e, if typeMentionsHole(t) and typeIsClosed(expected) { expected } else { t })
   t
 }
 
@@ -22435,6 +22458,32 @@ func isDataTypeKind(k: in DeclKind): Bool {
     case DKExposedRec(_, _) -> true
     case _ -> false
   }
+}
+
+// Does `t` mention the hole (`TyError`) or an unsolved inference variable?
+func typeMentionsHole(t: in Type): Bool {
+  match t {
+    case TyError(_) -> true
+    case TyInfer(_) -> true
+    case TyUser(_, _, args) -> typesMentionHole(args)
+    case TySlice(e) -> typeMentionsHole(e)
+    case TyArray(_, e, _) -> typeMentionsHole(e)
+    case TyNullable(inner) -> typeMentionsHole(inner)
+    case TyTuple(elems) -> typesMentionHole(elems)
+    case TyRefined(u, _, _, _, _) -> typeMentionsHole(u)
+    case _ -> false
+  }
+}
+
+func typesMentionHole(ts: in List[Type]): Bool {
+  var i = 0
+  while i < ts.count {
+    if typeMentionsHole(ts[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 func inferExprExpectedCore(
@@ -25297,6 +25346,20 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         return
       }
     }
+    // `f[A, B](x)`: the callee is an index of the name.  Backends look a call up by
+    // the callee's site, which this callee never had, so only the node is recorded.
+    case EIndex(inner, _) -> {
+      match inner.kind {
+        case EPath(path) -> if path.segments.count == 1 {
+          match symTableFuncDefPathKey(tbl, sig, path.segments[0], true) {
+            case Some(dp) -> recordCalleeNode(tbl, dp, sig, callNode)
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+      return
+    }
     case _ -> return
   }
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
@@ -25314,6 +25377,12 @@ func recordCalleeSiteAs(
     tbl.calleeSites.remove(key)
   }
   tbl.calleeSites.add(key, dp)
+  recordCalleeNode(tbl, dp, sig, callNode)
+}
+
+// The per-node half of `recordCalleeSiteAs`: the callee and its signature under the
+// call's `NodeId`, for the TIR builder (D361, D367).
+func recordCalleeNode(tbl: in SymbolTable, dp: in String, sig: in ResolvedSignature, callNode: in Int): Unit {
   if callNode > 0 {
     if tbl.calleeByNode.containsKey(callNode) {
       tbl.calleeByNode.remove(callNode)

@@ -982,7 +982,7 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
   val c = Ctx(
     diags = shared.diags,
     seenNodes = shared.seenNodes,
-    allLocals = shared.allLocals,
+    allLocals = newMap(),
     syms = shared.syms,
     fnSym = f.sym,
     tpCount = f.typeParams.count,

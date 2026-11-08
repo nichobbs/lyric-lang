@@ -18,6 +18,7 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
+import Lyric.Tir.Verify
 import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
@@ -537,13 +538,25 @@ test "a bare case two unions share builds as the case of the expected union" {
   assertTrue(named == "App::Left::Idle", "the case of Left, not Right")
 }
 
-test "a generic nullary case whose type argument is unsolved is counted, not guessed" {
+test "a generic nullary case takes its type argument from the expected type" {
   val r = buildFirstFn(
     "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc f(): Maybe[Int] {\n  Nothing\n}\n"
   )
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertTrue(r.env.errors.count > 0, "an I0002")
+  assertEqualInt(r.env.errors.count, 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, Some(t)) -> match t.ty {
+        case TNamed(_, args) -> {
+          assertEqualInt(args.count, 1, "one type argument")
+          assertTrue(tyEq(args[0], TPrim(kind = TPInt)), "Int, from the return type")
+        }
+        case _ -> assertTrue(false, "a named type")
+      }
+      case _ -> assertTrue(false, "a block with a value")
+    }
+    case None -> assertTrue(false, "built")
+  }
 }
 
 func matchSummary(b: in Option[TExpr]): String {
@@ -1386,4 +1399,88 @@ test "a lambda captures an outer value by value and a var by reference" {
     }
     case None -> assertTrue(false, "a lambda")
   }
+}
+
+func censusOf(src: in String): BuildCensus {
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  buildCensus(newTyConvCtx(cr.symbols), cr.symbols, file)
+}
+
+test "a function builds as a TFnDecl with modes, contracts and its own entry" {
+  val c = censusOf(
+    "package App\nfunc add(a: Int, b: Int): Int\n  requires: a >= 0\n  ensures: result >= a\n{ a + b }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.pkg.funcs.count, 1, "one declaration")
+  val f = c.pkg.funcs[0]
+  assertEqualInt(f.params.count, 2, "two parameters")
+  assertEqualInt(f.preconds.count, 1, "the requires clause")
+  assertEqualInt(f.postconds.count, 1, "the ensures clause")
+  assertTrue(tyEq(f.ret, TPrim(kind = TPInt)), "returns Int")
+  assertTrue(f.body.isSome(), "has a body")
+  var own = false
+  for en in c.pkg.symbols {
+    if en.sym.id == f.sym.id {
+      own = true
+    }
+  }
+  assertTrue(own, "an entry for the declared function")
+}
+
+test "a call and a construction add the declarations they reach" {
+  val c = censusOf(
+    "package App\nrecord P { x: Int, y: Int }\nfunc add(a: Int, b: Int): Int { a + b }\nfunc g(): P { P(x = add(1, 2), y = 3) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertTrue(c.pkg.symbols.count >= 3, "add, g and P")
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a string's length is a built-in property read" {
+  val r = buildFirstFn("package App\nfunc f(s: String): Int { s.length }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, Some(tail)) -> match tail.kind {
+        case XCall(Intrinsic(IoBuiltin(n)), args) -> {
+          assertEqual(n, "String.length", "the built-in name")
+          assertEqualInt(args.count, 1, "the receiver")
+        }
+        case _ -> assertTrue(false, "a built-in call")
+      }
+      case _ -> assertTrue(false, "a block with a value")
+    }
+    case None -> assertTrue(false, "built")
+  }
+}
+
+test "a generic union case constructs at its closed instantiation and verifies" {
+  val c = censusOf(
+    "package App\nunion Box[T] { case Full(value: T)\n case Empty }\nfunc f(): Box[Int] { Full(value = 1) }\nfunc g(): Box[Int] { Empty }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a slice's length is a built-in property read" {
+  val r = buildFirstFn("package App\nfunc f(xs: slice[Int]): Int { xs.length }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "an argument typed with a hole takes its parameter's type" {
+  val c = censusOf(
+    "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc pick[T](m: Maybe[T], d: T): T { d }\nfunc f(): Int { pick(Nothing, 7) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a call with explicit type arguments builds as a direct generic call" {
+  val c = censusOf("package App\nfunc id[T](x: T): T { x }\nfunc f(): Int { id[Int](7) }\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }

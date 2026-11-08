@@ -29,6 +29,10 @@ pub record TyConvCtx {
   ownerSyms: Map[String, SymbolId]
   ownerParams: Map[String, List[String]]
   selfIface: Option[SymbolId]
+  /// The union and enum case symbols of the table by `SymbolId`, filled on first use
+  /// (`loadCases`); `casesLoaded` is a one-element flag.
+  cases: Map[Int, Symbol] = newMap()
+  casesLoaded: List[Bool] = newList()
 }
 
 pub func newTyConvCtx(tbl: in SymbolTable): TyConvCtx {

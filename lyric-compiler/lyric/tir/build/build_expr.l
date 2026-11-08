@@ -39,6 +39,11 @@ pub record BuildEnv {
   /// The lambdas being built, innermost last: a local resolved from outside one is a
   /// capture of it.
   lambdas: List[LambdaFrame]
+  /// The declarations the body being built reaches, by `SymbolId`, for the verifier.
+  syms: Map[Int, TSymEntry] = newMap()
+  /// The type a context fixes for an expression the checker typed with a hole
+  /// (`None` or `[]` passed where the parameter's type is known), by `NodeId`.
+  settled: Map[Int, Ty] = newMap()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -258,9 +263,12 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-      return None
+    case Err(msg) -> match mapGet(env.settled, e.nodeId) {
+      case Some(t) -> t
+      case None -> {
+        env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+        return None
+      }
     }
   }
   match e.kind {
@@ -310,7 +318,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
       match refSite(env.ctx, e.nodeId) {
         case Some(r) -> match r.kind {
-          case RkNullaryCase -> return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+          case RkNullaryCase -> {
+            noteCaseSym(env, r.sym)
+            return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+          }
           case _ -> return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
         }
         case None -> ()
@@ -488,7 +499,10 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       match patSym(env.ctx, p.nodeId) {
         case Some(sym) -> {
           return match inner {
-            case None -> Some(value = mkPat(p, ty, TpCtor(sym = sym, args = newList())))
+            case None -> {
+              noteCaseSym(env, sym)
+              Some(value = mkPat(p, ty, TpCtor(sym = sym, args = newList())))
+            }
             case Some(_) -> uncoveredPat(env, p, "a case name with a sub-pattern")
           }
         }
@@ -515,10 +529,14 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
     case PConstructor(_, args) -> match patSym(env.ctx, p.nodeId) {
       case Some(sym) -> match buildPats(env, args) {
         case Some(ts) -> Some(
-          value = mkPat(
-            p,
-            ty,
-            TpCtor(sym = sym, args = ts)
+          value = withCaseSym(
+            env,
+            sym,
+            mkPat(
+              p,
+              ty,
+              TpCtor(sym = sym, args = ts)
+            )
           )
         )
         case None -> None
@@ -733,7 +751,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SFor(_, _, _, _) -> uncoveredStmt(env, s, "a for loop")
     case SAssign(t, op, v) -> {
-      val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = s.nodeId)
+      val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
         case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
         case None -> None
@@ -769,7 +787,7 @@ func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding):
       case _ -> uncoveredStmt(env, s, "a binding pattern")
     }
     case LBLet(name, ann, init) -> {
-      val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = s.nodeId)
+      val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = freshNodeId(env).id)
       buildLet(env, s, pat, name, ann, init)
     }
     case LBVar(name, ann, init) -> match init {
@@ -840,17 +858,27 @@ func buildLet(
   }
 }
 
-/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
-/// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol.  A function with contracts is not covered yet.
-pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
+/// What building a function yields beyond its body: the parameters as declared locals
+/// with their modes and defaults, the return type, and the contract clauses.
+record FnCore {
+  sym: Option[SymbolId]
+  typeNames: List[String]
+  params: List[TParamDecl]
+  ret: Ty
+  pre: List[TExpr]
+  post: List[TExpr]
+  body: TExpr
+}
+
+func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool): Option[FnCore] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  val names = extractGenericNames(fn.generics)
+  val sym = symTableFuncSymOf(tbl, fn)
   match fn.generics {
     case Some(_) -> {
-      val names = extractGenericNames(fn.generics)
-      match symTableFuncSymOf(tbl, fn) {
-        case Some(sym) -> {
-          tyConvBind(env.ctx, fn.name, sym, names)
+      match sym {
+        case Some(sy) -> {
+          tyConvBind(env.ctx, fn.name, sy, names)
           gctxPushOwned(gc, names, fn.name)
         }
         case None -> {
@@ -862,19 +890,62 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
     }
     case None -> ()
   }
+  if wantSym and not isSome(sym) {
+    noteUncovered(env, "a function with no symbol")
+    env.errors.add("I0002: the builder has no symbol for the function: " + fn.name)
+    return None
+  }
   pushScope(env)
   env.generics.clear()
   env.generics.add(gc)
   val diag: List[Diagnostic] = newList()
   var ok = true
+  val params: List[TParamDecl] = newList()
   for p in fn.params {
+    var dflt: Option[TExpr] = None
+    match p.dflt {
+      case Some(dx) -> match buildExpr(env, dx) {
+        case Some(t) -> {
+          dflt = Some(value = t)
+        }
+        case None -> {
+          ok = false
+        }
+      }
+      case None -> ()
+    }
     match tyOfType(env.ctx, resolveType(tbl, gc, diag, p.ty)) {
       case Ok(t) -> {
-        val _ = declareLocal(env, p.name, t, false)
+        val d = declareLocal(env, p.name, t, false)
+        params.add(TParamDecl(local = d, mode = modeOfParam(p.mode), dflt = dflt))
       }
       case Err(msg) -> {
         env.errors.add(msg)
         ok = false
+      }
+    }
+  }
+  var ret: Ty = TPrim(kind = TPUnit)
+  match fn.ret {
+    case Some(te) -> match tyOfType(env.ctx, resolveType(tbl, gc, diag, te)) {
+      case Ok(t) -> {
+        ret = t
+      }
+      case Err(msg) -> {
+        env.errors.add(msg)
+        ok = false
+      }
+    }
+    case None -> ()
+  }
+  val pre: List[TExpr] = newList()
+  val post: List[TExpr] = newList()
+  if ok {
+    for c in fn.contracts {
+      match c {
+        case CCRequires(x, _) -> match buildExpr(env, x) { case Some(t) -> pre.add(t); case None -> { ok = false } }
+        case CCEnsures(x, _) -> match buildExpr(env, x) { case Some(t) -> post.add(t); case None -> { ok = false } }
+        case _ -> ()
       }
     }
   }
@@ -891,7 +962,60 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
     }
   }
   popScope(env)
-  res
+  match res {
+    case Some(b) -> Some(
+      value = FnCore(
+        sym = sym,
+        typeNames = names,
+        params = params,
+        ret = ret,
+        pre = pre,
+        post = post,
+        body = b
+      )
+    )
+    case None -> None
+  }
+}
+
+/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
+/// parameters become the outermost locals; a generic function binds its type
+/// parameters to its symbol.  Contracts are built with the body: a clause the
+/// builder has no case for fails it like any other expression.
+pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
+  match buildFnCore(env, fn, tbl, false) {
+    case Some(c) -> Some(value = c.body)
+    case None -> None
+  }
+}
+
+/// A function with a body as a `TFnDecl` (docs/70 §6.2): its symbol, type
+/// parameters (their bounds are not converted yet), parameters with modes and
+/// defaults, return type, contracts as `preconds`/`postconds`, and the body.
+pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
+  match buildFnCore(env, fn, tbl, true) {
+    case Some(c) -> {
+      val tps: List[TTypeParam] = newList()
+      for n in c.typeNames {
+        tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
+      }
+      val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
+      Some(
+        value = TFnDecl(
+          sym = sym,
+          typeParams = tps,
+          params = c.params,
+          ret = c.ret,
+          isAsync = fn.isAsync,
+          preconds = c.pre,
+          postconds = c.post,
+          body = Some(value = c.body),
+          span = fn.span
+        )
+      )
+    }
+    case None -> None
+  }
 }
 
 /// How many function bodies of a file the builder covers, and what it has no
@@ -900,13 +1024,21 @@ pub record BuildCensus {
   total: Int
   built: Int
   uncovered: Map[String, Int]
+  /// The first I0002 message of each body that did not build: the cause, where
+  /// `uncovered` also counts the uses a failed binding leaves undefined.
+  firstErrors: List[String] = newList()
+  /// The built functions as a package, with the declarations their bodies reach.
+  pkg: TPackage = TPackage(name = "", symbols = newList(), funcs = newList())
 }
 
 /// Build every function body of `file` that has one, each with a fresh
 /// `BuildEnv`, and total the outcome.
 pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): BuildCensus {
+  val funcs: List[TFnDecl] = newList()
+  val syms: Map[Int, TSymEntry] = newMap()
   var total = 0
   var built = 0
+  val firstErrors: List[String] = newList()
   val sums: Map[String, Int] = newMap()
   val counter: List[Int] = newList()
   counter.add(firstSynthNodeId())
@@ -916,11 +1048,25 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         case Some(_) -> {
           total = total + 1
           val env = newBuildEnvSharing(ctx, counter)
-          match buildFnBody(env, decl, tbl) {
-            case Some(_) -> {
+          match buildFnDecl(env, decl, tbl) {
+            case Some(fd) -> {
               built = built + 1
+              funcs.add(fd)
+              if not syms.containsKey(fd.sym.id) {
+                syms.add(fd.sym.id, ownFnEntry(fd))
+              }
             }
-            case None -> ()
+            case None -> {
+              if env.errors.count > 0 {
+                firstErrors.add(decl.name + ": " + env.errors[0])
+              }
+            }
+          }
+          for sk in mapKeys(env.syms) {
+            match mapGet(env.syms, sk) {
+              case Some(en) -> if not syms.containsKey(sk) { syms.add(sk, en) }
+              case None -> ()
+            }
           }
           for k in mapKeys(env.uncovered) {
             val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
@@ -936,7 +1082,25 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
       case _ -> ()
     }
   }
-  BuildCensus(total = total, built = built, uncovered = sums)
+  for te in typeEntries(tbl) {
+    if not syms.containsKey(te.sym.id) {
+      syms.add(te.sym.id, te)
+    }
+  }
+  val entries: List[TSymEntry] = newList()
+  for k in mapKeys(syms) {
+    match mapGet(syms, k) {
+      case Some(en) -> entries.add(en)
+      case None -> ()
+    }
+  }
+  BuildCensus(
+    total = total,
+    built = built,
+    uncovered = sums,
+    firstErrors = firstErrors,
+    pkg = TPackage(name = "", symbols = entries, funcs = funcs)
+  )
 }
 
 /// The uncovered kinds of `c`, most frequent first, as `kind x count`.
@@ -1035,6 +1199,7 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
       case Some(sym) -> match fn.kind {
         case EPath(_) -> return buildDirectCall(env, e, ty, sym, sig, args)
+        case EIndex(_, _) -> return buildDirectCall(env, e, ty, sym, sig, args)
         case _ -> return uncoveredExpr(env, e, "a package-qualified or static call")
       }
       case None -> ()
@@ -1291,8 +1456,49 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
-    case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+    case None -> match builtinPropertyName(env, recv, name) {
+      case Some(bn) -> Some(
+        value = mkExpr(
+          e,
+          ty,
+          XCall(
+            callee = Intrinsic(op = IoBuiltin(name = bn)),
+            args = inArgs(singleTExpr(rt))
+          )
+        )
+      )
+      case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+    }
   }
+}
+
+func singleTExpr(t: in TExpr): List[TExpr] {
+  val xs: List[TExpr] = newList()
+  xs.add(t)
+  xs
+}
+
+/// The built-in a property read names: a stdlib collection's `count` and a string's
+/// `length`, as the checker names the built-in members (`List.count`).  A user type
+/// that happens to be named `List` is not the stdlib's.
+func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
+  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  match rty {
+    case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
+    case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
+    case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
+    case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
+      val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
+        case Some(ts) -> ts.originPackage.startsWith("Std.")
+        case None -> false
+      }
+      if stdlib {
+        return Some(value = hd + ".count")
+      }
+    }
+    case _ -> ()
+  }
+  None
 }
 
 /// How `recv[idx]` is performed, from the receiver's type: arrays, slices and strings by
@@ -1807,7 +2013,10 @@ func buildDirectCall(
   if sig.generics.count > 0 {
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
-      case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+      case None -> match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
+        case Some(rt) -> genericArgsFromResult(sig, rt)
+        case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+      }
     }
     if checkerArgs.count != sig.generics.count {
       return uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
@@ -1828,7 +2037,10 @@ func buildDirectCall(
     callSig = sig.copy(params = ps)
   }
   match buildCallArgs(env, e, callSig, args) {
-    case Some(targs) -> Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+    case Some(targs) -> {
+      noteFuncSym(env, sym, sig, None, None, TSkFunc)
+      Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+    }
     case None -> None
   }
 }
@@ -1874,6 +2086,14 @@ func buildMethodCall(
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
     case None -> Direct(sym = sym, typeArgs = newList())
   }
+  noteFuncSym(
+    env,
+    sym,
+    site.sig,
+    Some(value = site.recvTy),
+    site.sig.recvMode,
+    if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
+  )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
 }
 
@@ -1896,10 +2116,22 @@ func buildConstructCall(
           case _ -> return uncoveredExpr(env, e, "a construction field passed by reference")
         }
       }
+      noteCaseSym(env, sym)
+      noteCtorSym(env, sym, sig)
       Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
     }
     case None -> None
   }
+}
+
+/// Build the argument `x` of a parameter of type `pty`.  An argument the checker typed
+/// with a hole (`None`, `[]`) takes the parameter's type, which the call's other
+/// arguments have fixed.
+func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
+  if not env.settled.containsKey(x.nodeId) {
+    env.settled.add(x.nodeId, pty)
+  }
+  buildExpr(env, x)
 }
 
 /// The arguments of a call placed by parameter, in parameter order, each built and
@@ -1992,7 +2224,7 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
             env.errors.add(msg)
             ok = false
           }
-          case Ok(pty) -> match buildExpr(env, x) {
+          case Ok(pty) -> match settleArg(env, x, pty) {
             case None -> {
               ok = false
             }
