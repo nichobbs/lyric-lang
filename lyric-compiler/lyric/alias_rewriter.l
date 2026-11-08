@@ -2494,7 +2494,9 @@ func withoutAmbiguousHeads(entries: in List[String], files: in List[FileHeader])
             ambiguous.add(key)
           }
         }
-        case None -> seen[key] = e
+        case None -> {
+          seen[key] = e
+        }
       }
     }
   }
