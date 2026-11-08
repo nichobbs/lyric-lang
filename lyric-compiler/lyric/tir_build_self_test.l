@@ -1433,7 +1433,7 @@ test "a string's length is a built-in property read" {
     case Some(b) -> match b.kind {
       case XBlock(_, Some(tail)) -> match tail.kind {
         case XCall(Intrinsic(IoBuiltin(n)), args) -> {
-          assertEqualString(n, "String.length", "the built-in's name")
+          assertEqual(n, "String.length", "the built-in name")
           assertEqualInt(args.count, 1, "the receiver")
         }
         case _ -> assertTrue(false, "a built-in call")
