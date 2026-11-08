@@ -1982,10 +1982,7 @@ func firstParamType(items: in List[Item], name: in String): String {
     match it.kind {
       case IFunc(d) -> {
         if d.name == name and d.params.count > 0 {
-          return match d.params[0].ty.kind {
-            case TRef(path) -> Str.joinList(".", path.segments)
-            case _ -> "?"
-          }
+          return match d.params[0].ty.kind { case TRef(path) -> Str.joinList(".", path.segments); case _ -> "?" }
         }
       }
       case _ -> ()
@@ -2022,12 +2019,4 @@ test "an alias two files bind to different packages is rewritten per file, and l
     "T.Pos",
     "a synthesised item does not pick the first file's binding of an alias two files bind differently"
   )
-}
-
-test "a sibling file's rename is not applied to a file that sees the name another way (#8690)" {
-  val a = "package P\nimport Acme.One.{Pos as Q}\n\nfunc fa(x: in Q): Int {\n  1\n}\n"
-  val b = "package P\nimport Acme.Two\n\nfunc fb(x: in Q): Int {\n  2\n}\n"
-  val res = rewriteFileReporting(assembleFiles(a, b))
-  assertEqual(firstParamType(res.file.items, "fa"), "Acme.One.Pos", "a.l's own rename applies")
-  assertEqual(firstParamType(res.file.items, "fb"), "Q", "b.l keeps Q: its whole import of Acme.Two may declare it")
 }

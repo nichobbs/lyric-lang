@@ -183,16 +183,24 @@ func isRenameEntry(entry: in String): Bool {
   Str.startsWith(entry, "^")
 }
 
-// The target segments of rename `name` (`P.f` split), or None.  Only the
-// item's own file's renames apply: a bare name is judged by the file's imports
-// (docs/70 §4.1, #8690), so a sibling's rename is never a fallback; the
-// checker reports a name only a sibling imports as T0219, and a name the
-// file's own whole import declares resolves to that declaration.
+// The target segments of rename `name` (`P.f` split), or None, for a use
+// written at `sp`; another file's rename is recorded as `aliasPkgSegs`
+// records an alias.  The sibling fallback is what turns a name only a sibling
+// imports into T0219 (the checker does not see the renamed name at all), but
+// it also applies when the item's file sees the name another way, through a
+// whole import that declares it; telling those apart needs the resolver's
+// declaration table (#8690).
 func renameTarget(aliases: in AliasEnv, name: in String, sp: in Span): Option[List[String]] {
   val pfx = "^" + name + "="
   val own = entryIndex(aliases.entries, pfx)
   if own >= 0 {
     return Some(value = renameSegs(aliases.entries[own], pfx))
+  }
+  val other = siblingIndex(aliases.siblings, pfx)
+  if other >= 0 {
+    val segs = renameSegs(aliases.siblings[other].item, pfx)
+    noteSiblingUse(aliases, other, name, packageOfMember(modulePathJoin(segs)), sp)
+    return Some(value = segs)
   }
   None
 }
@@ -218,7 +226,15 @@ func entriesHaveRenames(entries: in List[String]): Bool {
 }
 
 func hasRenames(aliases: in AliasEnv): Bool {
-  entriesHaveRenames(aliases.entries)
+  if entriesHaveRenames(aliases.entries) {
+    return true
+  }
+  for e in aliases.siblings {
+    if isRenameEntry(e.item) {
+      return true
+    }
+  }
+  false
 }
 
 // `aliases` without the renames that `names` (bindings coming into scope)
@@ -234,7 +250,13 @@ func dropRenamesNamed(aliases: in AliasEnv, names: in List[String]): AliasEnv {
     }
     kept.add(entry)
   }
-  aliasEnvWith(aliases, kept, aliases.siblings)
+  val keptSiblings: List[SiblingEntry] = newList()
+  for e in aliases.siblings {
+    if not (isRenameEntry(e.item) and listHas(names, aliasKeyFirstSegment(e.item))) {
+      keptSiblings.add(e)
+    }
+  }
+  aliasEnvWith(aliases, kept, keptSiblings)
 }
 
 func listHas(xs: in List[String], x: in String): Bool {
@@ -2542,6 +2564,9 @@ func fileAliasEnv(files: in List[FileHeader], f: in Int): AliasEnv {
         val one: List[ImportDecl] = newList()
         one.add(imp)
         val entries = collectAliases(one)
+        for r in collectRenames(one) {
+          entries.add(r)
+        }
         for e in entries {
           val key = entryKey(e)
           if not listHasKey(own, key) and siblingIndex(env.siblings, key + "=") < 0 {

@@ -52,3 +52,30 @@ the union of its files' imports) keep the union.
   `Types.Pos` and `Types.Tag`. Each fails with its lookup disabled
   (`Acme.One declares no public type Tag`; `W0040 ... the type Tag of package
   Acme.One is not pub`).
+
+## Follow-up: the weaver's A0047 lookup and the alias rewriter's union environment
+
+- `perFileImports` now lives in `Lyric.Resolve` (`buildResolverContext` builds
+  each file's scope from it); `Lyric.PluginExpand`, `Lyric.ComponentGlue` and
+  `Lyric.Weaver` call it.
+- `A0047Scope` carries `fileImports` (built by `collectAspectTemplates` and
+  `weaveItemsCore` from the file's header imports; the MSIL and JVM bridges pass
+  `perFileImports` of the file they collect). `a0047TypeExprEqual` switches each
+  side's scope to the imports of the file its type expression was written in
+  (`a0047ScopeAt`), so a function in `b.l` that spells `T.LambdaContext` is
+  compared through `b.l`'s `T`, not through the first file's. The test fails
+  without it (0 diagnostics instead of A0047 for the `Timer` spelling).
+- `Lyric.AliasRewriter` rewrites a synthesised item (no source position) with the
+  union of the files' entries. A head two files bind to different packages is
+  ambiguous there, so `withoutAmbiguousHeads` leaves it unrewritten and the type
+  checker reports the unresolved qualifier; before, the first file's package won
+  silently.
+- Still reading the union, so `B0012`, the cross-file `T0148` and `T0123` stay:
+  `AliasRewriter`'s sibling-rename fallback (what turns a name only a sibling
+  imports into T0219: the checker does not see the renamed name at all, and
+  dropping the fallback made it accept `fy()` in a file that does not import it,
+  so the fallback stays until the resolver's declaration table can tell a file
+  that sees the name another way), and the JVM rename maps (#8895). The MSIL
+  `pkgImportAliases` map the issue lists no longer exists since D336; the MSIL
+  readers of imports left (bare-import order, selective-import bookkeeping) key
+  on the package, not on an alias.

@@ -4303,13 +4303,7 @@ pub func compileProjectToJarBundledWithRestored(
   var ati = 0
   while ati < toBundle.count {
     val tf = toBundle[ati]
-    Weaver.collectAspectTemplates(
-      tf.items,
-      dottedPath(tf.packageDecl.path),
-      tf.imports,
-      allTemplates,
-      perFileImports(tf)
-    )
+    Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), tf.imports, allTemplates, perFileImports(tf))
     ati = ati + 1
   }
   // Collect templates from path-dependency source files passed by the caller
