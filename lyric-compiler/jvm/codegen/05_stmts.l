@@ -1713,6 +1713,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           pushCtorExpect(ctx, ctx.retTy)
           val ty = lowerExpr(ctx, insns, e)
           popCtorExpect(ctx)
+          // An operand that already ended the method (a `match` whose arms all
+          // `return` or `throw`, a `panic`) leaves no value and no live path:
+          // anything emitted here is unreachable code that pops an empty stack
+          // (VerifyError, #8828).
+          if lastInsnIsTerminator(insns) {
+            return ()
+          }
           // Coerce to the declared return type so the value matches the method
           // descriptor (e.g. a plain Double literal in a `: Float` function
           // narrows with d2f).  Skip for void / generator contexts where the
