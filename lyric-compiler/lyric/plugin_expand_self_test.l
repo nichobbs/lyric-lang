@@ -25,6 +25,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.PluginExpand
 import Lyric.PackageMerge as PM
+import Lyric.ComponentGlue
 import Lyric.Fmt as Fmt
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.RestoredPackages
@@ -1291,4 +1292,65 @@ test "a name is resolved through the importing file's own alias, not the package
     }
   }
   assertEqualInt(errors, 0, "both files' boundary types resolve through their own `Types`: " + text)
+}
+
+func assembleTwoFiles(pkg: in String, a: in String, b: in String): SourceFile {
+  val none: List[String] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(a)
+  srcs.add(b)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  PM.assemblePackageFiles(pkg, srcs, paths, none, none, "dotnet").file
+}
+
+test "a dependency package's names are resolved through the file that wrote them (#8690)" {
+  val pkgs: Map[String, PluginPackage] = newMap()
+  val one = parse(
+    "package Acme.One\npub record Pos {\n  line: Int\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtOne {\n  func f(p: in Pos): Result[Int, String]\n}\n"
+  )
+  val two = parse(
+    "package Acme.Two\npub record Tag {\n  name: String\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtTwo {\n  func g(t: in Tag): Result[Int, String]\n}\n"
+  )
+  collectPluginPackage(one.file, pkgs)
+  collectPluginPackage(two.file, pkgs)
+  val da = "package Acme.Dep\nimport Acme.One as Types\n\npub alias PosA = Types.Pos\n"
+  val db = "package Acme.Dep\nimport Acme.Two as Types\n\npub alias TagB = Types.Tag\n"
+  collectPluginPackage(assembleTwoFiles("Acme.Dep", da, db), pkgs)
+  val app = parse(
+    "package Acme.App\nimport Acme.Dep\n\n@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(a: in PosA, b: in TagB): Result[Int, String]\n}\n"
+  )
+  assertEqualInt(app.diagnostics.count, 0, "app parses")
+  val res = expandFile(app.file, pkgs)
+  var text = ""
+  var errors = 0
+  for d in res.diagnostics {
+    match d.severity {
+      case DiagError -> {
+        errors = errors + 1
+        text = text + d.code + " " + d.message + "; "
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(errors, 0, "both dependency files' aliases resolve through their own `Types`: " + text)
+}
+
+test "component glue resolves a type through the importing file's own alias (#8690)" {
+  val one = parse("package Acme.One\npub record Pos {\n  line: Int\n}\n")
+  val two = parse("package Acme.Two\npub record Tag {\n  name: String\n}\n")
+  val peers: List[SourceFile] = newList()
+  peers.add(one.file)
+  peers.add(two.file)
+  val a = "package Acme.Ui\nimport Acme.One as Types\n\npub func fa(p: in Types.Pos): Int {\n  p.line\n}\n"
+  val b = "package Acme.Ui\nimport Acme.Two as Types\n\npub func fb(t: in Types.Tag): Int {\n  t.name.length\n}\n"
+  val res = componentRewriteFile(assembleTwoFiles("Acme.Ui", a, b), peers)
+  assertEqual(res.error, "", "no error")
+  var notes = ""
+  for n in res.info.notes {
+    notes = notes + n + "; "
+  }
+  assertEqual(notes, "", "both functions are exported, no W0040 note")
+  assertEqualInt(res.info.exports.count, 2, "both pub funcs are exports")
 }

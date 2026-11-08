@@ -1,7 +1,8 @@
 # D346 - Plugin expansion resolves a name through the imports of the file that writes it (docs/70 phase 2d, #8690)
 
-**Status:** shipped for `Lyric.PluginExpand`; the other passes #8690 lists, and
-retiring `B0012`, the cross-file `T0148` and the cross-file `T0123`, follow.
+**Status:** shipped for `Lyric.PluginExpand` (the checked package and, since the
+follow-up below, dependency packages) and `Lyric.ComponentGlue`; the other passes
+#8690 lists, and retiring `B0012`, the cross-file `T0148` and the cross-file `T0123`, follow.
 
 ## Context
 
@@ -31,3 +32,23 @@ the union of its files' imports) keep the union.
   `Lyric.ComponentGlue`, the JVM `~ctor-import~`/`~selimport~` rename maps, the
   weaver's A0047 lookup, the MSIL alias lookups, and `AliasRewriter`'s rename
   fallback and synthesised-item environment (#8690).
+
+## Follow-up: dependency packages and `Lyric.ComponentGlue`
+
+- `PluginPackage` carries `fileImports` (`collectPluginPackage` fills it for a
+  package collected from one assembled file; a package assembled from several
+  collected files keeps the union, as their file ids would collide). `ctxOf` hands
+  it to the dependency's `Ctx`, and `classifyNamed` takes the file id of the type
+  expression itself, not of the referencing site, so an alias chain that crosses
+  into a dependency reads that dependency file's imports. The `allows` names of a
+  point carry their annotation span's file id the same way.
+- `Lyric.ComponentGlue` gets `perFileImports` (moved there from
+  `Lyric.PluginExpand`, which now calls it) and `TypeTable`/`PeerPkg` carry
+  `fileImports`; `resolveTy` switches the table to the imports of the type
+  expression's file (`tableAtFile`) before resolving a bare or qualified name, so
+  a peer package's types resolve in the peer's files too.
+- Tests in `plugin_expand_self_test.l`: a dependency whose two files bind `Types`
+  to different packages (an alias in each), and a two-file package exporting
+  `Types.Pos` and `Types.Tag`. Each fails with its lookup disabled
+  (`Acme.One declares no public type Tag`; `W0040 ... the type Tag of package
+  Acme.One is not pub`).

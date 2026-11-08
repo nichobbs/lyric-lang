@@ -51,7 +51,6 @@ import Lyric.Parser
 import Lyric.Fmt as Fmt
 import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
-import Lyric.Resolve.{renderImport}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -62,6 +61,9 @@ pub record PluginPackage {
   pkgName: String
   imports: List[ImportDecl]
   items: List[Item]
+  /// Each file's own imports by `Position.fileId`, as `Ctx.fileImports`; empty
+  /// when the package is one unnumbered file or several collected files.
+  fileImports: List[List[ImportDecl]] = newList()
 }
 
 /// The expanded file and the K-diagnostics.  `file` is meaningful only when
@@ -91,10 +93,15 @@ pub func collectPluginPackage(file: in SourceFile, dest: in Map[String, PluginPa
       for im in file.imports {
         imps.add(im)
       }
-      dest[pkg] = PluginPackage(pkgName = pkg, imports = imps, items = items)
+      dest[pkg] = PluginPackage(pkgName = pkg, imports = imps, items = items, fileImports = newList())
     }
     case None -> {
-      dest[pkg] = PluginPackage(pkgName = pkg, imports = file.imports, items = file.items)
+      dest[pkg] = PluginPackage(
+        pkgName = pkg,
+        imports = file.imports,
+        items = file.items,
+        fileImports = Glue.perFileImports(file)
+      )
     }
   }
 }
@@ -387,39 +394,6 @@ func itemDeclName(it: in Item): String {
   }
 }
 
-/// The imports each file of `file` brings into scope, by file id: the file's
-/// own, plus the ones a pass added to the package that no file's header holds.
-/// Empty for a package of one unnumbered file.
-func perFileImports(file: in SourceFile): List[List[ImportDecl]] {
-  val res: List[List[ImportDecl]] = newList()
-  if file.files.count == 0 {
-    return res
-  }
-  val headerKeys: Map[String, Bool] = newMap()
-  for h in file.files {
-    for imp in h.imports {
-      headerKeys[renderImport(imp)] = true
-    }
-  }
-  val added: List[ImportDecl] = newList()
-  for imp in file.imports {
-    if not headerKeys.containsKey(renderImport(imp)) {
-      added.add(imp)
-    }
-  }
-  for h in file.files {
-    val all: List[ImportDecl] = newList()
-    for imp in h.imports {
-      all.add(imp)
-    }
-    for imp in added {
-      all.add(imp)
-    }
-    res.add(all)
-  }
-  res
-}
-
 /// `ctx` as the file `fileId` sees names: that file's own imports.  A synthesised
 /// node (no file) and a package of one unnumbered file keep the package's.
 func ctxAtFile(ctx: in Ctx, fileId: in Int): Ctx {
@@ -456,7 +430,7 @@ func ctxOf(pkg: in String, home: in Ctx, st: in St): Option[Ctx] {
     return Some(value = home)
   }
   match mapGet(st.packages, pkg) {
-    case Some(pp) -> Some(value = makeCtx(pp.pkgName, pp.imports, pp.items))
+    case Some(pp) -> Some(value = makeCtx(pp.pkgName, pp.imports, pp.items).copy(fileImports = pp.fileImports))
     case None -> None
   }
 }
@@ -774,7 +748,7 @@ func classify(
       }
       BT(kind = BTuple(elems = elems), text = text + ")")
     }
-    case TRef(path) -> classifyNamed(path.segments, ctx, home, st, sp, whereText, depth)
+    case TRef(path) -> classifyNamed(path.segments, ctx, home, st, sp, whereText, depth, te.span.startPos.fileId)
     case TGenericApp(head, args) -> classifyGeneric(head, args, ctx, home, st, sp, whereText, depth)
     case TArray(_, _) -> k0001(st, sp, whereText, "a fixed-size array cannot cross a plugin boundary; use List[T]")
     case TRefined(_, _) -> k0001(st, sp, whereText, "a range type cannot cross a plugin boundary; use its base type")
@@ -860,6 +834,7 @@ func classifyNamed(
   sp: in Span,
   whereText: in String,
   depth: in Int,
+  fileId: in Int,
 ): BT {
   val name = lastSegOf(segs)
   val written = modulePathJoin(segs)
@@ -869,7 +844,7 @@ func classifyNamed(
   if name == "JsonValue" and not (segs.count == 1 and ctx.decls.containsKey(name)) {
     return BT(kind = BJson, text = "JsonValue")
   }
-  val ref = resolveNamedAt(segs, ctx, st, sp.startPos.fileId)
+  val ref = resolveNamedAt(segs, ctx, st, fileId)
   if not ref.found {
     if ref.pkg != "" and not ref.collected and not isStdPkg(ref.pkg) {
       val q = qualifierIn(ref, home)
@@ -2124,8 +2099,13 @@ func capGrantTe(it: in Item): Option[TypeExpr] {
   }
 }
 
-func pointAllowNames(it: in Item): List[String] {
-  val acc: List[String] = newList()
+record AllowRef {
+  name: String
+  fileId: Int
+}
+
+func pointAllowNames(it: in Item): List[AllowRef] {
+  val acc: List[AllowRef] = newList()
   for a in it.annotations {
     val n = annName(a)
     if n == annPoint or n == annProtocol {
@@ -2135,7 +2115,7 @@ func pointAllowNames(it: in Item): List[String] {
             if cn == "allows" {
               for x in inner {
                 match x {
-                  case ABare(nm, _) -> acc.add(nm)
+                  case ABare(nm, sp) -> acc.add(AllowRef(name = nm, fileId = sp.startPos.fileId))
                   case _ -> ()
                 }
               }
@@ -2472,7 +2452,7 @@ func pluginModel(
         match ctxOf(p.pkg, ctx, st) {
           case Some(pc) -> {
             for an in pointAllowNames(x) {
-              allowed.add(refKey(resolveNamed(splitDotted(an), pc, st)))
+              allowed.add(refKey(resolveNamedAt(splitDotted(an.name), pc, st, an.fileId)))
             }
           }
           case None -> {
@@ -4318,7 +4298,7 @@ func expandFileMode(
   }
   val pkg = modulePathJoin(file.packageDecl.path.segments)
   val st = St(packages = packages, reachMemo = newMap(), diags = newList())
-  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = perFileImports(file))
+  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = Glue.perFileImports(file))
   val ifaces: List[IfaceModel] = newList()
   val plugins: List[PluginModel] = newList()
   var pluginCount = 0
