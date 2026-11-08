@@ -9874,7 +9874,7 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
 
 /// The caller's resolution scope, saved by `enterDeclaringScope`: its
 /// package, that package's imports and the file entered (docs/70 §4.1).
-record SavedScope {
+pub record SavedScope {
   pkg: String
   imports: List[String]
   file: Int
@@ -9900,7 +9900,7 @@ func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
 // `enterDeclaringScope` for a symbol declared in another package; for one
 // of the current package (or with no package context) the package scope is
 // kept and the file `sym` is declared in is entered.
-func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedScope {
+pub func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedScope {
   val cur = symTableScopePkg(tbl)
   if sym.originPackage.length > 0 and sym.originPackage != cur {
     return enterDeclaringScope(tbl, sym)
@@ -9916,7 +9916,7 @@ func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedSco
   SavedScope(pkg = cur, imports = savedImports, file = savedFile)
 }
 
-func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
+pub func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
   symTableSetScope(tbl, saved.pkg, saved.imports)
   symTableEnterFile(tbl, saved.file)
 }
