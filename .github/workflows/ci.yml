@@ -815,24 +815,6 @@ jobs:
       - name: Silent TyError census across the library manifests
         run: bash scripts/ci/library-tyerr-census.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
 
-  # Typed-IR census (docs/70 §6.4, D540): the standard library's test programs
-  # built with `--verify-ir`; any I0003 (an ill-formed body the builder produced)
-  # or program the census cannot judge fails.  I0002 is reported, not gated yet.
-  tir-census:
-    runs-on: ubuntu-latest
-    needs: [build]
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    if: needs.build.outputs.has_code_changes == 'true'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: ./.github/actions/lyric-test-setup
-        with:
-          build-config: ${{ env.BUILD_CONFIG }}
-      - name: TIR census over the stdlib test programs
-        run: bash scripts/ci/tir-census.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
   # bootstrap compiler was decommissioned in favor of bootstrap-from-release.

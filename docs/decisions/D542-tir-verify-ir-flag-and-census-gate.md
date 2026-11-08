@@ -19,7 +19,9 @@ produces verifies.
    build that stops before the checker finishes), as the I0001 census does
    (D386). The programs it cannot judge are listed in the script with a reason.
    I0002 is reported, not gated, until it reaches zero (docs/70 §12.2). CI runs it
-   as the `tir-census` job.
+   at the end of `scripts/ci/library-tyerr-census.sh`, so in that job: `ci.yml` is
+   within 21 bytes of the soft size ceiling (`check-workflow-size.sh`), so a job of
+   its own does not fit.
 3. The first full run found, and this change fixes, defects in the builder that
    no hand-picked file showed: an `out` or `inout` parameter was not a mutable
    local; a block ending in `return`, `throw`, `break` or `continue` was typed
