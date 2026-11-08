@@ -900,6 +900,9 @@ pub record BuildCensus {
   total: Int
   built: Int
   uncovered: Map[String, Int]
+  /// The first I0002 message of each body that did not build: the cause, where
+  /// `uncovered` also counts the uses a failed binding leaves undefined.
+  firstErrors: List[String] = newList()
 }
 
 /// Build every function body of `file` that has one, each with a fresh
@@ -907,6 +910,7 @@ pub record BuildCensus {
 pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): BuildCensus {
   var total = 0
   var built = 0
+  val firstErrors: List[String] = newList()
   val sums: Map[String, Int] = newMap()
   val counter: List[Int] = newList()
   counter.add(firstSynthNodeId())
@@ -920,7 +924,11 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
             case Some(_) -> {
               built = built + 1
             }
-            case None -> ()
+            case None -> {
+              if env.errors.count > 0 {
+                firstErrors.add(decl.name + ": " + env.errors[0])
+              }
+            }
           }
           for k in mapKeys(env.uncovered) {
             val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
@@ -936,7 +944,7 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
       case _ -> ()
     }
   }
-  BuildCensus(total = total, built = built, uncovered = sums)
+  BuildCensus(total = total, built = built, uncovered = sums, firstErrors = firstErrors)
 }
 
 /// The uncovered kinds of `c`, most frequent first, as `kind x count`.

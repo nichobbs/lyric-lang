@@ -1808,6 +1808,11 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   for line in TirBuild.buildCensusLines(built, 12) {
     Console.error("  no builder case: " + line)
   }
+  var k = 0
+  while k < built.firstErrors.count and k < 8 {
+    Console.error("  first error: " + built.firstErrors[k])
+    k = k + 1
+  }
 }
 
 func pipeModeItemName(it: in Item): String {
