@@ -51,7 +51,6 @@ import Lyric.Parser
 import Lyric.Fmt as Fmt
 import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
-import Lyric.Resolve.{renderImport}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -101,7 +100,7 @@ pub func collectPluginPackage(file: in SourceFile, dest: in Map[String, PluginPa
         pkgName = pkg,
         imports = file.imports,
         items = file.items,
-        fileImports = perFileImports(file)
+        fileImports = Glue.perFileImports(file)
       )
     }
   }
@@ -393,39 +392,6 @@ func itemDeclName(it: in Item): String {
     case IProtected(d) -> d.name
     case _ -> ""
   }
-}
-
-/// The imports each file of `file` brings into scope, by file id: the file's
-/// own, plus the ones a pass added to the package that no file's header holds.
-/// Empty for a package of one unnumbered file.
-func perFileImports(file: in SourceFile): List[List[ImportDecl]] {
-  val res: List[List[ImportDecl]] = newList()
-  if file.files.count == 0 {
-    return res
-  }
-  val headerKeys: Map[String, Bool] = newMap()
-  for h in file.files {
-    for imp in h.imports {
-      headerKeys[renderImport(imp)] = true
-    }
-  }
-  val added: List[ImportDecl] = newList()
-  for imp in file.imports {
-    if not headerKeys.containsKey(renderImport(imp)) {
-      added.add(imp)
-    }
-  }
-  for h in file.files {
-    val all: List[ImportDecl] = newList()
-    for imp in h.imports {
-      all.add(imp)
-    }
-    for imp in added {
-      all.add(imp)
-    }
-    res.add(all)
-  }
-  res
 }
 
 /// `ctx` as the file `fileId` sees names: that file's own imports.  A synthesised
@@ -4332,7 +4298,7 @@ func expandFileMode(
   }
   val pkg = modulePathJoin(file.packageDecl.path.segments)
   val st = St(packages = packages, reachMemo = newMap(), diags = newList())
-  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = perFileImports(file))
+  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = Glue.perFileImports(file))
   val ifaces: List[IfaceModel] = newList()
   val plugins: List[PluginModel] = newList()
   var pluginCount = 0

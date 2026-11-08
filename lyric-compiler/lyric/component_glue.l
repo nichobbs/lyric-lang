@@ -27,6 +27,7 @@ import Std.Collections
 import Std.String as Str
 import Std.Char as Ch
 import Lyric.Parser
+import Lyric.Resolve.{renderImport}
 
 /// WIT's reserved words, which a Lyric name must escape with `%`.
 func isWitKeyword(w: in String): Bool {
@@ -232,6 +233,9 @@ record PeerPkg {
   /// The names of its `pub` (or `internal`) types: the ones another package may name.
   pubs: List[String]
   imports: List[ImportDecl]
+  /// Each file's own imports by `Position.fileId` (docs/70 §4.1); empty for a
+  /// package of one unnumbered file, then `imports` serves.
+  fileImports: List[List[ImportDecl]] = newList()
 }
 
 /// The types a package declares, plus what it can reach: `qual` is "" for the
@@ -246,6 +250,9 @@ record TypeTable {
   handles: List[String]
   pubs: List[String]
   imports: List[ImportDecl]
+  /// Each file's own imports by `Position.fileId` (docs/70 §4.1); empty for a
+  /// package of one unnumbered file, then `imports` serves.
+  fileImports: List[List[ImportDecl]] = newList()
   peers: List[PeerPkg]
 }
 
@@ -318,7 +325,8 @@ func peerOf(file: in SourceFile): PeerPkg {
     enums = enums,
     handles = handles,
     pubs = pubs,
-    imports = file.imports
+    imports = file.imports,
+    fileImports = perFileImports(file)
   )
 }
 
@@ -341,6 +349,7 @@ func tableOf(file: in SourceFile, peers: in List[SourceFile]): TypeTable {
     handles = own.handles,
     pubs = own.pubs,
     imports = own.imports,
+    fileImports = own.fileImports,
     peers = others
   )
 }
@@ -363,8 +372,51 @@ func tableOfPeer(peer: in PeerPkg, tbl: in TypeTable): TypeTable {
     handles = peer.handles,
     pubs = peer.pubs,
     imports = peer.imports,
+    fileImports = peer.fileImports,
     peers = others
   )
+}
+
+/// The imports each file of `file` brings into scope, by file id: the file's
+/// own, plus the ones a pass added to the package that no file's header holds.
+/// Empty for a package of one unnumbered file.
+pub func perFileImports(file: in SourceFile): List[List[ImportDecl]] {
+  val res: List[List[ImportDecl]] = newList()
+  if file.files.count == 0 {
+    return res
+  }
+  val headerKeys: Map[String, Bool] = newMap()
+  for h in file.files {
+    for imp in h.imports {
+      headerKeys[renderImport(imp)] = true
+    }
+  }
+  val added: List[ImportDecl] = newList()
+  for imp in file.imports {
+    if not headerKeys.containsKey(renderImport(imp)) {
+      added.add(imp)
+    }
+  }
+  for h in file.files {
+    val all: List[ImportDecl] = newList()
+    for imp in h.imports {
+      all.add(imp)
+    }
+    for imp in added {
+      all.add(imp)
+    }
+    res.add(all)
+  }
+  res
+}
+
+/// `tbl` as the file `fileId` sees names: that file's own imports.  A synthesised
+/// node (no file) and a package of one unnumbered file keep the package's.
+func tableAtFile(tbl: in TypeTable, fileId: in Int): TypeTable {
+  if fileId < 0 or fileId >= tbl.fileImports.count {
+    return tbl
+  }
+  tbl.copy(imports = tbl.fileImports[fileId])
 }
 
 func hasGenerics(g: in Option[GenericParams]): Bool {
@@ -397,7 +449,8 @@ func resolveValueTy(te: in TypeExpr, tbl: in TypeTable, depth: in Int): Result[W
   }
 }
 
-func resolveTy(te: in TypeExpr, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
+func resolveTy(te: in TypeExpr, tbl0: in TypeTable, depth: in Int): Result[WitTy, String] {
+  val tbl = tableAtFile(tbl0, te.span.startPos.fileId)
   if depth > 8 {
     return failTy("the type is recursive or nested too deeply")
   }

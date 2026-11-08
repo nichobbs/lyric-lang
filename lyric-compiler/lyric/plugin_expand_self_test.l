@@ -25,6 +25,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.PluginExpand
 import Lyric.PackageMerge as PM
+import Lyric.ComponentGlue
 import Lyric.Fmt as Fmt
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.RestoredPackages
@@ -1334,4 +1335,22 @@ test "a dependency package's names are resolved through the file that wrote them
     }
   }
   assertEqualInt(errors, 0, "both dependency files' aliases resolve through their own `Types`: " + text)
+}
+
+test "component glue resolves a type through the importing file's own alias (#8690)" {
+  val one = parse("package Acme.One\npub record Pos {\n  line: Int\n}\n")
+  val two = parse("package Acme.Two\npub record Tag {\n  name: String\n}\n")
+  val peers: List[SourceFile] = newList()
+  peers.add(one.file)
+  peers.add(two.file)
+  val a = "package Acme.Ui\nimport Acme.One as Types\n\npub func fa(p: in Types.Pos): Int {\n  p.line\n}\n"
+  val b = "package Acme.Ui\nimport Acme.Two as Types\n\npub func fb(t: in Types.Tag): Int {\n  t.name.length\n}\n"
+  val res = componentRewriteFile(assembleTwoFiles("Acme.Ui", a, b), peers)
+  assertEqualString(res.error, "", "no error")
+  var notes = ""
+  for n in res.info.notes {
+    notes = notes + n + "; "
+  }
+  assertEqualString(notes, "", "both functions are exported, no W0040 note")
+  assertEqualInt(res.info.exports.count, 2, "both pub funcs are exports")
 }
