@@ -241,6 +241,13 @@ EOF
   printf 'package Mf\nimport Std.Math as X\n\npub func other(): Int {\n  X.absInt(-3)\n}\n' > "$d/src/b_other.l"
   runs "an alias bound to two packages" "$d" "$target" "X3"
 
+  # The same alias in type, constructor, pattern, call and contract positions,
+  # bound to Std.Core in one file and to Std.String in the other.
+  d="$(project alias2)"
+  printf 'package Mf\nimport Std.Core as X\nimport Std.String\n\nfunc pick(n: in Int): X.Option[Int]\n  requires: n >= 0\n{\n  if n > 2 { X.Some(value = n) } else { X.None }\n}\n\nfunc main(): Unit {\n  val r = match pick(5) {\n    case X.Some(v) -> v\n    case X.None -> 0\n  }\n  println(toString(r) + toString(count()))\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\nimport Std.String as X\n\npub func count(): Int {\n  X.length("ab")\n}\n' > "$d/src/b_other.l"
+  runs "an alias bound to two packages in every position" "$d" "$target" "52"
+
   # Two files import the same bare name from different packages
   # (Std.String.join and Std.Path.join): T0123 until #8690, since the
   # backends resolve a bare name across the package's files.

@@ -25,10 +25,9 @@
 //! `@cfg`: they are united, one written by two files is kept once, and two
 //! files that disagree are an error (B0014; Y0009 for `@pure` against `@io`).
 //! Each file's imports are its own (`FileHeader.imports`, docs/70 §4.1);
-//! `SourceFile.imports` is their union.  Passes that still read aliases from
-//! the union pick one package per alias, so an alias two files bind to
-//! different packages is an error (B0012) until they read each file's own
-//! (#8690).
+//! `SourceFile.imports` is their union.  An alias two files bind to different
+//! packages is each file's own (B0012 was retired, #8690); the passes that
+//! resolve an alias read the imports of the file the name is written in.
 //!
 //! A malformed file-level `@cfg` is F0012 and one naming a feature the
 //! manifest does not declare is F0013, as for the items of a file.

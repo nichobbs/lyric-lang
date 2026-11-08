@@ -79,3 +79,11 @@ the union of its files' imports) keep the union.
   `pkgImportAliases` map the issue lists no longer exists since D336; the MSIL
   readers of imports left (bare-import order, selective-import bookkeeping) key
   on the package, not on an alias.
+
+## Follow-up: B0012 retired
+
+`Lyric.PackageMerge` no longer raises `B0012`: an alias two files bind to different
+packages is each file's own. Nothing that compiled before is rejected, so the census
+is of what is newly accepted: the e2e cases (`multi-file-package-merge-e2e.sh`, dotnet,
+JVM, native) and `package_merge_self_test.l`. docs/01 §(packages), docs/19 §9, the book
+(chapter 6, appendix B) and docs/70 are updated. The cross-file `T0148` and `T0123` stay.

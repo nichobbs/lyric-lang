@@ -6453,8 +6453,8 @@ func reexportClosure(pkg: in String, importedPackages: in List[ImportedPackage])
 // (T0210) are checked against its own imports.  A name a file sees only
 // through a sibling file's import is T0219 (`symTableNoteBareUse` and kin).
 // A rename that collides with a name a sibling's import brings in stays
-// T0148, and an alias bound two ways stays B0012, until the passes that
-// read the union's renames and aliases read each file's own (#8690).
+// T0148, until the passes that read the union's renames read each file's own
+// (#8690).
 // A package with no file table, or of one file, has only the union.
 func installImportRule(
   tbl: in SymbolTable,
