@@ -12055,6 +12055,18 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
   bound
 }
 
+// The type arguments of a call to `sig` read back from its result type (docs/70
+// §6.3): `newList()` has no argument to bind `T` from, and the annotation that
+// settles the call's type (`val xs: List[Int] = newList()`) fixes it.  A
+// generic the result does not mention, or mentions inconsistently, is a hole.
+pub func genericArgsFromResult(sig: in ResolvedSignature, resultTy: in Type): List[Type] {
+  val ps: List[Type] = newList()
+  ps.add(sig.returnTy)
+  val rts: List[Type] = newList()
+  rts.add(resultTy)
+  inferGenericArgsDeep(sig.generics, ps, rts)
+}
+
 // `inferGenericArgsDeep` for a call to `sig`, where a bare `T` parameter an
 // `out`/`inout` parameter declares is bound by its argument's type alone: the
 // parameter refers to the caller's place (D183), so `T` is the place's type,

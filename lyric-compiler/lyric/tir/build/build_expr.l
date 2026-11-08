@@ -1950,7 +1950,10 @@ func buildDirectCall(
   if sig.generics.count > 0 {
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
-      case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+      case None -> match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
+        case Some(rt) -> genericArgsFromResult(sig, rt)
+        case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+      }
     }
     if checkerArgs.count != sig.generics.count {
       return uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
