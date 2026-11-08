@@ -86,13 +86,12 @@ calls it through `Lyric.Pipeline.pipeParsePackageTo` (docs/70 §4.1, phase 2a):
    are its own: add `import P` to this file`, once per name and file.
    Later passes still read the union of the files' imports and the backends
    resolve bare names across the package, so a bare name that two files
-   import from different packages is `T0123`, an alias that two files bind to
-   different packages (`import Std.Core as A` in one, `import Std.Math as
-   A` in another) is `B0012 — import alias A names Std.Math here but
-   Std.Core at <file>:<line>`, reported against the later file, and a
-   rename that collides with a name another file's import brings in is
-   `T0148`, all until #8690. The same alias for the same package in two files
-   is one import. The package also carries the union
+   import from different packages is `T0123` and a rename that collides with a
+   name another file's import brings in is `T0148`, both until #8690. An alias
+   that two files bind to different packages (`import Std.Core as A` in one,
+   `import Std.Math as A` in another) is legal: each file's `A` is its own
+   (`B0012` was retired, #8690). The same alias for the same package in two
+   files is one import. The package also carries the union
    of the files' imports (`SourceFile.imports`, an import written in
    several files kept once), for synthesised items and the stages that
    need the package's dependencies. Phase 2a step 4 (#8676) introduced the
@@ -200,15 +199,16 @@ early split: token types into `tokens.l`, keyword table into
 |---|---|---|
 | `B0010` | package matches both single-file and multi-file layout | Not raised: no build finds a package by file name (§3). Raised by the removed F# emitter (D-progress-095) |
 | `B0011` | duplicate declaration across files in same package | Not raised: the type checker's `T0001` reports it against the later file (§4 step 7). Raised by the removed F# emitter (D-progress-095) |
-| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180); retired when the passes that read the union's aliases read each file's own (#8690) |
+| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180); retired: an alias two files bind to different packages is each file's own (#8690, D346) |
 | `B0013` | a file of the package declares another package | Shipped (#8234, D180) |
 | `B0014` | files of the package disagree on a file-level annotation | Shipped (#8234, D180) |
 
 `B-` prefix introduced for "build / project-layout" diagnostics — same
 prefix space `docs/20-project-as-dll.md` uses for project-level errors.
 
-### B0012 collapse rule
+### Aliases across files
 
 Same alias targeting the same package across two files is silently
 deduped (it's a redundant declaration, not a conflict).  Different
-targets is the conflict that fires.
+targets are both kept: each file's alias applies to that file only
+(`B0012`, which rejected this, was retired with #8690).

@@ -827,7 +827,7 @@ saw only through a sibling's import was the warning `W0032`; the compiler,
 stdlib, ecosystem and examples were fixed to build without it. Step 5
 (D300) makes it the error `T0219`. Candidates for a bare name are still
 the union's, so a name two files import from different packages stays
-`T0123`, and `B0012` and the cross-file `T0148` stay, until the passes that
+`T0123`, and the cross-file `T0148` stay (`B0012` was retired by #8690, D346), until the passes that
 read the union of the files' imports (plugin expansion, component glue, the
 alias rewriter's synthesised items, MSIL and JVM lookups and the backends'
 bare-name resolution) read each file's own or receive resolved symbols

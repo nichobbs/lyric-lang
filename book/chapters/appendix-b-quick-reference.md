@@ -1846,7 +1846,7 @@ Reported against the file at fault (`<path>: error[B0013] line:col: ...`) before
 
 | Code | Meaning |
 |---|---|
-| `B0012` | Two files of a package bind one import alias to different packages. Imports are per file, but some passes still read aliases from the package's union of imports, so within a package an alias must name one package (#8690). (A renamed selective import colliding with a sibling's import is `T0148`.) |
+| `B0012` | Retired. Two files of a package may bind one import alias to different packages: each file's alias is its own. (A renamed selective import colliding with a sibling's import is `T0148`.) |
 | `B0013` | A file of a package declares another package than its manifest entry names (in a package of one file too; a single file built on its own is named by its own declaration). |
 | `B0014` | Two files of a package disagree on a file-level annotation: different verification levels (`@runtime_checked`, `@proof_required`, `@axiom`), one annotation with different arguments, or one of `@test_module` / `@bench_module` / `@contract_source` that some files carry and others do not. (`@pure` in one file and `@io` in another is `Y0009`.) |
 
