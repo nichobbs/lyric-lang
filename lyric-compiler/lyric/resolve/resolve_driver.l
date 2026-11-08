@@ -92,6 +92,41 @@ pub func reexportsOf(imports: in List[ImportDecl]): List[String] {
   acc
 }
 
+/// The imports each file of `file` brings into scope, by file id: the file's
+/// own, plus the ones a pass added to the package that no file's header holds
+/// (the plugin expansion's; they serve the declarations the pass synthesised, so
+/// every file carries them, as the checker judges a synthesised item by the
+/// union of the files' imports).  Empty for a package of one unnumbered file.
+pub func perFileImports(file: in SourceFile): List[List[ImportDecl]] {
+  val res: List[List[ImportDecl]] = newList()
+  if file.files.count == 0 {
+    return res
+  }
+  val headerKeys: Map[String, Bool] = newMap()
+  for h in file.files {
+    for imp in h.imports {
+      headerKeys.add(importKey(imp), true)
+    }
+  }
+  val added: List[ImportDecl] = newList()
+  for imp in file.imports {
+    if not headerKeys.containsKey(importKey(imp)) {
+      added.add(imp)
+    }
+  }
+  for h in file.files {
+    val all: List[ImportDecl] = newList()
+    for imp in h.imports {
+      all.add(imp)
+    }
+    for imp in added {
+      all.add(imp)
+    }
+    res.add(all)
+  }
+  res
+}
+
 /// Build the context for `file`, a package assembled from its files
 /// (docs/70 §4.1), against `deps`.  A dependency with the package's own name
 /// is dropped: a package is not its own import (D306).
@@ -125,33 +160,10 @@ pub func buildResolverContext(
   if file.files.count == 0 {
     scopes.add(buildFileScope(tbl, pkg, 0, "", file.imports))
   } else {
-    // An import a pass added to the package (the plugin expansion's) is in
-    // `file.imports` but in no file's header: it serves the declarations the
-    // pass synthesised, so every file's scope carries it, as the checker judges
-    // a synthesised item by the union of the files' imports.
-    val headerKeys: Map[String, Bool] = newMap()
-    for h in file.files {
-      for imp in h.imports {
-        headerKeys.add(importKey(imp), true)
-      }
-    }
-    val added: List[ImportDecl] = newList()
-    for imp in file.imports {
-      if not headerKeys.containsKey(importKey(imp)) {
-        added.add(imp)
-      }
-    }
+    val per = perFileImports(file)
     var i = 0
     while i < file.files.count {
-      val h = file.files[i]
-      val all: List[ImportDecl] = newList()
-      for imp in h.imports {
-        all.add(imp)
-      }
-      for imp in added {
-        all.add(imp)
-      }
-      scopes.add(buildFileScope(tbl, pkg, i, h.path, all))
+      scopes.add(buildFileScope(tbl, pkg, i, file.files[i].path, per[i]))
       i = i + 1
     }
   }

@@ -24,6 +24,7 @@ import Lyric.Propagate
 import Lyric.AliasRewriter as Aliases
 import Lyric.BareFuncRef as BFR
 import Lyric.TypeAliasResolve as TAR
+import Lyric.Resolve.{perFileImports}
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
 import Lyric.PluginExpand as PluginExpand
@@ -4278,7 +4279,13 @@ pub func compileProjectToJarBundledWithRestored(
   // the weave loop so that from-instance aspects in any package can resolve
   // their template body (#3414; parity with the MSIL bridge).
   val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
-  Weaver.collectAspectTemplates(userFile.items, dottedPath(userFile.packageDecl.path), userFile.imports, allTemplates)
+  Weaver.collectAspectTemplates(
+    userFile.items,
+    dottedPath(userFile.packageDecl.path),
+    userFile.imports,
+    allTemplates,
+    perFileImports(userFile)
+  )
   // #7497: which package declares each type name, for the A0047 row-type
   // check (docs/56) — built ONCE here (over the now-final `importedPkgs`,
   // which already carries the entry package, every stdlib file, every
@@ -4296,7 +4303,13 @@ pub func compileProjectToJarBundledWithRestored(
   var ati = 0
   while ati < toBundle.count {
     val tf = toBundle[ati]
-    Weaver.collectAspectTemplates(tf.items, dottedPath(tf.packageDecl.path), tf.imports, allTemplates)
+    Weaver.collectAspectTemplates(
+      tf.items,
+      dottedPath(tf.packageDecl.path),
+      tf.imports,
+      allTemplates,
+      perFileImports(tf)
+    )
     ati = ati + 1
   }
   // Collect templates from path-dependency source files passed by the caller
@@ -4317,7 +4330,8 @@ pub func compileProjectToJarBundledWithRestored(
       dtRewritten.items,
       dottedPath(dtRewritten.packageDecl.path),
       dtRewritten.imports,
-      allTemplates
+      allTemplates,
+      perFileImports(dtRewritten)
     )
     // #7497: a path-dependency template's row-typed `args` (docs/56) can
     // reference a type declared only in the dependency's own package —

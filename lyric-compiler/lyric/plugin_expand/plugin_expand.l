@@ -51,6 +51,7 @@ import Lyric.Parser
 import Lyric.Fmt as Fmt
 import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
+import Lyric.Resolve.{perFileImports}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -100,7 +101,7 @@ pub func collectPluginPackage(file: in SourceFile, dest: in Map[String, PluginPa
         pkgName = pkg,
         imports = file.imports,
         items = file.items,
-        fileImports = Glue.perFileImports(file)
+        fileImports = perFileImports(file)
       )
     }
   }
@@ -4298,7 +4299,7 @@ func expandFileMode(
   }
   val pkg = modulePathJoin(file.packageDecl.path.segments)
   val st = St(packages = packages, reachMemo = newMap(), diags = newList())
-  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = Glue.perFileImports(file))
+  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = perFileImports(file))
   val ifaces: List[IfaceModel] = newList()
   val plugins: List[PluginModel] = newList()
   var pluginCount = 0
