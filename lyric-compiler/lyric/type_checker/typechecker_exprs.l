@@ -18054,6 +18054,7 @@ func checkExplicitTypeArgCall(
   args: in List[CallArg],
   argTypes: in List[Type],
   sp: in Span,
+  callNode: in Int,
 ): Unit {
   if explicitGenericArgs(fn).count == 0 {
     return
@@ -18095,6 +18096,7 @@ func checkExplicitTypeArgCall(
   if found.isAsync or found.isGenerator or found.isExternFunc or found.generics.count == 0 {
     return
   }
+  recordCalleeSite(tbl, fn, found, callNode)
   match explicitCallTypeArgs(sc, tbl, fn, found) {
     case Some(targs) -> {
       val inst = instantiateSigAt(found, targs)
@@ -19887,7 +19889,7 @@ func inferExprCore(
       // and its callee types as an error; its arguments and lengths are
       // checked here and give the call its type.
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
-      checkExplicitTypeArgCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
+      checkExplicitTypeArgCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span, e.nodeId)
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
