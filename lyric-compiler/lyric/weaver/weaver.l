@@ -66,6 +66,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ContractElaborator as CE
+import Lyric.Resolve.{perFileImports}
 import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2761,10 +2762,16 @@ func weaveItemsCore(
   typeIndex: in TypeOwnerIndex,
   contractsEnabled: in Bool = true,
   early: in Bool = false,
+  fileImports: in List[List[ImportDecl]] = newList(),
 ): WeaveResult {
   val weaveDiags: List[WeaveDiagEntry] = newList()
   val generatedRuns: List[GeneratedRun] = newList()
-  val consumerScope = A0047Scope(pkg = packagePath, imports = imports, localTypes = a0047LocalTypeNames(items))
+  val consumerScope = A0047Scope(
+    pkg = packagePath,
+    imports = imports,
+    localTypes = a0047LocalTypeNames(items),
+    fileImports = fileImports
+  )
   val collected = collectActiveAspects(items)
   if collected.count == 0 {
     val noAspectItems: List[Item] = newList()
@@ -3088,6 +3095,9 @@ pub record A0047Scope {
   pkg: String
   imports: List[ImportDecl]
   localTypes: List[String]
+  /// Each file's own imports by `Position.fileId` (docs/70 §4.1); empty for a
+  /// package of one unnumbered file, when `imports` serves.
+  fileImports: List[List[ImportDecl]] = newList()
 }
 
 /// Collect all `pub` aspect declarations that carry an `around` body from
@@ -3102,8 +3112,14 @@ pub func collectAspectTemplates(
   pkgName: in String,
   imports: in List[ImportDecl],
   dest: in Map[String, CollectedTemplate],
+  fileImports: in List[List[ImportDecl]] = newList(),
 ): Unit {
-  val nameScope = A0047Scope(pkg = pkgName, imports = imports, localTypes = a0047LocalTypeNames(items))
+  val nameScope = A0047Scope(
+    pkg = pkgName,
+    imports = imports,
+    localTypes = a0047LocalTypeNames(items),
+    fileImports = fileImports
+  )
   var i = 0
   while i < items.count {
     val it = items[i]
@@ -3922,13 +3938,15 @@ pub func typeOwnerIndexAddFile(ix: in TypeOwnerIndex, file: in SourceFile): Unit
 /// `b`) via `a0047ResolvePath`.
 func a0047TypeExprEqual(
   a0: in TypeExpr,
-  aScope: in A0047Scope,
+  aScope0: in A0047Scope,
   b0: in TypeExpr,
-  bScope: in A0047Scope,
+  bScope0: in A0047Scope,
   ix: in TypeOwnerIndex,
 ): Bool {
   val a = a0047UnwrapParen(a0)
   val b = a0047UnwrapParen(b0)
+  val aScope = a0047ScopeAt(aScope0, a.span.startPos.fileId)
+  val bScope = a0047ScopeAt(bScope0, b.span.startPos.fileId)
   match a.kind {
     case TUnit -> match b.kind { case TUnit -> true; case _ -> false }
     case TNever -> match b.kind { case TNever -> true; case _ -> false }
@@ -3982,6 +4000,16 @@ func a0047TypeExprEqual(
     }
     case TParen(_) -> panic("a0047TypeExprEqual: a0047UnwrapParen left a TParen")
   }
+}
+
+/// `scope` as the file `fileId` sees names: that file's own imports.  A
+/// synthesised node (no file) and a package of one unnumbered file keep the
+/// package's.
+func a0047ScopeAt(sc: in A0047Scope, fileId: in Int): A0047Scope {
+  if fileId < 0 or fileId >= sc.fileImports.count {
+    return sc
+  }
+  sc.copy(imports = sc.fileImports[fileId])
 }
 
 func a0047UnwrapParen(te: in TypeExpr): TypeExpr {
@@ -5127,7 +5155,16 @@ pub func weaveFileWithDiagsAndTemplates(
     rangeDiags.add(d)
   }
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
-  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex, contractsEnabled, early)
+  val wr = weaveItemsCore(
+    resolvedItems,
+    pkgPath,
+    file0.imports,
+    resolvedFI.origins,
+    typeIndex,
+    contractsEnabled,
+    early,
+    perFileImports(file0)
+  )
   val allDiags: List[Diagnostic] = newList()
   var ui = 0
   while ui < unresolvedDiags.count {

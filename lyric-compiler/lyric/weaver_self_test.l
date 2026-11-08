@@ -38,6 +38,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Weaver
+import Lyric.PackageMerge as PM
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers — parse + weave + shape inspection.
@@ -2227,4 +2228,37 @@ test "from-instance config field that declares its own range is A0048" {
     "func doWork(x: in Int): Int { x }\n"
   val res = weaveWithTemplates(src, templates)
   assertTrue(diagsHaveCode(res.diagnostics, "A0048"), "a range on the instance is rejected, not silently dropped")
+}
+
+test "A0047 resolves a type through the alias of the file that wrote it (#8690)" {
+  val tplSrc = "package Lib.Aspects\n" + "pub aspect Guard {\n" + "  matches: name like \"*\"\n" +
+    "  around(call) -> ret where TArgs has { ctx: Lambda.LambdaContext } {\n" +
+    "    ret = call.proceed()\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Aspects")
+  val a = "package App\n" + "import Lambda as T\n" + "aspect MyGuard from Lib.Aspects.Guard {\n" +
+    "  matches: name like \"handle*\"\n" +
+    "}\n" +
+    "func handleA(ctx: in T.LambdaContext): Int { 1 }\n"
+  val b = "package App\n" + "import Timer as T\n" + "func handleB(ctx: in T.LambdaContext): Int { 2 }\n"
+  val none: List[String] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(a)
+  srcs.add(b)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  val file = PM.assemblePackageFiles("App", srcs, paths, none, none, "dotnet").file
+  val wr = weaveFileWithDiagsAndTemplates(file, templates, fixtureTypeIndex(), true)
+  var count = 0
+  var text = ""
+  for d in wr.diagnostics {
+    if d.code == "A0047" {
+      count = count + 1
+      text = text + d.message + "; "
+    }
+  }
+  assertEqualInt(count, 1, "only handleB (T = Timer in b.l) is rejected: " + text)
+  assertTrue(Str.contains(text, "handleB"), "the rejected function is handleB: " + text)
 }

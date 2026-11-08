@@ -46,6 +46,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.AliasRewriter
+import Lyric.PackageMerge as PM
 
 // ── Control: IFunc bodies were already descended pre-#1834 ────────────────────
 func ctrlLen(s: in String): Int {
@@ -1961,4 +1962,61 @@ test "runtime: bare `import Std.Console` routes Console.println correctly (#2929
 test "runtime: bare `import Std.Console` routes Std.Console.println correctly (#6294)" {
   Std.Console.println("alias rewriter #6294: bare multi-segment import's full form works")
   assertTrue(true, "Std.Console.println via a bare multi-segment import's full form did not throw")
+}
+
+// ── #8690: imports are per file ──────────────────────────────────────────────
+func assembleFiles(a: in String, b: in String): SourceFile {
+  val none: List[String] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(a)
+  srcs.add(b)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  PM.assemblePackageFiles("P", srcs, paths, none, none, "dotnet").file
+}
+
+// The dotted spelling of the first parameter's type of function `name`.
+func firstParamType(items: in List[Item], name: in String): String {
+  for it in items {
+    match it.kind {
+      case IFunc(d) -> {
+        if d.name == name and d.params.count > 0 {
+          return match d.params[0].ty.kind { case TRef(path) -> Str.joinList(".", path.segments); case _ -> "?" }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  "<missing>"
+}
+
+test "an alias two files bind to different packages is rewritten per file, and left alone for a synthesised item (#8690)" {
+  val a = "package P\nimport Acme.One as T\n\nfunc fa(x: in T.Pos): Int {\n  1\n}\n"
+  val b = "package P\nimport Acme.Two as T\n\nfunc fb(x: in T.Tag): Int {\n  2\n}\n"
+  val file = assembleFiles(a, b)
+  val synth = parse("package P\nfunc fs(x: in T.Pos): Int {\n  3\n}\n").file.items[0]
+  val noPos = Position(offset = 0, line = 0, column = 0)
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  items.add(synth.copy(span = Span(startPos = noPos, endPos = noPos)))
+  val withSynth = SourceFile(
+    moduleDoc = file.moduleDoc,
+    files = file.files,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+  val res = rewriteFileReporting(withSynth)
+  assertEqual(firstParamType(res.file.items, "fa"), "Acme.One.Pos", "a.l's T is Acme.One")
+  assertEqual(firstParamType(res.file.items, "fb"), "Acme.Two.Tag", "b.l's T is Acme.Two")
+  assertEqual(
+    firstParamType(res.file.items, "fs"),
+    "T.Pos",
+    "a synthesised item does not pick the first file's binding of an alias two files bind differently"
+  )
 }

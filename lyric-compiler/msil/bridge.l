@@ -21,6 +21,7 @@ import Lyric.Propagate
 import Lyric.Mono
 import Lyric.BareFuncRef as BFR2
 import Lyric.TypeAliasResolve as TAR2
+import Lyric.Resolve.{perFileImports}
 import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
@@ -340,7 +341,8 @@ pub func compileToMsilWithVersion(
     file0.items,
     segmentsToString(file0.packageDecl.path.segments),
     file0.imports,
-    singleFileTemplates
+    singleFileTemplates,
+    perFileImports(file0)
   )
   // #7496: the A0047 row-type check resolves type names against the same
   // stdlib packages the type checker saw.
@@ -982,7 +984,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       parsedPkgs[tpi].file.items,
       parsedPkgs[tpi].name,
       parsedPkgs[tpi].file.imports,
-      allTemplates
+      allTemplates,
+      perFileImports(parsedPkgs[tpi].file)
     )
     Weaver.typeOwnerIndexAddFile(weaveTypeIndex, parsedPkgs[tpi].file)
     tpi = tpi + 1
@@ -1007,7 +1010,13 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // every cross-package aspect error path (caught when the T0115
     // ldnull backstop made the class loud).
     val dtRewritten = Aliases.rewriteFile(dtParsed)
-    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
+    Weaver.collectAspectTemplates(
+      dtRewritten.items,
+      dtPkg.name,
+      dtRewritten.imports,
+      allTemplates,
+      perFileImports(dtRewritten)
+    )
     Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
   }

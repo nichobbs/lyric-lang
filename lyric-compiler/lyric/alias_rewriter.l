@@ -185,7 +185,11 @@ func isRenameEntry(entry: in String): Bool {
 
 // The target segments of rename `name` (`P.f` split), or None, for a use
 // written at `sp`; another file's rename is recorded as `aliasPkgSegs`
-// records an alias.
+// records an alias.  The sibling fallback is what turns a name only a sibling
+// imports into T0219 (the checker does not see the renamed name at all), but
+// it also applies when the item's file sees the name another way, through a
+// whole import that declares it; telling those apart needs the resolver's
+// declaration table (#8690).
 func renameTarget(aliases: in AliasEnv, name: in String, sp: in Span): Option[List[String]] {
   val pfx = "^" + name + "="
   val own = entryIndex(aliases.entries, pfx)
@@ -2453,7 +2457,14 @@ pub func rewriteFileReporting(file: in SourceFile): AliasRewriteResult {
   // the per-function locals #6311 already guards against.
   val moduleLocals: List[String] = newList()
   collectModuleLevelValueNames(file, moduleLocals)
-  val unionEnv = dropRenamesNamed(filterAliasesExcludingLocals(aliasEnvOf(aliases), moduleLocals), moduleLocals)
+  // A synthesised item has no file of its own, so it is rewritten with the
+  // union of the files' entries.  A head two files bind to different packages
+  // is ambiguous there: it is left unrewritten (the type checker reports the
+  // unresolved qualifier) and never resolved to the first file's package.
+  val unionEnv = dropRenamesNamed(
+    filterAliasesExcludingLocals(aliasEnvOf(withoutAmbiguousHeads(aliases, file.files)), moduleLocals),
+    moduleLocals
+  )
   val fileEnvs: List[AliasEnv] = newList()
   if file.files.count > 1 {
     var f = 0
@@ -2487,6 +2498,40 @@ pub func rewriteFileReporting(file: in SourceFile): AliasRewriteResult {
     span = file.span
   )
   AliasRewriteResult(file = rewritten, diagnostics = diags)
+}
+
+// `entries` without the keys that two of `files` bind to different targets.
+func withoutAmbiguousHeads(entries: in List[String], files: in List[FileHeader]): List[String] {
+  if files.count < 2 {
+    return entries
+  }
+  val ambiguous: List[String] = newList()
+  val seen: Map[String, String] = newMap()
+  for h in files {
+    for e in collectAliases(h.imports) {
+      val key = entryKey(e)
+      match mapGet(seen, key) {
+        case Some(prev) -> {
+          if prev != e and not listHas(ambiguous, key) {
+            ambiguous.add(key)
+          }
+        }
+        case None -> {
+          seen[key] = e
+        }
+      }
+    }
+  }
+  if ambiguous.count == 0 {
+    return entries
+  }
+  val kept: List[String] = newList()
+  for e in entries {
+    if not listHas(ambiguous, entryKey(e)) {
+      kept.add(e)
+    }
+  }
+  kept
 }
 
 // The file of `files` that item `it` is written in, or -1 for a package of
