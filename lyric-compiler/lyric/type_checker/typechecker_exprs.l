@@ -5197,7 +5197,14 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   if node <= 0 {
     return
   }
-  val closed = match unrefine(resultTy) { case TyUser(_, _, a) -> a.count == 0; case _ -> false }
+  // A record's fields are read from its declaration, so only a non-generic record has
+  // them; a union case's are instantiated from the result type, so a generic case whose
+  // result type is closed (`Some(value = 42)` as `Option[Int]`) has them too.
+  val isCase = match sym.kind { case DKUnionCase(_, _) -> true; case _ -> false }
+  val closed = match unrefine(resultTy) {
+    case TyUser(_, _, a) -> if isCase { typeIsClosed(resultTy) } else { a.count == 0 }
+    case _ -> false
+  }
   if not closed {
     return
   }

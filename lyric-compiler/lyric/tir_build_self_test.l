@@ -1443,3 +1443,18 @@ test "a string's length is a built-in property read" {
     case None -> assertTrue(false, "built")
   }
 }
+
+test "a generic union case constructs at its closed instantiation and verifies" {
+  val c = censusOf(
+    "package App\nunion Box[T] { case Full(value: T)\n case Empty }\nfunc f(): Box[Int] { Full(value = 1) }\nfunc g(): Box[Int] { Empty }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a slice's length is a built-in property read" {
+  val r = buildFirstFn("package App\nfunc f(xs: slice[Int]): Int { xs.length }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}

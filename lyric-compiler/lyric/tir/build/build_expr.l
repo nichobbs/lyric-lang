@@ -1478,6 +1478,8 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
   val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
   match rty {
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
+    case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
+    case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
     case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
       val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
         case Some(ts) -> ts.originPackage.startsWith("Std.")
@@ -2107,6 +2109,7 @@ func buildConstructCall(
           case _ -> return uncoveredExpr(env, e, "a construction field passed by reference")
         }
       }
+      noteCaseSym(env, sym)
       noteCtorSym(env, sym, sig)
       Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
     }
