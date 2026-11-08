@@ -977,12 +977,23 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   if ok {
     match fn.body {
       case Some(FBBlock(b)) -> {
-        res = buildBlock(env, b, None, freshNodeId(env))
+        // A function returning Unit discards its last expression, as a loop body does.
+        res = buildBlock(env, b, if isUnitTy(ret) { Some(value = ret) } else { None }, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
         res = buildExpr(env, x)
       }
       case None -> ()
+    }
+    // The body is the function's value: it meets the declared return type through a
+    // conversion the types alone derive, or the build counts the one it cannot.
+    if not isUnitTy(ret) {
+      match res {
+        case Some(b) -> {
+          res = coerceBranch(env, b, ret)
+        }
+        case None -> ()
+      }
     }
   }
   popScope(env)

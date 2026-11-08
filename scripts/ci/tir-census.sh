@@ -28,6 +28,21 @@ if [[ ${#FILES[@]} -eq 0 ]]; then
   while IFS= read -r f; do FILES+=("$f"); done < <(cd "$REPO_ROOT" && ls lyric-stdlib/tests/*.l | sort)
 fi
 
+# Programs the census cannot judge because they do not pass the ordinary check as a
+# dotnet program.  Each is listed with the reason; a new entry needs one.
+SKIP=(
+  lyric-stdlib/tests/async_echo_main.l        # names Std.TcpHost.hostCloseListener, which no longer exists
+  lyric-stdlib/tests/metadata_reader_tests.l  # needs the compiler packages (PeImage), built by `lyric test`
+  lyric-stdlib/tests/tls_server_jvm_tests.l   # a --target jvm test (TlsListenError.InvalidConfig, mTLS helpers)
+)
+filtered=()
+for f in "${FILES[@]}"; do
+  skip=0
+  for s in "${SKIP[@]}"; do [[ "$f" == "$s" ]] && skip=1; done
+  [[ $skip -eq 0 ]] && filtered+=("$f")
+done
+FILES=("${filtered[@]}")
+
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 i0003=0
