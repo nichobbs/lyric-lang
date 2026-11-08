@@ -1835,11 +1835,13 @@ func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage): Unit {
   for r in mapKeys(counts) {
     val n = match mapGet(counts, r) { case Some(k) -> k; case None -> 0 }
     Console.error("  I0003 rule: " + r + " x " + toString(n))
-  }
-  var i = 0
-  while i < diags.count and i < 3 {
-    Console.error("  " + TirVerify.renderVerifyDiag("builder", diags[i]))
-    i = i + 1
+    var shown = 0
+    for d in diags {
+      if d.rule == r and shown < 2 {
+        Console.error("    e.g. " + TirVerify.renderVerifyDiag("builder", d))
+        shown = shown + 1
+      }
+    }
   }
 }
 
