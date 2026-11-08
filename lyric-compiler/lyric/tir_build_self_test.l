@@ -1424,3 +1424,22 @@ test "a call and a construction add the declarations they reach" {
   assertTrue(c.pkg.symbols.count >= 3, "add, g and P")
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+test "a string's length is a built-in property read" {
+  val r = buildFirstFn("package App\nfunc f(s: String): Int { s.length }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, Some(tail)) -> match tail.kind {
+        case XCall(Intrinsic(IoBuiltin(n)), args) -> {
+          assertEqualString(n, "String.length", "the built-in's name")
+          assertEqualInt(args.count, 1, "the receiver")
+        }
+        case _ -> assertTrue(false, "a built-in call")
+      }
+      case _ -> assertTrue(false, "a block with a value")
+    }
+    case None -> assertTrue(false, "built")
+  }
+}

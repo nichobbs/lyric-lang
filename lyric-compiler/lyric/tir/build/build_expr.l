@@ -1449,8 +1449,47 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
-    case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+    case None -> match builtinPropertyName(env, recv, name) {
+      case Some(bn) -> Some(
+        value = mkExpr(
+          e,
+          ty,
+          XCall(
+            callee = Intrinsic(op = IoBuiltin(name = bn)),
+            args = inArgs(singleTExpr(rt))
+          )
+        )
+      )
+      case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+    }
   }
+}
+
+func singleTExpr(t: in TExpr): List[TExpr] {
+  val xs: List[TExpr] = newList()
+  xs.add(t)
+  xs
+}
+
+/// The built-in a property read names: a stdlib collection's `count` and a string's
+/// `length`, as the checker names the built-in members (`List.count`).  A user type
+/// that happens to be named `List` is not the stdlib's.
+func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
+  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  match rty {
+    case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
+    case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
+      val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
+        case Some(ts) -> ts.originPackage.startsWith("Std.")
+        case None -> false
+      }
+      if stdlib {
+        return Some(value = hd + ".count")
+      }
+    }
+    case _ -> ()
+  }
+  None
 }
 
 /// How `recv[idx]` is performed, from the receiver's type: arrays, slices and strings by
