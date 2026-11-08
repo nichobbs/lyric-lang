@@ -51,6 +51,7 @@ import Lyric.Parser
 import Lyric.Fmt as Fmt
 import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
+import Lyric.Resolve.{renderImport}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -360,6 +361,9 @@ record Ctx {
   imports: List[ImportDecl]
   items: List[Item]
   decls: Map[String, Item]
+  /// Each file's own imports, indexed by `Position.fileId` (docs/70 §4.1);
+  /// empty when the package is one unnumbered file, then `imports` serves.
+  fileImports: List[List[ImportDecl]] = newList()
 }
 
 record St {
@@ -381,6 +385,59 @@ func itemDeclName(it: in Item): String {
     case IProtected(d) -> d.name
     case _ -> ""
   }
+}
+
+/// The imports each file of `file` brings into scope, by file id: the file's
+/// own, plus the ones a pass added to the package that no file's header holds.
+/// Empty for a package of one unnumbered file.
+func perFileImports(file: in SourceFile): List[List[ImportDecl]] {
+  val res: List[List[ImportDecl]] = newList()
+  if file.files.count == 0 {
+    return res
+  }
+  val headerKeys: Map[String, Bool] = newMap()
+  for h in file.files {
+    for imp in h.imports {
+      headerKeys[renderImport(imp)] = true
+    }
+  }
+  val added: List[ImportDecl] = newList()
+  for imp in file.imports {
+    if not headerKeys.containsKey(renderImport(imp)) {
+      added.add(imp)
+    }
+  }
+  for h in file.files {
+    val all: List[ImportDecl] = newList()
+    for imp in h.imports {
+      all.add(imp)
+    }
+    for imp in added {
+      all.add(imp)
+    }
+    res.add(all)
+  }
+  res
+}
+
+/// `ctx` as the file `fileId` sees names: that file's own imports.  A synthesised
+/// node (no file) and a package of one unnumbered file keep the package's.
+func ctxAtFile(ctx: in Ctx, fileId: in Int): Ctx {
+  if fileId < 0 or fileId >= ctx.fileImports.count {
+    return ctx
+  }
+  Ctx(
+    pkg = ctx.pkg,
+    imports = ctx.fileImports[fileId],
+    items = ctx.items,
+    decls = ctx.decls,
+    fileImports = ctx.fileImports
+  )
+}
+
+/// `resolveNamed` for a name written at file `fileId`.
+func resolveNamedAt(segs: in List[String], ctx: in Ctx, st: in St, fileId: in Int): NamedRef {
+  resolveNamed(segs, ctxAtFile(ctx, fileId), st)
 }
 
 func makeCtx(pkg: in String, imports: in List[ImportDecl], items: in List[Item]): Ctx {
@@ -812,7 +869,7 @@ func classifyNamed(
   if name == "JsonValue" and not (segs.count == 1 and ctx.decls.containsKey(name)) {
     return BT(kind = BJson, text = "JsonValue")
   }
-  val ref = resolveNamed(segs, ctx, st)
+  val ref = resolveNamedAt(segs, ctx, st, sp.startPos.fileId)
   if not ref.found {
     if ref.pkg != "" and not ref.collected and not isStdPkg(ref.pkg) {
       val q = qualifierIn(ref, home)
@@ -1783,7 +1840,7 @@ func ifaceModel(
     }
     allows = annCallNames(a, "allows", st)
     for al in allows {
-      val ref = resolveNamed(splitDotted(al.name), ctx, st)
+      val ref = resolveNamedAt(splitDotted(al.name), ctx, st, al.span.startPos.fileId)
       if ref.found {
         val isCapIface = match ref.item {
           case Some(x) -> match x.kind {
@@ -2096,7 +2153,7 @@ func pointAllowNames(it: in Item): List[String] {
 func namedKey(te: in TypeExpr, ctx: in Ctx, st: in St): String {
   match te.kind {
     case TRef(path) -> {
-      val ref = resolveNamed(path.segments, ctx, st)
+      val ref = resolveNamedAt(path.segments, ctx, st, te.span.startPos.fileId)
       if ref.pkg == "" {
         ""
       } else {
@@ -2242,7 +2299,7 @@ func pluginModel(
   // The points it implements.
   val points: List[PointRef] = newList()
   for nm in implNames {
-    val ref = resolveNamed(splitDotted(nm.name), ctx, st)
+    val ref = resolveNamedAt(splitDotted(nm.name), ctx, st, nm.span.startPos.fileId)
     if ref.found {
       val isPt = match ref.item { case Some(x) -> isPointItem(x); case None -> false }
       if not isPt {
@@ -2274,7 +2331,7 @@ func pluginModel(
     match other.kind {
       case IImpl(d) -> {
         if implTargetIs(d, decl.name, ctx.pkg) {
-          val iref = resolveNamed(d.iface.head.segments, ctx, st)
+          val iref = resolveNamedAt(d.iface.head.segments, ctx, st, d.iface.head.span.startPos.fileId)
           val key = refKey(iref)
           implKeys.add(key)
           var listed = false
@@ -2367,7 +2424,7 @@ func pluginModel(
         var accepted = false
         match clientCapName(clientTe) {
           case Some(capSegs) -> {
-            val ref = resolveNamed(capSegs, ctx, st)
+            val ref = resolveNamedAt(capSegs, ctx, st, clientTe.span.startPos.fileId)
             if ref.found {
               val isCapIface = match ref.item { case Some(x) -> isAnnotatedIface(x, annCapability); case None -> false }
               if isCapIface {
@@ -2455,7 +2512,7 @@ func pluginModel(
           if an == annContributions or an == annRequest {
             match singleNameArg(fa, an, st) {
               case Some(target) -> {
-                val ref = resolveNamed(splitDotted(target.name), ctx, st)
+                val ref = resolveNamedAt(splitDotted(target.name), ctx, st, target.span.startPos.fileId)
                 val key = refKey(ref)
                 val fnOk = checkProviderFn(fn, an, st)
                 if an == annContributions {
@@ -3738,7 +3795,7 @@ func allowsLines(p: in IfaceModel, ctx: in Ctx, st: in St): List[String] {
   val l: List[String] = newList()
   l.add("  val allows: List[String] = newList()")
   for al in p.allows {
-    val ref = resolveNamed(splitDotted(al.name), ctx, st)
+    val ref = resolveNamedAt(splitDotted(al.name), ctx, st, al.span.startPos.fileId)
     val q = qualifierIn(ref, ctx.pkg)
     l.add("  allows.add(" + q + lowerFirst(ref.declName) + "CapabilityInfo().id)")
   }
@@ -4261,7 +4318,7 @@ func expandFileMode(
   }
   val pkg = modulePathJoin(file.packageDecl.path.segments)
   val st = St(packages = packages, reachMemo = newMap(), diags = newList())
-  val ctx = makeCtx(pkg, file.imports, file.items)
+  val ctx = makeCtx(pkg, file.imports, file.items).copy(fileImports = perFileImports(file))
   val ifaces: List[IfaceModel] = newList()
   val plugins: List[PluginModel] = newList()
   var pluginCount = 0
