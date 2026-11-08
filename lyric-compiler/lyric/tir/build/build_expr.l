@@ -322,7 +322,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
             noteCaseSym(env, r.sym)
             return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
           }
-          case _ -> return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
+          case _ -> {
+            noteGlobalSym(env, r.sym, ty)
+            return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
+          }
         }
         case None -> ()
       }
@@ -704,8 +707,29 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in 
   if not ok {
     return None
   }
-  val ty = match known { case Some(k) -> k; case None -> match tail { case Some(t) -> t.ty; case None -> tyUnit() } }
+  val ty = match known {
+    case Some(k) -> k
+    case None -> match tail {
+      case Some(t) -> t.ty
+      case None -> if endsInJump(stmts) { TirT.TNever } else { tyUnit() }
+    }
+  }
   Some(value = TExpr(id = id, ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
+}
+
+/// Does control never fall out of the end of `stmts`: the last statement is a `return`,
+/// `throw`, `break` or `continue`?  Such a block has type `Never` (the checker's rule).
+func endsInJump(stmts: in List[TStmt]): Bool {
+  if stmts.count == 0 {
+    return false
+  }
+  match stmts[stmts.count - 1].kind {
+    case TsReturn(_) -> true
+    case TsThrow(_) -> true
+    case TsBreak(_) -> true
+    case TsContinue(_) -> true
+    case _ -> false
+  }
 }
 
 func loopBody(env: in BuildEnv, b: in Block): Option[TExpr] {
@@ -916,7 +940,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
     }
     match tyOfType(env.ctx, resolveType(tbl, gc, diag, p.ty)) {
       case Ok(t) -> {
-        val d = declareLocal(env, p.name, t, false)
+        val d = declareLocal(env, p.name, t, p.mode != PMIn)
         params.add(TParamDecl(local = d, mode = modeOfParam(p.mode), dflt = dflt))
       }
       case Err(msg) -> {

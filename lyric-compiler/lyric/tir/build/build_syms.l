@@ -326,3 +326,23 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
   }
   res
 }
+
+/// Record the module value or function value `sym` a body reads, with the type the checker
+/// gave the reading.  A `val` and a `const` are not assignable.
+func noteGlobalSym(env: in BuildEnv, sym: in SymbolId, ty: in Ty): Unit {
+  if env.syms.containsKey(sym.id) {
+    return
+  }
+  env.syms.add(
+    sym.id,
+    TSymEntry(
+      sym = sym,
+      kind = TSkVal,
+      typeParamCount = 0,
+      sig = None,
+      fields = newList(),
+      ty = Some(value = ty),
+      mutable = false
+    )
+  )
+}
