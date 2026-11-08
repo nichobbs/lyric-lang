@@ -24,6 +24,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.PluginExpand
+import Lyric.PackageMerge as PM
 import Lyric.Fmt as Fmt
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.RestoredPackages
@@ -1247,4 +1248,47 @@ test "a diverging declaration expands to a different PointInfo" {
   val changed = Str.replace(apiSource(), "func inspect(", "func examine(")
   expectClean(expandOne(changed), "changed api")
   expectFunc(expandOne(changed), "editorExtensionPointInfo", "editorExtensionPointInfo(): PluginPointInfo")
+}
+
+func expandTwoFilePackage(a: in String, b: in String, deps: in List[String]): PluginExpandResult {
+  val pkgs: Map[String, PluginPackage] = newMap()
+  for d in deps {
+    val pr = parse(d)
+    assertEqualInt(pr.diagnostics.count, 0, "dependency parses")
+    collectPluginPackage(pr.file, pkgs)
+  }
+  val none: List[String] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(a)
+  srcs.add(b)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  paths.add("b.l")
+  val asm = PM.assemblePackageFiles("Acme.Api", srcs, paths, none, none, "dotnet")
+  expandFile(asm.file, pkgs)
+}
+
+test "a name is resolved through the importing file's own alias, not the package's union (#8690)" {
+  val deps: List[String] = newList()
+  deps.add(
+    "package Acme.One\npub record Pos {\n  line: Int\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtOne {\n  func f(p: in Pos): Result[Int, String]\n}\n"
+  )
+  deps.add(
+    "package Acme.Two\npub record Tag {\n  name: String\n}\n\n@plugin_point(version = \"1.0\")\npub interface PtTwo {\n  func g(t: in Tag): Result[Int, String]\n}\n"
+  )
+  val a = "package Acme.Api\nimport Acme.One as Types\n\n@plugin_point(version = \"1.0\")\npub interface PtA {\n  func f(p: in Types.Pos): Result[Int, String]\n}\n"
+  val b = "package Acme.Api\nimport Acme.Two as Types\n\n@plugin_point(version = \"1.0\")\npub interface PtB {\n  func g(t: in Types.Tag): Result[Int, String]\n}\n"
+  val res = expandTwoFilePackage(a, b, deps)
+  var errors = 0
+  var text = ""
+  for d in res.diagnostics {
+    match d.severity {
+      case DiagError -> {
+        errors = errors + 1
+        text = text + d.code + " " + d.message + "; "
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(errors, 0, "both files' boundary types resolve through their own `Types`: " + text)
 }
