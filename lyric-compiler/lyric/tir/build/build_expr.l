@@ -41,6 +41,9 @@ pub record BuildEnv {
   lambdas: List[LambdaFrame]
   /// The declarations the body being built reaches, by `SymbolId`, for the verifier.
   syms: Map[Int, TSymEntry] = newMap()
+  /// The type a context fixes for an expression the checker typed with a hole
+  /// (`None` or `[]` passed where the parameter's type is known), by `NodeId`.
+  settled: Map[Int, Ty] = newMap()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -260,9 +263,12 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-      return None
+    case Err(msg) -> match mapGet(env.settled, e.nodeId) {
+      case Some(t) -> t
+      case None -> {
+        env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+        return None
+      }
     }
   }
   match e.kind {
@@ -1193,6 +1199,7 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
       case Some(sym) -> match fn.kind {
         case EPath(_) -> return buildDirectCall(env, e, ty, sym, sig, args)
+        case EIndex(_, _) -> return buildDirectCall(env, e, ty, sym, sig, args)
         case _ -> return uncoveredExpr(env, e, "a package-qualified or static call")
       }
       case None -> ()
@@ -2117,6 +2124,16 @@ func buildConstructCall(
   }
 }
 
+/// Build the argument `x` of a parameter of type `pty`.  An argument the checker typed
+/// with a hole (`None`, `[]`) takes the parameter's type, which the call's other
+/// arguments have fixed.
+func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
+  if not env.settled.containsKey(x.nodeId) {
+    env.settled.add(x.nodeId, pty)
+  }
+  buildExpr(env, x)
+}
+
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg]): Option[List[TArg]] {
@@ -2207,7 +2224,7 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
             env.errors.add(msg)
             ok = false
           }
-          case Ok(pty) -> match buildExpr(env, x) {
+          case Ok(pty) -> match settleArg(env, x, pty) {
             case None -> {
               ok = false
             }

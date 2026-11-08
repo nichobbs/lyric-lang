@@ -25344,6 +25344,20 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         return
       }
     }
+    // `f[A, B](x)`: the callee is an index of the name.  Backends look a call up by
+    // the callee's site, which this callee never had, so only the node is recorded.
+    case EIndex(inner, _) -> {
+      match inner.kind {
+        case EPath(path) -> if path.segments.count == 1 {
+          match symTableFuncDefPathKey(tbl, sig, path.segments[0], true) {
+            case Some(dp) -> recordCalleeNode(tbl, dp, sig, callNode)
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+      return
+    }
     case _ -> return
   }
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
@@ -25361,6 +25375,12 @@ func recordCalleeSiteAs(
     tbl.calleeSites.remove(key)
   }
   tbl.calleeSites.add(key, dp)
+  recordCalleeNode(tbl, dp, sig, callNode)
+}
+
+// The per-node half of `recordCalleeSiteAs`: the callee and its signature under the
+// call's `NodeId`, for the TIR builder (D361, D367).
+func recordCalleeNode(tbl: in SymbolTable, dp: in String, sig: in ResolvedSignature, callNode: in Int): Unit {
   if callNode > 0 {
     if tbl.calleeByNode.containsKey(callNode) {
       tbl.calleeByNode.remove(callNode)

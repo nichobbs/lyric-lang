@@ -1470,3 +1470,17 @@ test "a slice's length is a built-in property read" {
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
+
+test "an argument typed with a hole takes its parameter's type" {
+  val c = censusOf(
+    "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc pick[T](m: Maybe[T], d: T): T { d }\nfunc f(): Int { pick(Nothing, 7) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a call with explicit type arguments builds as a direct generic call" {
+  val c = censusOf("package App\nfunc id[T](x: T): T { x }\nfunc f(): Int { id[Int](7) }\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
