@@ -18,6 +18,7 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
+import Lyric.Tir.Verify
 import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
@@ -1386,4 +1387,34 @@ test "a lambda captures an outer value by value and a var by reference" {
     }
     case None -> assertTrue(false, "a lambda")
   }
+}
+
+func censusOf(src: in String): BuildCensus {
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  buildCensus(newTyConvCtx(cr.symbols), cr.symbols, file)
+}
+
+test "a function builds as a TFnDecl with modes, contracts and its own entry" {
+  val c = censusOf(
+    "package App\nfunc add(a: Int, b: Int): Int\n  requires: a >= 0\n  ensures: result >= a\n{ a + b }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.pkg.funcs.count, 1, "one declaration")
+  val f = c.pkg.funcs[0]
+  assertEqualInt(f.params.count, 2, "two parameters")
+  assertEqualInt(f.preconds.count, 1, "the requires clause")
+  assertEqualInt(f.postconds.count, 1, "the ensures clause")
+  assertTrue(tyEq(f.ret, TPrim(kind = TPInt)), "returns Int")
+  assertTrue(f.body.isSome(), "has a body")
+  assertEqualInt(c.pkg.symbols.count, 1, "an entry for the declared function")
+}
+
+test "a call and a construction add the declarations they reach" {
+  val c = censusOf(
+    "package App\nrecord P { x: Int, y: Int }\nfunc add(a: Int, b: Int): Int { a + b }\nfunc g(): P { P(x = add(1, 2), y = 3) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertTrue(c.pkg.symbols.count >= 3, "add, g and P")
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
