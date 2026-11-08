@@ -22374,8 +22374,10 @@ pub func inferExprExpected(
   val t = sharedEnumCaseAgainstExpected(sc, tbl, e, core, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
-  // `inferExpr`; the type settled on is the node's type (D366).
-  recordExprType(tbl, e, t)
+  // `inferExpr`; the type settled on is the node's type (D366).  An expression with
+  // no evidence of its own for a type argument (`newList()`, a bare `None`) is typed
+  // with a hole, and a closed expected type is what settles it (docs/70 §6.3).
+  recordExprType(tbl, e, if typeMentionsHole(t) and typeIsClosed(expected) { expected } else { t })
   t
 }
 
@@ -22454,6 +22456,32 @@ func isDataTypeKind(k: in DeclKind): Bool {
     case DKExposedRec(_, _) -> true
     case _ -> false
   }
+}
+
+// Does `t` mention the hole (`TyError`) or an unsolved inference variable?
+func typeMentionsHole(t: in Type): Bool {
+  match t {
+    case TyError(_) -> true
+    case TyInfer(_) -> true
+    case TyUser(_, _, args) -> typesMentionHole(args)
+    case TySlice(e) -> typeMentionsHole(e)
+    case TyArray(_, e, _) -> typeMentionsHole(e)
+    case TyNullable(inner) -> typeMentionsHole(inner)
+    case TyTuple(elems) -> typesMentionHole(elems)
+    case TyRefined(u, _, _, _, _) -> typeMentionsHole(u)
+    case _ -> false
+  }
+}
+
+func typesMentionHole(ts: in List[Type]): Bool {
+  var i = 0
+  while i < ts.count {
+    if typeMentionsHole(ts[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 func inferExprExpectedCore(

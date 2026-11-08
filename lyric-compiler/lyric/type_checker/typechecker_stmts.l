@@ -420,7 +420,6 @@ pub func checkStatement(
               )
             )
           }
-          settleInitType(tbl, init, declT, initType)
           recordUnsignedWidening(tbl, declT, initType, init)
           checkRefinedLiteralBound(declT, init, diag)
           val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { tyErrorSilent() } else { declT }
@@ -464,7 +463,6 @@ pub func checkStatement(
                   )
                 )
               }
-              settleInitType(tbl, initE, declT, initType)
               recordUnsignedWidening(tbl, declT, initType, initE)
               checkRefinedLiteralBound(declT, initE, diag)
             }
@@ -2680,16 +2678,5 @@ func forIterIsGeneratorCall(tbl: in SymbolTable, iter: in Expr): Bool {
   match iter.kind {
     case ECall(_, _) -> tbl.generatorCallSites.containsKey(recordCopySiteKey(iter.span))
     case _ -> false
-  }
-}
-
-// An initialiser the annotation settles (docs/70 §6.3): `newList()` has no
-// evidence for its element type, so the check types it with a hole, and the
-// annotation (`val xs: List[Int] = newList()`) is what fixes it.  The node's
-// recorded type becomes the annotation when the initialiser's own is not
-// closed and the annotation is: the builder reads a closed type there.
-func settleInitType(tbl: in SymbolTable, init: in Expr, declT: in Type, initType: in Type): Unit {
-  if not typeIsClosed(initType) and typeIsClosed(declT) {
-    recordExprType(tbl, init, declT)
   }
 }
