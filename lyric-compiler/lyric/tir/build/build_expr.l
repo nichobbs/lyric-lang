@@ -1234,6 +1234,11 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
       case Some(sym) -> match fn.kind {
         case EPath(_) -> return buildDirectCall(env, e, ty, sym, sig, args)
         case EIndex(_, _) -> return buildDirectCall(env, e, ty, sym, sig, args)
+        // `Pkg.f(x)` and `Type.f(x)`: a function the checker resolved by its qualified name.
+        // A method call has its own table and is built below.
+        case EMember(_, _) -> if not tbl.methodCallByNode.containsKey(e.nodeId) {
+          return buildDirectCall(env, e, ty, sym, sig, args)
+        }
         case _ -> return uncoveredExpr(env, e, "a package-qualified or static call")
       }
       case None -> ()
@@ -2270,9 +2275,17 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
             }
           }
         }
-        case _ -> {
-          noteUncovered(env, "an res or inout argument")
-          ok = false
+        case PMOut -> match buildPlace(env, x) {
+          case Some(pl) -> targs.add(TArgOut(place = pl))
+          case None -> {
+            ok = false
+          }
+        }
+        case PMInout -> match buildPlace(env, x) {
+          case Some(pl) -> targs.add(TArgInout(place = pl))
+          case None -> {
+            ok = false
+          }
         }
       }
     }
