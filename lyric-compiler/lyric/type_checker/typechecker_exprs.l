@@ -22351,12 +22351,90 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
-  val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  val core = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  val t = sharedEnumCaseAgainstExpected(sc, tbl, e, core, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).
   recordExprType(tbl, e, t)
   t
+}
+
+// A case name several enums share (`Lib.On` for `Beam.On` and `Ray.On`) reads
+// as an unresolved `TyError` on its own and is told apart by the expected
+// type (D355).  Against an enum that owns the case it is that enum; against a
+// primitive, tuple, function, array or slice, or a record, union or other enum
+// that does not own it, it is the first owning enum, so the caller's ordinary
+// mismatch check reports the wrong kind (#8845).  Any other expected type is
+// left to the caller, as an interface an enum implements is.  A local or
+// module value of that name is a value, not the case.
+func sharedEnumCaseAgainstExpected(sc: in Scope, tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
+  if not isUnresolvedTyError(t) {
+    return t
+  }
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(e, segs) or segs.count == 0 or scopeHasName(sc, segs[0]) {
+    return t
+  }
+  match moduleValSymbolOfExpr(sc, tbl, e) {
+    case Some(_) -> return t
+    case None -> ()
+  }
+  val name = segs[segs.count - 1]
+  val owners: List[SymbolId] = newList()
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if segs.count == 1 or cand.originPackage == qualifierOfSegs(segs) {
+      match cand.kind {
+        case DKEnumCase(pid, _) -> {
+          var seen = false
+          for o in owners {
+            if symbolIdEq(o, pid) {
+              seen = true
+            }
+          }
+          if not seen {
+            owners.add(pid)
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  if owners.count < 2 {
+    return t
+  }
+  val firstOwner = TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+  match unrefine(expected) {
+    case TyUser(eid, ename, eargs) -> {
+      for o in owners {
+        if symbolIdEq(o, eid) {
+          return TyUser(id = eid, name = ename, args = eargs)
+        }
+      }
+      match symTableTypeSymbolOf(tbl, eid) {
+        case Some(esym) -> if isDataTypeKind(esym.kind) { firstOwner } else { t }
+        case None -> t
+      }
+    }
+    case TyPrim(_) -> firstOwner
+    case TyTuple(_) -> firstOwner
+    case TyFunction(_, _, _) -> firstOwner
+    case TyArray(_, _, _) -> firstOwner
+    case TySlice(_) -> firstOwner
+    case _ -> t
+  }
+}
+
+// A declaration that is a plain data type: an enum, record, union or exposed
+// record (not an interface, which an enum may implement).
+func isDataTypeKind(k: in DeclKind): Bool {
+  match k {
+    case DKEnum(_, _) -> true
+    case DKRecord(_, _) -> true
+    case DKUnion(_, _) -> true
+    case DKExposedRec(_, _) -> true
+    case _ -> false
+  }
 }
 
 func inferExprExpectedCore(

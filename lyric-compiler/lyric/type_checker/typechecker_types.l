@@ -185,6 +185,15 @@ pub func isNamedUncheckedTyError(t: in Type): Bool {
   }
 }
 
+/// True for the `TyError` of `tyErrorUnresolved`: a read whose type only its
+/// context (an expected type) can tell.
+pub func isUnresolvedTyError(t: in Type): Bool {
+  match t {
+    case TyError(d) -> d.index == -3
+    case _ -> false
+  }
+}
+
 /// True for a `TyError` that records no diagnostic.
 pub func isSilentTyError(t: in Type): Bool {
   match t {
