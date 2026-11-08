@@ -473,25 +473,11 @@ func addAnnotation(
 }
 
 // Add `p` to the package's imports unless another file wrote an equal one.
-// An alias another file binds to a different package is B0012: some passes
-// still read aliases from the package's union of imports (#8690).
+// An alias two files bind to different packages is legal: imports are per file
+// (docs/70 §4.1), and every pass that resolves an alias reads the file the
+// name is written in (#8690).
 func addImport(acc: in List[HeaderPiece], p: in HeaderPiece, diags: in List[MergeDiagnostic]): Unit {
   for q in acc {
-    if p.aliasName.length > 0 and q.aliasName == p.aliasName and q.aliasTarget != p.aliasTarget and q.fileIndex != p.fileIndex {
-      diags.add(
-        MergeDiagnostic(
-          path = p.path,
-          diag = errorDiagnostic(
-            "B0012",
-            "import alias " + p.aliasName + " names " + p.aliasTarget + " here but " + q.aliasTarget + " at " +
-              whereWritten(q) +
-              "; within one package an alias must name one package in every file that binds it",
-            spanAt(p)
-          )
-        )
-      )
-      return
-    }
     if q.key == p.key and q.fileIndex != p.fileIndex {
       return
     }

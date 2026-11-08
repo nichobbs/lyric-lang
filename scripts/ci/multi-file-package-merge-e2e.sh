@@ -15,7 +15,7 @@
 #   - a file with no `package` declaration is P0020, against its own path;
 #   - files that disagree on the verification level are B0014;
 #   - a file-level `@cfg(target = ...)` keeps each target's own file only;
-#   - an import alias two files bind to different packages is B0012 (#8690);
+#   - an import alias two files bind to different packages is each file's own (#8690);
 #   - imports are per file (docs/70 §4.1): a name only a sibling file
 #     imports is T0219 naming the sibling and the import to add, and a bare
 #     name two files import from different packages is T0123 (#8690);
@@ -235,12 +235,11 @@ EOF
   case "$target" in dotnet) want=1 ;; jvm) want=2 ;; native) want=3 ;; esac
   runs "a file-level @cfg(target) picks the target's file" "$d" "$target" "$want"
 
-  # One alias, two packages.
+  # One alias, two packages: each file's `X` is its own import (#8690).
   d="$(project alias)"
-  printf 'package Mf\nimport Std.String as X\n\nfunc main(): Unit {\n  println(X.toUpper("x"))\n}\n' > "$d/src/a_main.l"
-  printf 'package Mf\nimport Std.Math as X\n\npub func other(): Int {\n  1\n}\n' > "$d/src/b_other.l"
-  rejected "an alias bound to two packages" "$d" "$target" \
-    "src/b_other\.l: error\[B0012\] 2:1: import alias X names Std\.Math here but Std\.String at .*a_main\.l:2"
+  printf 'package Mf\nimport Std.String as X\n\nfunc main(): Unit {\n  println(X.toUpper("x") + toString(other()))\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\nimport Std.Math as X\n\npub func other(): Int {\n  X.absInt(-3)\n}\n' > "$d/src/b_other.l"
+  runs "an alias bound to two packages" "$d" "$target" "X3"
 
   # Two files import the same bare name from different packages
   # (Std.String.join and Std.Path.join): T0123 until #8690, since the

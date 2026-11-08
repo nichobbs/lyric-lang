@@ -323,22 +323,16 @@ test "every file of a package gated off leaves an empty package" {
   assertEqual(annotationNames(r.file), "io", "the package's annotation")
 }
 
-test "an import alias two files bind to different packages is B0012" {
-  // Review repro r1: passes that read aliases from the union of the files'
-  // imports pick one package per alias (#8690).
+test "an import alias two files bind to different packages is each file's own (#8690)" {
   val a = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
   val b = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
   val r = asm(a, b)
-  assertEqual(diagSummary(r), "b.l:B0012:2", "B0012 on b.l's import")
-  assertTrue(
-    Str.contains(r.diagnostics[0].diag.message, "names Std.Math here but Std.String at a.l:2"),
-    r.diagnostics[0].diag.message
-  )
-  assertEqualInt(r.diagnostics[0].diag.span.startPos.fileId, 1, "the diagnostic's position names b.l")
+  assertEqual(diagSummary(r), "", "no diagnostic")
   assertEqual(itemPlaces(r.file.items), "main@0:4,other@1:4", "both files' items")
-  assertEqual(importNames(r.file), "Std.String as X", "the package binds X once, to a.l's package")
+  assertEqual(importNames(r.file), "Std.String as X,Std.Math as X", "both files' imports stay")
   assertEqualInt(r.file.files.count, 2, "both headers")
-  assertEqual(modulePathJoin(r.file.files[1].imports[0].path.segments), "Std.Math", "b.l's header keeps its own")
+  assertEqual(r.file.files[0].imports[0].path.segments[1], "String", "a.l's X is Std.String")
+  assertEqual(r.file.files[1].imports[0].path.segments[1], "Math", "b.l's X is Std.Math")
   val same = asm(a, "package P\nimport Std.String as X\n\nfunc other(): Int { 1 }\n")
   assertEqual(diagSummary(same), "", "the same alias for the same package is one import")
   assertEqual(importNames(same.file), "Std.String as X", "kept once")
