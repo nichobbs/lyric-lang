@@ -1,0 +1,7 @@
+[package]
+name = "reject-dot-overload"
+version = "0.1.0"
+[project]
+name = "RejectDotOverload"
+[project.packages]
+"App" = "app"
