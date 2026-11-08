@@ -792,11 +792,28 @@ builder (I0002) rather than on the current checker.
   (`~ctor-import~`, `~selimport~`, `importAwareRegistry`'s overlays; #8895); and
   native's name lookups for bundled stdlib units, Mono-renamed specialisations and
   synthesised calls (#8896). Two overloads with the same parameter count are
-  keyed alike by the backends (#8897). Still open in phase 2: the passes that read
-  the union of the files' imports (#8690: plugin expansion, component glue, the
-  JVM rename maps, the weaver, the alias rewriter's rename fallback and
-  synthesised-item environment), which gate retiring `B0012`, the cross-file
-  `T0148` and the cross-file `T0123`.
+  keyed alike by the backends only in the sense #8897 described: two same-arity
+  dot-named functions of one package are the duplicate name `T0001`, so it cannot
+  arise (pinned by the reject corpus, #8914).
+
+  Imports are per file everywhere the phase-2 passes read them (D346, #8690):
+  plugin expansion (the checked package and its dependencies), component glue, the
+  weaver's A0047 row-type check and the alias rewriter's synthesised items read the
+  imports of the file a name is written in, `perFileImports` lives in
+  `Lyric.Resolve`, and `B0012` is retired: an alias two files bind to different
+  packages is each file's own (e2e on dotnet, the JVM and native).
+
+  Phase 2 is complete as far as it can be without TIR; what remains moved to phase
+  4, with the reason. The cross-file `T0148` and `T0123` stay: the checker's
+  bare-name tables hold one symbol per name, so a name two files import from
+  different packages (a function, or two types called `Pt`) still resolves to one
+  of them and the other file is told T0219 or T0060; narrowing the candidates to
+  the file's own imports is per-file symbol selection, which the TIR resolver does
+  by construction (`SymbolId`s; #8894, #8896). The alias rewriter's sibling-rename
+  fallback (what turns a name only a sibling imports into T0219) cannot tell a file
+  that sees the name another way without the declaration table (#8894), and the JVM
+  rename maps are #8895. Phase 4 therefore retires `T0148` and `T0123` when it
+  deletes those lookups.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 
