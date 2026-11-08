@@ -1166,7 +1166,7 @@ func joinPackageNames(pkgs: in List[String]): String {
 // instead of also reporting a misleading downstream error against whichever
 // candidate it would otherwise have picked.
 pub func checkBareNameAmbiguity(tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, span: in Span): Bool {
-  val pkgs = symTableAmbiguousImportPackages(tbl, name)
+  val pkgs = symTableAmbiguousImportPackages(tbl, name, span)
   if pkgs.count >= 2 {
     diag.add(
       errorDiagnostic(
@@ -1174,7 +1174,7 @@ pub func checkBareNameAmbiguity(tbl: in SymbolTable, diag: in List[Diagnostic], 
         "'" + name + "' is ambiguous: it is declared by " + joinPackageNames(pkgs) +
           (
             if not symTableFileImportsAll(tbl, pkgs, span) {
-              ", imported by the files of this package (a bare name means one declaration in every file of a package until #8690)"
+              ", imported by the files of this package (a declaration with no source position is judged by every file's imports)"
             } else if symTableIsDirectImport(tbl, pkgs[0]) {
               ", all imported here"
             } else {

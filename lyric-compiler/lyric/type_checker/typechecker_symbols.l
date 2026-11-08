@@ -2646,9 +2646,20 @@ func symIsCrossPackageVisible(sym: in Symbol): Bool {
 // `name` is not ambiguous; 2+ means a bare reference cannot tell which
 // package's declaration is meant and must be qualified.  A declaration of the
 // package itself wins its step outright and is never ambiguous.
-pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): List[String] {
+pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String, sp: in Span): List[String] {
   val pkgs: List[String] = newList()
-  val files = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return pkgs }
+  val all = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return pkgs }
+  // A name written in a file is judged by that file's imports alone (docs/70
+  // §4.1, #8690); a synthesised node, with no file, by every file's.
+  val useFile = useFileForSiblingCheck(tbl, sp)
+  val files: List[Int] = newList()
+  if useFile >= 0 {
+    files.add(useFile)
+  } else {
+    for f in all {
+      files.add(f)
+    }
+  }
   val ctx = tbl.resolveCtx[0]
   val perFile: List[String] = newList()
   for fid in files {

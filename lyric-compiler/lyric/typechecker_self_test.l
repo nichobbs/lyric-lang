@@ -14647,18 +14647,23 @@ test "per-file imports: a rename is its own file's; one colliding with a sibling
   assertEqualInt(countCodeIn(checkPerFile(ownClash), "T0148"), 1, diagMessages(checkPerFile(ownClash)))
 }
 
-test "per-file imports: a name two files import from different packages is T0123 package-wide" {
-  // a.l imports fromY from PkgY, b.l from PkgW.  The backends resolve a bare
-  // name across the package's files, so it must mean one declaration in
-  // every file (#8690): T0123, saying that the files import the packages.
+test "per-file imports: a name two files import from different packages is each file's own (#8690)" {
+  // a.l imports fromY from PkgY, b.l from PkgW: each file's bare name is its
+  // own import, so neither is ambiguous (the backends bind a call by the
+  // callee the checker resolved).
   val file = assembleTwo(
     "package App\nimport PkgY\nfunc a(): Int { fromY() }\n",
     "package App\nimport PkgW\nfunc b(): String { fromY() }\n"
   )
   val ds = checkPerFile(file)
-  assertTrue(countCodeIn(ds, "T0123") >= 1, diagMessages(ds))
-  assertTrue(Str.contains(messageWithCode(ds, "T0123"), "imported by the files of this package"), diagMessages(ds))
+  assertEqualInt(countCodeIn(ds, "T0123"), 0, diagMessages(ds))
   assertEqualInt(countCodeIn(ds, "T0219"), 0, diagMessages(ds))
+  // Two imports in one file stay ambiguous.
+  val both = assembleTwo(
+    "package App\nimport PkgY\nimport PkgW\nfunc a(): Int { fromY() }\n",
+    "package App\nfunc b(): Int { 1 }\n"
+  )
+  assertTrue(countCodeIn(checkPerFile(both), "T0123") >= 1, diagMessages(checkPerFile(both)))
   // A file importing neither uses a sibling's: T0219 naming that import.
   val none = assembleTwo(
     "package App\nimport PkgW\nfunc a(): String { fromY() }\n",

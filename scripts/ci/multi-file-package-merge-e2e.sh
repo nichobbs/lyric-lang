@@ -18,7 +18,7 @@
 #   - an import alias two files bind to different packages is B0012 (#8690);
 #   - imports are per file (docs/70 §4.1): a name only a sibling file
 #     imports is T0219 naming the sibling and the import to add, and a bare
-#     name two files import from different packages is T0123 (#8690);
+#     name two files import from different packages is each file's own (#8690);
 #   - a package of one file that declares another package is B0013;
 #   - a sub-package whose directory is inside its parent's builds as its own
 #     package, and a plain subdirectory's files stay in the parent;
@@ -243,13 +243,37 @@ EOF
     "src/b_other\.l: error\[B0012\] 2:1: import alias X names Std\.Math here but Std\.String at .*a_main\.l:2"
 
   # Two files import the same bare name from different packages
-  # (Std.String.join and Std.Path.join): T0123 until #8690, since the
-  # backends resolve a bare name across the package's files.
+  # (Std.String.join and Std.Path.join): each file's name is its own import
+  # and the backends lower the callee the checker resolved (#8690).
   d="$(project samename)"
   printf 'package Mf\nimport Std.String\n\nfunc main(): Unit {\n  val parts: slice[String] = ["x", "y"]\n  println(join(",", parts) + " " + joined())\n}\n' > "$d/src/a_main.l"
   printf 'package Mf\nimport Std.Path\n\npub func joined(): String {\n  join("a", "b")\n}\n' > "$d/src/b_path.l"
-  rejected "a name two files import from different packages" "$d" "$target" \
-    "src/b_path\.l: error\[T0123\] 5:3: 'join' is ambiguous: it is declared by .*imported by the files of this package"
+  runs "a name two files import from different packages" "$d" "$target" "x,y a/b"
+
+  # The same for a type, its constructor, a field read and a function, from
+  # two project packages that declare them under one name.
+  d="$(project samename2)"
+  cat > "$d/lyric.toml" <<'TOML'
+[package]
+name = "Mf"
+version = "0.1.0"
+
+[project]
+name = "Mf"
+output = "single"
+output_assembly = "Mf.dll"
+
+[project.packages]
+"Mf" = "src"
+"One" = "one"
+"Two" = "two"
+TOML
+  mkdir -p "$d/one" "$d/two"
+  printf 'package One\n\npub record Pt {\n  x: Int\n}\n\npub func make(): Pt {\n  Pt(x = 4)\n}\n' > "$d/one/p.l"
+  printf 'package Two\n\npub record Pt {\n  y: Int\n}\n\npub func make(): Pt {\n  Pt(y = 5)\n}\n' > "$d/two/p.l"
+  printf 'package Mf\nimport One\n\nfunc main(): Unit {\n  val a: Pt = make()\n  val c = Pt(x = 1)\n  println(toString(a.x + c.x) + toString(other()))\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\nimport Two\n\npub func other(): Int {\n  val b: Pt = make()\n  val c = Pt(y = 2)\n  b.y + c.y\n}\n' > "$d/src/b_other.l"
+  runs "a type and a function two files import from different packages" "$d" "$target" "57"
 
   # A name only a sibling file imports is T0219 naming the sibling and the
   # import to add.
