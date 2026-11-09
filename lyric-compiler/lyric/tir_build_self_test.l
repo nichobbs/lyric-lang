@@ -458,11 +458,38 @@ test "collection members take their parameter types from a host or a declared re
   }
 }
 
-test "a refined argument to a built-in the builder cannot check is counted, not passed through" {
+test "a refined argument to a built-in member is unrefined to the parameter the checker gave it" {
   val r = buildFirstFn("package App\nfunc m(s: in String, i: in Int range 0 ..= 9): String { s.substring(i) }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  var unrefined = false
+  val call: Option[TExpr] = match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, tail) -> tail
+      case _ -> Some(value = b)
+    }
+    case None -> None
+  }
+  match call {
+    case Some(b) -> match b.kind {
+      case XCall(_, args) -> {
+        for a in args {
+          match a {
+            case TArgIn(v) -> match v.kind {
+              case XConvert(CvUnrefine, _) -> {
+                unrefined = true
+              }
+              case _ -> ()
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  assertTrue(unrefined, "the refined argument is converted")
 }
 
 func bodyKindName(b: in Option[TExpr]): String {
