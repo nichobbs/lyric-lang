@@ -2042,7 +2042,7 @@ func caseDefId(tbl: in SymbolTable, parent: in SymbolId, caseName: in String): O
 
 // The newest symbol that registers the declaration with resolver id `id`.
 // Symbols registered since the last call are indexed first.
-func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
+pub func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
   indexDefIds(tbl)
   mapGet(tbl.symByDefId, toString(id.id))
 }
