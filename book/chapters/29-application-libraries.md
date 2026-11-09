@@ -365,6 +365,8 @@ func main(): Unit {
 
 ## Library availability matrix
 
+This matrix is the authoritative statement of which backends are real on which target. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
+
 | Library | .NET | JVM | Status |
 |---|---|---|---|
 | lyric-proto | stable | planned (Phase 6) | D067 |

@@ -229,6 +229,11 @@ artifacts must be built after it.
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
+9. The v1.0 release notes state the limits decided in D548 and D549: native and
+   wasm32 are outside the SemVer guarantee, UI and graphics libraries are
+   experimental, ecosystem backends that return `NOT_IMPLEMENTED` are listed
+   (link the library availability matrix), and cross-package contracts are not
+   enforced at 1.0.
 
 ### Open decisions (owner: project lead)
 
@@ -240,12 +245,16 @@ Decided 2026-11-09 (D548):
   (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-gpu-window`, `lyric-text`,
   `lyric-draw`, `lyric-game`, `lyric-unicode`, `lyric-access`).
 
-Still open:
+Decided 2026-11-09 (D549):
 
-- **Ecosystem libraries with `NOT_IMPLEMENTED` backends** (lyric-storage S3 and
-  Azure, lyric-mq brokers, lyric-mail JVM SMTP, lyric-search): label in release
-  notes or exclude.  G4 already gives each library its own versioning.
-- **Cross-package contracts (docs/70 phase 6) before or after 1.0.**
+- **Ecosystem libraries with `NOT_IMPLEMENTED` backends ship, labelled.**  Each
+  library's README and the library availability matrix in
+  `book/chapters/29-application-libraries.md` state which backends are real on
+  which target, and an unimplemented backend must return a clear
+  `NOT_IMPLEMENTED` error rather than fail silently or look supported.
+- **Cross-package contracts (docs/70 phase 6) land after v1.0**, and the v1.0
+  release notes must say so: at 1.0 a restored library's `requires:` and
+  `ensures:` clauses are not enforced across the package boundary.
 
 ### Work streams
 
