@@ -590,6 +590,9 @@ pub record SymbolTable {
   /// The built-in a call resolved to, keyed by the call's `NodeId` (D362): its
   /// name in TIR's built-in table, `println` or `List.add`.
   builtinByNode: Map[Int, String]
+  /// The function type the checker gave a built-in member call's callee (`s.substring`),
+  /// keyed by the call's `NodeId`: its parameters are what the call's arguments meet.
+  builtinFnTyByNode: Map[Int, Type]
   /// The calls whose callee is a function value, keyed by the call's `NodeId`
   /// (D364).  Only `true` is stored; membership is the mark.
   indirectByNode: Map[Int, Bool]
@@ -1233,6 +1236,7 @@ pub func newSymbolTable(): SymbolTable {
     exprTypes = newMap(),
     calleeByNode = newMap(),
     builtinByNode = newMap(),
+    builtinFnTyByNode = newMap(),
     indirectByNode = newMap(),
     callSigByNode = newMap(),
     externByNode = newMap(),

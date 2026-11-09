@@ -2056,11 +2056,14 @@ func buildBuiltinCall(
               // parameters, the call's leading ones when it leaves an optional one out.
               var declared: Option[List[TParamTy]] = None
               if not genericBuiltin(name) {
-                match exprTy(env.ctx, fn.nodeId) {
-                  case Ok(TFunc(ps, _, _)) -> if ts.count <= ps.count {
-                    declared = Some(value = ps)
+                match mapGet(env.ctx.tbl.builtinFnTyByNode, e.nodeId) {
+                  case Some(ft) -> match tyOfType(env.ctx, ft) {
+                    case Ok(TFunc(ps, _, _)) -> if ts.count <= ps.count {
+                      declared = Some(value = ps)
+                    }
+                    case _ -> ()
                   }
-                  case _ -> ()
+                  case None -> ()
                 }
               }
               match declared {
