@@ -293,9 +293,9 @@ func mapParams(ps: in List[Param], m: in AstMapper): List[Param] {
   if not m.params {
     return ps
   }
-  val out: List[Param] = newList()
+  val mapped: List[Param] = newList()
   for p in ps {
-    out.add(
+    mapped.add(
       Param(
         mode = p.mode,
         modeExplicit = p.modeExplicit,
@@ -307,7 +307,7 @@ func mapParams(ps: in List[Param], m: in AstMapper): List[Param] {
       )
     )
   }
-  out
+  mapped
 }
 
 func mapFunction(fn: in FunctionDecl, m: in AstMapper): FunctionDecl {
