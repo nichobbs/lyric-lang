@@ -1,4 +1,4 @@
-# D546 - Record construction defaults in the TIR builder (docs/70 phase 3a, #8613)
+# D547 - Record construction defaults in the TIR builder (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D545 and corrects part of its measurement note.
 

@@ -1,4 +1,4 @@
-# 2026-11-09 - TIR builder: record construction defaults (D546)
+# 2026-11-09 - TIR builder: record construction defaults (D547)
 
 docs/70 phase 3a, #8613. A record construction that leaves a literal- or constant-
 defaulted field out places the default at the construction, as a call does for a
