@@ -187,8 +187,8 @@ boilerplate for at-least-once delivery patterns.
 with AWS Signature V4) and `sendgrid` (v3 `mail/send`) are plain HTTPS APIs
 implemented once in Lyric over `Std.Http`, so they work on `dotnet` and
 `jvm` alike. The `smtp` provider uses `System.Net.Mail` on `dotnet` (no
-extra NuGet dependency) and returns `Err(code = "NOT_IMPLEMENTED")` on `jvm`
-pending a Jakarta Mail extern kernel (#7462). Senders take no constructor
+extra NuGet dependency) and Jakarta Mail on `jvm` (#7462, restored from the
+`[maven]` table with `lyric restore`). Senders take no constructor
 arguments — configuration (host, port, credentials, the envelope `From`
 address) is read from `LYRIC_CONFIG_SMTP_*` / `LYRIC_CONFIG_SENDER_*`
 environment variables.
@@ -252,11 +252,12 @@ func getAvatar(userId: in String): Result[Storage.StorageObject, Storage.Storage
 
 ## lyric-search — Search
 
-`lyric-search` supports Elasticsearch and Meilisearch backends. Real
-kernel-level HTTP bindings exist for both on both targets, but the public
-`Search` API does not call them yet (#5067), so neither backend is
-reachable today; `connectElasticsearch`/`connectMeilisearch` are shown
-below for reference.
+`lyric-search` supports Elasticsearch and Meilisearch backends. Both are
+implemented over plain HTTP and JSON on `Std.Http` and `Std.Json` (#5408), with
+no native SDK and no per-target kernel. They have not been driven against a
+live cluster, and the README documents a crash when an operation reads a real
+response body, so the library cannot yet be used against a live server (see the
+library's README for the remaining defects).
 
 ```toml
 [dependencies]
@@ -365,7 +366,7 @@ func main(): Unit {
 
 ## Library availability matrix
 
-This matrix is the authoritative statement of which backends are real on which target. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
+This matrix summarises which backends are real on which target; each library's README is the detailed source, and the two must agree. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
 
 | Library | .NET | JVM | Status |
 |---|---|---|---|
@@ -373,12 +374,12 @@ This matrix is the authoritative statement of which backends are real on which t
 | lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
 | lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
-| lyric-mail | `smtp`, `ses`, `sendgrid` real | `ses`/`sendgrid` real; `smtp` `NOT_IMPLEMENTED` (#7462) | D062 |
+| lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
-| lyric-search | kernel bindings exist, unreachable from public API (#5067) | same | D056 |
+| lyric-search | implemented over HTTP (#5408); not usable against a live server, see its README | same code | D056 |
 | lyric-i18n | stable | stable (1 known gap, #5439) | D-progress-628 |
 | lyric-feature-flags | stable | stable | D-progress-627 |
-| lyric-jobs | stable | partial (`InProcessJobScheduler` broken, #5456; Quartz backend real) | D-progress-633 |
+| lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `inprocess` and Quartz real; `InProcessJobScheduler` broken (#5456) | D-progress-633 |
 | lyric-ws | stable | partial (Undertow WebSocket kernel real; 2 known gaps, #5453/#5454; aspects blocked on B′-mode weaver gap) | D-progress-634 |
 | lyric-session | stable | stable (1 known gap, `InProcessSessionStore`, #5451; Lettuce Redis backend real) | D-progress-631 |
 | lyric-auth | stable | stable (`Auth.Aspects.ValidateKey` is .NET-only pending the B′-mode weaver fix; JWT/API-key verification real) | D-progress-630 |
@@ -386,7 +387,7 @@ This matrix is the authoritative statement of which backends are real on which t
 | lyric-validation | stable | stable | — |
 | lyric-testing | stable | — | — |
 | lyric-cache | stable | stable | D056 |
-| lyric-db | stable | planned | D056 |
+| lyric-db | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
 | lyric-health | stable | stable | D057 |
 | lyric-web | stable | stable | D057 |
 | lyric-logging | stable | planned | D054 |
