@@ -166,6 +166,8 @@ pub interface DeadLetterStore {
 ///
 /// Entries are held in insertion order.  When `maxEntries` is reached the
 /// oldest entry is discarded to make room, preserving the configured capacity.
+/// Not thread-safe; converting it to a protected type (as
+/// `Cache.InProcessCacheStore` is) is tracked in #8950.
 @stable(since = "0.1")
 pub ref record InProcessDeadLetterStore {
   var entries: slice[DeadLetterEntry]

@@ -3,20 +3,11 @@
 //! tests, but the redis-backed store has not been driven against a live
 //! cluster in CI.
 //!
-//! WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
-//! access from multiple threads produces undefined behaviour (lost updates,
-//! torn reads).  It is a plain mutable record, not a `protected type`: an
-//! isolated repro confirmed that `impl <interface> for <protected type>`
-//! compiles on both backends but fails at RUNTIME on both — `--target dotnet`
-//! raises `System.TypeLoadException: Method '...' does not have an
-//! implementation`, `--target jvm` raises `NoSuchMethodError` for the same
-//! forwarding method — because the interface-dispatch method the `impl`
-//! block declares is never linked to the protected type's own `entry`/`func`
-//! members by either backend.  `InProcessCacheStore` must keep implementing
-//! `CacheStore` (its whole public surface depends on that), so converting it
-//! is not possible until that gap closes.  Multi-threaded services should use
-//! a Redis-backed store (`Lyric.Cache.Redis`) or guard access with an
-//! external mutex.  See lyric-lang #411; the backend gap is #7457.
+//! Thread safety: `InProcessCacheStore` is a `protected type` (docs/01 §7.5), so
+//! every `get`/`set`/`delete`/`clear` runs under the store's instance lock and
+//! the store may be shared freely between threads (it is process-wide in
+//! `Cache.Aspects`).  Each operation is atomic; a read-then-write sequence made
+//! of separate calls (`get` then `set`) is not.
 //!
 //! `CacheStore` is the public interface for the backing store.  Implement it
 //! to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
@@ -164,112 +155,99 @@ pub interface CacheStore {
 // Invariant: `maxEntries >= 1` (no magic "0 or negative means unbounded"
 // sentinel — every public factory already enforces this) and
 // `insertionOrder.count == valueMap.count` (the FIFO order tracks exactly
-// the live key set, no more, no fewer). The compiler checks a record's
-// invariant at construction (D-progress-958) but not yet after a field
-// mutation (#7222 tracks that), so every mutating operation below
-// (`set`/`evictKey`/`clear`) re-verifies it explicitly via `checkInvariant`.
+// the live key set, no more, no fewer). A protected type's invariant is
+// checked after every member returns, so no mutating member re-verifies it.
+//
+// `InProcessCacheStore` is a protected type: each member below, including the
+// `CacheStore` impl's methods, holds the instance lock for its whole body, so
+// concurrent callers never see (or produce) a half-updated store.
 @stable(since = "0.1")
-pub ref record InProcessCacheStore {
-  var valueMap: Map[String, String]  // key → cached value
+pub protected type InProcessCacheStore {
+  // key → cached value
+  var valueMap: Map[String, String] = newMap()
   maxEntries: Int
-  var insertionOrder: List[String]         // keys in FIFO insertion order; oldest first
-  var expiryMap: Map[String, Long]  // key → expiry epoch millis; absent means no expiry
-  clock: Clock  // clock seam; defaults to SystemClock
-
+  // keys in FIFO insertion order; oldest first
+  var insertionOrder: List[String] = newList()
+  // key → expiry epoch millis; absent means no expiry
+  var expiryMap: Map[String, Long] = newMap()
+  // clock seam; defaults to SystemClock
+  clock: Clock
   invariant: maxEntries >= 1
   invariant: insertionOrder.count == valueMap.count
-}
-
-// Re-verify `InProcessCacheStore`'s invariant (see above) after a mutating
-// operation. Kept as explicit runtime asserts, mirroring the record's own
-// `invariant:` clauses, rather than relying on construction-time checking
-// alone (#7222).
-func checkInvariant(store: in InProcessCacheStore): Unit {
-  assert(store.maxEntries >= 1, "InProcessCacheStore invariant violated: maxEntries must be >= 1")
-  assert(
-    store.insertionOrder.count == store.valueMap.count,
-    "InProcessCacheStore invariant violated: insertionOrder.count must equal valueMap.count"
-  )
-}
-
-// Remove `key` from all three backing collections of `store`. Shared by
-// `delete` and by `get`'s lazy TTL-expiry eviction.
-func evictKey(store: in InProcessCacheStore, key: in String): Unit {
-  store.valueMap.remove(key)
-  store.expiryMap.remove(key)
-  // Remove `key` from the insertion order by index: `List.remove(value)` is
-  // not a supported element-removal intrinsic on the MSIL backend (it lowers
-  // to a no-op), so a value-based remove would silently leave a stale entry
-  // and corrupt the FIFO eviction bound.  Scan for the index and `removeAt`.
-  var idx = 0
-  var found = 0 - 1
-  while idx < store.insertionOrder.count {
-    if store.insertionOrder[idx] == key {
-      found = idx
-      idx = store.insertionOrder.count
-    } else {
-      idx = idx + 1
+  // Remove `key` from all three backing collections. Shared by the impl's
+  // `delete` and by `get`'s lazy TTL-expiry eviction.
+  func evictKey(key: in String): Unit {
+    valueMap.remove(key)
+    expiryMap.remove(key)
+    // Remove `key` from the insertion order by index: `List.remove(value)` is
+    // not a supported element-removal intrinsic on the MSIL backend (it lowers
+    // to a no-op), so a value-based remove would silently leave a stale entry
+    // and corrupt the FIFO eviction bound.  Scan for the index and `removeAt`.
+    var idx = 0
+    var found = 0 - 1
+    while idx < insertionOrder.count {
+      if insertionOrder[idx] == key {
+        found = idx
+        idx = insertionOrder.count
+      } else {
+        idx = idx + 1
+      }
+    }
+    if found >= 0 {
+      insertionOrder.removeAt(found)
     }
   }
-  if found >= 0 {
-    store.insertionOrder.removeAt(found)
-  }
-  checkInvariant(store)
 }
 
 impl CacheStore for InProcessCacheStore {
   func get(key: in String): Option[String] {
-    if not self.valueMap.containsKey(key) {
+    if not valueMap.containsKey(key) {
       return None
     }
-    if self.expiryMap.containsKey(key) {
-      val expiresAtMillis = self.expiryMap[key]
-      if self.clock.nowMillis() >= expiresAtMillis {
-        evictKey(self, key)
+    if expiryMap.containsKey(key) {
+      val expiresAtMillis = expiryMap[key]
+      if clock.nowMillis() >= expiresAtMillis {
+        evictKey(key)
         return None
       }
     }
-    return Some(value = self.valueMap[key])
+    return Some(value = valueMap[key])
   }
 
   func set(key: in String, value: in String, ttlSeconds: in Int): Unit {
-    val isNew = not self.valueMap.containsKey(key)
+    val isNew = not valueMap.containsKey(key)
     // FIFO capacity bound: before inserting a *new* key into a full store,
     // evict the oldest (front of the insertion order). `maxEntries` is
-    // always >= 1 (the record's invariant), so this bound is always active.
-    if isNew and self.insertionOrder.count >= self.maxEntries {
-      val oldest = self.insertionOrder[0]
-      self.valueMap.remove(oldest)
-      self.expiryMap.remove(oldest)
-      self.insertionOrder.removeAt(0)
+    // always >= 1 (the type's invariant), so this bound is always active.
+    if isNew and insertionOrder.count >= maxEntries {
+      val oldest = insertionOrder[0]
+      valueMap.remove(oldest)
+      expiryMap.remove(oldest)
+      insertionOrder.removeAt(0)
     }
-    self.valueMap[key] = value
+    valueMap[key] = value
     if isNew {
-      self.insertionOrder.add(key)
+      insertionOrder.add(key)
     }
     if ttlSeconds > 0 {
-      self.expiryMap[key] = self.clock.nowMillis() + ttlSeconds.toLong() * 1000i64
-    } else if self.expiryMap.containsKey(key) {
+      expiryMap[key] = clock.nowMillis() + ttlSeconds.toLong() * 1000i64
+    } else if expiryMap.containsKey(key) {
       // Re-`set` of a previously-TTL'd key with ttlSeconds = 0 makes it
       // permanent again; drop the stale expiry entry.
-      self.expiryMap.remove(key)
+      expiryMap.remove(key)
     }
-    checkInvariant(self)
   }
 
   func delete(key: in String): Unit {
-    evictKey(self, key)
+    evictKey(key)
   }
 
   func clear(): Unit {
-    // Reset to fresh empty collections.  Records are reference types, so the
-    // field reassignment is visible through the `CacheStore` borrow at the call
-    // site.  (In-place `Map.clear()` / `List.clear()` are not yet supported
-    // intrinsics on the MSIL backend; reassignment is the idiomatic reset.)
-    self.valueMap = newMap()
-    self.insertionOrder = newList()
-    self.expiryMap = newMap()
-    checkInvariant(self)
+    // Reset to fresh empty collections (in-place `Map.clear()` / `List.clear()`
+    // are not yet supported intrinsics on the MSIL backend).
+    valueMap = newMap()
+    insertionOrder = newList()
+    expiryMap = newMap()
   }
 }
 
@@ -278,13 +256,7 @@ impl CacheStore for InProcessCacheStore {
 @stable(since = "0.1")
 pub func inProcess(): InProcessCacheStore {
   val clock: Clock = SystemClock()
-  return InProcessCacheStore(
-    valueMap = newMap(),
-    maxEntries = defaultMaxEntries,
-    insertionOrder = newList(),
-    expiryMap = newMap(),
-    clock = clock
-  )
+  return InProcessCacheStore(maxEntries = defaultMaxEntries, clock = clock)
 }
 
 // Create an in-process store with an explicit capacity limit.
@@ -293,13 +265,7 @@ pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
   requires: maxEntries >= 1
 {
   val clock: Clock = SystemClock()
-  return InProcessCacheStore(
-    valueMap = newMap(),
-    maxEntries = maxEntries,
-    insertionOrder = newList(),
-    expiryMap = newMap(),
-    clock = clock
-  )
+  return InProcessCacheStore(maxEntries = maxEntries, clock = clock)
 }
 
 // Create an in-process store with a caller-supplied clock instead of the
@@ -308,13 +274,7 @@ pub func inProcessWithCapacity(maxEntries: in Int): InProcessCacheStore
 // in real time.
 @stable(since = "0.1")
 pub func inProcessWithClock(clock: in Clock): InProcessCacheStore {
-  return InProcessCacheStore(
-    valueMap = newMap(),
-    maxEntries = defaultMaxEntries,
-    insertionOrder = newList(),
-    expiryMap = newMap(),
-    clock = clock
-  )
+  return InProcessCacheStore(maxEntries = defaultMaxEntries, clock = clock)
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

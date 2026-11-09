@@ -53,11 +53,10 @@
 //! mutated in place by every load/register call with no synchronization;
 //! concurrent calls from multiple threads produce undefined behaviour (lost
 //! updates, torn reads, a `nextHandle` race that hands out the same handle
-//! twice).  Until the `protected type` weaver ships, wrap access in an
+//! twice).  Wrap access in an
 //! external mutex if the process loads or registers translations
 //! concurrently with looking them up.  Mirrors the same caveat on
-//! `Flags.Registry`, `Flags.InProcessFlagStore`, and
-//! `Cache.InProcessCacheStore` (lyric-lang #411).
+//! `Flags.Registry` (tracked in #8950).
 @io
 package I18n.Kernel
 

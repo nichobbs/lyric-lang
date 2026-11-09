@@ -422,8 +422,8 @@ impl SessionStore for NativeSessionStore {
 /// In-process session store backed by a mutable Map.
 ///
 /// Suitable for single-instance deployments or development.  Session state is
-/// lost on process restart.  Not thread-safe; wrap in a protected type for
-/// concurrent access once the protected-type weaver ships.
+/// lost on process restart.  Not thread-safe; converting it to a protected
+/// type (as `Cache.InProcessCacheStore` is) is tracked in #8950.
 @stable(since = "0.1")
 pub ref record InProcessSessionStore {
   var sessions: Map[String, SessionData]

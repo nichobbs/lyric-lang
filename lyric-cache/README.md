@@ -43,16 +43,14 @@ The v1 implementation is `InProcessCacheStore` (in-memory, single-process).
 Implement `CacheStore` for Redis, Memcached, or any other backend and pass
 the implementation to your own aspect body or helper functions.
 
-`InProcessCacheStore` is **not thread-safe**. It is a plain mutable record,
-not a `protected type`: an isolated repro confirmed that
-`impl <interface> for <protected type>` compiles on both backends but fails
-at runtime on both (`--target dotnet`: `System.TypeLoadException`;
-`--target jvm`: `NoSuchMethodError`) — the interface's dispatch method is
-never linked to the protected type's own `entry`/`func` members by either
-backend. Since `InProcessCacheStore` must keep implementing `CacheStore`,
-converting it is not possible until that backend gap closes. Multi-threaded
-services should use a Redis-backed store or guard access with an external
-mutex; see the WARNING in `src/cache.l`, lyric-lang #411, and #7457 for the backend gap.
+`InProcessCacheStore` is thread-safe. It is a `protected type` that implements
+`CacheStore`, so every `get`/`set`/`delete`/`clear` runs under the store's
+instance lock and one store can be shared between threads (the aspect stores
+`functionCacheStore` and `itemCacheStore` are process-wide). Each operation is
+atomic, but a sequence of separate calls is not: a `get` followed by a `set`
+can interleave with another thread, so two threads may both miss and both
+compute. `tests/cache_concurrency_{dotnet,jvm}_tests.l` hammer one store from
+four real threads on each target.
 
 ## In-process store
 
@@ -69,8 +67,10 @@ explicit `n`, e.g. `Int.maxValue`, for an effectively unbounded store), using
 the config default TTL.
 
 `InProcessCacheStore` carries an invariant — `maxEntries >= 1` and
-`insertionOrder.count == valueMap.count` — enforced at construction and
-re-checked after every mutating operation (`set`/`delete`/`clear`).
+`insertionOrder.count == valueMap.count` — which, as for any protected type, the
+compiler checks after every member returns. The factories reject `maxEntries < 1`
+with a `requires:` clause; constructing the type directly with an invalid
+capacity panics on its first operation rather than at construction.
 
 ## API reference
 
