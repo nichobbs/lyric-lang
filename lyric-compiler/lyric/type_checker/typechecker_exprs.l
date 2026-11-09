@@ -5511,10 +5511,26 @@ func recordBuiltinCall(
     return
   }
   match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 {
-      match codegenBuiltinType(p.segments[0]) {
-        case Some(_) -> recordBuiltinCallee(tbl, callNode, p.segments[0])
-        case None -> ()
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        match codegenBuiltinType(p.segments[0]) {
+          case Some(_) -> recordBuiltinCallee(tbl, callNode, p.segments[0])
+          case None -> ()
+        }
+      } else if p.segments.count >= 2 {
+        // `Console.println(x)`: the checker types a package-qualified call of a
+        // codegen built-in name as that built-in (`qualifiedBuiltinCalleeType`), so
+        // it is recorded as the built-in too.
+        val typedAsBuiltin = match fnT {
+          case TyError(_) -> match qualifiedBuiltinCalleeType(tbl, fn, fnT) {
+            case TyError(_) -> false
+            case _ -> true
+          }
+          case _ -> false
+        }
+        if typedAsBuiltin {
+          recordBuiltinCallee(tbl, callNode, p.segments[p.segments.count - 1])
+        }
       }
     }
     case _ -> ()
