@@ -44,6 +44,8 @@ pub record BuildEnv {
   /// The type a context fixes for an expression the checker typed with a hole
   /// (`None` or `[]` passed where the parameter's type is known), by `NodeId`.
   settled: Map[Int, Ty] = newMap()
+  /// Where each uncovered kind was first met, as `line:column`.
+  sites: Map[String, String] = newMap()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -149,8 +151,17 @@ func noteUncovered(env: in BuildEnv, what: in String): Unit {
   env.uncovered.add(what, n + 1)
 }
 
-func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr] {
+/// Count a construct the builder has no case for and remember where its kind was
+/// first met.
+func noteUncoveredAt(env: in BuildEnv, what: in String, sp: in Span): Unit {
   noteUncovered(env, what)
+  if not env.sites.containsKey(what) {
+    env.sites.add(what, toString(sp.startPos.line) + ":" + toString(sp.startPos.column))
+  }
+}
+
+func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr] {
+  noteUncoveredAt(env, what, e.span)
   env.errors.add(
     "I0002: the builder has no case for " + what + " at " + toString(e.span.startPos.line) + ":" +
       toString(e.span.startPos.column)
@@ -457,7 +468,7 @@ func mkPat(p: in Pattern, ty: in Ty, kind: in TPatKind): TPat {
 }
 
 func uncoveredPat(env: in BuildEnv, p: in Pattern, what: in String): Option[TPat] {
-  noteUncovered(env, what)
+  noteUncoveredAt(env, what, p.span)
   env.errors.add(
     "I0002: the builder has no case for " + what + " at " + toString(p.span.startPos.line) + ":" +
       toString(p.span.startPos.column)
@@ -838,7 +849,7 @@ func buildForIter(env: in BuildEnv, iter: in Expr): Option[TExpr] {
 }
 
 func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[TStmt] {
-  noteUncovered(env, what)
+  noteUncoveredAt(env, what, s.span)
   env.errors.add(
     "I0002: the builder has no case for " + what + " at " + toString(s.span.startPos.line) + ":" +
       toString(s.span.startPos.column)
@@ -1134,6 +1145,8 @@ pub record BuildCensus {
   total: Int
   built: Int
   uncovered: Map[String, Int]
+  /// Where each uncovered kind was first met in the file, as `line:column`.
+  sites: Map[String, String] = newMap()
   /// The first I0002 message of each body that did not build: the cause, where
   /// `uncovered` also counts the uses a failed binding leaves undefined.
   firstErrors: List[String] = newList()
@@ -1150,6 +1163,7 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
   var built = 0
   val firstErrors: List[String] = newList()
   val sums: Map[String, Int] = newMap()
+  val sites: Map[String, String] = newMap()
   val counter: List[Int] = newList()
   counter.add(firstSynthNodeId())
   for it in file.items {
@@ -1186,6 +1200,12 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
             }
             sums.add(k, had + add)
           }
+          for k in mapKeys(env.sites) {
+            match mapGet(env.sites, k) {
+              case Some(at) -> if not sites.containsKey(k) { sites.add(k, at) }
+              case None -> ()
+            }
+          }
         }
         case None -> ()
       }
@@ -1208,6 +1228,7 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
     total = total,
     built = built,
     uncovered = sums,
+    sites = sites,
     firstErrors = firstErrors,
     pkg = TPackage(name = "", symbols = entries, funcs = funcs)
   )
@@ -1234,7 +1255,8 @@ pub func buildCensusLines(c: in BuildCensus, limit: in Int): List[String] {
       return res
     }
     taken.add(best, true)
-    res.add(best + " x " + toString(bestN))
+    val at = match mapGet(c.sites, best) { case Some(a) -> " (first at " + a + ")"; case None -> "" }
+    res.add(best + " x " + toString(bestN) + at)
     round = round + 1
   }
   res

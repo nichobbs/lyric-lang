@@ -52,6 +52,7 @@ judged=0
 unchecked=()
 declare -A rules
 declare -A kinds
+declare -A samples
 
 cd "$REPO_ROOT"
 for f in "${FILES[@]}"; do
@@ -82,15 +83,18 @@ for f in "${FILES[@]}"; do
     rules[$name]=$(( ${rules[$name]:-0} + n ))
   done < <(grep -E '^  I0003 rule: ' "$log" || true)
   while IFS= read -r r; do
+    site="$(sed -nE 's/^.* x [0-9]+ \(first at ([0-9:]+)\)$/\1/p' <<<"$r")"
+    r="$(sed -E 's/ \(first at [0-9:]+\)$//' <<<"$r")"
     name="$(sed -E 's/^  no builder case: (.*) x [0-9]+$/\1/' <<<"$r")"
     n="$(sed -E 's/^.* x ([0-9]+)$/\1/' <<<"$r")"
     kinds[$name]=$(( ${kinds[$name]:-0} + n ))
+    if [[ -n "$site" && -z "${samples[$name]:-}" ]]; then samples[$name]="$f:$site"; fi
   done < <(grep -E '^  no builder case: ' "$log" || true)
 done
 
 echo "TIR census over ${#FILES[@]} file(s): $built of $total function bodies built, $((total - built)) not yet (I0002), $i0003 I0003 diagnostic(s)"
 for r in "${!rules[@]}"; do echo "  I0003 rule $r: ${rules[$r]}"; done
-for k in "${!kinds[@]}"; do echo "  I0002 kind ${k}: ${kinds[$k]}"; done | sort -t: -k2 -n -r | head -25
+for k in "${!kinds[@]}"; do echo "  I0002 kind ${k}: ${kinds[$k]}${samples[$k]:+ (e.g. ${samples[$k]})}"; done | sort -t: -k2 -n -r | head -25
 if [[ ${#unchecked[@]} -gt 0 ]]; then
   echo "UNCHECKED (the build stopped before the census):"
   printf '  %s\n' "${unchecked[@]}"
