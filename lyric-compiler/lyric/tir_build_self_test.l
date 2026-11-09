@@ -1246,6 +1246,15 @@ test "a member that is not a record field is counted" {
   assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
 }
 
+test "an uncovered kind remembers where it was first met" {
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val at = match mapGet(r.env.sites, "a member access that is not a record field") {
+    case Some(a) -> a
+    case None -> ""
+  }
+  assertTrue(at.startsWith("3:"), "line 3 where the member access is")
+}
+
 // ─── Assignments and indexing (docs/70 §6.3, D398) ───────────────────────────
 func firstAssign(b: in Option[TExpr]): Option[TExpr] {
   match b {
