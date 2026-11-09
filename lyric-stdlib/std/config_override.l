@@ -30,7 +30,7 @@ import Std.Core
 import Std.ConfigOverrideHost
 
 /// Why a registration was refused.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union ConfigOverrideError {
   /// This target has no config-override store (native).  Retrying will never
   /// succeed.
@@ -44,7 +44,7 @@ pub union ConfigOverrideError {
 }
 
 /// Human-readable message for logging.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func errorMessage(err: in ConfigOverrideError): String {
   match err {
     case Unsupported(reason) -> "config override unsupported: " + reason
@@ -54,12 +54,12 @@ pub func errorMessage(err: in ConfigOverrideError): String {
 }
 
 /// The prefix every config override key carries.
-@stable(since = "0.1")
+@stable(since = "1.0")
 @pure
 pub func keyPrefix(): String = "LYRIC_CONFIG_"
 
 /// True when this target consults the override store.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func isSupported(): Bool {
   hostConfigOverrideSupported()
 }
@@ -87,7 +87,7 @@ func checkKey(key: in String): Result[Unit, ConfigOverrideError] {
 /// - `Unsupported`: the target reads config blocks before `main` (native).
 /// - `InvalidKey`: `key` does not start with `LYRIC_CONFIG_`.
 /// - `InvalidValue`: `value` contains a NUL character.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func setConfigOverride(key: in String, value: in String): Result[Unit, ConfigOverrideError] {
   match checkKey(key) {
     case Err(e) -> Err(error = e)
@@ -107,7 +107,7 @@ pub func setConfigOverride(key: in String, value: in String): Result[Unit, Confi
 /// # Errors
 /// - `Unsupported`: the target reads config blocks before `main` (native).
 /// - `InvalidKey`: `key` does not start with `LYRIC_CONFIG_`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func clearConfigOverride(key: in String): Result[Unit, ConfigOverrideError] {
   match checkKey(key) {
     case Err(e) -> Err(error = e)
@@ -120,7 +120,7 @@ pub func clearConfigOverride(key: in String): Result[Unit, ConfigOverrideError] 
 
 /// The value registered for `key`, if any.  Always `None` on a target with
 /// no store.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getConfigOverride(key: in String): Option[String] {
   hostGetConfigOverride(key)
 }

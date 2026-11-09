@@ -45,11 +45,13 @@ func acosF(x: in Float): Float {
 }
 
 /// Linear interpolation: `a` at `t == 0`, `b` at `t == 1`.
+@experimental
 pub func lerpFloat(a: in Float, b: in Float, t: in Float): Float {
   a + (b - a) * t
 }
 
 /// `x` limited to `[lo, hi]`.
+@experimental
 pub func clampFloat(x: in Float, lo: in Float, hi: in Float): Float {
   if x < lo {
     lo
@@ -60,10 +62,12 @@ pub func clampFloat(x: in Float, lo: in Float, hi: in Float): Float {
   }
 }
 
+@experimental
 pub func radians(deg: in Float): Float {
   deg * 0.017453292f32
 }
 
+@experimental
 pub func degrees(rad: in Float): Float {
   rad * 57.29578f32
 }
@@ -72,44 +76,54 @@ pub func degrees(rad: in Float): Float {
 // Vec2
 // =====================================================================
 @derive(Add, Sub)
+@experimental
 pub record Vec2 {
   x: Float
   y: Float
 }
 
+@experimental
 pub func Vec2.zero(): Vec2 {
   Vec2(x = 0.0f32, y = 0.0f32)
 }
 
+@experimental
 pub func Vec2.splat(v: in Float): Vec2 {
   Vec2(x = v, y = v)
 }
 
+@experimental
 pub func Vec2.neg(a: in Vec2): Vec2 {
   Vec2(x = -a.x, y = -a.y)
 }
 
+@experimental
 pub func Vec2.scale(a: in Vec2, k: in Float): Vec2 {
   Vec2(x = a.x * k, y = a.y * k)
 }
 
+@experimental
 pub func Vec2.mulComponents(a: in Vec2, b: in Vec2): Vec2 {
   Vec2(x = a.x * b.x, y = a.y * b.y)
 }
 
+@experimental
 pub func Vec2.dot(a: in Vec2, b: in Vec2): Float {
   a.x * b.x + a.y * b.y
 }
 
+@experimental
 pub func Vec2.lengthSquared(a: in Vec2): Float {
   a.dot(a)
 }
 
+@experimental
 pub func Vec2.length(a: in Vec2): Float {
   sqrtF(a.lengthSquared())
 }
 
 /// The unit vector in `a`'s direction; the zero vector for a zero `a`.
+@experimental
 pub func Vec2.normalize(a: in Vec2): Vec2 {
   val len = a.length()
   if len == 0.0f32 {
@@ -119,17 +133,20 @@ pub func Vec2.normalize(a: in Vec2): Vec2 {
   }
 }
 
+@experimental
 pub func Vec2.lerp(a: in Vec2, b: in Vec2, t: in Float): Vec2 {
   Vec2(x = lerpFloat(a.x, b.x, t), y = lerpFloat(a.y, b.y, t))
 }
 
 /// `a` rotated a quarter turn counter-clockwise.
+@experimental
 pub func Vec2.perp(a: in Vec2): Vec2 {
   Vec2(x = -a.y, y = a.x)
 }
 
 /// The z component of the 3D cross product: positive when `b` is
 /// counter-clockwise from `a`.
+@experimental
 pub func Vec2.cross(a: in Vec2, b: in Vec2): Float {
   a.x * b.y - a.y * b.x
 }
@@ -138,49 +155,60 @@ pub func Vec2.cross(a: in Vec2, b: in Vec2): Float {
 // Vec3
 // =====================================================================
 @derive(Add, Sub)
+@experimental
 pub record Vec3 {
   x: Float
   y: Float
   z: Float
 }
 
+@experimental
 pub func Vec3.zero(): Vec3 {
   Vec3(x = 0.0f32, y = 0.0f32, z = 0.0f32)
 }
 
+@experimental
 pub func Vec3.splat(v: in Float): Vec3 {
   Vec3(x = v, y = v, z = v)
 }
 
+@experimental
 pub func Vec3.neg(a: in Vec3): Vec3 {
   Vec3(x = -a.x, y = -a.y, z = -a.z)
 }
 
+@experimental
 pub func Vec3.scale(a: in Vec3, k: in Float): Vec3 {
   Vec3(x = a.x * k, y = a.y * k, z = a.z * k)
 }
 
+@experimental
 pub func Vec3.mulComponents(a: in Vec3, b: in Vec3): Vec3 {
   Vec3(x = a.x * b.x, y = a.y * b.y, z = a.z * b.z)
 }
 
+@experimental
 pub func Vec3.dot(a: in Vec3, b: in Vec3): Float {
   a.x * b.x + a.y * b.y + a.z * b.z
 }
 
+@experimental
 pub func Vec3.cross(a: in Vec3, b: in Vec3): Vec3 {
   Vec3(x = a.y * b.z - a.z * b.y, y = a.z * b.x - a.x * b.z, z = a.x * b.y - a.y * b.x)
 }
 
+@experimental
 pub func Vec3.lengthSquared(a: in Vec3): Float {
   a.dot(a)
 }
 
+@experimental
 pub func Vec3.length(a: in Vec3): Float {
   sqrtF(a.lengthSquared())
 }
 
 /// The unit vector in `a`'s direction; the zero vector for a zero `a`.
+@experimental
 pub func Vec3.normalize(a: in Vec3): Vec3 {
   val len = a.length()
   if len == 0.0f32 {
@@ -190,11 +218,13 @@ pub func Vec3.normalize(a: in Vec3): Vec3 {
   }
 }
 
+@experimental
 pub func Vec3.lerp(a: in Vec3, b: in Vec3, t: in Float): Vec3 {
   Vec3(x = lerpFloat(a.x, b.x, t), y = lerpFloat(a.y, b.y, t), z = lerpFloat(a.z, b.z, t))
 }
 
 /// `a` reflected about the plane with unit normal `n`.
+@experimental
 pub func Vec3.reflect(a: in Vec3, n: in Vec3): Vec3 {
   a - n.scale(2.0f32 * a.dot(n))
 }
@@ -203,6 +233,7 @@ pub func Vec3.reflect(a: in Vec3, n: in Vec3): Vec3 {
 // Vec4
 // =====================================================================
 @derive(Add, Sub)
+@experimental
 pub record Vec4 {
   x: Float
   y: Float
@@ -210,46 +241,57 @@ pub record Vec4 {
   w: Float
 }
 
+@experimental
 pub func Vec4.zero(): Vec4 {
   Vec4(x = 0.0f32, y = 0.0f32, z = 0.0f32, w = 0.0f32)
 }
 
+@experimental
 pub func Vec4.splat(v: in Float): Vec4 {
   Vec4(x = v, y = v, z = v, w = v)
 }
 
+@experimental
 pub func Vec4.fromVec3(a: in Vec3, w: in Float): Vec4 {
   Vec4(x = a.x, y = a.y, z = a.z, w = w)
 }
 
+@experimental
 pub func Vec4.xyz(a: in Vec4): Vec3 {
   Vec3(x = a.x, y = a.y, z = a.z)
 }
 
+@experimental
 pub func Vec4.neg(a: in Vec4): Vec4 {
   Vec4(x = -a.x, y = -a.y, z = -a.z, w = -a.w)
 }
 
+@experimental
 pub func Vec4.scale(a: in Vec4, k: in Float): Vec4 {
   Vec4(x = a.x * k, y = a.y * k, z = a.z * k, w = a.w * k)
 }
 
+@experimental
 pub func Vec4.mulComponents(a: in Vec4, b: in Vec4): Vec4 {
   Vec4(x = a.x * b.x, y = a.y * b.y, z = a.z * b.z, w = a.w * b.w)
 }
 
+@experimental
 pub func Vec4.dot(a: in Vec4, b: in Vec4): Float {
   a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
 }
 
+@experimental
 pub func Vec4.lengthSquared(a: in Vec4): Float {
   a.dot(a)
 }
 
+@experimental
 pub func Vec4.length(a: in Vec4): Float {
   sqrtF(a.lengthSquared())
 }
 
+@experimental
 pub func Vec4.normalize(a: in Vec4): Vec4 {
   val len = a.length()
   if len == 0.0f32 {
@@ -259,6 +301,7 @@ pub func Vec4.normalize(a: in Vec4): Vec4 {
   }
 }
 
+@experimental
 pub func Vec4.lerp(a: in Vec4, b: in Vec4, t: in Float): Vec4 {
   Vec4(x = lerpFloat(a.x, b.x, t), y = lerpFloat(a.y, b.y, t), z = lerpFloat(a.z, b.z, t), w = lerpFloat(a.w, b.w, t))
 }
@@ -267,6 +310,7 @@ pub func Vec4.lerp(a: in Vec4, b: in Vec4, t: in Float): Vec4 {
 // Mat3 - 3x3, column-major. Rotation and scale in 3D, or an affine 2D
 // transform in homogeneous coordinates.
 // =====================================================================
+@experimental
 pub record Mat3 {
   m: array[9, Float]
 }
@@ -275,18 +319,21 @@ func mat3Of(a: in array[9, Float]): Mat3 {
   Mat3(m = a)
 }
 
+@experimental
 pub func Mat3.identity(): Mat3 {
   var a: array[9, Float] = [1.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32]
   mat3Of(a)
 }
 
 /// Element at `row`, `col` (each 0 to 2).
+@experimental
 pub func Mat3.get(a: in Mat3, row: in Int, col: in Int): Float
   requires: row >= 0 and row < 3 and col >= 0 and col < 3
 {
   a.m[col * 3 + row]
 }
 
+@experimental
 pub func Mat3.mul(a: in Mat3, b: in Mat3): Mat3 {
   var res: array[9, Float] = [0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32]
   var col = 0
@@ -307,6 +354,7 @@ pub func Mat3.mul(a: in Mat3, b: in Mat3): Mat3 {
   mat3Of(res)
 }
 
+@experimental
 pub func Mat3.transform(a: in Mat3, v: in Vec3): Vec3 {
   Vec3(
     x = a.m[0] * v.x + a.m[3] * v.y + a.m[6] * v.z,
@@ -315,6 +363,7 @@ pub func Mat3.transform(a: in Mat3, v: in Vec3): Vec3 {
   )
 }
 
+@experimental
 pub func Mat3.transpose(a: in Mat3): Mat3 {
   var res: array[9, Float] = [0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32]
   var col = 0
@@ -329,12 +378,14 @@ pub func Mat3.transpose(a: in Mat3): Mat3 {
   mat3Of(res)
 }
 
+@experimental
 pub func Mat3.determinant(a: in Mat3): Float {
   a.m[0] * (a.m[4] * a.m[8] - a.m[7] * a.m[5]) - a.m[3] * (a.m[1] * a.m[8] - a.m[7] * a.m[2]) +
     a.m[6] * (a.m[1] * a.m[5] - a.m[4] * a.m[2])
 }
 
 /// The inverse, or `None` when the matrix is singular.
+@experimental
 pub func Mat3.inverse(a: in Mat3): Option[Mat3] {
   val det = a.determinant()
   if det == 0.0f32 {
@@ -356,17 +407,20 @@ pub func Mat3.inverse(a: in Mat3): Option[Mat3] {
 }
 
 /// A 2D translation as a homogeneous transform: apply it to `Vec3(x, y, 1)`.
+@experimental
 pub func Mat3.translation2d(tx: in Float, ty: in Float): Mat3 {
   var a: array[9, Float] = [1.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 0.0f32, tx, ty, 1.0f32]
   mat3Of(a)
 }
 
+@experimental
 pub func Mat3.scaling2d(sx: in Float, sy: in Float): Mat3 {
   var a: array[9, Float] = [sx, 0.0f32, 0.0f32, 0.0f32, sy, 0.0f32, 0.0f32, 0.0f32, 1.0f32]
   mat3Of(a)
 }
 
 /// A counter-clockwise 2D rotation by `angle` radians.
+@experimental
 pub func Mat3.rotation2d(angle: in Float): Mat3 {
   val c = cosF(angle)
   val s = sinF(angle)
@@ -378,6 +432,7 @@ pub func Mat3.rotation2d(angle: in Float): Mat3 {
 // Quat - unit quaternions for rotation. Stored as (x, y, z) vector part
 // and w scalar part.
 // =====================================================================
+@experimental
 pub record Quat {
   x: Float
   y: Float
@@ -385,11 +440,13 @@ pub record Quat {
   w: Float
 }
 
+@experimental
 pub func Quat.identity(): Quat {
   Quat(x = 0.0f32, y = 0.0f32, z = 0.0f32, w = 1.0f32)
 }
 
 /// A rotation of `angle` radians about `axis` (which need not be unit length).
+@experimental
 pub func Quat.fromAxisAngle(axis: in Vec3, angle: in Float): Quat {
   val n = axis.normalize()
   val half = angle * 0.5f32
@@ -397,14 +454,17 @@ pub func Quat.fromAxisAngle(axis: in Vec3, angle: in Float): Quat {
   Quat(x = n.x * s, y = n.y * s, z = n.z * s, w = cosF(half))
 }
 
+@experimental
 pub func Quat.dot(a: in Quat, b: in Quat): Float {
   a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
 }
 
+@experimental
 pub func Quat.length(a: in Quat): Float {
   sqrtF(a.dot(a))
 }
 
+@experimental
 pub func Quat.normalize(a: in Quat): Quat {
   val len = a.length()
   if len == 0.0f32 {
@@ -415,11 +475,13 @@ pub func Quat.normalize(a: in Quat): Quat {
   }
 }
 
+@experimental
 pub func Quat.conjugate(a: in Quat): Quat {
   Quat(x = -a.x, y = -a.y, z = -a.z, w = a.w)
 }
 
 /// The Hamilton product: `a.mul(b)` applies `b` first, then `a`.
+@experimental
 pub func Quat.mul(a: in Quat, b: in Quat): Quat {
   Quat(
     x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
@@ -430,6 +492,7 @@ pub func Quat.mul(a: in Quat, b: in Quat): Quat {
 }
 
 /// `v` rotated by the unit quaternion `a`.
+@experimental
 pub func Quat.rotate(a: in Quat, v: in Vec3): Vec3 {
   val u = Vec3(x = a.x, y = a.y, z = a.z)
   val t = u.cross(v).scale(2.0f32)
@@ -437,6 +500,7 @@ pub func Quat.rotate(a: in Quat, v: in Vec3): Vec3 {
 }
 
 /// Spherical interpolation along the shorter arc; `a` at `t == 0`, `b` at 1.
+@experimental
 pub func Quat.slerp(a: in Quat, b: in Quat, t: in Float): Quat {
   var cosTheta = a.dot(b)
   var bx = b.x
@@ -464,6 +528,7 @@ pub func Quat.slerp(a: in Quat, b: in Quat, t: in Float): Quat {
 // =====================================================================
 // Mat4 - 4x4, column-major.
 // =====================================================================
+@experimental
 pub record Mat4 {
   m: array[16, Float]
 }
@@ -493,6 +558,7 @@ func zeros16(): array[16, Float] {
   ]
 }
 
+@experimental
 pub func Mat4.identity(): Mat4 {
   var a = zeros16()
   a[0] = 1.0f32
@@ -503,6 +569,7 @@ pub func Mat4.identity(): Mat4 {
 }
 
 /// Element at `row`, `col` (each 0 to 3).
+@experimental
 pub func Mat4.get(a: in Mat4, row: in Int, col: in Int): Float
   requires: row >= 0 and row < 4 and col >= 0 and col < 4
 {
@@ -510,6 +577,7 @@ pub func Mat4.get(a: in Mat4, row: in Int, col: in Int): Float
 }
 
 /// The product `a * b`: applying it to a vector applies `b` first, then `a`.
+@experimental
 pub func Mat4.mul(a: in Mat4, b: in Mat4): Mat4 {
   var res = zeros16()
   var col = 0
@@ -530,6 +598,7 @@ pub func Mat4.mul(a: in Mat4, b: in Mat4): Mat4 {
   mat4Of(res)
 }
 
+@experimental
 pub func Mat4.transform(a: in Mat4, v: in Vec4): Vec4 {
   Vec4(
     x = a.m[0] * v.x + a.m[4] * v.y + a.m[8] * v.z + a.m[12] * v.w,
@@ -540,15 +609,18 @@ pub func Mat4.transform(a: in Mat4, v: in Vec4): Vec4 {
 }
 
 /// Transform a point (w = 1), dropping the resulting w.
+@experimental
 pub func Mat4.transformPoint(a: in Mat4, p: in Vec3): Vec3 {
   a.transform(Vec4.fromVec3(p, 1.0f32)).xyz()
 }
 
 /// Transform a direction (w = 0): translation does not apply.
+@experimental
 pub func Mat4.transformDirection(a: in Mat4, d: in Vec3): Vec3 {
   a.transform(Vec4.fromVec3(d, 0.0f32)).xyz()
 }
 
+@experimental
 pub func Mat4.transpose(a: in Mat4): Mat4 {
   var res = zeros16()
   var col = 0
@@ -563,6 +635,7 @@ pub func Mat4.transpose(a: in Mat4): Mat4 {
   mat4Of(res)
 }
 
+@experimental
 pub func Mat4.translation(t: in Vec3): Mat4 {
   var a = Mat4.identity().m
   a[12] = t.x
@@ -571,6 +644,7 @@ pub func Mat4.translation(t: in Vec3): Mat4 {
   mat4Of(a)
 }
 
+@experimental
 pub func Mat4.scaling(s: in Vec3): Mat4 {
   var a = zeros16()
   a[0] = s.x
@@ -580,6 +654,7 @@ pub func Mat4.scaling(s: in Vec3): Mat4 {
   mat4Of(a)
 }
 
+@experimental
 pub func Mat4.rotationX(angle: in Float): Mat4 {
   val c = cosF(angle)
   val s = sinF(angle)
@@ -591,6 +666,7 @@ pub func Mat4.rotationX(angle: in Float): Mat4 {
   mat4Of(a)
 }
 
+@experimental
 pub func Mat4.rotationY(angle: in Float): Mat4 {
   val c = cosF(angle)
   val s = sinF(angle)
@@ -602,6 +678,7 @@ pub func Mat4.rotationY(angle: in Float): Mat4 {
   mat4Of(a)
 }
 
+@experimental
 pub func Mat4.rotationZ(angle: in Float): Mat4 {
   val c = cosF(angle)
   val s = sinF(angle)
@@ -614,6 +691,7 @@ pub func Mat4.rotationZ(angle: in Float): Mat4 {
 }
 
 /// The rotation matrix of a unit quaternion.
+@experimental
 pub func Mat4.fromQuat(q: in Quat): Mat4 {
   val xx = q.x * q.x
   val yy = q.y * q.y
@@ -638,6 +716,7 @@ pub func Mat4.fromQuat(q: in Quat): Mat4 {
 }
 
 /// A right-handed view matrix looking from `eye` toward `target`.
+@experimental
 pub func Mat4.lookAt(eye: in Vec3, target: in Vec3, up: in Vec3): Mat4 {
   val f = (target - eye).normalize()
   val s = f.cross(up).normalize()
@@ -660,6 +739,7 @@ pub func Mat4.lookAt(eye: in Vec3, target: in Vec3, up: in Vec3): Mat4 {
 
 /// A right-handed perspective projection with 0-to-1 clip-space depth.
 /// `fovY` is the vertical field of view in radians.
+@experimental
 pub func Mat4.perspective(fovY: in Float, aspect: in Float, near: in Float, far: in Float): Mat4
   requires: fovY > 0.0f32 and aspect > 0.0f32 and near > 0.0f32 and far > near
 {
@@ -674,6 +754,7 @@ pub func Mat4.perspective(fovY: in Float, aspect: in Float, near: in Float, far:
 }
 
 /// A right-handed orthographic projection with 0-to-1 clip-space depth.
+@experimental
 pub func Mat4.orthographic(
   left: in Float,
   right: in Float,
@@ -696,6 +777,7 @@ pub func Mat4.orthographic(
 }
 
 /// The inverse, or `None` when the matrix is singular.
+@experimental
 pub func Mat4.inverse(a: in Mat4): Option[Mat4] {
   val m = a.m
   var inv = zeros16()
@@ -756,6 +838,7 @@ pub func Mat4.inverse(a: in Mat4): Option[Mat4] {
 // Rgba8 - an 8-bit-per-channel colour, laid out as the four bytes a
 // texture upload expects.
 // =====================================================================
+@experimental
 pub record Rgba8 {
   r: Byte
   g: Byte
@@ -763,29 +846,35 @@ pub record Rgba8 {
   a: Byte
 }
 
+@experimental
 pub func Rgba8.white(): Rgba8 {
   Rgba8(r = 255.toByte(), g = 255.toByte(), b = 255.toByte(), a = 255.toByte())
 }
 
+@experimental
 pub func Rgba8.black(): Rgba8 {
   Rgba8(r = 0.toByte(), g = 0.toByte(), b = 0.toByte(), a = 255.toByte())
 }
 
+@experimental
 pub func Rgba8.transparent(): Rgba8 {
   Rgba8(r = 0.toByte(), g = 0.toByte(), b = 0.toByte(), a = 0.toByte())
 }
 
 /// From four channels, each clamped to 0 to 255.
+@experimental
 pub func Rgba8.fromInts(r: in Int, g: in Int, b: in Int, a: in Int): Rgba8 {
   Rgba8(r = clampChannel(r), g = clampChannel(g), b = clampChannel(b), a = clampChannel(a))
 }
 
 /// From `0xRRGGBB`, fully opaque.
+@experimental
 pub func Rgba8.fromRgb(rgb: in Int): Rgba8 {
   Rgba8.fromInts(rgb.shr(16).and(255), rgb.shr(8).and(255), rgb.and(255), 255)
 }
 
 /// From `0xRRGGBBAA`: the low byte is alpha.
+@experimental
 pub func Rgba8.fromRgba(rgba: in Long): Rgba8 {
   Rgba8.fromInts(
     rgba.shr(24).and(255i64).toInt(),
@@ -806,6 +895,7 @@ func clampChannel(v: in Int): Byte {
 }
 
 /// The colour as four floats in 0 to 1, in r, g, b, a order.
+@experimental
 pub func Rgba8.toVec4(c: in Rgba8): Vec4 {
   Vec4(
     x = c.r.toInt().toFloat() / 255.0f32,
@@ -816,6 +906,7 @@ pub func Rgba8.toVec4(c: in Rgba8): Vec4 {
 }
 
 /// From four floats in 0 to 1 (clamped), rounding to the nearest byte.
+@experimental
 pub func Rgba8.fromVec4(v: in Vec4): Rgba8 {
   Rgba8.fromInts(channelOf(v.x), channelOf(v.y), channelOf(v.z), channelOf(v.w))
 }

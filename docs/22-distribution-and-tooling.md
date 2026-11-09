@@ -296,6 +296,53 @@ out of scope for this mechanism; see `docs/34-distribution-strategy.md` §7
 for the existing code-signing surface (Authenticode/notarization/NuGet
 signing) this would complement.
 
+## 5.3. Cutting the public-API baseline
+
+`lyric public-api-diff <old.dll> <new.dll>` is the SemVer gate for the
+`@stable` surface (`lyric-stdlib/STABILITY.md`, D040).  It reads the embedded
+`Lyric.Contract` resource of each assembly (`Lyric.ContractMeta.readFromFile`),
+prints one line per added, removed or changed public declaration, and exits
+`0` (no breaking change), `2` (a removed or changed item that is not
+`@experimental`, or a `[breaking]` contract clause) or `1` (usage error, or an
+assembly without a `Lyric.Contract` resource).  The baseline is therefore a set
+of assemblies kept from the release, not a source ref.  CI does not run the
+command today (`public-api-diff` appears in no workflow, script or Makefile
+target).
+
+**Known gap, verified 2026-11-09 with `lyric` 0.7.12.**  The command reads only
+the bare `Lyric.Contract` resource that a single-package build embeds.  A
+project-as-DLL bundle embeds one `Lyric.Contract.<Pkg>` resource per package
+instead, so `lyric public-api-diff lib/Lyric.Stdlib.dll lib/Lyric.Stdlib.dll`
+and the same command on any multi-package library (`lyric-cache`'s `Cache.dll`
+was the one tried) both fail with `has no Lyric.Contract resource`.  Until
+`cmdPublicApiDiff` walks `readAllContractsFromFile` (or the docs/70 package
+interfaces, `lyric interface dump`) the standard library and every
+multi-package ecosystem library cannot be baselined with this command.  That is
+a compiler change and is a prerequisite of step 4 below.
+
+Procedure for the `v1.0` tag, once the gap is closed:
+
+1. Walk the stability table (`lyric-stdlib/STABILITY.md`, "Walk procedure") so
+   every module is listed and every `pub` item carries `@stable(since="1.0")`
+   or `@experimental`.
+2. Set the release version in `lyric-stdlib/lyric.toml` and in each library's
+   `lyric.toml` (`lyric version --set 1.0.0`).  The embedded contract records
+   the manifest's `[package] version`, so a baseline built before the bump
+   would carry `0.1.0`.
+3. Build the release as usual.  The standard library baseline is the SDK's
+   `lib/Lyric.Stdlib.dll`; a library's baseline is the DLL of
+   `lyric build --manifest <lib>/lyric.toml`.  Build libraries after docs/70
+   phase 5, because the library artifact format changes there
+   (docs/70 §12.3).
+4. Attach every baseline assembly to the GitHub release as an asset named
+   `api-baseline-<Assembly>-<version>.dll` (they are not committed to the
+   repository), and list them in `SHASUMS256.txt` (section 5.2).
+5. For each later release, download the baseline for the previous
+   major line, build the candidate, and run
+   `lyric public-api-diff api-baseline-Lyric.Stdlib-1.0.0.dll lib/Lyric.Stdlib.dll`.
+   Exit `2` requires a major bump; exit `0` with entries requires at least a
+   minor bump.  Add this as a CI step on release branches.
+
 ## 6. VS Code extension features
 
 The existing extension (`lyric-vscode/`) provides syntax highlighting,

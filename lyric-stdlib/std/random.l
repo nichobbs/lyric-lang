@@ -17,6 +17,7 @@ import Std.RandomHost
 
 /// Re-export the Random opaque type so callers need only `import Std.Random`
 /// for both the helpers and explicit type annotations.
+@stable(since = "1.0")
 pub alias Random = Std.RandomHost.Random
 
 /// Return the process-wide shared Random instance.

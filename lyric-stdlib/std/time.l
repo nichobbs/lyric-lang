@@ -312,6 +312,7 @@ pub func monotonicNanos(): Long {
 /// Implemented on `dotnet` (`Thread.Sleep`), `jvm` (`Thread.sleep`), and
 /// native (`lyric_rt`) — works on every target.
 @io
+@stable(since = "1.0")
 pub func sleepMillis(ms: in Int): Unit {
   if ms <= 0 {
     return

@@ -69,14 +69,14 @@ pub func exitCode(code: in Int): Never {
 /// On .NET this is `System.AppContext.BaseDirectory`, which is the
 /// directory containing the entry assembly.  Useful for resolving
 /// resources packaged alongside the binary.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func appBaseDirectory(): String {
   hostAppBaseDirectory()
 }
 
 /// Current working directory of the process.  Equivalent to `pwd` on
 /// POSIX.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func currentDirectory(): String {
   hostCurrentDirectory()
 }

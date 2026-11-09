@@ -28,7 +28,7 @@ import Std.String
 /// Quote one argument so `argvSplit` (and CommandLineToArgvW) decodes it
 /// back to exactly `arg`.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func argvQuote(arg: in String): String {
   val sb = StringBuilder.new()
   sb.append("\"")
@@ -61,7 +61,7 @@ pub func argvQuote(arg: in String): String {
 
 /// Join `args` into one command-line string, each argument quoted.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func argvJoin(args: in List[String]): String {
   val sb = StringBuilder.new()
   var i = 0
@@ -77,7 +77,7 @@ pub func argvJoin(args: in List[String]): String {
 
 /// Split a command-line string into its arguments (the inverse of
 /// `argvJoin`, and of any CommandLineToArgvW-conformant encoder).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func argvSplit(argStr: in String): List[String] {
   val parsed: List[String] = newList()
   var i = 0

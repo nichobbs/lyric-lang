@@ -17,7 +17,7 @@ import Std.RegexHost as RxKernel
 
 // ─── Error type ──────────────────────────────────────────────────────────────
 /// Errors surfaced by the safe regex wrapper.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union RegexError {
   /// `RegexMatchTimeoutException` from the BCL — the pattern took
   /// longer than the compiled timeout (default 1s) to match.  The
@@ -30,7 +30,7 @@ pub union RegexError {
   case RegexBug(message: String)
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func errorMessage(e: in RegexError): String {
   match e {
     case TimedOut(m) -> "regex match timed out: " + m
@@ -41,7 +41,7 @@ pub func errorMessage(e: in RegexError): String {
 // ─── Safe wrappers ───────────────────────────────────────────────────────────
 /// Compile a pattern with the default 1-second match timeout.
 /// Returns `Err(RegexBug)` when the pattern itself is invalid.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func tryCompile(
   // `tryCompile`, `tryIsMatch`, `tryMatchOne`, `tryReplace` are
   // prefixed to distinguish them from the `host*`-prefixed kernel functions.
@@ -56,7 +56,7 @@ pub func tryCompile(
 
 /// Test whether `input` matches `r`.  Returns `Err(TimedOut)` when
 /// the match exceeds the compiled timeout.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func tryIsMatch(r: in RxKernel.Regex, input: in String): Result[Bool, RegexError] {
   return try {
     Ok(value = RxKernel.hostIsMatch(r, input))
@@ -68,7 +68,7 @@ pub func tryIsMatch(r: in RxKernel.Regex, input: in String): Result[Bool, RegexE
 /// Single-match: returns the first match (success-flag on the
 /// returned `Match` distinguishes "no match" from "match at offset").
 /// `Err(TimedOut)` on regex-engine overrun.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func tryMatchOne(r: in RxKernel.Regex, input: in String): Result[RxKernel.Match, RegexError] {
   return try {
     Ok(value = RxKernel.hostMatchOne(r, input))
@@ -79,7 +79,7 @@ pub func tryMatchOne(r: in RxKernel.Regex, input: in String): Result[RxKernel.Ma
 
 /// Replace every match of `r` in `input` with `replacement`.
 /// `Err(TimedOut)` on regex-engine overrun.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func tryReplace(r: in RxKernel.Regex, input: in String, replacement: in String): Result[String, RegexError] {
   return try {
     Ok(value = RxKernel.hostReplace(r, input, replacement))

@@ -46,7 +46,7 @@ pub enum HttpMethod {
 /// `build()`s successfully — builder construction stays infallible by
 /// design — but every operation on the resulting client fails with a
 /// typed `HttpError.ConnectionFailed` naming this limitation.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub enum HttpVersion {
   case Http11
   case Http2
@@ -160,7 +160,7 @@ pub opaque type Headers {
 /// `InvalidUrl` errors are surfaced through the `Result` return type.
 /// For requests that need custom headers or non-string bodies, use
 /// `send` with a pre-built `HttpRequest`.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub interface HttpClient {
   /// Send a pre-built HTTP request.
   async func send(request: in HttpRequest): Result[HttpResponse, HttpError]
@@ -350,7 +350,7 @@ impl HttpClient for HttpClientImpl {
 ///     .withNoRedirects()
 ///     .build()
 /// ```
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub record HttpClientBuilder {
   socketPath: Option[String]
   maxRedirects: Option[Int]
@@ -364,7 +364,7 @@ pub record HttpClientBuilder {
 }
 
 /// Construct a default builder (TCP transport, redirect-following, process-wide singleton).
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func HttpClientBuilder.new(): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = None,
@@ -383,7 +383,7 @@ pub func HttpClientBuilder.new(): HttpClientBuilder {
 ///
 /// Common paths: Docker at `/var/run/docker.sock`, systemd at
 /// `/run/systemd/private/io.systemd.Journal`.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in String): HttpClientBuilder
   requires: path.length > 0
 {
@@ -401,7 +401,7 @@ pub func HttpClientBuilder.withUnixSocket(b: in HttpClientBuilder, path: in Stri
 }
 
 /// Follow up to `max` redirects automatically.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withRedirects(b: in HttpClientBuilder, max: in Int): HttpClientBuilder
   requires: max >= 0
 {
@@ -419,7 +419,7 @@ pub func HttpClientBuilder.withRedirects(b: in HttpClientBuilder, max: in Int): 
 }
 
 /// Do not follow redirects.  3xx responses are returned to the caller as-is.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withNoRedirects(b: in HttpClientBuilder): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -437,7 +437,7 @@ pub func HttpClientBuilder.withNoRedirects(b: in HttpClientBuilder): HttpClientB
 /// Set the negotiated HTTP protocol version. See `HttpVersion` for the
 /// per-case semantics (default `Http2`, exact `Http11` pin, reserved
 /// `Http3`).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in HttpVersion): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -469,7 +469,7 @@ pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in 
 /// On jvm, `cert` is added to a `KeyStore` alongside every certificate the
 /// platform's own default trust store already accepts — a chain valid
 /// against either set is accepted.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -496,7 +496,7 @@ pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in C
 /// Supported on both targets (#5877, #5878). On jvm, `cert` is the ONLY
 /// entry in the `KeyStore` fed to the `TrustManagerFactory` — the
 /// platform's own trust store is never consulted.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withExclusiveCaCertificate(b: in HttpClientBuilder, cert: in Certificate): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -517,7 +517,7 @@ pub func HttpClientBuilder.withExclusiveCaCertificate(b: in HttpClientBuilder, c
 /// Supported on both targets (#5877, #5878). On jvm, `identity`'s
 /// certificate + private key populate a `KeyStore` fed to a
 /// `KeyManagerFactory`.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withClientIdentity(b: in HttpClientBuilder, identity: in Identity): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -539,7 +539,7 @@ pub func HttpClientBuilder.withClientIdentity(b: in HttpClientBuilder, identity:
 /// Supported on both targets (#5877, #5878). On jvm, lowers to
 /// `SSLParameters.setProtocols` (`["TLSv1.3"]` for the `Tls13` pin,
 /// `["TLSv1.2", "TLSv1.3"]` for the `Tls12` floor).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withMinTlsVersion(b: in HttpClientBuilder, version: in TlsVersion): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -579,7 +579,7 @@ pub func HttpClientBuilder.withMinTlsVersion(b: in HttpClientBuilder, version: i
 /// otherwise describes ("disables peer chain verification and hostname
 /// matching together"), not a gap: on `--target jvm` a hostname-mismatched
 /// certificate is rejected even with this option enabled.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpClientBuilder.withInsecureSkipVerify(b: in HttpClientBuilder): HttpClientBuilder {
   HttpClientBuilder(
     socketPath = b.socketPath,
@@ -607,7 +607,7 @@ pub func HttpClientBuilder.withInsecureSkipVerify(b: in HttpClientBuilder): Http
 /// typed `ConnectionFailed` naming the gap, rather than silently
 /// connecting without the configured options — this probe exists so
 /// callers can detect that case ahead of time.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func tlsConfigSupported(): Bool {
   HostHttp.hostSupportsTlsConfig()
 }
@@ -624,7 +624,7 @@ func hasTlsOptions(b: in HttpClientBuilder): Bool {
 /// without mutating the process environment, and the same policy governs
 /// `Std.Tls.TlsServerConfig`'s future `insecureSkipClientVerify` (docs/61
 /// §4) — server-side TLS code can reuse this instead of re-deriving it.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub enum InsecureVerifyPolicy {
   case VerificationEnabled
   case VerificationEnabledWarn
@@ -635,7 +635,7 @@ pub enum InsecureVerifyPolicy {
 /// table `withInsecureSkipVerify`'s doc comment reproduces). Both inputs
 /// are read once, at `build()` time.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func resolveInsecureVerifyPolicy(codeOptIn: in Bool, envAllows: in Bool): InsecureVerifyPolicy {
   if not codeOptIn {
     VerificationEnabled
@@ -668,7 +668,7 @@ func warnInsecureVerifyRequestedWithoutEnv(): Unit {
 /// (see `HttpVersion`'s doc comment and `tlsConfigSupported()`): the
 /// returned client is fully constructed, but every operation on it fails
 /// with a typed `ConnectionFailed` naming the unsupported feature.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   // Unwrap `Option[HttpVersion]` to a plain `HttpVersion` (defaulting the
   // unset case to `Http2`, the documented default) BEFORE matching its
@@ -833,7 +833,7 @@ pub func Url.tryFrom(raw: in String): Result[Url, HttpError] {
 /// #7251 only the prefix was checked, so `http://` and a URL carrying CR/LF
 /// were accepted and failed later, inside the host HTTP client.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func isHttpUrlShape(raw: in String): Bool {
   var i = 0
   while i < raw.length {
@@ -910,7 +910,7 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///   one is appended (#6658); use `withJsonBody`/`withTextBody` to set the
 ///   content type, or a request-shaping option on `HttpClientBuilder` for
 ///   `Host`/`Connection`.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError] {
   if not isHeaderNameToken(key) or not isHeaderValueSafe(value) {
     return Err(error = InvalidHeader(url = request.url, name = key))
@@ -1353,7 +1353,7 @@ pub func HttpResponse.header(response: in HttpResponse, name: in String): Option
 /// (docs/61 §5.1). A plaintext (`http://`) response is always `Http11` —
 /// h2 only upgrades via ALPN, which requires TLS — regardless of the
 /// requesting client's `HttpVersion` default or pin.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func HttpResponse.negotiatedVersion(response: in HttpResponse): HttpVersion {
   val major = HostHttp.hostResponseVersionMajor(response.handle)
   match major {
@@ -1374,7 +1374,7 @@ pub func HttpResponse.negotiatedVersion(response: in HttpResponse): HttpVersion 
 ///
 /// Prefer this over constructing a new client per request.  The singleton
 /// handle avoids TCP socket-pool exhaustion from repeated construction.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func defaultClient(): HttpClient {
   HttpClientImpl(handle = HostHttp.hostDefaultClient(), unsupportedReason = None)
 }
@@ -1410,7 +1410,7 @@ pub func clientNoRedirects(): HttpClient {
 /// - `socketPath` must be a valid path to an accessible Unix socket.
 ///
 /// Connection failures are represented as `ConnectionFailed` by `send`.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func clientWithUnixSocket(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {
@@ -1422,7 +1422,7 @@ pub func clientWithUnixSocket(socketPath: in String): HttpClient
 /// # Preconditions as data
 /// - `socketPath` must be a valid path to an accessible Unix socket.
 /// - `maxRedirects` must be non-negative.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClient
   requires: socketPath.length > 0
   requires: maxRedirects >= 0
@@ -1439,7 +1439,7 @@ pub func clientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: i
 ///
 /// # Preconditions as data
 /// - `socketPath` must be a valid path to an accessible Unix socket.
-@stable(since = "1.1")
+@stable(since = "1.0")
 pub func clientWithUnixSocketNoRedirects(socketPath: in String): HttpClient
   requires: socketPath.length > 0
 {

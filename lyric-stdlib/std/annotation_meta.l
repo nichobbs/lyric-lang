@@ -32,7 +32,7 @@ import Std.AnnotationMetaHost
 /// quotes), `"bare"` (a bare identifier argument; `value` is the
 /// identifier), or `"call"` (a nested `name(...)` argument; only the head
 /// name is recorded in `value`).
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record AnnotationArg {
   name: String
   kind: String
@@ -44,7 +44,7 @@ pub record AnnotationArg {
 /// `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` name the field's initialiser reads
 /// (D046), which is also the key `Std.ConfigOverride` takes (D230); the
 /// compiler records it so no consumer re-derives the naming rule.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record AnnotatedField {
   packageName: String
   configName: String
@@ -55,7 +55,7 @@ pub record AnnotatedField {
 }
 
 /// Why annotation metadata could not be produced.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union AnnotationMetaError {
   /// This target does not embed annotation metadata (native).  Retrying
   /// will never succeed.
@@ -66,7 +66,7 @@ pub union AnnotationMetaError {
 }
 
 /// Human-readable message for logging.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func errorMessage(err: in AnnotationMetaError): String {
   match err {
     case Unsupported(reason) -> "annotation metadata unsupported: " + reason
@@ -162,7 +162,7 @@ func decodeField(v: in JsonValue, site: in String): Result[AnnotatedField, Annot
 /// objects) into
 /// its annotated fields, in document order.  Pure; exposed so the decoder is
 /// testable without an embedded resource.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseAnnotationMeta(json: in String): Result[List[AnnotatedField], AnnotationMetaError] {
   match parseValue(json) {
     case Err(e) -> Err(error = malformed(JsonParseError.message(e)))
@@ -190,7 +190,7 @@ pub func parseAnnotationMeta(json: in String): Result[List[AnnotatedField], Anno
 /// # Errors
 /// - `Unsupported`: the target embeds no annotation metadata (native).
 /// - `Malformed`: an embedded document does not decode.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func allAnnotatedFields(): Result[List[AnnotatedField], AnnotationMetaError] {
   if not hostAnnotationMetaSupported() {
     return Err(
@@ -235,7 +235,7 @@ func stripAt(name: in String): String {
 /// # Errors
 /// - `Unsupported`: the target embeds no annotation metadata (native).
 /// - `Malformed`: an embedded document does not decode.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func fieldsWithAnnotation(annotationName: in String): Result[List[AnnotatedField], AnnotationMetaError]
   requires: annotationName.length > 0
 {
@@ -258,7 +258,7 @@ pub func fieldsWithAnnotation(annotationName: in String): Result[List[AnnotatedF
 
 /// The value of the argument written `name: value`, if present.  The first
 /// match wins.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func namedArg(f: in AnnotatedField, name: in String): Option[String] {
   var i = 0
   while i < f.args.count {
@@ -272,7 +272,7 @@ pub func namedArg(f: in AnnotatedField, name: in String): Option[String] {
 
 /// The value of the `index`th positional (unnamed) argument, counting from
 /// zero, if present.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func positionalArg(f: in AnnotatedField, index: in Int): Option[String] {
   var seen = 0
   var i = 0

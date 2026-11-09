@@ -37,7 +37,7 @@ import Std.JsonValue
 import Std.PanicGuardHost
 
 // ── Envelope types ─────────────────────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union RpcId {
   case IntId(value: Long)
   case StringId(value: String)
@@ -45,14 +45,14 @@ pub union RpcId {
 }
 
 /// `id = None` marks a notification (no response is ever expected).
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record RpcRequest {
   id: Option[RpcId]
   method: String
   params: Option[JsonValue]
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record RpcError {
   code: Int
   message: String
@@ -67,31 +67,32 @@ pub record RpcError {
 // binding name; only this one production trips over it, presumably because
 // `result` is *also* the reserved word available inside `ensures:` contract
 // clauses). Tracked in #6118.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union RpcResponse {
   case RpcSuccess(id: RpcId, value: JsonValue)
   case RpcFailure(id: RpcId, error: RpcError)
 }
 
 // ── Standard error codes (JSON-RPC 2.0 §5.1) ────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val parseError: Int = -32700
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val invalidRequest: Int = -32600
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val methodNotFound: Int = -32601
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val invalidParams: Int = -32602
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val internalError: Int = -32603
 
 /// True when `code` lies in -32768..-32000, the range JSON-RPC 2.0 §5.1
 /// reserves for predefined errors. Application errors must stay outside it.
 @pure
+@stable(since = "1.0")
 pub func isReservedErrorCode(code: in Int): Bool {
   code >= -32768 and code <= -32000
 }
@@ -99,7 +100,7 @@ pub func isReservedErrorCode(code: in Int): Bool {
 /// An application-defined error. The precondition keeps handlers from
 /// passing off their own failures as protocol errors (a reserved code such
 /// as `-32601` would tell the peer the method does not exist).
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func applicationError(code: in Int, message: in String, data: in Option[JsonValue]): RpcError
   requires: not isReservedErrorCode(code)
 {
@@ -110,6 +111,7 @@ pub func applicationError(code: in Int, message: in String, data: in Option[Json
 /// the `rpc.` namespace, which JSON-RPC 2.0 §4 reserves for rpc-internal
 /// methods and extensions.
 @pure
+@stable(since = "1.0")
 pub func isValidOutboundMethod(method: in String): Bool {
   method.length > 0 and not method.startsWith("rpc.")
 }
@@ -117,27 +119,28 @@ pub func isValidOutboundMethod(method: in String): Bool {
 /// Upper bound on the number of elements in an inbound batch. A larger batch
 /// is answered with a single `-32600 Invalid Request` instead of being
 /// dispatched element by element.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub val maxBatchSize: Int = 1024
 
 /// Error code of the local failure `call`/`callWithin` return when no
 /// response arrives before the deadline. `-32001` lies in the range JSON-RPC
 /// 2.0 §5.1 leaves to implementation-defined server errors, and is the code
 /// MCP SDKs use for a request timeout. It is never sent to the peer.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub val requestTimedOut: Int = -32001
 
 /// The call timeout a peer from `newPeer` applies to `call`, in milliseconds.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub val defaultCallTimeoutMs: Int = 60000
 
 /// Upper bound on a call timeout: 24 hours.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub val maxCallTimeoutMs: Int = 86400000
 
 /// True when `timeoutMs` is an accepted call timeout: 1 ms to
 /// `maxCallTimeoutMs`.
 @pure
+@stable(since = "1.0")
 pub func isValidCallTimeout(timeoutMs: in Int): Bool {
   timeoutMs >= 1 and timeoutMs <= maxCallTimeoutMs
 }
@@ -154,6 +157,7 @@ pub func isValidCallTimeout(timeoutMs: in Int): Bool {
 /// peer reported (or we locally assigned) code `-32001`", not as proof the
 /// local deadline actually passed.
 @pure
+@stable(since = "1.0")
 pub func isTimeoutError(e: in RpcError): Bool {
   e.code == requestTimedOut
 }
@@ -161,11 +165,11 @@ pub func isTimeoutError(e: in RpcError): Bool {
 /// Upper bound on the inbound requests/notifications `call` will queue while
 /// it waits for its own response. A peer that floods past it fails the
 /// pending `call` rather than growing the queue without limit.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub val maxPendingMessages: Int = 4096
 
 // ── Handler / transport interfaces ──────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface RpcHandler {
   /// Handle an incoming request; return the result value or an error.
   /// A `Bug` raised here is caught at the dispatch boundary and mapped to
@@ -179,14 +183,14 @@ pub interface RpcHandler {
 
 /// Outcome of `RpcTransport.receiveWithin`: one complete message, clean end
 /// of stream, or no complete message within the timeout.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub union ReceiveOutcome {
   case RpcMessage(text: String)
   case RpcEndOfStream
   case RpcTimedOut
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface RpcTransport {
   /// Block until the next complete message arrives. `None` ⇒ clean EOF.
   func receive(): Result[Option[String], String]
@@ -202,7 +206,7 @@ pub interface RpcTransport {
 }
 
 // ── Peer ────────────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub ref record RpcPeer {
   transport: RpcTransport
   handler: RpcHandler
@@ -222,7 +226,7 @@ pub ref record RpcPeer {
 /// Construct a peer over the given transport and handler, with
 /// `defaultCallTimeoutMs` as its call timeout. `runLoop`/`call`/`notify` all
 /// take the peer `inout` since dispatch mutates `nextId` and `pendingQueue`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer {
   RpcPeer(
     transport = transport,
@@ -235,7 +239,7 @@ pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer {
 
 /// Construct a peer whose `call` waits at most `callTimeoutMs` milliseconds
 /// for each response.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, callTimeoutMs: in Int): RpcPeer
   requires: isValidCallTimeout(callTimeoutMs)
 {
@@ -249,7 +253,7 @@ pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, 
 }
 
 /// Change the deadline `call` applies to later calls on this peer.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
   requires: isValidCallTimeout(callTimeoutMs)
 {
@@ -264,13 +268,13 @@ pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
 /// `workspace/applyEdit` would otherwise wait on the server while the server
 /// waits on it. The handler then runs inside `call`, so it may itself call.
 /// Off by default.
-@stable(since = "0.3")
+@stable(since = "1.0")
 pub func setServeDuringCall(peer: inout RpcPeer, serve: in Bool): Unit {
   peer.serveDuringCall = serve
 }
 
 /// Close the peer's underlying transport.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func closePeer(peer: in RpcPeer): Unit {
   peer.transport.close()
 }
@@ -352,7 +356,7 @@ func encodeRequestObject(id: in Option[RpcId], method: in String, params: in Opt
 
 /// Encode an `RpcRequest` envelope (a request when `id` is `Some`, a
 /// notification when `id` is `None`) to its wire `JsonValue`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func encodeRequest(req: in RpcRequest): JsonValue {
   encodeRequestObject(req.id, req.method, req.params)
 }
@@ -369,7 +373,7 @@ func encodeErrorObject(e: in RpcError): JsonValue {
 }
 
 /// Encode an `RpcResponse` envelope to its wire `JsonValue`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func encodeResponse(resp: in RpcResponse): JsonValue {
   match resp {
     case RpcSuccess(id, resultValue) -> {
@@ -728,7 +732,7 @@ func trySend(peer: inout RpcPeer, payload: in JsonValue, running: inout Bool, ou
 /// EOF (`Ok(None)`) or a transport-level failure (`Err`). Drains any
 /// messages queued by an in-flight `call()` first, on every iteration,
 /// before reading a new one from the transport.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
   var running = true
   var outcome: Result[Unit, String] = Ok(value = ())
@@ -814,7 +818,7 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
 /// Client MUST NOT expect a Response". Returns the first transport-send
 /// failure encountered, if any, leaving any remaining queued entries
 /// undrained (the same failure `runLoop` would hit and stop on).
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func drainPendingQueue(peer: inout RpcPeer): Result[Unit, String] {
   var running = true
   var outcome: Result[Unit, String] = Ok(value = ())
@@ -831,7 +835,7 @@ pub func drainPendingQueue(peer: inout RpcPeer): Result[Unit, String] {
 
 /// Issue an outbound request and wait for its response, for at most the
 /// peer's call timeout (`callWithin` with `peer.callTimeoutMs`).
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
   requires: isValidOutboundMethod(method)
 {
@@ -849,7 +853,7 @@ val localErrorMarker: String = "lyricLocal"
 /// the peer sent. A peer can put the same member in its own error `data`, so
 /// treat this as classification for retry decisions, not as authentication.
 @pure
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func isLocalError(e: in RpcError): Bool {
   match e.data {
     case None -> false
@@ -910,7 +914,7 @@ func remainingMs(deadlineNanos: in Long): Int {
 /// arrived, or more than `maxPendingMessages` inbound messages queued up.
 /// Queued messages stay queued for `runLoop` in every case, and a response
 /// that arrives after a timeout is dropped when it is later read.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func callWithin(
   peer: inout RpcPeer, method: in String, params: in Option[JsonValue], timeoutMs: in Int
 ): Result[JsonValue, RpcError]
@@ -990,7 +994,7 @@ pub func callWithin(
 }
 
 /// Send a notification (no response is ever expected).
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func notify(peer: inout RpcPeer, method: in String, params: in Option[JsonValue]): Result[Unit, String]
   requires: isValidOutboundMethod(method)
 {

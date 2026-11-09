@@ -21,6 +21,7 @@ import Std.Char
 import Std.Encoding
 
 // ── Error type ─────────────────────────────────────────────────────────────────
+@stable(since = "1.0")
 pub union XmlError {
   case UnexpectedChar(pos: Int, expected: String)
   case UnexpectedEof(pos: Int, expected: String)
@@ -28,6 +29,7 @@ pub union XmlError {
   case InvalidDocument(message: String)
 }
 
+@stable(since = "1.0")
 pub func XmlError.message(e: in XmlError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
@@ -42,11 +44,13 @@ pub func XmlError.message(e: in XmlError): String {
 }
 
 // ── Data model ─────────────────────────────────────────────────────────────────
+@stable(since = "1.0")
 pub record XmlAttr {
   name: String
   value: String
 }
 
+@stable(since = "1.0")
 pub union XmlNode {
   case Element(tag: String, attrs: List[XmlAttr], children: List[XmlNode])
   case Text(value: String)
@@ -54,6 +58,7 @@ pub union XmlNode {
   case CData(value: String)
 }
 
+@stable(since = "1.0")
 pub record XmlDoc {
   version: Option[String]
   encoding: Option[String]
@@ -742,7 +747,7 @@ func xParseProlog(st: inout XmlState): Result[Unit, XmlError] {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 /// Parse an XML string, returning the document tree or an error.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
   var st = XmlState(src = src, pos = 0)
   match xParseProlog(st) {
@@ -783,13 +788,13 @@ pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
 }
 
 /// Return the root element of the document.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func documentRoot(doc: in XmlDoc): XmlNode {
   doc.root
 }
 
 /// Return the tag name of an element node, or None if not an element.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func elementTag(node: in XmlNode): Option[String] {
   match node {
     case Element(tag, attrs, children) -> Some(value = tag)
@@ -800,7 +805,7 @@ pub func elementTag(node: in XmlNode): Option[String] {
 }
 
 /// Return the attribute list of an element, or an empty list.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func elementAttrs(node: in XmlNode): List[XmlAttr] {
   match node {
     case Element(tag, attrs, children) -> attrs
@@ -812,7 +817,7 @@ pub func elementAttrs(node: in XmlNode): List[XmlAttr] {
 }
 
 /// Return the child nodes of an element, or an empty list.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func elementChildren(node: in XmlNode): List[XmlNode] {
   match node {
     case Element(tag, attrs, children) -> children
@@ -824,7 +829,7 @@ pub func elementChildren(node: in XmlNode): List[XmlNode] {
 }
 
 /// Return the value of a named attribute, or None if absent.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getAttribute(node: in XmlNode, name: in String): Option[String] {
   val attrs = elementAttrs(node)
   var i = 0
@@ -839,7 +844,7 @@ pub func getAttribute(node: in XmlNode, name: in String): Option[String] {
 }
 
 /// Collect all text content within a node, depth-first.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func textContent(node: in XmlNode): String {
   match node {
     case Text(v) -> v
@@ -869,7 +874,7 @@ func xAppendTextContent(node: in XmlNode, sb: in StringBuilder): Unit {
 }
 
 /// Find the first descendant element (depth-first) with the given tag.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
   match node {
     case Text(_) -> None
@@ -892,7 +897,7 @@ pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
 }
 
 /// Collect all descendant elements (depth-first) with the given tag.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func findAll(node: in XmlNode, tag: in String): List[XmlNode] {
   val result: List[XmlNode] = newList()
   xCollectAll(node, tag, result)

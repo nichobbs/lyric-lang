@@ -25,11 +25,13 @@ import Std.FileHost
 /// JVM, a `{ epochNanos: Long }` record on native — issue #6961) and
 /// compared via `hostDateTimeGreaterThan` — no extern type is declared
 /// here; the kernel owns the boundary.
+@stable(since = "1.0")
 pub record FileStat {
   modifiedAt: FileTime
 }
 
 /// Compare two file modification times. Returns true if `a` is newer than `b`.
+@stable(since = "1.0")
 pub func fileStatIsNewer(a: in FileStat, b: in FileStat): Bool {
   hostDateTimeGreaterThan(a.modifiedAt, b.modifiedAt)
 }
@@ -111,7 +113,7 @@ pub func createDir(path: in String): Result[Unit, IOError] {
 /// shim which the kernel doesn't expose today.  Callers that need
 /// idempotent semantics should check `dirExists(path)` first or
 /// match on `Err(IoError)` and ignore it.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -135,7 +137,7 @@ pub func deleteDirRecursive(path: in String): Result[Unit, IOError] {
 /// invoke `deleteFile` unconditionally.  This is the opposite of
 /// `deleteDirRecursive`, which routes the BCL's
 /// `DirectoryNotFoundException` into `Err(IoError)`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func deleteFile(path: in String): Result[Unit, IOError] {
   if path.length == 0 {
     return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
@@ -290,6 +292,7 @@ pub func stat(path: in String): Result[FileStat, IOError] {
 }
 
 /// What a path names, looked at without following a symbolic link.
+@experimental
 pub enum EntryKind {
   case Missing
   case RegularFile

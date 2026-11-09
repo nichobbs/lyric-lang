@@ -52,20 +52,20 @@ import Std.TlsHost as Host
 // Core types.
 // ---------------------------------------------------------------------------
 /// A parsed X.509 certificate (no private key), loaded from PEM.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub opaque type Certificate {
   handle: Host.CertHandle
 }
 
 /// A certificate plus its private key — a server or client identity.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub opaque type Identity {
   handle: Host.CertHandle
 }
 
 /// Minimum TLS protocol version. TLS 1.2 is the floor; there is no
 /// constructor for anything older.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub enum TlsVersion {
   case Tls12
   case Tls13
@@ -86,7 +86,7 @@ pub enum TlsVersion {
 /// identical code runs correctly on `--target dotnet`). Filed as #5903 —
 /// this rename is the workaround for `Std.Tls` specifically, not a fix for
 /// the underlying cross-package case-name collision.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub union TlsError {
   // Also covers permission-denied and other unreadable-file conditions —
   // `Std.Tls` does not distinguish "absent" from "unreadable" beyond this
@@ -99,7 +99,7 @@ pub union TlsError {
 
 /// Human-readable message for a TlsError.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func TlsError.message(e: in TlsError): String {
   match e {
     case CertFileNotFound(path) -> "file not found: " + path
@@ -123,7 +123,7 @@ pub func TlsError.message(e: in TlsError): String {
 /// miscompiled this on both targets (`--target jvm` #5908, `--target
 /// dotnet` #5920) is fixed. See `tls_server_config_tests.l`'s
 /// omitted-defaults test.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub record TlsServerConfig {
   identity: Identity
   minVersion: TlsVersion = Tls12
@@ -228,7 +228,7 @@ func identityFromBytes(
 /// # Errors
 /// - `CertFileNotFound`: the file does not exist or could not be read.
 /// - `PemMalformed`: the file does not contain a parseable certificate.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func Certificate.fromPemFile(path: in String): Result[Certificate, TlsError]
   requires: path.length > 0
 {
@@ -244,7 +244,7 @@ pub func Certificate.fromPemFile(path: in String): Result[Certificate, TlsError]
 /// - `PemMalformed`: `pem` is empty or does not contain a parseable
 ///   certificate. PEM text usually comes from an environment variable or a
 ///   secret store, so an empty value is an error, not a precondition (#7251).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError] {
   if pem.length == 0 {
     return Err(error = PemMalformed(path = "<memory>", message = "the certificate PEM text is empty"))
@@ -267,7 +267,7 @@ pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError] {
 ///   `keyPath`.
 /// - `KeyMismatch`: a detected certificate/key mismatch (always on JVM;
 ///   cross-algorithm mismatches only on .NET — module header).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func Identity.fromPemFiles(certPath: in String, keyPath: in String): Result[Identity, TlsError]
   requires: certPath.length > 0
   requires: keyPath.length > 0
@@ -284,7 +284,7 @@ pub func Identity.fromPemFiles(certPath: in String, keyPath: in String): Result[
 /// Load a certificate and its private key from PEM text already in memory.
 /// Same error discipline as `fromPemFiles`; `path` in the returned error is
 /// `"<memory>"`. Empty PEM text is `PemMalformed` (#7251).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identity, TlsError] {
   if certPem.length == 0 {
     return Err(error = PemMalformed(path = "<memory>", message = "the certificate PEM text is empty"))

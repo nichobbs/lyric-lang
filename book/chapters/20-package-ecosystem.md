@@ -105,11 +105,13 @@ You can inspect the contract resource of any compiled Lyric package using `dotne
 
 ## §20.4 SemVer and `lyric public-api-diff`
 
-`lyric public-api-diff` compares your current public surface against a previous git ref and reports what changed:
+`lyric public-api-diff` compares the public surface of two built assemblies and reports what changed:
 
 ```sh
-lyric public-api-diff v1.2.0   # compare against the v1.2.0 git tag
+lyric public-api-diff baseline/Billing-1.2.0.dll bin/Billing.dll
 ```
+
+The first argument is a DLL you kept from the previous release; the second is the one you are about to ship.
 
 The output lists:
 
@@ -117,7 +119,9 @@ The output lists:
 - **Removed** — missing `pub` declarations (breaking for `@stable` items; non-breaking for `@experimental`).
 - **Changed** — signature or contract modifications (breaking for `@stable` items; non-breaking for `@experimental`).
 
-If you remove or change a `@stable` declaration without bumping the major version in `lyric.toml`, the tool exits with a non-zero status and names the offending items. Run it in CI before any release tag.
+The tool exits `0` when nothing breaks, `2` when a `@stable` declaration was removed or changed (the release needs a major version bump), and `1` for a usage error or an assembly that has no `Lyric.Contract` resource. Run it in CI before any release tag.
+
+> **Current limit.** The command reads the bare `Lyric.Contract` resource that a single-package build embeds. An assembly built from a multi-package project carries one `Lyric.Contract.<Pkg>` resource per package, which `public-api-diff` does not read yet, so it reports "has no Lyric.Contract resource" for such a bundle (`docs/22-distribution-and-tooling.md` section 5.3).
 
 The tool reads stability information from the `Lyric.Contract` embedded resource of the previous version's DLL — it doesn't need to check out the old source.
 
@@ -252,7 +256,7 @@ lyric build --manifest lyric.toml   # finds std.core, std.io, etc. from LYRIC_ST
 
 3. **`lyric public-api-diff` in practice**
 
-   In a git repository, build a Lyric package at an initial commit. Tag it `v1.0.0`. Then remove one `@stable` function and one `@experimental` function. Run `lyric public-api-diff v1.0.0`. What does the output report for each removal? What does the tool say about the version bump required in `lyric.toml`?
+   Build a single-package Lyric library and keep a copy of the DLL as `v1.0.0.dll`. Then remove one `@stable` function and one `@experimental` function, rebuild, and run `lyric public-api-diff v1.0.0.dll <new.dll>`. What does the output report for each removal? What exit code does the tool return, and what version bump does that imply?
 
 4. **Inspecting the `Lyric.Contract` resource**
 

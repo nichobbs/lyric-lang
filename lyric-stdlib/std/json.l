@@ -120,7 +120,7 @@ pub func getDouble(elem: in JsonElement): Double
 }
 
 /// True when `elem` is an object with a property called `name`.
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func hasProperty(elem: in JsonElement, name: in String): Bool {
   match tryGetProperty(elem, name) {
@@ -130,14 +130,14 @@ pub func hasProperty(elem: in JsonElement, name: in String): Bool {
 }
 
 /// True when `elem` is a JSON string (`getString`'s precondition).
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func isJsonString(elem: in JsonElement): Bool {
   hostValueKind(elem) == 3
 }
 
 /// True when `elem` is a number that fits an `Int` (`getInt32`'s precondition).
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func isJsonInt32(elem: in JsonElement): Bool {
   match tryGetInt(elem) {
@@ -147,7 +147,7 @@ pub func isJsonInt32(elem: in JsonElement): Bool {
 }
 
 /// True when `elem` is a number that fits a `Long` (`getInt64`'s precondition).
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func isJsonInt64(elem: in JsonElement): Bool {
   match tryGetLong(elem) {
@@ -157,7 +157,7 @@ pub func isJsonInt64(elem: in JsonElement): Bool {
 }
 
 /// True when `elem` is `true` or `false` (`getBoolean`'s precondition).
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func isJsonBool(elem: in JsonElement): Bool {
   val kind = hostValueKind(elem)
@@ -166,7 +166,7 @@ pub func isJsonBool(elem: in JsonElement): Bool {
 
 /// True when `elem` is a number readable as a `Double` (`getDouble`'s
 /// precondition).
-@stable(since = "1.2")
+@stable(since = "1.0")
 @pure
 pub func isJsonDouble(elem: in JsonElement): Bool {
   match tryGetDouble(elem) {
@@ -257,6 +257,7 @@ pub func valueKind(elem: in JsonElement): Int {
 // opaque Lyric record so callers iterate without naming (or emitting) the BCL
 // type.  Callers don't change: `var c = enumerateArray(e)` infers the cursor.
 // =====================================================================
+@stable(since = "1.0")
 pub ref record JsonArrayCursor {
   var en: JsonArrayEnumerator
 }
@@ -281,6 +282,7 @@ pub func arrayCurrent(cur: inout JsonArrayCursor): JsonElement {
 // same way as the array cursor above (the BCL `ObjectEnumerator` struct stays
 // behind `JsonObjectCursor`).
 // =====================================================================
+@stable(since = "1.0")
 pub ref record JsonObjectCursor {
   var en: JsonObjectEnumerator
 }
@@ -333,6 +335,7 @@ func lyricJsonParseObject(s: in String): Option[JsonDoc] {
   }
 }
 
+@experimental
 pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
   value = default()
   match lyricJsonParseObject(s) {
@@ -349,6 +352,7 @@ pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
   }
 }
 
+@experimental
 pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool {
   value = default()
   match lyricJsonParseObject(s) {
@@ -365,6 +369,7 @@ pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool 
   }
 }
 
+@experimental
 pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): Bool {
   value = default()
   match lyricJsonParseObject(s) {
@@ -381,6 +386,7 @@ pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): B
   }
 }
 
+@experimental
 pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool {
   value = default()
   match lyricJsonParseObject(s) {
@@ -404,6 +410,7 @@ pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool 
   }
 }
 
+@experimental
 pub func lyricJsonGetString(s: in String, name: in String, value: out String): Bool {
   value = default()
   match lyricJsonParseObject(s) {
@@ -433,6 +440,7 @@ pub func lyricJsonGetString(s: in String, name: in String, value: out String): B
 /// must be a number in 0..255 and a `Char` a one-character string, as
 /// `toJson` writes them.
 @pure
+@experimental
 pub func lyricJsonIsKind(elem: in JsonElement, typeName: in String): Bool {
   if typeName == "String" {
     isJsonString(elem)
@@ -456,6 +464,7 @@ pub func lyricJsonIsKind(elem: in JsonElement, typeName: in String): Bool {
   }
 }
 
+@experimental
 pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String): Bool {
   value = "{}"
   match lyricJsonParseObject(s) {

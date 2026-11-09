@@ -304,8 +304,8 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      opcode / tables layer (M1–M83).
    - Stage 3b (shipped, D-progress-227 / D-progress-238 / D-progress-240):
      `Msil.Lowering` high-level lowering, `Msil.Codegen`, `Msil.Bridge`, and
-     F# bridge `SelfHostedMsil.fs`; `--target dotnet` default routes through
-     this pipeline.
+     F# bridge `SelfHostedMsil.fs` (since deleted with the rest of the F#
+     bootstrap); `--target dotnet` routes through this pipeline.
    - Stage 4 (shipped, D-progress-229): `Lyric.Mono` monomorphizer — call-site
      specialisation for same-package generic functions; `monoFile(file) → MonoResult`.
 3. **M5.3 (month 75-81):** Self-hosted standard library, LSP, formatter, package manager, CLI
@@ -313,9 +313,10 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      TOML parser, `Lyric.Cli` command dispatch (forward-references M5.2 packages).
    - Stage 2 (shipped, D-progress-131): `Lyric.Fmt` formatter port — walks the red/green CST,
      preserves comments at item granularity.
-   - Stage 3 (shipped, D-progress-135): F# `lyric fmt` subcommand routes through the self-hosted
-     formatter via in-process compile + reflection bridge; `--legacy` / `LYRIC_FMT_LEGACY=1`
-     fallback retained for one release of soak.
+   - Stage 3 (shipped, D-progress-135; historical): the F# `lyric fmt` subcommand routed through
+     the self-hosted formatter via an in-process compile + reflection bridge, with a `--legacy` /
+     `LYRIC_FMT_LEGACY=1` fallback for one release of soak.  Both the F# subcommand and the
+     fallback have since been deleted.
    - Stage 4 (shipped, D-progress-136): item-internal comment preservation via `FmtCtx` cursor —
      comments between statements, between record fields, between union/enum cases, and inside
      nested `if`/`for`/`while`/`match`/`try`/`defer`/`scope` blocks now survive.

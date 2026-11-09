@@ -315,7 +315,7 @@ pub func joinList(sep: in String, xs: in List[String]): String {
 /// `formatArgs("{0}+{1}", ["a", "b"])` is `format2("{0}+{1}", "a", "b")`,
 /// for any number of arguments.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func formatArgs(template: in String, args: in slice[String]): String {
   val problem = formatTemplateProblem(template, args.length)
   if problem.length > 0 {
@@ -363,7 +363,7 @@ pub func formatArgs(template: in String, args: in slice[String]): String {
 /// type checker reports it at compile time for a literal `format1`-`format4`
 /// template, so the two cannot drift apart (#7983).
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func formatTemplateProblem(template: in String, argCount: in Int): String {
   val n = template.length
   var i = 0
@@ -738,7 +738,7 @@ pub func last(s: in String): Option[Char]
 /// `open`, the `parts` separated by `", "`, then `close`: `[1, 2]`, `(1, 2)`,
 /// and `P(x = 1, y = 2)` (with `open` = `"P("`).
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func showSeq(open: in String, parts: in List[String], close: in String): String {
   val sb = StringBuilder.new()
   sb.append(open)
@@ -759,7 +759,7 @@ pub func showSeq(open: in String, parts: in List[String], close: in String): Str
 /// key (code unit order), because the host map's own iteration order differs
 /// between targets.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func showMap(keys: in List[String], vals: in List[String]): String {
   val order = showOrder(keys)
   val parts: List[String] = newListWithCapacity(keys.count)
@@ -774,7 +774,7 @@ pub func showMap(keys: in List[String], vals: in List[String]): String {
 
 /// A `Set` as `{a, b}`, its members ordered by their rendered text.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func showSet(items: in List[String]): String {
   val order = showOrder(items)
   val parts: List[String] = newListWithCapacity(items.count)

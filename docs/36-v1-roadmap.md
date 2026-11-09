@@ -51,9 +51,9 @@ are 1.x.  Record the answers as decision-log entries.
 
 | # | Question | Stakes |
 |---|---|---|
-| G1 | Is `--target jvm` a v1.0 supported channel, or is it Phase-6 ecosystem work with its own versioning? | **Resolved (D-progress-620):** Phase-6 ecosystem work with its own independent versioning, not a v1.0 SemVer-guaranteed channel. (Q-J012/Q-J013 are non-blocking either way — both already shipped, see §2-R3.) Language reference §0.1 / platform support matrix should carry the "supported but not v1.0 SemVer-guaranteed" note per the original stakes column; not yet done as of this entry. |
+| G1 | Is `--target jvm` a v1.0 supported channel, or is it Phase-6 ecosystem work with its own versioning? | **Resolved (D-progress-620):** Phase-6 ecosystem work with its own independent versioning, not a v1.0 SemVer-guaranteed channel. (Q-J012/Q-J013 are non-blocking either way — both already shipped, see §2-R3.) Language reference §0.1 / platform support matrix should carry the "supported but not v1.0 SemVer-guaranteed" note per the original stakes column; **done 2026-11-09** (`docs/01` §0.1, which also marks the native and wasm32 lines pending a project-lead decision). |
 | G2 | Which `@experimental` items graduate to `@stable(since="1.0")` and which stay experimental? | Triggers R1.  Until this list exists, SemVer is unenforceable and any user relying on an `@experimental` item has no compatibility guarantees. |
-| G3 | Does `--legacy` / `LYRIC_FMT_LEGACY=1` survive as a supported flag past 1.0, or does it sunset with `Fmt.fs`? | **Resolved (D066):** Flag survives as deprecated through v1.0; removed in v1.1.  Per-expression CST gap deferred to 1.1. |
+| G3 | Does `--legacy` / `LYRIC_FMT_LEGACY=1` survive as a supported flag past 1.0, or does it sunset with `Fmt.fs`? | **Resolved (D066):** Flag survives as deprecated through v1.0; removed in v1.1.  Per-expression CST gap deferred to 1.1.  _Overtaken by events: `--legacy` and `Fmt.fs` were deleted before v1.0 (`docs/05` M5.3), so nothing sunsets at 1.1._ |
 | G4 | Do the `lyric-*` service libraries (`lyric-web`, `lyric-cache`, `lyric-db`, `lyric-health`, `lyric-logging`, `lyric-otel`, `lyric-lambda`, `lyric-aws-secrets`, `lyric-aws-xray`) ship under v1.0 SemVer, or under their own independent versioning? | **Resolved (D066):** Independent versioning per library; each declares its own stability policy in `lyric.toml`. |
 | G5 | Must the three-stage reproducibility bootstrap (`scripts/bootstrap.sh`: F# stage 0 → self-hosted stage 1 → self-hosted² binary comparison) produce a passing diff before v1.0? | **Resolved (D066):** Not required for v1.0.  Stage 0 (F# bootstrap) compiles the self-hosted compiler from `.l` sources; user-facing CLI flows through the AOT entry point that loads the Lyric-emitted `Lyric.Cli.Program.main` (Track A A1.4, #860).  Stage-2 binary-identity reproducibility is a Phase-7 (2.0) gate. |
 
@@ -66,7 +66,11 @@ are 1.x.  Record the answers as decision-log entries.
 **Status:** Done (D-progress-252).  `stdlib/STABILITY.md` lists every module.
 `Std.Core` and `Std.Testing.Mocking` were missing `pub`/`@stable` annotations;
 both are now annotated `@stable(since="1.0")`.  All other modules were already
-annotated.
+annotated.  Re-walked 2026-11-09: `STABILITY.md` had drifted (about 30 modules
+unlisted, a kernel table naming files that no longer exist, `since` values of
+`0.x`, `1.1` and `1.2` before any release), and it now lists every file in
+`lyric-stdlib/std/` as stable or experimental with its `@experimental`
+exceptions; every `pub` item carries one of the two annotations.
 
 **What to do:**
 
@@ -172,8 +176,8 @@ What to do in `lyric-compiler/jvm/lowering.l`:
 - Lower to: invoke the lambda argument inline inside a `try` block; on
   `Throwable`, construct `JvmException` and return `Err(e)`.
 
-**If G1 resolves to "JVM is Phase-6":**  Add a note to
-`docs/01-language-reference.md` §0.1 (or §"Platform support matrix") stating:
+**G1 resolved to "JVM is Phase-6" (note added to `docs/01` §0.1 on 2026-11-09):**
+the note in `docs/01-language-reference.md` §0.1 states:
 "`--target jvm` is supported and tested but carries no v1.0 SemVer guarantee;
 breaking changes may land in minor releases until JVM support is declared
 stable in a future release."

@@ -2,6 +2,20 @@
 
 This document is the authoritative description of the Lyric language at the v0.1 design stage. It is not yet a formal specification; sections marked **[TBD]** require Phase 0 work before implementation.
 
+## 0. Release channels
+
+### 0.1 Channel status
+
+Lyric compiles to several targets. They do not all carry the same stability promise at v1.0.
+
+| Channel | Status at v1.0 |
+|---|---|
+| `--target dotnet` | The reference channel. Lyric SemVer applies to the language and to the `@stable` standard library (`lyric-stdlib/STABILITY.md`, D040). |
+| `--target jvm` | Supported and tested, but carries **no v1.0 SemVer guarantee**: breaking changes may land in minor releases until JVM support is declared stable in a future release. It has its own independent versioning (G1, D-progress-620; `docs/44-jvm-production-readiness-plan.md`). |
+| `--target native` (LLVM) and `--triple wasm32-wasi` (`--shape module`, `--shape component`) | **Pending a project-lead decision.** The v1.0 channel status of the native and wasm32 targets has not been decided; see "Open decisions" in the "v1.0 exit checklist and work streams" section of `docs/12-todo-plan.md`. Until it is recorded, neither target is covered by the SemVer guarantee above. |
+
+The same pending decision covers the graphics and UI libraries built on the native target, and ecosystem libraries whose backends return `NOT_IMPLEMENTED` (each library's README lists them). Each library is versioned independently of the compiler.
+
 ## 1. Lexical structure
 
 ### 1.1 Source representation
@@ -3571,7 +3585,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 ### 13.5 Public API diff
 
-`lyric public-api-diff <ref>` compares the current `pub` surface against a previous git ref and reports breaking changes. Used in CI to enforce SemVer discipline.
+`lyric public-api-diff <old.dll> <new.dll>` compares the `pub` surface recorded in the `Lyric.Contract` resource of two assemblies and reports added, removed and changed declarations. It exits 0 when nothing breaks, 2 when a non-`@experimental` declaration was removed or changed (or a contract clause changed in a breaking way), and 1 on a usage error or an assembly without a `Lyric.Contract` resource. The baseline is an assembly kept from the previous release, not a git ref; how it is cut, and the current limit that it reads only single-package assemblies, is in `docs/22-distribution-and-tooling.md` §5.3.
 
 ### 13.5.1 Package interfaces
 
