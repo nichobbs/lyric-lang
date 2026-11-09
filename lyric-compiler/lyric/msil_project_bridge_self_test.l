@@ -2284,48 +2284,16 @@ test "known String methods still compile and run correctly (#7099 regression gua
   )
 }
 
-// #7422: an unknown method on a List/Map/Set receiver used to compile to a
-// runtime-throw stub (the JVM already rejected it at build time, J008). Like
-// the String case (#7099), `compileProjectToMsil` now panics at build time.
-test "unknown method call on a List receiver panics at build time, not silently (#7422)" {
-  val packages: List[ProjectPackagePayload] = newList()
-  packages.add(
-    mkPkg(
-      "UnknownListMethod.Bad",
-      "package UnknownListMethod.Bad\n" + "import Std.Collections\n" + "func main(): Unit {\n" +
-        "  val acc: List[Int] = newList()\n" +
-        "  val more: slice[Int] = [1, 2]\n" +
-        "  acc.addRange(more)\n" +
-        "}\n"
-    )
-  )
-  val dir = freshTempDir("unknown_list_method")
-  val dllPath = Path.join(dir, "UnknownListMethod.dll")
-  val stdlibSources = Emitter.findStdlibSources()
-  var panicked = false
-  var panicMsg = ""
-  try {
-    compileProjectToMsil(packages, "UnknownListMethod", dllPath, stdlibSources)
-  } catch Bug as b {
-    panicked = true
-    panicMsg = b.message
-  }
-  cleanup(dir)
-  assertTrue(panicked, "unknown List method: compileProjectToMsil panics instead of returning (#7422)")
-  assertTrue(
-    Str.contains(panicMsg, "no method 'addRange' on type 'List'"),
-    "unknown List method: panic names the method and receiver type (got: " + panicMsg + ")"
-  )
-}
-
-// The same build error for Map and Set receivers (#7422).
-test "unknown method call on a Map or Set receiver panics at build time (#7422)" {
+// #7422, #7683: an unknown method on a List/Map/Set receiver used to compile to
+// a runtime-throw stub.  The type checker now rejects it (T0113, the collection
+// surface is closed) before codegen, so the build reports the diagnostic and
+// returns false instead of panicking or writing an assembly.  The diagnostic
+// text is pinned by `typechecker_self_test.l` and the reject corpus.
+test "unknown method call on a List, Map or Set receiver is rejected at check time (#7422, #7683)" {
   val cases: List[String] = newList()
+  cases.add("  val acc: List[Int] = newList()\n  val more: slice[Int] = [1, 2]\n  acc.addRange(more)\n")
   cases.add("  val m: Map[String, Int] = newMap()\n  m.mergeAll(m)\n")
   cases.add("  val s: Set[Int] = newSet()\n  s.unionWith(s)\n")
-  val expected: List[String] = newList()
-  expected.add("no method 'mergeAll' on type 'Map'")
-  expected.add("no method 'unionWith' on type 'Set'")
   var ci = 0
   while ci < cases.count {
     val packages: List[ProjectPackagePayload] = newList()
@@ -2342,19 +2310,17 @@ test "unknown method call on a Map or Set receiver panics at build time (#7422)"
     val dllPath = Path.join(dir, "UnknownCollMethod.dll")
     val stdlibSources = Emitter.findStdlibSources()
     var panicked = false
-    var panicMsg = ""
+    var built = true
     try {
-      compileProjectToMsil(packages, "UnknownCollMethod", dllPath, stdlibSources)
+      built = compileProjectToMsil(packages, "UnknownCollMethod", dllPath, stdlibSources)
     } catch Bug as b {
       panicked = true
-      panicMsg = b.message
     }
+    val wroteDll = File.fileExists(dllPath)
     cleanup(dir)
-    assertTrue(panicked, "unknown collection method: build panics (" + expected[ci] + ")")
-    assertTrue(
-      Str.contains(panicMsg, expected[ci]),
-      "unknown collection method: names method and type (got: " + panicMsg + ")"
-    )
+    assertFalse(panicked, "unknown collection method: the checker rejects it, codegen never panics")
+    assertFalse(built, "unknown collection method: the build fails")
+    assertFalse(wroteDll, "unknown collection method: no assembly is written")
     ci = ci + 1
   }
 }
