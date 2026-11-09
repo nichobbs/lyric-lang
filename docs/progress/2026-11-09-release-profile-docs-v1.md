@@ -1,4 +1,4 @@
-# `--release` profile: docs reconciled with the shipped behaviour (#6263, D552)
+# `--release` profile: docs reconciled with the shipped behaviour (#6263, D555)
 
 #6263 was still open although overflow (D163), contract elision (D297, D307)
 and the native `-O` default (D-progress-913) had shipped. This entry settles the
@@ -9,7 +9,7 @@ keeps every contract, the docs/05 performance criterion is restated, and the
 managed-target optimisation gap is tracked as #8946. No compiler code changed
 and no new test was added; the behaviours are covered by the existing
 `scripts/ci/release-contracts-e2e.sh` and the D163 self-tests (not re-run in
-this change). See D552.
+this change). See D555.
 
 ## v1.0 release notes
 

@@ -1,4 +1,4 @@
-# D552 - The `--release` profile at v1.0: what it drives, and what it does not (#6263, #8946)
+# D555 - The `--release` profile at v1.0: what it drives, and what it does not (#6263, #8946)
 
 **Status:** accepted
 
