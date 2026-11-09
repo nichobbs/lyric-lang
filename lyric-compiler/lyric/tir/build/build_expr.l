@@ -803,19 +803,28 @@ func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[T
 /// A `val`, `let` or `var` of one name: its local takes the annotation's type when
 /// there is one (the initializer is converted to it) and the initializer's otherwise,
 /// declared after the initializer is built so the initializer cannot see it.  A
-/// pattern, or a `var` without an initializer, has no case yet.
+/// `var` without an initializer takes its annotation's type.
 func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
   match binding {
     case LBVal(pat, ann, init) -> match pat.kind {
       case PBinding(name, None) -> buildLet(env, s, pat, name, ann, init)
-      case _ -> uncoveredStmt(env, s, "a binding pattern")
+      case _ -> buildLetPattern(env, s, pat, ann, init)
     }
     case LBLet(name, ann, init) -> {
       val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = freshNodeId(env).id)
       buildLet(env, s, pat, name, ann, init)
     }
     case LBVar(name, ann, init) -> match init {
-      case None -> uncoveredStmt(env, s, "a var without an initializer")
+      case None -> match ann {
+        case Some(te) -> match annotatedTy(env, te) {
+          case Some(want) -> {
+            val d = declareLocal(env, name, want, true)
+            Some(value = stmtOf(s, TsVar(decl = d, init = None)))
+          }
+          case None -> None
+        }
+        case None -> uncoveredStmt(env, s, "a var without an initializer or annotation")
+      }
       case Some(x) -> match buildInit(env, s, ann, x) {
         case Some(t) -> {
           val d = declareLocal(env, name, t.ty, true)
@@ -827,6 +836,25 @@ func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding):
   }
 }
 
+/// The type an annotation names, as a `Ty`.
+func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
+  // The checker has already reported an annotation that does not resolve, so the
+  // diagnostics of this second resolution are not read.
+  val diag: List[Diagnostic] = newList()
+  val gc = if env.generics.count > 0 {
+    env.generics[0]
+  } else {
+    GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  }
+  match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+    case Ok(w) -> Some(value = w)
+    case Err(msg) -> {
+      env.errors.add(msg)
+      None
+    }
+  }
+}
+
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
 func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
@@ -834,21 +862,7 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
   match ann {
     case None -> Some(value = t)
     case Some(te) -> {
-      // The checker has already reported an annotation that does not resolve, so the
-      // diagnostics of this second resolution are not read.
-      val diag: List[Diagnostic] = newList()
-      val gc = if env.generics.count > 0 {
-        env.generics[0]
-      } else {
-        GenericContext(params = newList(), owners = newList(), stackDepths = newList())
-      }
-      val want = match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
-        case Ok(w) -> w
-        case Err(msg) -> {
-          env.errors.add(msg)
-          return None
-        }
-      }
+      val want = match annotatedTy(env, te) { case Some(w) -> w; case None -> return None }
       match convertValue(env, t, want) {
         case Some(c) -> Some(value = c)
         case None -> {
@@ -861,6 +875,16 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
         }
       }
     }
+  }
+}
+
+/// A `val` of a pattern: the initializer is built first (it cannot see the names the
+/// pattern binds), then the pattern, which declares them.
+func buildLetPattern(env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr): Option[TStmt] {
+  val t = match buildInit(env, s, ann, init) { case Some(x) -> x; case None -> return None }
+  match buildPat(env, pat) {
+    case Some(tp) -> Some(value = stmtOf(s, TsLet(pat = tp, init = t)))
+    case None -> None
   }
 }
 
