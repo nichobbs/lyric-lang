@@ -546,10 +546,20 @@ uninterpreted function of the receiver and the arguments, one function
 per method name, argument shape (a named argument keeps its name) and
 sorts: `a.f() == a.f()` holds by congruence, `a.f() == b.g()` and
 `a.f() == b.f()` do not. Congruence treats the method as a function of
-its receiver and arguments — true of the `@pure` calls a contract may
-make (T0133), and an assumption about an unmodelled method called in a
-body, which mutation through the receiver (the verifier has no heap)
-would break. A call through a computed callee is a fresh
+its receiver and arguments, which is true only where the receiver and
+every argument are immutable values (a primitive, `String`, `Unit`, a
+tuple, `Option`/`Result` or a record or union of the file that compares
+by value). On any other receiver or argument (a `List`, `Map`, slice,
+mutable or `ref` record, protected object, closure, or a value the
+verifier does not model) the call may change what the value holds or
+read what another call changed, and the verifier has no heap model: it
+fails closed (`V0033`, #8110), so `xs.add(1)` never lets a later read of
+`xs.count` be proved equal to an earlier one. Declare the method in the
+file with a contract, or call a `@pure` function, to prove over such a
+value. Two exceptions keep their older behaviour: a sibling method
+called on `self` (#8231) and a call on the binding of a match arm the
+verifier does not model, whose value already fails every goal it
+reaches (V0027). A call through a computed callee is a fresh
 value. No two distinct values share a symbol: every value the verifier
 introduces — a call result, a havocked variable, an unmodelled
 expression — has a name of its own, with a `!` no Lyric identifier

@@ -2846,13 +2846,13 @@ test "a @pure call over a closure, a collection or a protected object is its own
       "func f(): Bool\n  ensures: result\n{\n  val a = call0(monotonicNanos)\n  val b = call0(monotonicNanos)\n  a == b\n}\n",
     "undeclared-function-argument"
   )
-  assertRefuted(
+  assertUntranslatable(
     "@pure\nfunc probe(xs: in List[Int]): Int = xs.count\n" +
       "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  val a = probe(xs)\n  xs.add(1)\n" +
       "  val b = probe(xs)\n  a == b\n}\n",
     "list-argument"
   )
-  assertRefuted(
+  assertUntranslatable(
     "pub protected type Counter {\n  var n: Int\n  pub entry next(): Int {\n    n = n + 1\n    n\n  }\n}\n" +
       "@pure\nfunc peek(c: in Counter): Int = c.next()\n" +
       "func f(c: in Counter): Bool\n  ensures: result\n{\n  peek(c) == peek(c)\n}\n",
@@ -3285,7 +3285,7 @@ test "two function values are never compared (#8109)" {
 }
 
 test "a source type named like a built-in sort is never the built-in (#8109)" {
-  assertRefuted(
+  assertUntranslatable(
     "record Tuple {\n  xs: List[Int]\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val n = t.xs.count\n  n\n}\n" +
       "func f(t: in Tuple): Bool\n  ensures: result\n{\n  val a = size(t)\n  t.xs.add(1)\n  val b = size(t)\n  a == b\n}\n",
     "record-named-tuple-with-a-list"
@@ -4844,5 +4844,29 @@ test "exposed record and opaque type invariants are checked at construction and 
   assertTrue(
     summaryHasCounterexample(brokenExit),
     "pub-boundary-must-restore-invariant-after-private-helper: " + diagnosticMessages(brokenExit)
+  )
+}
+
+test "a read of a value after a non-@pure method call on it is not the earlier read (#8110)" {
+  assertUntranslatable(
+    "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  val a = xs.count\n  xs.add(1)\n  a == xs.count\n}\n",
+    "count-after-add"
+  )
+  assertUntranslatable("func f(xs: in List[Int]): Unit\n{\n  xs.add(1)\n}\n", "add-alone")
+  assertDischarged(
+    "func f(s: in String): Bool\n  ensures: result\n{\n  s.contains(\"a\") == s.contains(\"a\")\n}\n",
+    "method-of-an-immutable-value-is-a-function"
+  )
+  assertNotProved(
+    "func f(xs: in List[Int]): Bool\n  ensures: result\n{\n  xs.removeLast() == xs.removeLast()\n}\n",
+    "two-removals"
+  )
+  assertNotProved(
+    "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  var i = 0\n  while i < 3\n    invariant: i >= 0\n  {\n    xs.add(i)\n    i = i + 1\n  }\n  xs.count == 0\n}\n",
+    "count-after-adding-loop"
+  )
+  assertNotProved(
+    "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  xs.add(5)\n  xs[0] == 5\n}\n",
+    "element-after-add"
   )
 }

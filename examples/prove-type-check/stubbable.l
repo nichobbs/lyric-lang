@@ -12,7 +12,7 @@ pub interface Source {
 
 func stubbedNext(): Int {
   val s = SourceStub(next_value = 7)
-  s.next()
+  s.next_value
 }
 
 func pick(x: in Int): Int
