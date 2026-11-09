@@ -9,15 +9,17 @@ recorded as **settled** in §3.4, §4.4, and §8.1; the rest is open
 (Q-BP-001–Q-BP-011, §13).
 
 Deferred out of B0 with tracked follow-ups: `--shape standalone` shipped in
-D297 (#6262; `F0044` retired); contracts follow the profile for free
-functions in D297 (#6263); the profile
-axis reaches codegen only on `--target native` so far — `resolveNativeOptDefault`
-defaults the clang `-O` level from the profile (`2` under `--release`, `0`
-under `--debug`) when neither `--opt` nor `[native] opt_level` supply one
-(D-progress-913) — and integer overflow panics under `--debug` and wraps
-under `--release` on every target (D163). `--target dotnet`/`--target jvm`
-still perform no optimization under `--release`, and contract elision is not
-yet profile-driven (#6263, still open for those two pieces).
+D297 (#6262; `F0044` retired); the profile axis now reaches the backends
+in three ways: integer overflow panics under `--debug` and wraps under
+`--release` on every target (D163); `ensures:` and internal `requires:` are
+elided under `--release` on every target, for free functions (D297) and for
+record, `impl` and protected-type methods (D307); and on `--target native`
+`resolveNativeOptDefault` defaults the clang `-O` level from the profile (`2`
+under `--release`, `0` under `--debug`) when neither `--opt` nor
+`[native] opt_level` supply one (D-progress-913). `--target dotnet` and
+`--target jvm` perform no IL or bytecode optimisation under `--release`; that
+is the one remaining piece of #6263, tracked as #8946 (2026-11-09). The
+language reference states the full table (docs/01 section 13).
 
 **Method.** The current-state findings in §2 were produced by auditing the code
 as source of truth. Every claim is grounded in a `file:line` reference, an
@@ -1100,7 +1102,7 @@ their update when the user-visible behaviour arrives with `SourceFile`.
 | GraalVM `native-image` shape is host-dependent (shipped Linux/macOS in D131; Windows #1975) | medium | `--shape aot --target jvm` must fail loud when the toolchain is missing or the host is unsupported, never silently emit a JAR. That is **not** `F0044`, which only covers a shape whose implementation does not exist at all (`standalone`): a merely-absent driver is reported by `Lyric.Release.jvmReleasePreflightError`, which already implements this check. |
 | MSIL/JVM divergence | medium | docs/59 documents one-sided fixes between the backends. Debug info doubles the surface where they can drift. |
 | Clean break surprises scripted users | medium | Accepted per §6; mitigated by `F0042` and the build note. |
-| Optimization at `--release` is currently a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer; `--release` on those targets means "strip symbols" only, and the docs must say so rather than implying optimization that does not happen. |
+| Optimization at `--release` is a no-op for dotnet/jvm | low | Lyric has no IL/bytecode optimizer, and no target emits debug information yet, so on those targets `--release` differs from `--debug` only by overflow wrapping and contract elision. The docs say so (docs/01 section 13, book chapter 1 and appendix B); tracked as #8946. |
 
 ---
 

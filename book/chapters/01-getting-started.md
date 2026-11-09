@@ -187,8 +187,12 @@ They are separate from `--target`, and from each other.
 
 | Flag | Meaning |
 |---|---|
-| `--debug` *(default)* | unoptimized, debug information retained |
-| `--release` | optimized, debug information stripped |
+| `--debug` *(default)* | integer overflow panics; all contracts checked; native builds use `-O0` |
+| `--release` | integer overflow wraps; `ensures:` and internal `requires:` not checked; native builds use `-O2` |
+
+The profile does not yet change the IL or bytecode of a `--target dotnet` or
+`--target jvm` build (the runtime's JIT optimises both alike), and no target
+emits debug information yet; both are tracked gaps (#8946, docs/63).
 
 **Shape** — how the artifact is packaged:
 

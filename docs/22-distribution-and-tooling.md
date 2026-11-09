@@ -246,6 +246,15 @@ The GitHub upgrade path implements strict security and reliability controls:
 
 `install.sh` itself applies the same fail-closed pattern to the archive it downloads (#6242): after fetching the platform archive, it downloads that release's `SHASUMS256.txt` (§5.2), locates the archive's manifest line, and compares the archive's own SHA-256 digest (via `sha256sum` or `shasum -a 256`, case-insensitively) before extracting — a missing manifest entry or a digest mismatch aborts the install rather than extracting unverified bytes. A consequence: `install.sh --version <v>` only works for releases that publish a `SHASUMS256.txt`; older releases that predate checksum publishing are refused with an explicit error rather than installed unverified.
 
+## 5.1.4. Release notes
+
+`.github/workflows/publish.yml` creates each GitHub release as a draft. Its
+body is `docs/release-notes/v<X.Y.Z>.md` if that file exists, else
+`docs/release-notes/v<X.Y>.md` (the v1.0 notes are `v1.0.md`), else the generic
+line "Lyric compiler release". The file is read from the commit the release is
+cut from, so notes are reviewed in the PR that adds them. The release stays a draft until the `finalize-release` job has attached the
+assets and published it.
+
 ## 5.2. Release asset checksums (`SHASUMS256.txt`)
 
 Every GitHub Release also carries a `SHASUMS256.txt` asset covering the

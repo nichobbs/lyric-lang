@@ -152,11 +152,26 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${RELEASE_VERSION}"
+          # Hand-written notes live in docs/release-notes/: v<X.Y.Z>.md for
+          # an exact version, else v<X.Y>.md for the whole minor line (the
+          # v1.0 notes are v1.0.md).  Without either file the release keeps
+          # the generic one-line body.
+          MINOR_LINE="${RELEASE_VERSION%.*}"
+          NOTES_FILE=""
+          for candidate in "docs/release-notes/${TAG}.md" "docs/release-notes/v${MINOR_LINE}.md"; do
+            if [ -f "$candidate" ]; then NOTES_FILE="$candidate"; break; fi
+          done
+          if [ -n "$NOTES_FILE" ]; then
+            echo "Using release notes from ${NOTES_FILE}."
+            NOTES_ARGS=(--notes-file "$NOTES_FILE")
+          else
+            NOTES_ARGS=(--notes "Lyric compiler release")
+          fi
           gh release create "$TAG" \
             --draft \
             --target "${GITHUB_SHA}" \
             --title "$TAG" \
-            --notes "Lyric compiler release"
+            "${NOTES_ARGS[@]}"
 
   # ---------------------------------------------------------------------------
   # Build self-contained standalone binaries for all supported platforms.
