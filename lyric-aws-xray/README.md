@@ -9,7 +9,7 @@ AWS X-Ray integration for [Lyric](https://github.com/nichobbs/lyric-lang). Provi
 | Feature flag | Backend | Status |
 |---|---|---|
 | `aws` | Amazon.XRay.Recorder.Core (.NET) | `currentSubsegment`/`beginSubsegment`/`endSubsegment`/`annotate`/`metadata` verified against the real SDK. The `Tracing` aspect works (cross-package B'-mode weaving is fine on `.NET`). |
-| `jvm` | aws-xray-recorder-sdk-core (Java) | `currentSubsegment`/`beginSubsegment`/`endSubsegment`/`annotate`/`metadata` verified against the real SDK. The `Tracing` aspect does **not** work on this target: cross-package `from`-instance aspect instantiation is B'-mode, and B'-mode's JVM call-context codegen has a pre-existing weaver bug (`NoSuchMethodError` on the synthesised `__LyricBModeCallContext` at runtime) unrelated to this library — use `beginSubsegment`/`endSubsegment` directly instead until that's fixed. |
+| `jvm` | aws-xray-recorder-sdk-core (Java) | `currentSubsegment`/`beginSubsegment`/`endSubsegment`/`annotate`/`metadata` verified against the real SDK. The `Tracing` aspect works (cross-package B'-mode weaving is fine on the JVM; the `__LyricBModeCallContext` codegen fix is #4600) and the suite runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`. |
 | `local` | Local stub (no-op) | Available |
 
 ## Verification

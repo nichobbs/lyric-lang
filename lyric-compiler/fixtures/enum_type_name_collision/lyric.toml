@@ -1,0 +1,14 @@
+[package]
+name        = "enum-type-name-collision"
+version     = "0.1.0"
+description = "Cross-package regression fixture: a package's own enum shares its type name and case names with a stdlib enum (Std.Log.LogLevel) that is also linked into the build."
+
+[project]
+name   = "enum-type-name-collision"
+output = "single"
+
+[project.packages]
+"EnumCollisionLib" = "src/levels.l"
+
+[project.tests]
+"EnumCollisionTests" = "tests/levels_tests.l"

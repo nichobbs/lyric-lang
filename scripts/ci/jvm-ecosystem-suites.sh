@@ -42,6 +42,20 @@
 #               transport, #8560) (#7511)
 #   search      the request-deadline branch against a silent in-process
 #               backend (`@cfg(target = "jvm")` test, #8571)
+#   jobs        InProcessJobScheduler (a `List[JobSpec]` queue field read back
+#               through the erased ArrayList) and the Retryable aspect, plus
+#               the Quartz-backed kernel; Quartz is Maven-restored first
+#   session     InProcessSessionStore (`Map[String, Record]` values) and the
+#               Lettuce-backed kernel; Lettuce is Maven-restored first
+#   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
+#               (`__LyricBModeCallContext` on the JVM, #4600)
+#   aws-xray    the `AwsXRay.Tracing` B'-mode aspect over the X-Ray recorder
+#   ws          frames, handshake and the WsSecurity aspects; the dotnet-only
+#               `Ws.WsDotnetE2eTests` suite (it dials Std.TcpHost, which has
+#               no JVM kernel) is left out with --suite
+#   logging     Std.Logging's `LogLevel` enum beside the stdlib's
+#               same-named `Std.Log.LogLevel` (type-scoped enum registry
+#               keys are re-pointed per file)
 #   grpc        the client against an in-process grpc-java server (unary,
 #               server streaming, metadata, deadlines, status mapping,
 #               early stream cancel, #8527 / #5409) and the Resilience-backed
@@ -69,18 +83,28 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web`, `mail` (Jakarta Mail, #7462) and `grpc` (grpc-java) need their Maven dependencies restored first; the shared helper
+  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java), `jobs` (Quartz),
+  # `session` (Lettuce), `aws-xray` (X-Ray recorder) and `ws` (Undertow) need
+  # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
-  if [ "$lib" = "web" ] || [ "$lib" = "mail" ] || [ "$lib" = "grpc" ]; then
-    runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
+  case "$lib" in
+    web|mail|grpc|jobs|session|aws-xray|ws)
+      runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
+      ;;
+  esac
+  # `Ws.WsDotnetE2eTests` dials Std.TcpHost, which has no JVM kernel, so the
+  # JVM run names the target-independent suites instead.
+  local suite_args=()
+  if [ "$lib" = "ws" ]; then
+    suite_args=(--suite Ws.WsTests --suite Ws.WsFrameTests --suite Ws.WsHandshakeTests --suite Ws.WsSecurityAspectWeavingTests)
   fi
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared
   # behind their own `[features]` flags, off by default under
@@ -90,6 +114,10 @@ run_suite() {
   local features="jvm"
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"
+  fi
+  # `jobs`'s in-process scheduler is its own feature, beside the Quartz kernel.
+  if [ "$lib" = "jobs" ]; then
+    features="jvm,inprocess"
   fi
   # A manifest with no `[features]` table declares no feature to select
   # (`--features` naming one is F0050, #8362).
@@ -102,7 +130,7 @@ run_suite() {
   if [ "$lib" = "search" ]; then
     feature_args=()
   fi
-  "${runner[@]}" --target jvm "${feature_args[@]}" \
+  "${runner[@]}" --target jvm "${feature_args[@]}" "${suite_args[@]}" \
     > "$log_dir/$lib.log" 2>&1
   echo $? > "$log_dir/$lib.rc"
 }

@@ -5873,6 +5873,17 @@ pub func collectFileSigsSeeded(
           if not into.containsKey(etkey) {
             into.add(etkey, esig)
           }
+          // The bare `enumty:` key is bundle-global first-wins, so two
+          // packages each declaring an enum with the SAME type name (the
+          // stdlib's `Std.Log.LogLevel` and a library's own
+          // `Std.Logging.LogLevel`) would share it. The `<owner>/`-qualified
+          // form lets the bridge's `importAwareRegistry` re-point the bare
+          // key at the enum the file actually sees, as it does for
+          // `enumcase:`.
+          val eqtkey = owner + "/" + etkey
+          if not into.containsKey(eqtkey) {
+            into.add(eqtkey, esig)
+          }
           // #6640: the package-scoped key below is (package, case) only —
           // it omits the enum's own TYPE name — so two DIFFERENT enums
           // declared in the SAME package sharing a case name (e.g. `enum

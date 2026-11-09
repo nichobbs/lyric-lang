@@ -5,18 +5,15 @@ Transport-agnostic authentication library for [Lyric](https://github.com/nichobb
 > **Status**: `Auth` (JWT verification, claim extraction, API-key comparison,
 > role checks) is production-ready on both `.NET` and JVM via
 > `Auth.Kernel.Net` / `Auth.Kernel.Jvm`. `Auth.Aspects.ValidateKey` (the
-> B′-mode API-key aspect template) is verified on `.NET` but currently
-> broken on JVM due to an unrelated, pre-existing self-hosted JVM
-> aspect-weaver codegen bug (see "Platform parity" below) — this is
-> independent of the `Auth.Kernel.Jvm` extern boundary, which is fully
-> verified on both targets.
+> B′-mode API-key aspect template) is verified on both targets; the JVM
+> suite runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
 | `dotnet` | .NET via `Auth.Kernel.Net` | Available — `Auth` and `Auth.Aspects` both verified |
-| `jvm` | JVM via `Auth.Kernel.Jvm` | `Auth` available and verified (HMAC-SHA256 via `javax.crypto.Mac`/`SecretKeySpec`); `Auth.Aspects.ValidateKey` fails at runtime due to a pre-existing B′-mode aspect-weaver JVM codegen bug (`__LyricBModeCallContext` `NoSuchMethodError`), unrelated to this library — present before and independent of the kernel fix, tracked separately |
+| `jvm` | JVM via `Auth.Kernel.Jvm` | Available — `Auth` and `Auth.Aspects` both verified (HMAC-SHA256 via `javax.crypto.Mac`/`SecretKeySpec`) |
 
 `jvm` is opt-in (`[features] default = ["dotnet"]` in `lyric.toml`); build
 with `--target jvm --no-default-features --features jvm` to select it.

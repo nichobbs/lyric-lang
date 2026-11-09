@@ -2,7 +2,15 @@
 
 Structured, named, runtime-configurable logging for [Lyric](https://github.com/nichobbs/lyric-lang), with aspect templates for automatic call instrumentation.
 
-> **Status**: Library source is complete. The aspect weaver (`CallLogging`, `SlowCallAlert`, `ErrorResultLogging`) and `config { }` blocks are shipped compiler features (D047, D-progress-292). The suite runs on `--target dotnet` in CI; it is not yet part of the `--target jvm` ecosystem suite (docs/71 phase 3), so JVM support is unverified.
+> **Status**: Library source is complete. The aspect weaver (`CallLogging`, `SlowCallAlert`, `ErrorResultLogging`) and `config { }` blocks are shipped compiler features (D047, D-progress-292). The suite runs on both `--target dotnet` and `--target jvm` in CI (the JVM run is part of `scripts/ci/jvm-ecosystem-suites.sh`).
+
+## Platform parity
+
+Pure Lyric over `Std.ConsoleHost`, so the same code runs on `--target dotnet`
+and `--target jvm`. The JVM suite runs in CI through
+`scripts/ci/jvm-ecosystem-suites.sh`; it covers `Std.Logging.LogLevel`
+resolving to this package's own enum while the stdlib's `Std.Log.LogLevel`
+is linked into the same build.
 
 ## Packages
 
