@@ -558,9 +558,11 @@ func cmdPublish(argv: in slice[String]): Int {
         printErr("publish: --package-version requires an argument")
         return 1
       }
+    } else if rejectUnknownOption("publish", arg) {
+      return 1
     } else {
-      printErr("publish: unrecognised flag '" + arg + "'")
-      i += 1
+      printErr("publish: unexpected argument '" + arg + "'")
+      return 1
     }
   }
 

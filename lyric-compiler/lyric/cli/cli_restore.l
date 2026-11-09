@@ -127,6 +127,8 @@ func cmdInit(argv: in slice[String]): Int {
     } else if arg == "--force" {
       force = true
       i += 1
+    } else if rejectUnknownOption("init", arg) {
+      return 1
     } else {
       if not haveDir {
         dir = arg
@@ -337,6 +339,8 @@ func cmdRemove(argv: in slice[String]): Int {
     } else if arg == "--no-restore" {
       noRestore = true
       i += 1
+    } else if rejectUnknownOption("remove", arg) {
+      return 1
     } else {
       match nameArg {
         case None -> {
@@ -497,6 +501,8 @@ func cmdAdd(argv: in slice[String]): Int {
     } else if arg == "--no-restore" {
       noRestore = true
       i += 1
+    } else if rejectUnknownOption("add", arg) {
+      return 1
     } else {
       match spec {
         case None -> {
@@ -717,9 +723,11 @@ func cmdRestore(argv: in slice[String]): Int {
     } else if arg == "--force" {
       forceShims = true
       i += 1
+    } else if rejectUnknownOption("restore", arg) {
+      return 1
     } else {
-      printErr("restore: unrecognised flag '" + arg + "'")
-      i += 1
+      printErr("restore: unexpected argument '" + arg + "'")
+      return 1
     }
   }
   if forceShims and not generateShims {
