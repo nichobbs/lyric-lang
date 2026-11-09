@@ -8,7 +8,7 @@ Distributed session management with pluggable backends (Redis, in-process).
 |--------------|-------------------------------------------------------|-----------|
 | `dotnet`     | StackExchange.Redis (`Session.Kernel.Net`)            | Available |
 | `jvm`        | Lettuce (`io.lettuce:lettuce-core`, `Session.Kernel.Jvm`) | Available |
-| `InProcessSessionStore` (both targets) | pure Lyric, no kernel | `dotnet`: Available; `jvm`: **Broken** — see below |
+| `InProcessSessionStore` (both targets) | pure Lyric, no kernel | Available on both targets |
 
 Both kernels bind their respective Redis client directly via `extern
 type` + auto-FFI — no F#/Java host shim, no `extern package` (that
@@ -39,15 +39,10 @@ must be on `PATH`/beside the `lyric` binary/`$LYRIC_MAVEN_RESOLVER` (see
 There is no host-backed in-memory store on either target — the earlier
 JVM kernel's `lyric.session.InMemoryStore` `extern package` block was
 dead code (the mechanism is a confirmed no-op) and was removed rather
-than ported. `InProcessSessionStore` below is pure Lyric and does not
-need a kernel at all — but it does not currently work on `--target
-jvm`: any write (`create()` followed by `set()`/`get()`/`load()`)
-crashes with `class Session.SessionData cannot be cast to class
-java.lang.Long`, a JVM backend erased-generics bug tracked in #5451
-(not caused by, or specific to, this library — a `Map[String,
-SessionData]` value read appears to resolve against an unrelated
-`Map[String, Long]` instantiation elsewhere in the JVM bundle). Use the
-Redis-backed `NativeSessionStore` on JVM until #5451 is fixed.
+than ported. `InProcessSessionStore` below is pure Lyric, needs no
+kernel, and works on both targets: its `Map[String, SessionData]` values
+read back as `SessionData` on the JVM (#5451 is fixed), and the JVM suite
+runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`.
 
 `lyric test --target jvm` now correctly injects the `[maven]`-restored
 classpath (`cli_test.l` runs the compiled test JAR with `java -cp
@@ -129,8 +124,7 @@ For distributed systems, use `NativeSessionStore` (Redis-backed, `dotnet` or `jv
 ### In-memory (`InProcessSessionStore`)
 
 `Session.inMemory()` stores sessions in-memory. Best for single-server
-development. **`--target dotnet` only today** — see "Known gap" above
-(#5451); on `--target jvm`, use `NativeSessionStore` instead.
+development. Works on both `--target dotnet` and `--target jvm`.
 
 ### Redis (`dotnet` / `jvm` feature)
 

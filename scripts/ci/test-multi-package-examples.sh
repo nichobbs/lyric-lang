@@ -65,6 +65,13 @@ done
 for target in dotnet jvm; do
   bash scripts/ci/nested-generic-expected-test.sh "$lyric_bin" "$target"
 done
+# A package's enum sharing its type and case names with a stdlib enum linked
+# into the same build resolves to its own class on both targets.
+for target in dotnet jvm; do
+  echo "=== test enum_type_name_collision fixture --target $target ==="
+  "$lyric_bin" test --manifest lyric-compiler/fixtures/enum_type_name_collision/lyric.toml --target "$target" > /tmp/enum-type-name-collision.$target.log 2>&1 \
+    && echo "PASS" || { echo "FAIL"; cat /tmp/enum-type-name-collision.$target.log; exit 1; }
+done
 # examples/agent/basics.l is the canonical-idioms reference agents copy from
 # (#7606): it must keep compiling and printing the same output on both targets.
 expected_basics=$'double 5 = 10\norder total: 1500 cents\nactive: amy, zoe\nrange: 1 to 9'

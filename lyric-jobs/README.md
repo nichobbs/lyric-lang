@@ -4,13 +4,11 @@ Background job scheduling with pluggable backends (Hangfire, Quartz.NET, Quartz)
 
 ## Platform parity
 
-**`InProcessJobScheduler` is production-ready on `dotnet`** (pure
-Lyric, no kernel dependency; `Jobs.inProcess()`). On `--target jvm` it
-is currently **broken**: `List[JobSpec]`'s `queue` field crashes with a
-`ClassCastException` (`class java.util.ArrayList cannot be cast to
-class java.lang.Integer`) the moment a job is enqueued — a JVM backend
-erased-generics bug (#5456, same family as #5439/#5442/#5444/#5451),
-not caused by or specific to this library. Beyond that, the two
+**`InProcessJobScheduler` is production-ready on both targets** (pure
+Lyric, no kernel dependency; `Jobs.inProcess()`). The JVM suite
+(`lyric test --target jvm --no-default-features --features jvm,inprocess`,
+with the Quartz Maven dependencies restored first) passes in full and runs in
+CI through `scripts/ci/jvm-ecosystem-suites.sh`. The two
 targets diverge in an unusual direction — `jvm` actually has *more* real
 backend coverage than `dotnet` today, for `NativeJobScheduler` (obtained via
 `Jobs.connect()` / `Jobs.connectHangfire()` / `Jobs.connectQuartz()`):
@@ -20,7 +18,7 @@ backend coverage than `dotnet` today, for `NativeJobScheduler` (obtained via
 | `dotnet` (default) | `InProcessJobScheduler`      | Available                                                                |
 | `dotnet` (default) | `inprocess`            | Available — real, functional `ConcurrentDictionary`-backed `NativeJobScheduler` (Phase 3 of #733) |
 | `dotnet`           | `hangfire`, `quartz`   | `NOT_IMPLEMENTED` — `connect()` returns an error (`src/_kernel/net/jobs_kernel.l`, tracked as a Phase 3 follow-up of #733) |
-| `jvm`              | `InProcessJobScheduler`      | **Broken** — #5456 (unrelated to the Quartz kernel below) |
+| `jvm`              | `InProcessJobScheduler`      | Available — pure Lyric, tested on the JVM in CI |
 | `jvm`              | `inprocess`            | Available — real, functional `ConcurrentHashMap`-backed `NativeJobScheduler` |
 | `jvm`              | `hangfire`, `quartz`   | Real Quartz Scheduler binding (both features map to Quartz — Hangfire has no JVM port) — genuine, tested implementation, not a stub. See "Quartz on JVM" below for exactly what "real" means here. |
 

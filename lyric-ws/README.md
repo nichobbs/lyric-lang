@@ -38,11 +38,10 @@ silent stubs — the dotnet kernel above does not replicate them, tracked
 to close as Q-WS-001): fragmented (multi-frame) WebSocket messages are
 not reassembled; automatic ping-interval keepalives are not scheduled;
 text decoding is lenient UTF-8 (substitutes U+FFFD) rather than
-`Std.Encoding.tryDecodeUtf8`'s strict validate-and-reject, because that
-pure-Lyric helper hits a separate, pre-existing self-hosted JVM backend
-bug (`slice[Byte]` element indexing resolves to the JVM-erased `Object`
-type instead of `Byte`, so `.toInt()` fails to compile) unrelated to
-this library. A real end-to-end test
+`Std.Encoding.tryDecodeUtf8`'s strict validate-and-reject. The backend bug
+that forced this (`slice[Byte]` element indexing, #5453) is fixed, so
+`Std.Encoding` works on the JVM now; moving the kernel to the strict
+decoder is a behaviour change left for its own PR. A real end-to-end test
 (`tests/ws_jvm_e2e_test.l` — starts a real server, connects a real
 Undertow `WebSocketClient`, sends/receives a frame) is written but not
 yet runnable end-to-end: it hits a further, precisely-diagnosed
@@ -50,6 +49,12 @@ self-hosted JVM backend gap in cross-package `impl` of a *native*
 (non-extern) interface — see that file's header for the full
 diagnosis. It is intentionally not registered in `[project.tests]`
 until that gap is fixed.
+
+The JVM suite (`Ws.WsTests`, `Ws.WsFrameTests`, `Ws.WsHandshakeTests` and
+`Ws.WsSecurityAspectWeavingTests`, including the `WsAuth`/`WsRateLimit`
+aspects) runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`;
+`Ws.WsDotnetE2eTests` dials `Std.TcpHost`, which has no JVM kernel, so that
+script selects the other suites with `--suite`.
 
 ## Packages
 

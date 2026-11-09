@@ -377,12 +377,12 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
 | lyric-search | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
-| lyric-i18n | stable | stable (1 known gap, #5439) | D-progress-628 |
+| lyric-i18n | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | D-progress-627 |
-| lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `inprocess` and Quartz real; `InProcessJobScheduler` broken (#5456) | D-progress-633 |
-| lyric-ws | stable | partial (Undertow WebSocket kernel real; 2 known gaps, #5453/#5454; aspects blocked on B′-mode weaver gap) | D-progress-634 |
-| lyric-session | stable | stable (1 known gap, `InProcessSessionStore`, #5451; Lettuce Redis backend real) | D-progress-631 |
-| lyric-auth | stable | stable (`Auth.Aspects.ValidateKey` is .NET-only pending the B′-mode weaver fix; JWT/API-key verification real) | D-progress-630 |
+| lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `InProcessJobScheduler`, `inprocess` and Quartz real, suite in CI | D-progress-633 |
+| lyric-ws | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
+| lyric-session | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
+| lyric-auth | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
 | lyric-validation | stable | stable | — |
 | lyric-testing | stable | — | — |
@@ -390,7 +390,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-db | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
 | lyric-health | stable | stable | D057 |
 | lyric-web | stable | stable | D057 |
-| lyric-logging | stable | not covered by the JVM CI suite (docs/71 phase 3) | D054 |
+| lyric-logging | stable | stable (suite in CI) | D054 |
 | lyric-forms | experimental | experimental | D137; see Chapter 31 |
 | lyric-mcp | experimental, real (stdio, spawned-child round trips) | experimental, real | D129, D133 |
 | lyric-docker | Unix-socket client real | Unix-socket client real (JDK 16+); named pipes planned | D056, D-progress-541 |

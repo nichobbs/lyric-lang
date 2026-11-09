@@ -1530,6 +1530,10 @@ func selectedBareKeyJvm(
   if selectedNames.containsKey(owner + "|" + name) {
     return true
   }
+  if Str.startsWith(bare, "enumty:") {
+    val dot = Str.indexOfRaw(unprefixed, ".")
+    return dot > 0 and selectedNames.containsKey(owner + "|" + unprefixed.substring(0, dot))
+  }
   if Str.startsWith(bare, "enumcase:") {
     val slash = Str.lastIndexOfRaw(sig.owner, "/")
     val enumName = if slash >= 0 { sig.owner.substring(slash + 1, sig.owner.length - slash - 1) } else { sig.owner }
@@ -1553,7 +1557,7 @@ func overlayOwnerNamesJvm(
   for k2 in mapKeys(registry) {
     if Str.startsWith(k2, pfx) {
       val bare = k2.substring(pfx.length, k2.length - pfx.length)
-      if bare.length > 0 and not Str.startsWith(bare, "~") and not Str.contains(bare, "/") and not Str.contains(bare, "#") and not Str.contains(bare, ".") and (isOwnPackage or not isPackagePrivateKeyJvm(registry, owner, bare)) {
+      if bare.length > 0 and not Str.startsWith(bare, "~") and not Str.contains(bare, "/") and not Str.contains(bare, "#") and (not Str.contains(bare, ".") or Str.startsWith(bare, "enumty:")) and (isOwnPackage or not isPackagePrivateKeyJvm(registry, owner, bare)) {
         match mapGet(registry, k2) {
           case Some(sig2) -> {
             if not onlySelected or selectedBareKeyJvm(owner, bare, sig2, selectedNames) {
