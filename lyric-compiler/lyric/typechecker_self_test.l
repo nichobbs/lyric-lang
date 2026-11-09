@@ -15693,3 +15693,29 @@ test "dot-named overloads that both take the arguments by count are chosen by th
   val bad = parseCheck(decls + "func main(): Int { Seed.base(true) }\n")
   assertTrue(hasDiagCode(bad, "T0043"), "a call no overload accepts is still reported against the first by count")
 }
+
+// A `List`, `Map` or `Set` has only the members the backends lower by name; a
+// call naming another is T0113 (#7683).
+test "a method call on a collection names a built-in member: T0113" {
+  val head = "package P\nimport Std.CollectionsHost\n"
+  val ok = checkWithImportedPackages(
+    parse(head + "func f(xs: in List[Int], m: in Map[String, Int]): Unit {\n  xs.add(1)\n  val has: Bool = xs.contains(1)\n  val n: Int = xs.count\n  m.add(\"a\", 1)\n  val k: Bool = m.containsKey(\"a\")\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(ok), "", "built-in members")
+  val insert = checkWithImportedPackages(
+    parse(head + "func f(xs: in List[Int]): Unit {\n  xs.insert(0, 1)\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(hasDiagCode(insert, "T0113"), "List.insert: " + diagCodesOf(insert))
+  val get = checkWithImportedPackages(
+    parse(head + "func f(m: in Map[String, Int]): Unit {\n  val v = m.get(\"a\")\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(hasDiagCode(get, "T0113"), "Map.get: " + diagCodesOf(get))
+  val wrongTy = checkWithImportedPackages(
+    parse(head + "func f(xs: in List[Int]): Unit {\n  xs.add(\"s\")\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(hasDiagCode(wrongTy, "T0043"), "element type: " + diagCodesOf(wrongTy))
+}

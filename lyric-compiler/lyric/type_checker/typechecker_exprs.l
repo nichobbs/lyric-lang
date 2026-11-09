@@ -6004,6 +6004,65 @@ func stringSurfaceNote(tbl: in SymbolTable): String {
   }
 }
 
+// The built-in members of the stdlib `List`, `Map` and `Set` that the
+// backends lower by name, in the order the T0113 message lists them.  A
+// collection is an extern type with no declared signatures, so any other name
+// compiled to a stub that throws (MSIL) or failed in codegen (JVM, native)
+// (#7683).
+func stdCollectionSurface(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[String] {
+  val ns: List[String] = newList()
+  if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
+    for n in ["add", "contains", "indexOf", "lastIndexOf", "remove", "removeAt", "clear", "count", "set", "toArray", "toList"] {
+      ns.add(n)
+    }
+  } else if targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map") {
+    for n in ["add", "containsKey", "containsValue", "remove", "clear", "count", "set"] {
+      ns.add(n)
+    }
+  } else if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "Set") {
+    for n in ["add", "contains", "remove", "clear", "count"] {
+      ns.add(n)
+    }
+  }
+  ns
+}
+
+func stdCollectionSurfaceList(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): String {
+  val ns = stdCollectionSurface(tbl, tid, targs)
+  var listed = ""
+  var i = 0
+  while i < ns.count {
+    listed = listed + (if i == 0 { "" } else { ", " }) + "." + ns[i]
+    i = i + 1
+  }
+  listed
+}
+
+// A method call on a `List`, `Map` or `Set` naming none of its built-in
+// members, no universal member, and no function the file can call bare or
+// that is dot-named for the type, which method syntax would bind to.
+func stdCollectionMethodIsUnknown(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  tid: in SymbolId,
+  targs: in List[Type],
+  name: in String,
+): Bool {
+  val surface = stdCollectionSurface(tbl, tid, targs)
+  if surface.count == 0 or surface.contains(name) or isUniversalMethodName(name) {
+    return false
+  }
+  // The host kernel that declares the collections (`Std.CollectionsHost` on
+  // the JVM) calls the host's own methods (`Map.get`, `keySet`, ...).
+  if packageDeclaresExternType(tbl) {
+    return false
+  }
+  if visibleBareFuncSigs(tbl, sigs, name, -1).count > 0 {
+    return false
+  }
+  symTableMethodSigs(tbl, tid, name).count == 0
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface,
 // local or imported (`symTableIsMemberComplete`; a restored contract's record
@@ -6030,6 +6089,17 @@ func maybeUnknownMemberDiag(
           errorDiagnostic(
             "T0207",
             "'List' has no member 'length'; use '.count' (only String, slice and array have '.length')",
+            span
+          )
+        )
+        return
+      }
+      if isCall and stdCollectionMethodIsUnknown(tbl, sigs, tid, targs, name) {
+        diag.add(
+          errorDiagnostic(
+            "T0113",
+            "no method '" + name + "' on type '" + tname + "'; a " + tname + " has only the members " +
+              stdCollectionSurfaceList(tbl, tid, targs),
             span
           )
         )
