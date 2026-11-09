@@ -977,12 +977,13 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
                                        # project mode: "built foo.dll (3 package(s), 1204ms)"
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
                                        # PROFILE axis (optimization + debug symbols):
-lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
-lyric build --release <file.l>         # optimized, debug info stripped. On --target native, the
-                                       # clang -O level defaults from this axis (2 vs. 0). Integer
-                                       # overflow wraps instead of panicking (D163). dotnet/jvm
-                                       # perform no further optimization. ensures: and internal
-                                       # requires: are not checked; --release-contracts keeps them.
+lyric build --debug <file.l>           # the default: overflow panics, all contracts checked,
+                                       # native -O0. No target emits debug info yet (docs/63 B1-B7).
+lyric build --release <file.l>         # overflow wraps (D163); ensures: and internal requires:
+                                       # are not checked, --release-contracts keeps them (D297).
+                                       # On --target native the clang -O level defaults to 2 (vs. 0).
+                                       # dotnet/jvm: no IL/bytecode optimization in either profile
+                                       # (tracked, #8946).
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)

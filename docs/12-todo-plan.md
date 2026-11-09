@@ -193,9 +193,10 @@ left is verification and release work, tracked in `docs/36`:
 - The "supported but not v1.0 SemVer-guaranteed" JVM note is in `docs/01`
   §0.1 (G1, D-progress-620); native and wasm32 are likewise outside the v1.0
   guarantee and the UI and graphics libraries are experimental (D548).
-- Release items from `docs/63`: `--release` does no optimisation and does not
-  relax overflow checking (#6263), `--shape standalone` unimplemented (#6262),
-  bands B2-B7 (debug info, debugger).
+- Release items from `docs/63`: bands B2-B7 (debug info, debugger) and IL or
+  bytecode optimisation under `--release` on dotnet and the JVM (#8946).  The
+  profile already drives overflow, contracts and the native `-O` level (#6263),
+  and `--shape standalone` shipped (D297, #6262).
 - Distribution: AOT binary and signing are shipped; ISO submission is Phase 6+.
 
 ## v1.0 exit checklist and work streams
@@ -219,7 +220,11 @@ artifacts must be built after it.
    and `build` agree on package files (Tier 1 cluster 6).
 5. `--release` is a real profile (#6263) or the "competitive with C#" criterion
    in `docs/05` is restated; `--shape standalone` (#6262) is implemented or
-   explicitly deferred with a dated issue.
+   explicitly deferred with a dated issue.  _Status 2026-11-09:_ met.  The
+   profile drives overflow, contracts and the native `-O` level on the targets
+   named in `docs/01` section 13; managed-target optimisation is tracked as
+   #8946 and the `docs/05` criterion is restated; `--shape standalone` shipped
+   (D297).
 6. The `@stable(since="1.0")` surface is walked, `lyric public-api-diff` has a
    baseline cut at the tag, and the channel-status notes below are in
    `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
@@ -288,8 +293,7 @@ API freeze), #8929 `make lyric` fails at the AOT step on NU1903 (blocks building
 from source), #8930 collection-surface drift and member reads, #8931 `getBytes`
 T0113, #8932 lyric-db JVM backend, #8933 `allowAnyOrigin`.
 
-Not started, needs an owner after S1-S6: `--release` profile (#6263) and
-`--shape standalone` (#6262); record invariants (#7222, epic #7221); the
+Not started, needs an owner after S1-S6: record invariants (#7222, epic #7221); the
 Tier 2 expected-type and lambda clusters; re-triage of Tier 1 cluster 1 after
 docs/70 phase 4.
 

@@ -129,7 +129,7 @@ Each item was checked against the code, not only the plan documents.
 | Platforms | Linux x86-64 and AArch64, macOS AArch64. No Windows. | `docs/01` §13.1 (`--target native`) |
 | Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `docs/native-plan/06-async-design.md` |
 | Dependencies | Path and workspace `[dependencies]` compile from source into a native build (#7833, closing #6815). No library package carries its own `extern func` kernel yet, so a dependency that binds C symbols, and the propagation of its link flags to the application, are untested. | `docs/01` §13.1, `cli/workspace_builder.l` |
-| Release codegen | Overflow checks are not gated on the build profile. | #6263 |
+| Release codegen | Overflow checks follow the build profile on every target (panic in `--debug`, wrap in `--release`, D163) and the clang `-O` level defaults from it (D-progress-913). | #6263 |
 | Positioning | Before D155, `docs/00` listed "game developers needing hot-path optimization" as not the audience and described the memory model as host GC only, and `docs/04` rejected operator overloading beyond numeric distinct types. D155 revised both (§4.9); `docs/04` still rejects SIMD intrinsics. | `docs/00`, `docs/04` |
 
 ---

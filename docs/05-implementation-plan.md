@@ -231,7 +231,7 @@ declarations).
 - A team can build, test, and deploy a real production service in Lyric.
 - Tooling is good enough that newcomers can be productive within a week.
 - Documentation is comprehensive: language reference, tutorial, standard library reference.
-- Compile times and runtime performance are competitive with C#.
+- Compile times and runtime performance are competitive with C#. Restated 2026-11-09 (docs/12 exit criterion 5): the claim is about the JIT-compiled output of `--target dotnet`, which has no Lyric-side optimisation pass in either build profile; it is checked against `benchmarks/`, not delivered by `--release` (#8946).
 - Public release. Conferences, blog posts, social work.
 
 ## Phase 4: Proof system (months 39-57)

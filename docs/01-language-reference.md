@@ -1946,7 +1946,7 @@ Each package declares a verification level:
 package Account
 ```
 
-- `@runtime_checked` (default): contracts are runtime asserts, checked in every build profile (`--release` does not remove them).
+- `@runtime_checked` (default): contracts are runtime asserts. A `--release` build leaves `ensures:` and the `requires:` of non-`pub` functions unchecked (§13, D297, D307); range subtypes, type invariants and the `requires:` of `pub` functions are always checked.
 - `@proof_required`: SMT solver must discharge every contract obligation at compile time. Checked arithmetic is enabled by default (D415): each signed or unsigned `+`, `-`, `*`, unary `-`, and compound assignment carries the obligation that its result fits its declared integer width (8-bit `Byte`/`SByte`, 16-bit `Short`/`UShort`, 32-bit `Int`/`UInt`, 64-bit `Long`/`ULong`). `@proof_required(checked_arithmetic)` is accepted as an explicit synonym; `@proof_required(unbounded_arithmetic)` opts out to mathematical unbounded integers. Modules at this level may only call other `@proof_required` modules, primitives, or modules behind explicit `@axiom` boundaries. `lyric prove` discharges the obligations. `lyric build` does not run the prover, so it keeps every contract clause of a `@proof_required` module as a runtime check, exactly as in a `@runtime_checked` one; a module that is never passed to `lyric prove` is therefore still checked at runtime. Importantly, `@proof_required` modules are **exempt from the `[contracts] enabled = false` setting** (§3.7): proof obligations must not be user-disableable, so their `requires:` and `ensures:` checks always run regardless of the manifest setting (D-progress-994, #7227). A quantifier conjunct is the exception: it has no runtime form, so only `lyric prove` checks it.
 - `@proof_required(unsafe_blocks_allowed)`: as above, with `unsafe { ... }` escape hatches that the prover treats as opaque.
 
@@ -3411,9 +3411,22 @@ the remainder with `.substring` after each match is not.
 
 `lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). After a successful build the compiler prints elapsed time: `built foo.dll in 342ms` for a single-package build, or `built foo.dll (3 package(s), 1204ms)` for a project build. The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build` exposes two axes that are independent of each other and of `--target` (docs/63):
 
-**Profile** (`--debug` / `--release`, default `--debug`) selects optimization and debug-symbol treatment. **Shape** (`--shape portable|standalone|aot`, default `portable`) selects packaging; `--aot` and `--standalone` are sugar for the corresponding `--shape`. Any profile combines with any shape, so `--release --shape portable` yields an optimized framework-dependent DLL and `--debug --aot` yields a debuggable native binary.
+**Profile** (`--debug` / `--release`, default `--debug`) selects the build's checked-arithmetic, contract and native-optimisation behaviour (see the table below, §13); it is not yet a debug-symbol switch, because no target emits debug information (docs/63 bands B1-B7). **Shape** (`--shape portable|standalone|aot`, default `portable`) selects packaging; `--aot` and `--standalone` are sugar for the corresponding `--shape`. Any profile combines with any shape, so `--release --shape portable` yields an optimized framework-dependent DLL and `--debug --aot` yields a debuggable native binary.
 
 `lyric build --release --aot <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and drives `ilc` plus the platform linker, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
+
+**What the profile changes today** (D163, D297, D307, D-progress-913; #6263):
+
+| Behaviour | `--debug` (default) | `--release` | Targets |
+|---|---|---|---|
+| Integer overflow on `+ - *` and unary `-` (`Byte`, `Int`, `Long`, `UInt`, `ULong`) | panics | wraps (two's complement) | dotnet, JVM, native |
+| `ensures:` and internal `requires:` | checked | not checked (`--release-contracts` or `@runtime_checked(release_contracts = full)` keeps them) | dotnet, JVM, native |
+| clang `-O` level, when neither `--opt` nor `[native] opt_level` is given | `-O0` | `-O2` | native |
+| `build_profile` define and `Std.BuildInfo.profile` | `debug` | `release` | all |
+| IL or bytecode optimisation | none | none | dotnet, JVM |
+| Debug information | none emitted | none emitted | all (docs/63 B1-B7) |
+
+On `--target dotnet` and `--target jvm` the generated IL and bytecode have no optimisation pass in either profile; the CLR and JVM JIT compilers optimise both identically. This is a tracked gap, not a silent no-op (#8946, 2026-11-09). A program whose result differs between the two profiles is therefore differing only through the first two rows.
 
 **`--release` no longer implies AOT.** Before the profile/shape split it selected a packaging mode; it now selects the optimization profile only, and `--aot` (or `[build] shape = "aot"`) is required for a native binary. A `--release` build that resolves to a non-`aot` shape and named no shape on the command line prints a one-line note saying so. Diagnostics: `F0040` (`--debug` and `--release` together), `F0041` (conflicting shape spellings, e.g. `--aot --shape portable`), `F0042` (`[build] kind = "aot"`, removed — use `shape = "aot"`), `F0043` (shape invalid for the target, e.g. `--target native --shape portable`, since a native build is AOT by construction), `F0044` is retired (it reported `standalone` as unimplemented, #6262; the number is not reused). `--watch` is rejected on a packaging shape (`standalone`, `aot`) rather than on `--release`, because the packaging build is too slow to rerun on every edit; `--define` and manifest `[build.define]` reach every shape, since a packaging shape compiles its staging artifact through the ordinary build.
 
