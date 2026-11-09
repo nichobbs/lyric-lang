@@ -8,8 +8,8 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 
 | Group | Libraries |
 |---|---|
-| Stable on both targets | proto, validation, i18n, health, testing, forms (experimental label), generator-sdk, unicode, unicode-dict; auth except `ValidateKey` on JVM |
-| Real, labelled `@experimental` | web, ws, mcp, grpc, lambda, aws-xray, resilience, session, feature-flags, ui |
+| Stable on both targets | proto, validation, i18n, health, testing, generator-sdk, unicode, unicode-dict; auth except `ValidateKey` on JVM |
+| Real, labelled `@experimental` | web, ws, mcp, grpc, forms, lambda, aws-xray, resilience, session, feature-flags, ui |
 | Headline backend missing | mq (only `inmemory`, dotnet), storage (S3, Azure), db (no JVM), jobs (Hangfire, Quartz.NET on dotnet), otel (OTLP JVM, logs, gRPC), lambda (HTTP, streaming), aws-secrets (native `config`) |
 | Broken in one configuration | session and jobs in-process stores on JVM (#5451, #5456); auth `ValidateKey` and aws-xray `Tracing` on JVM (B-prime weaver); cache thread safety (#7457); search against a live server (`HttpResponse.bodyText`) |
 | Docs out of step | logging README (weaver "planned"), book matrix rows (proto, logging, search, five libraries missing), `cache_aspects.l` header |
