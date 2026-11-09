@@ -733,10 +733,11 @@ test "a union case construction builds with its payload" {
   assertTrue(constructSummary(r.body) == "construct1", constructSummary(r.body))
 }
 
-test "a construction leaving a defaulted field out is counted, not filled by guessing" {
-  val r = buildFirstFn("package App\nrecord P { x: Int\n y: Int = 5 }\nfunc f(): P {\n  P(x = 1)\n}\n")
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
+test "a construction leaving a literal-defaulted field out places the default and verifies" {
+  val c = censusOf("package App\nrecord P { x: Int\n y: Int = 5 }\nfunc f(): P {\n  P(x = 1)\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "an array field is counted as defaulted, not missing, when left out" {
