@@ -260,6 +260,24 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
 }
 
 /// Build the expression `e`, or `None` after recording why in `env.errors`.
+/// A name the checker resolved to a declaration: a value, constant, function value
+/// or nullary case.
+func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
+  match refSite(env.ctx, e.nodeId) {
+    case Some(r) -> match r.kind {
+      case RkNullaryCase -> {
+        noteCaseSym(env, r.sym)
+        Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+      }
+      case _ -> {
+        noteGlobalSym(env, r.sym, ty)
+        Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
+      }
+    }
+    case None -> uncoveredExpr(env, e, "a name that is not a local")
+  }
+}
+
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
@@ -316,20 +334,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
           case None -> ()
         }
       }
-      match refSite(env.ctx, e.nodeId) {
-        case Some(r) -> match r.kind {
-          case RkNullaryCase -> {
-            noteCaseSym(env, r.sym)
-            return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
-          }
-          case _ -> {
-            noteGlobalSym(env, r.sym, ty)
-            return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
-          }
-        }
-        case None -> ()
-      }
-      uncoveredExpr(env, e, "a name that is not a local")
+      buildRefPath(env, e, ty)
     }
     case EAwait(inner) -> match buildExpr(env, inner) {
       case Some(t) -> Some(value = mkExpr(e, ty, XAwait(inner = t)))
@@ -2246,6 +2251,28 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
 
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
+/// The argument for a parameter the call leaves out: its declared default, placed at
+/// the call under a fresh node id (the declaration's own node stays the parameter's).
+/// A literal or a name the checker resolved to a declaration (a constant, `None`);
+/// any other default, and one from a restored package, has no case yet.
+func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Option[TExpr] {
+  val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
+  val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(_) -> pty }
+  val built = match d.kind {
+    case ELiteral(_) -> buildExpr(env, d)
+    case EPath(_) -> buildRefPath(env, d, ty)
+    case _ -> uncoveredExpr(env, call, "a default argument that is not a literal or a name")
+  }
+  match built {
+    case Some(t) -> match coerceArg(env, TExpr(id = freshNodeId(env), ty = t.ty, span = call.span, kind = t.kind), pty) {
+      case Some(c) -> Some(value = c)
+      case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+    }
+    case None -> None
+  }
+}
+
 func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg]): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
@@ -2321,10 +2348,15 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
     val p = sig.params[i]
     match slots[i] {
       case None -> {
-        ok = false
         if p.hasDefault {
-          noteUncovered(env, "a defaulted argument")
+          match buildDefaultArg(env, e, p) {
+            case Some(t) -> targs.add(TArgIn(value = t))
+            case None -> {
+              ok = false
+            }
+          }
         } else {
+          ok = false
           noteUncovered(env, "a missing argument")
         }
       }

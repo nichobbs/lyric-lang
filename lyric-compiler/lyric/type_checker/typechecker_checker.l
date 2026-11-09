@@ -1243,7 +1243,8 @@ func resolveFunctionSig(
         span = p.span,
         tyExpr = Some(value = p.ty),
         defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) },
-        defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) }
+        defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) },
+        dfltExpr = p.dflt
       )
     )
     i = i + 1
@@ -1799,7 +1800,8 @@ func resolveMethodSigParts(
           span = p.span,
           tyExpr = Some(value = p.ty),
           defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) },
-          defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) }
+          defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) },
+          dfltExpr = p.dflt
         )
       )
     }
@@ -2117,7 +2119,8 @@ func substitutesSelfParams(params: in List[ResolvedParam], selfTy: in Type): Lis
         span = rp.span,
         tyExpr = rp.tyExpr,
         defaultInert = rp.defaultInert,
-        defaultUnavailable = rp.defaultUnavailable
+        defaultUnavailable = rp.defaultUnavailable,
+        dfltExpr = rp.dfltExpr
       )
     )
     i = i + 1

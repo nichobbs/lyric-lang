@@ -21,6 +21,8 @@ pub record AstMapper {
   /// Sees every pattern bottom-up (and rewrites the expressions in range
   /// patterns); `None` leaves patterns untouched.
   pat: Option[(Pattern) -> Pattern]
+  /// Also rewrite the default expression of each function parameter.
+  params: Bool = false
 }
 
 func exprOnly(f: in (Expr) -> Expr): AstMapper {
@@ -52,7 +54,7 @@ pub func mapFileNodes(
   g: in (Statement) -> Statement,
   h: in (Pattern) -> Pattern,
 ): SourceFile {
-  mapFileWith(file, AstMapper(expr = f, stmt = g, contracts = true, pat = Some(h)))
+  mapFileWith(file, AstMapper(expr = f, stmt = g, contracts = true, pat = Some(h), params = true))
 }
 
 pub func mapExpr(e: in Expr, f: in (Expr) -> Expr): Expr {
@@ -287,6 +289,27 @@ func mapProtectedField(pf: in ProtectedField, m: in AstMapper): ProtectedField {
   }
 }
 
+func mapParams(ps: in List[Param], m: in AstMapper): List[Param] {
+  if not m.params {
+    return ps
+  }
+  val mapped: List[Param] = newList()
+  for p in ps {
+    mapped.add(
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = p.ty,
+        dflt = mapExprOpt(p.dflt, m),
+        annotations = p.annotations,
+        span = p.span
+      )
+    )
+  }
+  mapped
+}
+
 func mapFunction(fn: in FunctionDecl, m: in AstMapper): FunctionDecl {
   val body: Option[FunctionBody] = match fn.body {
     case Some(b) -> Some(value = mapFunctionBody(b, m))
@@ -299,7 +322,7 @@ func mapFunction(fn: in FunctionDecl, m: in AstMapper): FunctionDecl {
     isAsync = fn.isAsync,
     name = fn.name,
     generics = fn.generics,
-    params = fn.params,
+    params = mapParams(fn.params, m),
     ret = fn.ret,
     whereClause = fn.whereClause,
     contracts = mapContracts(fn.contracts, m),
