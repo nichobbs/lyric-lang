@@ -316,8 +316,13 @@ tag.
    `cancel`, `awaitAll` over handles, `awaitAny`), the handle-escape rule (new
    diagnostic code **V0037**; V0035 is taken by the verifier), MSIL scope-exit
    join, native `Task[T]`; open Q-TASK-002/004/005/006/008.
-3. **Ecosystem backends (docs/57).**  lyric-storage S3/Azure, lyric-mq brokers,
-   Hangfire/Quartz.NET on dotnet, lyric-db JVM (#8932); missing `Lyric.Testing` mocks (Jobs, Search, Queue
+3. **Ecosystem backends (docs/57, docs/71).**  Superseded in shape by D552:
+   each library keeps its interface, a real in-tree reference backend and a
+   shared conformance suite; SDK-bound backends (lyric-storage S3/Azure,
+   lyric-mq brokers, Hangfire/Quartz.NET, lyric-db JVM #8932) move to
+   separate packages after docs/71 phase 1.  The phased plan, the `stability`
+   manifest field and the compiler root causes it depends on are in docs/71.
+   Also: missing `Lyric.Testing` mocks (Jobs, Search, Queue
    consumer, i18n, Ws); `.new()` migration of remaining `..ctor` wrappers in
    lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.
 4. **Tooling.**  LSP: stdlib not loaded by the type check, hover/go-to on
