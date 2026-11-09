@@ -778,7 +778,12 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       pushScope(env)
       val built = match buildPat(env, pat) {
         case Some(tp) -> match loopBody(env, body) {
-          case Some(bt) -> Some(value = stmtOf(s, TsFor(label = label, pat = tp, iter = it, body = bt)))
+          case Some(bt) -> Some(
+            value = stmtOf(
+              s,
+              TsFor(label = label, pat = tp, iter = it, body = bt)
+            )
+          )
           case None -> None
         }
         case None -> None
@@ -859,7 +864,11 @@ func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding):
           }
           case None -> None
         }
-        case None -> uncoveredStmt(env, s, "a var without an initializer or annotation")
+        case None -> uncoveredStmt(
+          env,
+          s,
+          "a var without an initializer or annotation"
+        )
       }
       case Some(x) -> match buildInit(env, s, ann, x) {
         case Some(t) -> {
@@ -916,7 +925,9 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
 
 /// A `val` of a pattern: the initializer is built first (it cannot see the names the
 /// pattern binds), then the pattern, which declares them.
-func buildLetPattern(env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr): Option[TStmt] {
+func buildLetPattern(
+  env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr
+): Option[TStmt] {
   val t = match buildInit(env, s, ann, init) { case Some(x) -> x; case None -> return None }
   match buildPat(env, pat) {
     case Some(tp) -> Some(value = stmtOf(s, TsLet(pat = tp, init = t)))
