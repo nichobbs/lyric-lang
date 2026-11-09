@@ -152,7 +152,7 @@ named in each item are still open.
   aspect weaving (#8272, #8368), inout `Ref` megamorphism (3-5x slowdown,
   #8371), array/buffer passed to `spawn` copied inside the task (#8391).
   Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers,
-  lyric-mail SMTP, lyric-search (docs/57 §3).  `F8`: `@externTarget`
+  lyric-db (no backend at all, #8932) (docs/57 §3; lyric-mail SMTP and lyric-search are real now, #7462, #5408).  `F8`: `@externTarget`
   catches only `java/lang/Exception`, not `Error` (accepted limitation, see
   docs/18 Q-J009).  `F1`: `self_test_b128.l` hardcodes `/tmp/lyric-jvm-b128`.
 - **Native (`native-backend` 11).**  `N0007` family: method call on a captured `List` in a lambda (#8330),
@@ -315,8 +315,7 @@ tag.
    diagnostic code **V0037**; V0035 is taken by the verifier), MSIL scope-exit
    join, native `Task[T]`; open Q-TASK-002/004/005/006/008.
 3. **Ecosystem backends (docs/57).**  lyric-storage S3/Azure, lyric-mq brokers,
-   lyric-mail JVM SMTP (#7462), lyric-search wiring (#5067), Hangfire/
-   Quartz.NET on dotnet; missing `Lyric.Testing` mocks (Jobs, Search, Queue
+   Hangfire/Quartz.NET on dotnet, lyric-db JVM (#8932); missing `Lyric.Testing` mocks (Jobs, Search, Queue
    consumer, i18n, Ws); `.new()` migration of remaining `..ctor` wrappers in
    lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.
 4. **Tooling.**  LSP: stdlib not loaded by the type check, hover/go-to on
