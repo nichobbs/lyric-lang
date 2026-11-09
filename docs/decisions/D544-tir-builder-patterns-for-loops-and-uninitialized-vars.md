@@ -28,3 +28,13 @@ pattern`, `a var without an initializer` and `a for loop`.
 
 `tir_build_self_test.l`: a tuple `val`, a `var` without initializer and a range `for`
 each build and verify (I0003 0).
+
+## Measured
+
+`scripts/ci/tir-census.sh` over the 98 programs: bodies built 913 -> 964 of 1165
+(I0002 252 -> 201), I0003 0. `a name that is not a local` 77 -> 71, `a for loop` and
+`a binding pattern` are gone. Next by count: a name that is not a local (71), a
+defaulted argument (70; the callee's default expression is not in the resolved
+signature, so a call must build it from the callee's declaration), a method,
+constructor or member call (58), a method call with no declared receiver (38), a
+function with no symbol (37), an argument conversion (31).
