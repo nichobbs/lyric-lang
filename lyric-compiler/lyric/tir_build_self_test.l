@@ -1252,7 +1252,7 @@ test "an uncovered kind remembers where it was first met" {
     case Some(a) -> a
     case None -> ""
   }
-  assertTrue(at.startsWith("3:"), "line 3 where the member access is")
+  assertEqual(at, "3:3", "line 3, column 3: where the member access is")
 }
 
 // ─── Assignments and indexing (docs/70 §6.3, D398) ───────────────────────────

@@ -94,6 +94,8 @@ done
 
 echo "TIR census over ${#FILES[@]} file(s): $built of $total function bodies built, $((total - built)) not yet (I0002), $i0003 I0003 diagnostic(s)"
 for r in "${!rules[@]}"; do echo "  I0003 rule $r: ${rules[$r]}"; done
+# Sorted by the count that follows the first colon; the "(e.g. file:L:C)" suffix adds
+# colons but the numeric key reads only the leading count.
 for k in "${!kinds[@]}"; do echo "  I0002 kind ${k}: ${kinds[$k]}${samples[$k]:+ (e.g. ${samples[$k]})}"; done | sort -t: -k2 -n -r | head -25
 if [[ ${#unchecked[@]} -gt 0 ]]; then
   echo "UNCHECKED (the build stopped before the census):"
