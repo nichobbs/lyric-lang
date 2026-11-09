@@ -1529,3 +1529,29 @@ test "a for loop builds its iterable, its pattern and its body and verifies" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a call that leaves out a literal default places it at the call and verifies" {
+  val c = censusOf(
+    "package App\nfunc g(a: Int, b: Int = 5): Int { a + b }\nfunc f(): Int { g(1) + g(1, 2) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "two calls leaving out the same default get distinct node ids" {
+  val c = censusOf(
+    "package App\nval K: Int = 3\nfunc g(a: Int, b: Int = K): Int { a + b }\nfunc f(): Int { g(1) + g(2) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a default that is not a literal or a name is counted, not guessed" {
+  val c = censusOf(
+    "package App\nfunc g(a: Int, b: Int = 1 + 2): Int { a + b }\nfunc f(): Int { g(1) }\n"
+  )
+  assertEqualInt(c.built, 1, "only g builds")
+  assertTrue(c.firstErrors.count > 0, "f reports an I0002")
+}

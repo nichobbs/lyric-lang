@@ -4723,7 +4723,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
         span = p.span,
         tyExpr = p.tyExpr,
         defaultInert = p.defaultInert,
-        defaultUnavailable = p.defaultUnavailable
+        defaultUnavailable = p.defaultUnavailable,
+        dfltExpr = p.dfltExpr
       )
     )
     i = i + 1

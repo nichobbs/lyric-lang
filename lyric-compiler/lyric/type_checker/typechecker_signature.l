@@ -33,6 +33,10 @@ pub record ResolvedParam {
   // (its type names a type parameter or `Self`, #8076): `hasDefault` is false
   // and a call leaving the argument out is T0218, not 'has no default'.
   defaultUnavailable: Bool = false
+  // The declaration's default expression, as written, for a call that leaves the
+  // argument out (docs/70 section 6.3: the TIR builder places the default at the
+  // call).  `None` for a signature read from a restored package.
+  dfltExpr: Option[Expr] = None
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Resolved where-clause bound.
   // ─────────────────────────────────────────────────────────────────────────────
