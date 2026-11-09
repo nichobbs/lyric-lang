@@ -5370,6 +5370,20 @@ func recordFuncRefNode(tbl: in SymbolTable, node: in Int, sig: in ResolvedSignat
   }
 }
 
+// The function type of a built-in member call's callee (`builtinFnTyByNode`): its parameters
+// are what the call's arguments are converted to.  Only a function type is recorded.
+func recordBuiltinFnTy(tbl: in SymbolTable, callNode: in Int, fnT: in Type): Unit {
+  match fnT {
+    case TyFunction(_, _, _) -> {
+      if tbl.builtinFnTyByNode.containsKey(callNode) {
+        tbl.builtinFnTyByNode.remove(callNode)
+      }
+      tbl.builtinFnTyByNode.add(callNode, fnT)
+    }
+    case _ -> ()
+  }
+}
+
 // Record a call to a built-in or a member of a built-in type under the call's
 // `NodeId` (`builtinByNode`, D362): TIR names it `IoBuiltin(name)`, so the
 // table holds the name, `List.add` for a member and `println` for a function.
@@ -5527,15 +5541,7 @@ func recordBuiltinCall(
         val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
         if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
           recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
-          match fnT {
-            case TyFunction(_, _, _) -> {
-              if tbl.builtinFnTyByNode.containsKey(callNode) {
-                tbl.builtinFnTyByNode.remove(callNode)
-              }
-              tbl.builtinFnTyByNode.add(callNode, fnT)
-            }
-            case _ -> ()
-          }
+          recordBuiltinFnTy(tbl, callNode, fnT)
         }
       }
       case None -> ()
@@ -19827,6 +19833,9 @@ func inferExprCore(
               recordUnsignedOperand(tbl, bt, bRecv)
             }
             recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(bt) + "." + bName)
+            val bitParams: List[Type] = newList()
+            bitParams.add(wantArg)
+            recordBuiltinFnTy(tbl, e.nodeId, TyFunction(params = bitParams, ret = unrefine(bt), isAsync = false))
             return unrefine(bt)
           }
         }
