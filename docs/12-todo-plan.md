@@ -229,10 +229,11 @@ artifacts must be built after it.
    baseline cut at the tag, and the channel-status notes below are in
    `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
    note is in §0.1 (native, wasm32, UI and graphics recorded in D548); the
-   baseline cut is blocked because `lyric public-api-diff` cannot read
-   multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3, #8927); the
-   `Std.Task`, `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers are
-   undecided (#8928).
+   baseline cut was blocked because `lyric public-api-diff` could not read
+   multi-package bundles such as `Lyric.Stdlib.dll`; it now walks every
+   per-package contract (`docs/22` §5.3, #8927).  The `Std.Task`,
+   `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers default to
+   `@experimental`, awaiting project-lead review (#8928).
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).

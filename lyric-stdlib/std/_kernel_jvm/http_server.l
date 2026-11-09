@@ -128,6 +128,7 @@ import Std.String
 @sendable
 extern type JHttpServer = "com.sun.net.httpserver.HttpServer"
 
+@experimental
 pub extern type HttpContext = "com.sun.net.httpserver.HttpExchange"
 
 extern type JHeaders = "com.sun.net.httpserver.Headers"
@@ -197,6 +198,7 @@ extern type JCharacter = "java.lang.Character"
 /// on this target yet (see `startListenerTls`'s doc comment); a
 /// non-mTLS `startListenerTls` call never returns `Err` on the JVM
 /// target today.
+@experimental
 pub union TlsListenError {
   case NotSupportedOnTarget(message: String)
 }
@@ -430,6 +432,7 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
 /// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO
 /// `SSL_CLIENT_AUTH_MODE`) still differs per server implementation and is
 /// each caller's own responsibility to set.
+@experimental
 pub opaque type ServerSslContext {
   ctx: JSSLContext
 }
@@ -439,6 +442,7 @@ pub opaque type ServerSslContext {
 /// callers that support mutual TLS call `serverSslContextFromConfigMtls`
 /// instead. Reuses `buildServerSslContext` — the exact same construction
 /// `startListenerTls` uses for its own `HttpsServer`.
+@experimental
 pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVersion): ServerSslContext {
   ServerSslContext(ctx = buildServerSslContext(identity, minVersion))
 }
@@ -487,6 +491,7 @@ func buildServerSslContextWithClientCa(
 /// `startListenerTls` (`com.sun.net.httpserver.HttpsServer`) still rejects
 /// mTLS for the separate, harder `HttpsConfigurator` class-subclassing gap
 /// (#5930) — this function does not touch that path.
+@experimental
 pub func serverSslContextFromConfigMtls(
   identity: in Identity, minVersion: in TlsVersion, clientCa: in Certificate
 ): ServerSslContext {
@@ -507,6 +512,7 @@ internal func ServerSslContext.rawContext(s: in ServerSslContext): JSSLContext {
 /// A record rather than an extern alias because the pull-model bridge
 /// needs both halves; the .NET twin's `HttpListener` alias is equally
 /// opaque to consumers.
+@experimental
 pub record HttpListener {
   server: JHttpServer
   queue: JQueue
@@ -597,6 +603,7 @@ func parsePrefix(prefix: in String): ParsedPrefix {
 /// `"http://localhost:8080/"`).  The caller owns it and must call
 /// `stopListener` on shutdown.  A `"*"` / `"+"` host binds the wildcard
 /// address, matching the .NET twin's prefix convention.
+@experimental
 pub func startListener(prefix: in String): HttpListener {
   val parsed = parsePrefix(prefix)
   val addr = if parsed.bindHost == "*" or parsed.bindHost == "+" {
@@ -645,6 +652,7 @@ pub func startListener(prefix: in String): HttpListener {
 /// silent ignore — naming the tracking issue (#5930). Non-mTLS TLS
 /// termination (identity + minVersion) is fully supported and never
 /// returns `Err` on this target.
+@experimental
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
   val mtlsRequested = tls.requireClientCert or match tls.clientCa { case Some(_) -> true; case None -> false }
   if mtlsRequested {
@@ -671,18 +679,21 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
 }
 
 /// Block until the next request lands (a genuine `queue.take()`).
+@experimental
 pub func nextContext(l: in HttpListener): HttpContext {
   val ex: HttpContext = l.queue.take()
   ex
 }
 
 /// Stop accepting connections immediately.
+@experimental
 pub func stopListener(l: in HttpListener): Unit {
   l.server.stop(0)
 }
 
 /// HTTP method (`"GET"`, `"POST"`, ...).  Returns `"GET"` if the
 /// host throws — same defensive shape as the .NET twin.
+@experimental
 pub func requestMethod(c: in HttpContext): String {
   return try {
     c.getRequestMethod()
@@ -693,6 +704,7 @@ pub func requestMethod(c: in HttpContext): String {
 
 /// Absolute path of the request URL.  Returns `"/"` if the host
 /// throws — same defensive shape as the .NET twin.
+@experimental
 pub func requestPath(c: in HttpContext): String {
   return try {
     c.getRequestURI().getPath() ?? "/"
@@ -704,6 +716,7 @@ pub func requestPath(c: in HttpContext): String {
 /// Read the request body as a UTF-8 string (or `""` on transport error /
 /// empty body). The body was read, bounded, before the request was queued
 /// (`admitExchange`); this returns that stored text.
+@experimental
 pub func requestBody(c: in HttpContext): String {
   return try {
     storedBody(c)
@@ -769,6 +782,7 @@ func admitExchange(ex: in HttpContext, queue: in JQueue): Unit {
 /// Raw query string with no leading `?` (e.g. `"a=1&b=2"`), still
 /// percent-escaped — matching the .NET twin's `Uri.Query` handling — or
 /// `""` if the URL has none or the host throws.
+@experimental
 pub func requestQuery(c: in HttpContext): String {
   return try {
     c.getRequestURI().getRawQuery() ?? ""
@@ -783,6 +797,7 @@ pub func requestQuery(c: in HttpContext): String {
 /// Names carry the JDK's normalized capitalization ("X-req"; module
 /// header) — treat them case-insensitively.  Returns an empty map if
 /// the host throws.
+@experimental
 pub func requestHeaders(c: in HttpContext): Map[String, String] {
   val result: Map[String, String] = newMap()
   try {
@@ -830,6 +845,7 @@ func isPercentEscapeAt(s: in String, i: in Int): Bool {
 /// sequences (a multi-byte code point spans consecutive `%XX` escapes,
 /// so a whole run is collected before decoding), `+` is NOT treated as
 /// a space, and malformed escapes pass through literally.
+@experimental
 pub func urlDecode(s: in String): String {
   val sb = StringBuilder.new()
   val len = s.length
@@ -907,6 +923,7 @@ func respondWith(c: in HttpContext, status: in Int, contentType: in String, body
 }
 
 /// Reply with a plaintext body; closes the exchange.
+@experimental
 pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
   respondWith(c, status, "text/plain; charset=utf-8", body)
 }
@@ -915,12 +932,14 @@ pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
 /// passed through verbatim — pre-format with `Std.Json.encodeString`
 /// and string-concat for primitive payloads, or hand-build complex
 /// shapes.
+@experimental
 pub func respondJson(c: in HttpContext, status: in Int, body: in String): Unit {
   respondWith(c, status, "application/json; charset=utf-8", body)
 }
 
 /// Reply with a raw byte body plus extra response headers; closes the
 /// exchange.
+@experimental
 pub func respondBytesWithHeaders(
   c: in HttpContext,
   status: in Int,
@@ -937,6 +956,7 @@ pub func respondBytesWithHeaders(
 // to chunked transfer encoding when the response length is declared as 0.
 // =====================================================================
 /// An open chunked response: the exchange's response body stream.
+@experimental
 pub record HttpChunkedStream {
   body: JOutputStream
 }
@@ -944,6 +964,7 @@ pub record HttpChunkedStream {
 /// Commit status + content-type + extra headers, switch the response into
 /// chunked-transfer-encoding mode, and return the open stream handle to write
 /// chunks to.  No `Content-Length` is set.
+@experimental
 pub func beginChunkedResponse(
   c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
 ): HttpChunkedStream {
@@ -979,6 +1000,7 @@ func closeExchange(c: in HttpContext): Unit {
 
 /// Write `bytes[offset..offset+count)` as one chunk and flush it immediately.
 /// A zero-length write is a no-op.  `Err` surfaces a broken connection.
+@experimental
 pub func streamWriteChunk(
   s: in HttpChunkedStream, bytes: in slice[Byte], offset: in Int, count: in Int
 ): Result[Unit, String] {
@@ -996,6 +1018,7 @@ pub func streamWriteChunk(
 
 /// Write the terminating chunk and complete the exchange.  A broken
 /// connection is swallowed: a disconnect mid-stream is routine.
+@experimental
 pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
   try {
     closeBody(s.body)

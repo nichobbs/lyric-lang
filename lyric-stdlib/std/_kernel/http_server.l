@@ -259,6 +259,7 @@ val maxConcurrentConnectionsDefault: Int = 1000
 // the #6071 backpressure guarantee. Read once per listener at start; a cap of
 // 1 is the seam the backpressure regression test uses. Public so a caller can
 // query the effective cap (and so the resolution logic is directly testable).
+@experimental
 pub func resolveMaxConcurrentConnections(): Int {
   match Env.getVar("LYRIC_HTTP_MAX_CONNECTIONS") {
     case Ok(raw) -> {
@@ -309,6 +310,7 @@ func positiveIntFromEnv(name: in String, fallback: in Int): Int {
 /// The TLS handshake timeout in milliseconds a listener applies: the
 /// `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` environment variable when it is an
 /// integer in 1..86400000 (one day), otherwise 10000. Read once per listener at start.
+@experimental
 pub func resolveTlsHandshakeTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", tlsHandshakeTimeoutMsDefault)
 }
@@ -318,6 +320,7 @@ pub func resolveTlsHandshakeTimeoutMs(): Int {
 /// environment variable when it is an integer in 1..86400000 (one day),
 /// otherwise 120000.
 /// Read once per listener at start.
+@experimental
 pub func resolveConnectionIdleTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)
 }
@@ -330,6 +333,7 @@ pub func resolveConnectionIdleTimeoutMs(): Int {
 /// caught before the listener binds. `NotSupportedOnTarget` is retained for
 /// API/type stability across targets but is never constructed on `--target
 /// dotnet` now that server TLS is real here.
+@experimental
 pub union TlsListenError {
   case NotSupportedOnTarget(message: String)
   case InvalidConfig(message: String)
@@ -337,6 +341,7 @@ pub union TlsListenError {
 
 /// Human-readable message for a `TlsListenError`.
 @pure
+@experimental
 pub func TlsListenError.message(e: in TlsListenError): String {
   match e {
     case NotSupportedOnTarget(m) -> m
@@ -349,6 +354,7 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 /// (with `available` counting queued items), and the accept-loop task handle
 /// (kept alive so the loop is not collected). Opaque to consumers: observe it
 /// only through `nextContext` / `stopListener`.
+@experimental
 pub record HttpListener {
   transport: Listener
   queue: ConcurrentQueue[HttpContext]
@@ -364,6 +370,7 @@ pub record HttpListener {
 /// engine's keep-alive decision for this exchange. Treat the fields as private
 /// — observe a context only through the `request*` accessors and construct a
 /// response only through the `respond*` / chunked helpers.
+@experimental
 pub record HttpContext {
   conn: Conn
   method: String
@@ -392,6 +399,7 @@ pub record HttpContext {
 // Per-connection ownership flag. `taken` flips once, on the puller thread,
 // before it releases the context's `done` semaphore; the connection task reads
 // it after `semWait(done)`, so the semaphore orders the write before the read.
+@experimental
 pub ref record ConnHandoff {
   var taken: Bool = false
 }
@@ -401,16 +409,19 @@ pub ref record ConnHandoff {
 // change (headers ready, chunk queued, body ended) and `wake` is the one signal
 // the connection task blocks on, shared with the reader task so the task wakes
 // for input or for handler output alike. `closed` is set once at teardown.
+@experimental
 pub ref record H2Link {
   var closed: Bool = false
   outbox: ConcurrentQueue[H2Notice]
   wake: Semaphore
 }
 
+@experimental
 pub record H2Notice {
   streamId: Int
 }
 
+@experimental
 pub record H2Chunk {
   bytes: slice[Byte]
 }
@@ -431,6 +442,7 @@ record H2Inbound {
 // at `beginChunkedResponse` and queues chunks until `endChunkedResponse`.
 // `credit` bounds how many chunks may be queued ahead of the connection task.
 // `aborted` is set when the peer resets the stream or the connection closes.
+@experimental
 pub ref record H2Exchange {
   streamId: Int
   link: H2Link
@@ -541,6 +553,7 @@ ref record H2ConnState {
 /// An open chunked (`Transfer-Encoding: chunked`) response. Carries the
 /// connection the caller writes chunks to via `streamWriteChunk` and the
 /// `done` semaphore `endChunkedResponse` releases to complete the exchange.
+@experimental
 pub record HttpChunkedStream {
   conn: Conn
   done: Semaphore
@@ -1904,6 +1917,7 @@ func processH2Connection(
 /// owns it and must call `stopListener` on shutdown. A `"*"` / `"+"` host binds
 /// the IPv4 wildcard; `"localhost"` binds loopback. Use
 /// `startListenerWithLimits` to raise the request-size caps.
+@experimental
 pub func startListener(prefix: in String): HttpListener {
   startListenerWithLimits(prefix, EngineLimits.defaults())
 }
@@ -1917,6 +1931,7 @@ pub func startListener(prefix: in String): HttpListener {
 /// cross-package `EngineLimits` default omitted at the call site would risk the
 /// same multi-package bundle-build generic degradation this server's accept
 /// loop was just hardened against.
+@experimental
 pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): HttpListener {
   ensureServerThreadCapacity()
   val parsed = parsePrefix(prefix)
@@ -1943,6 +1958,7 @@ pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): Ht
 /// failed or timed-out handshake drops that connection and is never fatal to
 /// the listener. Use `startListenerTlsWithLimits` to raise the request-size
 /// caps.
+@experimental
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
   startListenerTlsWithLimits(host, port, tls, EngineLimits.defaults())
 }
@@ -1950,6 +1966,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
 /// Like `startListenerTls`, but with caller-supplied `EngineLimits` (see
 /// `startListenerWithLimits` for why the cap is overridable and why this is a
 /// separate function).
+@experimental
 pub func startListenerTlsWithLimits(
   host: in String, port: in Int, tls: in TlsServerConfig, limits: in EngineLimits
 ): Result[HttpListener, TlsListenError] {
@@ -1983,6 +2000,7 @@ pub func startListenerTlsWithLimits(
 }
 
 /// Block until the next fully-parsed request is ready, returning its context.
+@experimental
 pub func nextContext(l: in HttpListener): HttpContext {
   semWait(l.available)
   var ctx: HttpContext = default()
@@ -2001,16 +2019,19 @@ pub func nextContext(l: in HttpListener): HttpContext {
 /// Stop accepting connections and release the socket. In-flight connection
 /// tasks finish their current request; the accept loop ends when the stopped
 /// listener's next accept fails.
+@experimental
 pub func stopListener(l: in HttpListener): Unit {
   hostStopListener(l.transport)
 }
 
 /// HTTP method (`"GET"`, `"POST"`, ...).
+@experimental
 pub func requestMethod(c: in HttpContext): String {
   c.method
 }
 
 /// Absolute path of the request target (everything before the first `?`).
+@experimental
 pub func requestPath(c: in HttpContext): String {
   val q = queryStart(c.target)
   if q >= 0 {
@@ -2022,6 +2043,7 @@ pub func requestPath(c: in HttpContext): String {
 
 /// Raw query string with no leading `?` (e.g. `"a=1&b=2"`), still
 /// percent-escaped, or `""` if the target has none.
+@experimental
 pub func requestQuery(c: in HttpContext): String {
   val q = queryStart(c.target)
   if q >= 0 {
@@ -2045,6 +2067,7 @@ func queryStart(target: in String): Int {
 
 /// Read the request body as a UTF-8 string (or `""` for an empty / non-UTF-8
 /// body).
+@experimental
 pub func requestBody(c: in HttpContext): String {
   match tryDecodeUtf8(c.body) {
     case Some(s) -> s
@@ -2056,6 +2079,7 @@ pub func requestBody(c: in HttpContext): String {
 /// comma-joined (RFC 7230 §3.2.2), matching the old kernel and the JVM twin.
 /// Names carry the case the client supplied; consumers (e.g. lyric-web's
 /// `normalizeHeaders`) fold case before lookup.
+@experimental
 pub func requestHeaders(c: in HttpContext): Map[String, String] {
   // Group first and join once per name: re-adding an existing key threw on
   // .NET (`Dictionary.Add`), so any request repeating a header name crashed
@@ -2116,6 +2140,7 @@ func isPercentEscapeAt(s: in String, i: in Int): Bool {
 /// decode as UTF-8 byte sequences (a multi-byte code point spans consecutive
 /// `%XX` escapes, so a whole run is collected before decoding), `+` is NOT
 /// treated as a space, and malformed escapes pass through literally.
+@experimental
 pub func urlDecode(s: in String): String {
   val sb = StringBuilder.new()
   val len = s.length
@@ -2257,6 +2282,7 @@ func respondBytesWith(
 }
 
 /// Reply with a plaintext body; completes the exchange.
+@experimental
 pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
   val empty: Map[String, String] = newMap()
   respondBytesWith(c, status, "text/plain; charset=utf-8", encodeUtf8(body), empty)
@@ -2265,6 +2291,7 @@ pub func respondText(c: in HttpContext, status: in Int, body: in String): Unit {
 /// Reply with `application/json`; completes the exchange. The body is passed
 /// through verbatim — pre-format with `Std.Json.encodeString` for primitive
 /// payloads, or hand-build complex shapes.
+@experimental
 pub func respondJson(c: in HttpContext, status: in Int, body: in String): Unit {
   val empty: Map[String, String] = newMap()
   respondBytesWith(c, status, "application/json; charset=utf-8", encodeUtf8(body), empty)
@@ -2272,6 +2299,7 @@ pub func respondJson(c: in HttpContext, status: in Int, body: in String): Unit {
 
 /// Reply with a raw byte body plus extra response headers; completes the
 /// exchange.
+@experimental
 pub func respondBytesWithHeaders(
   c: in HttpContext,
   status: in Int,
@@ -2298,6 +2326,7 @@ pub func respondBytesWithHeaders(
 ///
 /// Call at most once per context, and never after a `respond*` or
 /// chunked-response helper has completed the exchange.
+@experimental
 pub func takeConnection(c: in HttpContext): Result[Conn, String] {
   match c.h2 {
     case Some(_) -> return Err(error = "an HTTP/2 stream cannot take over its connection")
@@ -2328,6 +2357,7 @@ pub func takeConnection(c: in HttpContext): Result[Conn, String] {
 /// Commit status + content-type + extra headers, switch the response into
 /// chunked-transfer-encoding mode, and return the open stream handle to write
 /// chunks to. No `Content-Length` is set.
+@experimental
 pub func beginChunkedResponse(
   c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
 ): HttpChunkedStream {
@@ -2365,6 +2395,7 @@ pub func beginChunkedResponse(
 /// Write `bytes[offset..offset+count)` as one chunk and flush it immediately.
 /// A zero-length write is a no-op (the terminating zero-length chunk is written
 /// only by `endChunkedResponse`). `Err` surfaces a broken connection.
+@experimental
 pub func streamWriteChunk(
   s: in HttpChunkedStream, bytes: in slice[Byte], offset: in Int, count: in Int
 ): Result[Unit, String] {
@@ -2398,6 +2429,7 @@ pub func streamWriteChunk(
 /// Write the terminating zero-length chunk and complete the exchange. Guarded:
 /// a broken connection is swallowed (a disconnect mid-stream is routine and
 /// must not crash the accept loop).
+@experimental
 pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
   match s.h2 {
     case Some(exchange) -> {

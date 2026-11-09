@@ -3,7 +3,7 @@
 Every public module in `lyric-stdlib/std/` is listed below with its stability
 tier at the v1.0 release.  The mechanism is documented in the decision log
 (D040).  The table was last walked against the sources on 2026-11-09 (issue
-#367); the walk procedure is at the end of this file.
+#367; the four kernel-resident packages added by #8928); the walk procedure is at the end of this file.
 
 **Rules:**
 
@@ -110,6 +110,10 @@ standard library but are outside the SemVer boundary.
 | `Std.PluginSign` | `std/plugin_sign.l` | Plugin artifact signatures |
 | `Std.PluginWasm` | `std/plugin_wasm.l` | WIT-typed component plugins |
 | `Std.Zip` | `std/zip.l` | Pure-Lyric zip and DEFLATE |
+| `Std.HttpServer` | `std/_kernel/http_server.l` | HTTP server listener and context; in flux with the docs/61 engine work. Kernel-resident, imported directly (default tier, see below) |
+| `Std.Jvm` | `std/_kernel/jvm.l` | JVM-target escape hatches (`catch`). Kernel-resident, imported directly (default tier, see below) |
+| `Std.Task` | `std/_kernel/task.l` | Cancellation tokens, scopes, `runWithin`; the docs/68 `Std.Task` API is unbacked. Kernel-resident, imported directly (default tier, see below) |
+| `Std.TcpHost` | `std/_kernel/tcp_host.l` | TCP listener and connection primitives. Kernel-resident, imported directly (default tier, see below) |
 
 ---
 
@@ -129,11 +133,18 @@ kernel files.  Kernel symbols carry no stability guarantee.
   extern-declaration budget; this file does not list kernel files one by one.
 
 Four packages that live in the kernel directory are imported directly by
-programs and carry **no** `@stable` or `@experimental` annotation:
-`Std.Task` (`_kernel/task.l`), `Std.HttpServer` (`_kernel/http_server.l`),
-`Std.TcpHost` (`_kernel/tcp_host.l`) and `Std.Jvm` (`_kernel/jvm.l`).  Their
-tier is an open decision for the project lead (docs/12, "Open decisions"); until
-it is made they are outside the SemVer boundary.
+programs rather than wrapped by a top-level `Std.*` module: `Std.Task`
+(`_kernel/task.l`), `Std.HttpServer` (`_kernel/http_server.l`), `Std.TcpHost`
+(`_kernel/tcp_host.l`) and `Std.Jvm` (`_kernel/jvm.l`).  They are listed in the
+"Experimental at v1.0" table above and every `pub` item in them, including in
+their `_kernel_jvm/` and `_kernel_native/` twins, is `@experimental`.
+
+**This tier is a default awaiting project-lead review (#8928).**  The lead has
+not chosen their tiers; `@experimental` was applied because the `Std.Task` API
+in docs/68 is unbacked and `Std.HttpServer` is in flux with the docs/61 engine
+work.  Promoting any of them to `@stable(since="1.0")` before the v1.0 tag is a
+one-line-per-item annotation change plus a move to the first table; after the
+tag it is a minor-version change.
 
 ---
 

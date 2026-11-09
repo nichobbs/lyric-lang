@@ -24,9 +24,8 @@
 //! IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
 //! the JSON blob into structured records using `Std.Json` directly.
 //!
-//! SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
-//! remaining in this package — porting the diff logic to Lyric is
-//! tracked under #1229 follow-ups.
+//! `diffContracts` is in-process too: it parses both blobs with
+//! `parseFromJson` and compares the structured declarations (#8927).
 @runtime_checked
 package Lyric.ContractMeta
 
@@ -34,9 +33,6 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.File
-import Std.Process
-import Std.ProcessCapture as ProcCapture
-import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
@@ -44,25 +40,8 @@ import Lyric.Lexer
 import Lyric.Parser
 import Msil.MetadataReader as Mdr
 import Std.Zip as Zip
-import Lyric.CliShell as CliShell
 import Lyric.Fmt as Fmt
 import Lyric.ContractElaborator
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Wrapper names are deliberately distinct from CliShell's public
-// surface: when the local function and the cross-package alias share
-// a name, the bootstrap resolver shadows the call site with the
-// enclosing module's symbol, producing infinite recursion at runtime.
-func cliShellExe(): String {
-  CliShell.lyrExe()
-}
-
-func cliShellArgs(subcmd: in List[String]): List[String] {
-  CliShell.lyrArgs(subcmd)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. readFromFile / readAllContractsFromFile (in-process)
@@ -227,30 +206,140 @@ pub func readAllContractsFromJarFile(jarPath: in String): List[ContractEntry] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. diffContracts
 // ─────────────────────────────────────────────────────────────────────────────
-/// Diff two Lyric.Contract JSON blobs.
-/// Returns a list of rendered diff entries (each entry may be multi-line).
-/// Entries are separated by blank lines in the subprocess output;
-/// this function splits on `\n\n` and returns one entry per element.
+/// Diff two `Lyric.Contract` JSON blobs of one package.
+/// Returns one rendered, single-line entry per difference, in declaration
+/// order of the old contract and then the added declarations:
+///   - `  - <kind> <name>`                  a declaration was removed
+///   - `  ~ <kind> <name>: <old> -> <new>`  its signature changed
+///   - `  ~ <kind> <name>: <detail> [breaking]`  a contract clause changed in
+///     a breaking way (a `requires:` clause added, an `ensures:` clause
+///     dropped), or the declaration lost `@pure`
+///   - `  = <kind> <name>: <detail>`        a compatible contract change
+///     (a `requires:` clause dropped, an `ensures:` clause added, gained
+///     `@pure`, or `@experimental` promoted to `@stable`)
+///   - `  + <kind> <name>`                  a declaration was added
+/// An entry about a declaration that was `@experimental` in the old contract
+/// carries `[experimental]` and is not breaking (D040). A blob that does not
+/// parse is reported as a breaking `  ~ contract` entry.
 @stable(since = "0.1")
 pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
-  val subcmd: List[String] = newList()
-  subcmd.add("--internal-contract-meta")
-  subcmd.add("diff")
-  val stdin = oldJson + "\n---\n" + newJson
-  val output = ProcCapture.runCapture(cliShellExe(), cliShellArgs(subcmd), stdin)
-
-  // Entries are separated by blank lines (\n\n).
-  val rawParts = Str.split(output, "\n\n")
   val result: List[String] = newList()
+  val oldC = match parseFromJson(oldJson) {
+    case Some(c) -> c
+    case None -> {
+      result.add("  ~ contract: the old contract metadata could not be parsed")
+      return result
+    }
+  }
+  val newC = match parseFromJson(newJson) {
+    case Some(c) -> c
+    case None -> {
+      result.add("  ~ contract: the new contract metadata could not be parsed")
+      return result
+    }
+  }
+  val matched: List[Bool] = newList()
+  var k = 0
+  while k < newC.decls.count {
+    matched.add(false)
+    k += 1
+  }
   var i = 0
-  while i < rawParts.length {
-    val item = Str.trim(rawParts[i])
-    if Str.isNotEmpty(item) {
-      result.add(item)
+  while i < oldC.decls.count {
+    val od = oldC.decls[i]
+    val label = od.kind + " " + od.name
+    val tag = if od.stability == "experimental" { " [experimental]" } else { "" }
+    var j = 0
+    var hit = -1
+    while j < newC.decls.count and hit < 0 {
+      val nd = newC.decls[j]
+      if not matched[j] and nd.kind == od.kind and nd.name == od.name {
+        hit = j
+      }
+      j += 1
+    }
+    if hit < 0 {
+      result.add("  - " + label + tag)
+    } else {
+      matched[hit] = true
+      diffDecl(od, newC.decls[hit], label, tag, result)
     }
     i += 1
   }
+  var n = 0
+  while n < newC.decls.count {
+    if not matched[n] {
+      result.add("  + " + newC.decls[n].kind + " " + newC.decls[n].name)
+    }
+    n += 1
+  }
   result
+}
+
+func containsClause(clauses: in List[String], c: in String): Bool {
+  var i = 0
+  while i < clauses.count {
+    if clauses[i] == c {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+func diffDecl(od: in ContractDecl, nd: in ContractDecl, label: in String, tag: in String, result: in List[String]): Unit {
+  if od.repr != nd.repr {
+    result.add("  ~ " + label + ": " + od.repr + " -> " + nd.repr + tag)
+  }
+  // Contract clauses are compared as source text: a requires: clause that
+  // is new strengthens the precondition, an ensures: clause that is gone
+  // weakens the postcondition (both break callers); the reverse directions
+  // are compatible.
+  val breaking = if tag == "" { " [breaking]" } else { tag }
+  var i = 0
+  while i < nd.requiresClauses.count {
+    val c = nd.requiresClauses[i]
+    if not containsClause(od.requiresClauses, c) {
+      result.add("  ~ " + label + ": requires strengthened: " + c + breaking)
+    }
+    i += 1
+  }
+  i = 0
+  while i < od.requiresClauses.count {
+    val c = od.requiresClauses[i]
+    if not containsClause(nd.requiresClauses, c) {
+      result.add("  = " + label + ": requires weakened: " + c)
+    }
+    i += 1
+  }
+  i = 0
+  while i < od.ensuresClauses.count {
+    val c = od.ensuresClauses[i]
+    if not containsClause(nd.ensuresClauses, c) {
+      result.add("  ~ " + label + ": ensures weakened: " + c + breaking)
+    }
+    i += 1
+  }
+  i = 0
+  while i < nd.ensuresClauses.count {
+    val c = nd.ensuresClauses[i]
+    if not containsClause(od.ensuresClauses, c) {
+      result.add("  = " + label + ": ensures strengthened: " + c)
+    }
+    i += 1
+  }
+  if od.isPure and not nd.isPure {
+    result.add("  ~ " + label + ": no longer @pure" + breaking)
+  }
+  if not od.isPure and nd.isPure {
+    result.add("  = " + label + ": now @pure")
+  }
+  if od.stability != "experimental" and nd.stability == "experimental" {
+    result.add("  ~ " + label + ": stable -> experimental")
+  }
+  if od.stability == "experimental" and nd.stability != "experimental" {
+    result.add("  = " + label + ": experimental -> " + nd.stability)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

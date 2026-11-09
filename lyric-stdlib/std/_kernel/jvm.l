@@ -44,5 +44,5 @@ import Std.JvmExceptionHost
 // Limitation: the lambda body must not contain an explicit `return` statement.
 // Passing a non-literal function value falls through to a general static call
 // which will fail at JVM load time (no generated implementation body).
-@stable(since="1.0")
+@experimental
 pub func catch[T](action: func(): T): Result[T, JvmException] = ()

@@ -143,6 +143,7 @@ extern type AsyncLocal[T] = "System.Threading.AsyncLocal`1"
 /// `CancellationToken.None` in the BCL.  Use as the "no
 /// cancellation requested" sentinel when an API requires a
 /// token but the caller has no source.
+@experimental
 pub func noCancellation(): CancellationToken {
   CancellationToken.None
 }
@@ -152,6 +153,7 @@ pub func noCancellation(): CancellationToken {
 /// `source.cancel()` when you want them to abort.  Sources own
 /// unmanaged resources — wrap usage in `defer { source.dispose()
 /// }` or use `withScope` for automatic cleanup.
+@experimental
 pub func makeCancelSource(): CancellationTokenSource {
   CancellationTokenSource.new()
 }
@@ -160,6 +162,7 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// source after `ms` milliseconds — convenient for deadline-
 /// shaped scopes.  Routes through the `(int millisecondsDelay)`
 /// constructor overload.
+@experimental
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
   CancellationTokenSource.new(ms)
 }
@@ -169,6 +172,7 @@ pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
 // =====================================================================
 /// Project a token from a source.  Multiple calls return the
 /// same token (BCL semantics).
+@experimental
 pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
   source.Token
 }
@@ -178,12 +182,14 @@ pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
 /// `isCancelled == true` (and any `delayWithCancel` / similar in
 /// flight will throw `OperationCanceledException` at the next
 /// resume point).
+@experimental
 pub func cancelSource(source: in CancellationTokenSource): Unit {
   source.Cancel()
 }
 
 /// Release the source's unmanaged resources.  Always safe to
 /// call after the source's last consumer has resumed.
+@experimental
 pub func disposeSource(source: in CancellationTokenSource): Unit {
   source.Dispose()
 }
@@ -194,6 +200,7 @@ pub func disposeSource(source: in CancellationTokenSource): Unit {
 /// Has cancellation been requested for this token's source?
 /// Async loops can poll this between iterations as a cheap
 /// alternative to `throwIfCancelled`.
+@experimental
 pub func isCancelled(token: in CancellationToken): Bool {
   token.IsCancellationRequested
 }
@@ -202,6 +209,7 @@ pub func isCancelled(token: in CancellationToken): Bool {
 /// `Exception`) when the token has been cancelled.  Use as a
 /// cooperative cancellation point inside long-running synchronous
 /// stretches that can't naturally suspend.
+@experimental
 pub func throwIfCancelled(token: in CancellationToken): Unit {
   token.ThrowIfCancellationRequested()
 }
@@ -212,6 +220,7 @@ pub func throwIfCancelled(token: in CancellationToken): Unit {
 /// `Task.Delay(ms)` — non-cancellable timer.  Pre-Phase-C
 /// callers continue to use this; the SM will suspend until `ms`
 /// elapses.
+@experimental
 pub func delay(ms: in Int): Task {
   Task.Delay(ms)
 }
@@ -220,6 +229,7 @@ pub func delay(ms: in Int): Task {
 /// is cancelled before the timer fires, the awaiting state
 /// machine resumes with `OperationCanceledException` (caught as
 /// `Exception` on the Lyric side).  Phase C / D-progress-068.
+@experimental
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
   Task.Delay(ms, token)
 }
@@ -286,6 +296,7 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 //       }
 //     }
 // =====================================================================
+@experimental
 pub protected type Scope {
   var source: CancellationTokenSource = makeCancelSource()
   var tasks: List[Task] = newList()
@@ -333,17 +344,20 @@ pub protected type Scope {
 /// `scopeSpawn`, then `await awaitAll(scope)` to join them.  Always
 /// pair construction with `defer { cancelScope(scope);
 /// disposeScope(scope) }` so the source is released on scope exit.
+@experimental
 pub func makeScope(): Scope {
   return Scope()
 }
 
 /// Project the scope's cancellation token.  Pass to child tasks
 /// so they observe scope-level cancellation requests.
+@experimental
 pub func scopeToken(s: in Scope): CancellationToken {
   return s.token()
 }
 
 /// Register an existing `Task` as a child of the scope.
+@experimental
 pub func scopeAdd(s: in Scope, child: in Task): Unit {
   s.addChild(child)
 }
@@ -355,6 +369,7 @@ pub func scopeAdd(s: in Scope, child: in Task): Unit {
 /// Named `scopeSpawn` rather than the more idiomatic `spawn`
 /// because `spawn` is a soft keyword reserved for the future
 /// `spawn expr` syntactic form (`ESpawn` in the parser AST).
+@experimental
 pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
   val tok = s.token()
   val t = taskRunWithCancel(action, tok)
@@ -364,6 +379,7 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
 /// The number of children the scope still tracks: those still running,
 /// plus the first that failed.  A child that finished successfully is
 /// dropped the next time the scope spawns.
+@experimental
 pub func scopePendingCount(s: in Scope): Int {
   return s.pendingCount()
 }
@@ -379,18 +395,21 @@ func taskSucceeded(t: in Task): Bool {
 /// Wait for every registered child to complete.  When any child
 /// faults the call rethrows the underlying exception so the
 /// caller's `try/catch` surfaces it.
+@experimental
 pub func awaitAll(s: in Scope): Task {
   return taskWhenAll(s.snapshot())
 }
 
 /// Explicitly cancel the scope's source.  Idempotent.  Useful
 /// for defer-based cleanup that signals children to abort.
+@experimental
 pub func cancelScope(s: in Scope): Unit {
   s.cancel()
 }
 
 /// Release the scope's underlying source.  Always safe to call
 /// from a `defer { ... }`.
+@experimental
 pub func disposeScope(s: in Scope): Unit {
   s.dispose()
 }
@@ -444,6 +463,7 @@ func tokenCanBeCanceled(token: in CancellationToken): Bool = ()
 /// Read the ambient cancellation token.  Returns the
 /// never-cancelled `CancellationToken.None` when no scope is
 /// active.
+@experimental
 pub func currentToken(): CancellationToken {
   ambientValue(__ambientSlot)
 }
@@ -451,6 +471,7 @@ pub func currentToken(): CancellationToken {
 /// Install `token` as the ambient.  Returns the previous value;
 /// callers should `defer { restoreToken(previous) }` so the slot
 /// is restored on scope exit (success or exception).
+@experimental
 pub func installToken(token: in CancellationToken): CancellationToken {
   val previous = currentToken()
   setAmbientValue(__ambientSlot, token)
@@ -459,6 +480,7 @@ pub func installToken(token: in CancellationToken): CancellationToken {
 
 /// Restore the ambient slot to `previous`.  Idempotent when
 /// `previous` is the same value already installed.
+@experimental
 pub func restoreToken(previous: in CancellationToken): Unit {
   setAmbientValue(__ambientSlot, previous)
 }
@@ -466,6 +488,7 @@ pub func restoreToken(previous: in CancellationToken): Unit {
 /// True when the ambient slot holds a non-default token.  Used by
 /// libraries to detect whether to honour the ambient or fall back
 /// to no-cancellation semantics.
+@experimental
 pub func hasAmbient(): Bool {
   tokenCanBeCanceled(currentToken())
 }
@@ -500,6 +523,7 @@ func waitTaskMs(t: in Task, timeoutMs: in Int): Bool = ()
 /// `runWithin[T]` builds on — kept `pub` (rather than the raw
 /// `Task.Run`/`Task.Wait` primitives above) so a generic function's
 /// per-caller specialisation only ever needs one exported name.
+@experimental
 pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
   requires: timeoutMs >= 0
 {
@@ -526,6 +550,7 @@ pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
 /// `runCheckIsolated` uses).  A panic that occurs only after the
 /// deadline has already elapsed is unobservable — the same
 /// "keeps running in the background" caveat above.
+@experimental
 pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
   requires: timeoutMs >= 0
 {

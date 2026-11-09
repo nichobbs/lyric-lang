@@ -1432,7 +1432,7 @@ lyric repl --verbose                   # REPL with diagnostic output on each eva
 
 # Tooling
 lyric --sdk-info                       # print SDK root, stdlib DLL path, and version information
-lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)
+lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces, per package for multi-package DLLs; exits 0 (compatible) or 2 (breaking)
 ```
 
 ### CLI environment variables

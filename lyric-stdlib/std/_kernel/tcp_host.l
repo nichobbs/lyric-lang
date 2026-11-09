@@ -109,6 +109,7 @@ extern type X509RevocationMode = "System.Security.Cryptography.X509Certificates.
 /// Every way a transport operation can fail. Bind, accept, TLS handshake,
 /// and read/write failures are surfaced as data (docs/61 §6.1's
 /// Result-based discipline), never as an uncaught host exception.
+@experimental
 pub union TcpError {
   case BindFailed(message: String)
   case AcceptFailed(message: String)
@@ -123,6 +124,7 @@ pub union TcpError {
 
 /// Human-readable message for a TcpError.
 @pure
+@experimental
 pub func TcpError.message(e: in TcpError): String {
   match e {
     case BindFailed(m) -> "bind failed: " + m
@@ -134,6 +136,7 @@ pub func TcpError.message(e: in TcpError): String {
 }
 
 /// A bound, listening TCP socket.
+@experimental
 pub opaque type Listener {
   handle: TcpListener
 }
@@ -143,6 +146,7 @@ pub opaque type Listener {
 /// for a TLS one); `client` owns the underlying socket for teardown;
 /// `alpn` is the negotiated ALPN protocol (`""` for a plain connection, or
 /// a TLS connection where the peer offered no ALPN).
+@experimental
 pub opaque type Conn {
   client: TcpClient
   stream: Stream
@@ -421,6 +425,7 @@ func revocationModeNoCheck(): X509RevocationMode = ()
 /// (e.g. `"127.0.0.1"` / `"0.0.0.0"` / `"::"`), not a DNS name — the
 /// transport does not resolve names. A bind failure (port in use,
 /// permission denied, malformed address) is `Err(BindFailed(...))`.
+@experimental
 pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
   try {
     val addr = ipParse(host)
@@ -435,6 +440,7 @@ pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
 /// The port `l` is actually bound to: lets a caller bind an ephemeral port
 /// (`hostListen(host, 0)`) and read back the one the OS assigned, the same
 /// accessor the native `Std.TcpHost` twin has. `0` if it cannot be read.
+@experimental
 pub func hostLocalPort(l: in Listener): Int {
   try {
     val text = endPointToString(listenerLocalEndPoint(l.handle))
@@ -456,6 +462,7 @@ pub func hostLocalPort(l: in Listener): Int {
 /// IP literal or a DNS name (the client path resolves names, unlike
 /// `hostListen`). A connect failure (refused, unreachable, unresolved) is
 /// `Err(TransportFailed(...))`.
+@experimental
 pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
   try {
     val client = newTcpClientConnected(host, port)
@@ -476,6 +483,7 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 
 /// Stop listening and release the socket. Idempotent-safe: a redundant stop
 /// is swallowed rather than surfaced.
+@experimental
 pub func hostStopListener(l: in Listener): Unit {
   try {
     listenerStop(l.handle)
@@ -486,6 +494,7 @@ pub func hostStopListener(l: in Listener): Unit {
 
 /// Block until a client connects, returning a plain (non-TLS) connection.
 /// `alpn` is always `""` for a plain connection.
+@experimental
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
   try {
     val client = listenerAccept(l.handle)
@@ -580,6 +589,7 @@ func validateServerConfig(
   }
 }
 
+@experimental
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
@@ -595,6 +605,7 @@ pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn
 /// its `SslStreamCertificateContext` (certificate chain), ALPN list and mTLS
 /// chain policy are built by `hostPrepareServerTls` and only read afterwards,
 /// so concurrent handshakes share them safely.
+@experimental
 pub opaque type ServerTls {
   options: SslServerAuthOptions
 }
@@ -602,6 +613,7 @@ pub opaque type ServerTls {
 /// Validate `cfg` and build its reusable server TLS state. A mutual-TLS
 /// misconfiguration (`requireClientCert` with no `clientCa`, #6042) or an
 /// identity the platform cannot use is `Err(TlsConfigInvalid(...))`.
+@experimental
 pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> return Err(error = e)
@@ -617,6 +629,7 @@ pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, Tc
 /// Release a `ServerTls` once no connection will be upgraded with it again.
 /// Nothing to free on this target (the options are garbage-collected); the
 /// native twin frees its OpenSSL context here.
+@experimental
 pub func hostReleaseServerTls(t: in ServerTls): Unit {
   ()
 }
@@ -625,6 +638,7 @@ pub func hostReleaseServerTls(t: in ServerTls): Unit {
 /// milliseconds of inactivity (`0` = no limit). A read or write that times
 /// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
 /// already closed ignores the call (its next read or write fails anyway).
+@experimental
 pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
   requires: timeoutMs >= 0
 {
@@ -644,6 +658,7 @@ pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
 /// timeout is cleared again on success. On `Err` the plain `conn` is left for
 /// the caller to `hostClose`, so a caller that tracks live connections can
 /// deregister it before its socket is released.
+@experimental
 pub func hostUpgradeServerTlsPrepared(
   conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int
 ): Result[Conn, TcpError]
@@ -684,6 +699,7 @@ pub func hostUpgradeServerTlsPrepared(
 /// this one connection; a
 /// driver upgrading many connections should call `hostPrepareServerTls` once
 /// and `hostUpgradeServerTlsPrepared` per connection instead.
+@experimental
 pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match hostPrepareServerTls(cfg) {
     case Err(e) -> {
@@ -714,6 +730,7 @@ func disposeQuietly(s: in Stream): Unit {
 /// The negotiated ALPN protocol for this connection (`"http/1.1"`, `"h2"`,
 /// or `""` when none was negotiated / the connection is plain). A driver
 /// selects the engine's connection FSM on this value (docs/61 §6.4).
+@experimental
 pub func hostAlpn(c: in Conn): String {
   c.alpn
 }
@@ -723,6 +740,7 @@ pub func hostAlpn(c: in Conn): String {
 /// the peer closed its half of the connection (EOF). A socket error is
 /// `Err(TransportFailed(...))`. Reads on one connection must not run
 /// concurrently: they share the connection's read buffer.
+@experimental
 pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
 {
@@ -737,6 +755,7 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
 
 /// Write all of `bytes` to the connection and flush. A broken pipe / reset
 /// connection is `Err(TransportFailed(...))` rather than an uncaught exception.
+@experimental
 pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   try {
     streamWriteFrom(c.stream, bytes, 0, bytes.length)
@@ -751,6 +770,7 @@ pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
 /// or `""` if it cannot be determined (a closed/disposed socket throws,
 /// which is swallowed rather than surfaced — a best-effort diagnostic value,
 /// never load-bearing for protocol correctness).
+@experimental
 pub func hostRemoteAddress(c: in Conn): String {
   try {
     endPointToString(socketRemoteEndPoint(clientSocket(c.client)))
@@ -761,6 +781,7 @@ pub func hostRemoteAddress(c: in Conn): String {
 
 /// Close the connection, releasing the socket and (for a TLS connection) the
 /// `SslStream`. Swallows a double-close.
+@experimental
 pub func hostClose(c: in Conn): Unit {
   // Dispose the stream first (for a TLS connection this is the SslStream,
   // whose own state clientClose would otherwise leak; for a plain connection
