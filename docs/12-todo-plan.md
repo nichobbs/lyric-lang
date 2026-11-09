@@ -67,6 +67,12 @@ Anything not yet correctly lowered must hard-error, never silently pass through.
 
 Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
 
+_Re-triage 2026-11-09 (v1.0 streams S1-S6, `docs/progress/2026-11-09-v1-triage-results.md`):_
+clusters 2 (dotnet part), 3, 4 and 7 and most of cluster 5 were found already
+fixed on `main`, each with a regression test; the markers below record which.
+Only cluster 1, the JVM and native halves of cluster 2, and the residuals
+named in each item are still open.
+
 1. **Generics at codegen (`compiler-mono-codegen`, 12).**  The largest single
    source of cross-target failures: generic call at `T = Unit` (#8236),
    Unit-typed parameters (#8266), generic member calling a generic free
@@ -75,31 +81,40 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
    open type argument fixed only by a pattern binding (#8250), enclosing type
    parameter as explicit type argument (#8280, #8282).
 2. **Async and inout (`async-concurrency` 8, `inout-out-params` 10).**  An async
-   function's inout write is silently lost on dotnet (#8229, #8318); aspect-woven
-   async returns garbage on dotnet (#8287); `ldloca.s` slot >= 256 corrupts
-   memory in async (#7822); async call result stored as raw `Task` (#7196);
+   function's inout write is silently lost on dotnet (fixed: `out`/`inout` on an
+   `async` function is T0183 on every target, #8229, #8318, #8445); aspect-woven
+   async returns garbage on dotnet (fixed, #8287); `ldloca.s` slot >= 256 corrupts
+   memory in async (fixed, #7822); async call result stored as raw `Task` (fixed,
+   #7196);
    captured `var` passed as inout still copies in three shapes (#8204); JVM
    `async_sm_self_test.l` fails verification (#8294); `Std.Task.Scope` spawn
    (#5329, verify stale); flaky native task race (#8259, #8367).
-3. **Invalid IL where a diagnostic is owed (`msil-codegen` 6).**  `+` on object
-   operands lowered as numeric add (#8344), overload chosen through default
-   arguments (#8355), `Option[Int]` parameter match panics on `None` (#8273),
-   `Self` spelling in impl (#8313), `Result == Ok(..)` literal false (#8144),
-   Unit function values `Func` vs `Action` (#7219), module-val shadowing shifts
-   MethodDef tokens (#7963).
+3. **Invalid IL where a diagnostic is owed (`msil-codegen`).**  All fixed on
+   `main`, each pinned by a self-test: `+` on object operands (T0120, #8344),
+   overload chosen through default arguments (#8355), `Option[Int]` parameter
+   match on `None` (#8273), `Self` spelling in impl (#8313), `Result == Ok(..)`
+   (#8144), Unit function values `Func` vs `Action` (#7219).  Module-val shadowing
+   (#7963) was closed as not reproducible with the self-hosted emitter; its
+   original stage-0 repro was not re-run.
 4. **Type-checker and mode-checker gaps (`typechecker-diagnostics` 5,
    `compiler-frontend-resolution` 5, `contracts-invariants` 2).**
-   `List`/`Map` method arguments unchecked (#7683, with #7978, #7786, #8104,
-   #8161), writes through an `in` parameter not rejected (#8289), `?` on a
-   non-Result/Option (#8249), interface method contracts never type-checked
-   (#8331), record invariant never enforced (#7222, epic #7221), unknown
-   methods on primitives accepted (#8334).
+   `List`/`Map` method arguments (checked, T0042/T0043/T0060: #7978, #7786, #8161
+   no longer reproduce; unknown `List`/`Map`/`Set` members are now T0113, #7683,
+   follow-ups in #8930), writes through an `in` parameter (V0038, #8289), `?` on a
+   non-Result/Option (T0195/T0169, #8249), interface method contracts (T0132,
+   T0020, #8331) and unknown methods on primitives (T0113, #8334) are all fixed.
+   Still open: native bare sibling calls (#8104 item 3, a native lowering gap),
+   record invariant never enforced (#7222, epic #7221), and a possible T0113
+   false positive on `getBytes` in a JVM-only test (#8931).
 5. **Verifier soundness (`verifier` 7 plus an unlabelled family).**  Match arm
-   guards ignored (#8142), `sortEq` ignores datatype arguments (#8354), no
-   bounds obligation on index (#8157; arrays, slices and buffers, `for`
-   over them and nested element writes are modelled, #8394, #8753),
-   sibling-file record fields (#8306), Float as Real (#8141), no heap model
-   (#8110).  The verifier must fail closed; these are the unsound ones.
+   guards (#8142), `sortEq` datatype arguments (#8354), index bounds (#8157;
+   arrays, slices and buffers, `for` over them and nested element writes are
+   modelled, #8394, #8753), sibling-file record fields (#8306) and Float as Real
+   (#8141) are fixed.  The heap model (#8110) is partly fixed: a method call over a
+   value with no heap model is V0033 (D546).  Still open there: mutation by a
+   declared callee through an `in` record parameter, record-method (`RMFunc`)
+   verification, and the aliasing edge of the unmodelled-arm exemption.  The
+   verifier must fail closed; #8110 is the remaining unsound family.
 6. **Silent build-system behaviour (`build-system-toolchain` 10).**  JVM project
    builds skip unreachable packages so type errors are lost (fixed, #8357),
    `--features` ignoring undeclared features (fixed, F0050, #8362), commands
@@ -110,7 +125,10 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
    bridge owns its check), `prove` and build disagreeing on package files
    (fixed, #8245).
 7. **Security-labelled issues** (#7253, #7249, #7247, #7241, #7240, #7239,
-   #7236, #7231 HPACK bomb).  Review and close or fix before any v1.0 tag.
+   #7236, #7231 HPACK bomb).  All closed (2026-11-09): fixed on `main` and
+   verified by code review and the existing tests, not re-run.  Residuals filed:
+   lyric-db has no JVM backend (#8932), lyric-web has no explicit
+   `allowAnyOrigin` flag (#8933).
 
 ## Tier 2 — expected-type inference, lambdas, UFCS
 
@@ -205,9 +223,9 @@ artifacts must be built after it.
    `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
    note is in §0.1 (native and wasm32 lines pending the decision below); the
    baseline cut is blocked because `lyric public-api-diff` cannot read
-   multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3); the
+   multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3, #8927); the
    `Std.Task`, `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers are
-   undecided.
+   undecided (#8928).
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
@@ -241,6 +259,18 @@ survives.
 | S4 dotnet codegen tail | Invalid IL where a diagnostic is owed, async and inout lost writes (dotnet only) | #8344, #8355, #8273, #8313, #8144, #7219, #7963, #8229, #8318, #8287, #7822, #7196 | `lyric-compiler/msil/` | 1-2 |
 | S5 Checker diagnostics | List/Map argument checking, `in` writes, `?` on non-Result, unknown primitive methods, interface method contracts | #7683, #7978, #7786, #8104, #8161, #8289, #8249, #8334, #8331 | `lyric-compiler/lyric/type_checker/` | 1 |
 | S6 Release hygiene | JVM and channel notes in `docs/01` §0.1, stability walk and `public-api-diff` baseline, issue labels, stale epics and review-finding issues, this checklist kept current | #367, `review-finding` set | `docs/`, `lyric-stdlib/STABILITY.md`, tracker | 1 |
+
+Outcomes (2026-11-09): S1 and S4 found nothing to fix (every listed issue was
+already closed with a regression test); S3 shipped the remaining CLI gaps (PR
+8922), S6 PR 8923, S2 PR 8924 (#8110 fail-closed, the rest already fixed), S5 PR
+8926 (closed `List`/`Map`/`Set` method surface).  Triage detail is in
+`docs/progress/2026-11-09-v1-triage-results.md`.
+
+Filed from the streams: #8927 `public-api-diff` cannot read multi-package
+libraries (gates the baseline cut), #8928 untiered `_kernel/` modules (gates the
+API freeze), #8929 `make lyric` fails at the AOT step on NU1903 (blocks building
+from source), #8930 collection-surface drift and member reads, #8931 `getBytes`
+T0113, #8932 lyric-db JVM backend, #8933 `allowAnyOrigin`.
 
 Not started, needs an owner after S1-S6: `--release` profile (#6263) and
 `--shape standalone` (#6262); record invariants (#7222, epic #7221); the
