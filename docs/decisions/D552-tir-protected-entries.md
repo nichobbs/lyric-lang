@@ -32,4 +32,8 @@ impl members, which the census does not walk yet.
 
 ## Measured
 
-See the progress entry for the census before and after.
+`scripts/ci/tir-census.sh` over the 98 programs: bodies built 967 -> 969 of 1165, I0003 0,
+`a method call with no declared receiver` 39 -> 30, `a method, constructor or member call` 58 -> 56.
+The 30 that remain are receivers that are not protected types (an `HttpClient` method, a method of
+an imported generic receiver such as `List[MapEntry[..]].add`), the next slices. The first protected
+sites now build as far as `scope` and `defer` (`async_mt_tsan_main.l`).
