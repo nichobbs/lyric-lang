@@ -14,7 +14,7 @@ Lyric compiles to several targets. They do not all carry the same stability prom
 | `--target jvm` | Supported and tested, but carries **no v1.0 SemVer guarantee**: breaking changes may land in minor releases until JVM support is declared stable in a future release. It has its own independent versioning (G1, D-progress-620; `docs/44-jvm-production-readiness-plan.md`). |
 | `--target native` (LLVM) and `--triple wasm32-wasi` (`--shape module`, `--shape component`) | Not part of v1.0. Supported and tested, but carry **no v1.0 SemVer guarantee** and are versioned independently of the compiler (D548). |
 
-The graphics and UI libraries (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-gpu-window`, `lyric-text`, `lyric-draw`, `lyric-game`, `lyric-unicode`, `lyric-access`) are **experimental** at v1.0: their APIs may change in any release (D548). Ecosystem libraries whose backends return `NOT_IMPLEMENTED` (each library's README lists them) are versioned independently of the compiler.
+The graphics and UI libraries (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-gpu-window`, `lyric-text`, `lyric-draw`, `lyric-game`, `lyric-unicode`, `lyric-access`) are **experimental** at v1.0: their APIs may change in any release (D548). Ecosystem libraries whose backends return `NOT_IMPLEMENTED` ship with that status labelled in each library's README and in the library availability matrix of the book (Chapter 29), and are versioned independently of the compiler (D549). At v1.0 a restored library's `requires:` and `ensures:` clauses are not enforced across the package boundary; cross-package contracts (docs/70 phase 6) follow v1.0 (D549).
 
 ## 1. Lexical structure
 
