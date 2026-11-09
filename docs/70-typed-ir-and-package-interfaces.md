@@ -347,7 +347,7 @@ A protected type's entry (or `func`) is a callable symbol of kind `TSkEntry` who
 is the protected value, passed `in`; `t.add(n)` is a direct `XCall` of it and `Total()` an
 `XConstruct`. A `TFnDecl` carries the entry's `when:` guard as `barrier: Option[TExpr]`, a `Bool`
 over the receiver's fields and the entry's parameters, which the verifier checks. The TIR carries
-no locks: backends lower locking and the barrier wait from the declaration (D552).
+no locks: backends lower locking and the barrier wait from the declaration (D553).
 
 ### 6.3 Who builds it
 
