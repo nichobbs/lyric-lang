@@ -5527,6 +5527,15 @@ func recordBuiltinCall(
         val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
         if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
           recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
+          match fnT {
+            case TyFunction(_, _, _) -> {
+              if tbl.builtinFnTyByNode.containsKey(callNode) {
+                tbl.builtinFnTyByNode.remove(callNode)
+              }
+              tbl.builtinFnTyByNode.add(callNode, fnT)
+            }
+            case _ -> ()
+          }
         }
       }
       case None -> ()
