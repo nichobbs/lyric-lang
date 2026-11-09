@@ -5229,7 +5229,8 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
                 ty = fes[k].ty,
                 mode = PMIn,
                 hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fes[k].ty, fd.span),
-                span = fd.span
+                span = fd.span,
+                dfltExpr = fd.dflt
               )
             )
             k = k + 1

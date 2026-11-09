@@ -259,7 +259,6 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
   }
 }
 
-/// Build the expression `e`, or `None` after recording why in `env.errors`.
 /// A name the checker resolved to a declaration: a value, constant, function value
 /// or nullary case.
 func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
@@ -278,6 +277,7 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
   }
 }
 
+/// Build the expression `e`, or `None` after recording why in `env.errors`.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
@@ -2249,8 +2249,6 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
   buildExpr(env, x)
 }
 
-/// The arguments of a call placed by parameter, in parameter order, each built and
-/// converted to its parameter's type; `None` after counting why not.
 /// The argument for a parameter the call leaves out: its declared default, placed at
 /// the call under a fresh node id (the declaration's own node stays the parameter's).
 /// A literal or a name the checker resolved to a declaration (a constant, `None`);
@@ -2258,7 +2256,7 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
 func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Option[TExpr] {
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
   val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
-  val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(_) -> pty }
+  val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
     case ELiteral(_) -> buildExpr(env, d)
     case EPath(_) -> buildRefPath(env, d, ty)
@@ -2273,6 +2271,8 @@ func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Opti
   }
 }
 
+/// The arguments of a call placed by parameter, in parameter order, each built and
+/// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg]): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
