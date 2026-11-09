@@ -457,6 +457,37 @@ func translateMethodCall(
         val ambPair: (TranslateResult, List[Diagnostic]) = (ambTR, diags)
         return ambPair
       }
+      // The verifier has no heap model (#8110): a method it does not know may
+      // change a collection, a mutable record or any value it holds by
+      // reference, or read what another call changed, and two calls with the
+      // same receiver and arguments would still be proved equal.  Only a
+      // method of immutable values (`valueDetermined`) is a function of its
+      // receiver and arguments; any other call fails closed.  A sibling method
+      // called on `self` inside a method (#8231) keeps its congruence; the
+      // purity of an interface's methods is its own open question.
+      // A binding of an arm whose pattern is not modelled is exempt: every goal
+      // the match's value reaches already fails closed (V0027).
+      val siblingOnSelf = match receiver.kind {
+        case ESelf -> isSome(mapGet(env.distincts, selfMethodResultKey(methodName)))
+        case _ -> false
+      }
+      val unmodelledBinding = smtRenderSort(sortOf(recvR.term)) == smtRenderSort(SUninterp(name = "binding"))
+      if not siblingOnSelf and not unmodelledBinding and (not valueDetermined(env, recvR.term) or not allValueDetermined(env, rawArgTerms)) {
+        diags.add(
+          untranslatableDiag(
+            "a call to '" + methodName +
+              "' on a value the verifier does not model as an immutable value: the call may change what it holds or read state that changed, and the verifier has no heap model (declare the method with a contract, or call a `@pure` function)",
+            callSpan
+          )
+        )
+        val heapTR = TranslateResult(
+          term = poisonTerm(freshVar(env, methodName + "!result", SUninterp(name = "call"))),
+          sideConds = sides,
+          assumed = facts
+        )
+        val heapPair: (TranslateResult, List[Diagnostic]) = (heapTR, diags)
+        return heapPair
+      }
       val ufArgs: List[Term] = newList()
       ufArgs.add(recvR.term)
       // One function per method, argument shape and sorts: `!`-separated
