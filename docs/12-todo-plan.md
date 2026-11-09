@@ -199,7 +199,12 @@ artifacts must be built after it.
    explicitly deferred with a dated issue.
 6. The `@stable(since="1.0")` surface is walked, `lyric public-api-diff` has a
    baseline cut at the tag, and the channel-status notes below are in
-   `docs/01` §0.1.
+   `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
+   note is in §0.1 (native and wasm32 lines pending the decision below); the
+   baseline cut is blocked because `lyric public-api-diff` cannot read
+   multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3); the
+   `Std.Task`, `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers are
+   undecided.
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
