@@ -4,9 +4,10 @@
 
 Context: several ecosystem libraries have backends that return
 `NOT_IMPLEMENTED` or do not exist (lyric-storage S3 and Azure Blob, the lyric-mq
-brokers, Hangfire and Quartz.NET on dotnet, lyric-db on the JVM). The first
-version of this entry also listed lyric-mail JVM SMTP and lyric-search, which
-their READMEs report as implemented (#7462, #5408); corrected 2026-11-09. docs/70 phase 6 (cross-package contracts) depends on phases 2 to 5,
+brokers, Hangfire and Quartz.NET on dotnet, lyric-db on the JVM), and
+lyric-search is implemented but not usable against a live server (its README
+documents a response-body crash). lyric-mail JVM SMTP was listed in the first
+version of this entry but is implemented (#7462); corrected 2026-11-09. docs/70 phase 6 (cross-package contracts) depends on phases 2 to 5,
 which are still in progress.
 
 Decision (project lead, 2026-11-09):

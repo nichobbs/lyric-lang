@@ -254,8 +254,10 @@ func getAvatar(userId: in String): Result[Storage.StorageObject, Storage.Storage
 
 `lyric-search` supports Elasticsearch and Meilisearch backends. Both are
 implemented over plain HTTP and JSON on `Std.Http` and `Std.Json` (#5408), with
-no native SDK and no per-target kernel, so they run on `dotnet` and `jvm`
-alike (see the library's README).
+no native SDK and no per-target kernel. They have not been driven against a
+live cluster, and the README documents a crash when an operation reads a real
+response body, so the library cannot yet be used against a live server (see the
+library's README for the remaining defects).
 
 ```toml
 [dependencies]
@@ -374,7 +376,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
-| lyric-search | Elasticsearch and Meilisearch real over HTTP (#5408) | same code | D056 |
+| lyric-search | implemented over HTTP (#5408); not usable against a live server, see its README | same code | D056 |
 | lyric-i18n | stable | stable (1 known gap, #5439) | D-progress-628 |
 | lyric-feature-flags | stable | stable | D-progress-627 |
 | lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `inprocess` and Quartz real; `InProcessJobScheduler` broken (#5456) | D-progress-633 |
