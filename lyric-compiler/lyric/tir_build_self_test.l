@@ -1584,3 +1584,12 @@ test "a protected type's construction and entry call build as a construction and
   }
   assertEqualInt(entries, 2, "add and get are recorded as entries")
 }
+
+test "a function and a generic function with a doc comment or an annotation have their symbol" {
+  val c = censusOf(
+    "package App\n/// doc\nfunc a(n: Int): Int { n }\n/// doc\nfunc b[T](x: T): T { x }\n@pure\nfunc c(n: Int): Int { n }\nfunc d(): Int { a(1) + b(2) + c(3) }\n"
+  )
+  assertEqualInt(c.built, 4, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
