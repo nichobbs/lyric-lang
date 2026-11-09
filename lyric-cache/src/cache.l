@@ -3,20 +3,11 @@
 //! tests, but the redis-backed store has not been driven against a live
 //! cluster in CI.
 //!
-//! WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
-//! access from multiple threads produces undefined behaviour (lost updates,
-//! torn reads).  It is a plain mutable record, not a `protected type`: an
-//! isolated repro confirmed that `impl <interface> for <protected type>`
-//! compiles on both backends but fails at RUNTIME on both — `--target dotnet`
-//! raises `System.TypeLoadException: Method '...' does not have an
-//! implementation`, `--target jvm` raises `NoSuchMethodError` for the same
-//! forwarding method — because the interface-dispatch method the `impl`
-//! block declares is never linked to the protected type's own `entry`/`func`
-//! members by either backend.  `InProcessCacheStore` must keep implementing
-//! `CacheStore` (its whole public surface depends on that), so converting it
-//! is not possible until that gap closes.  Multi-threaded services should use
-//! a Redis-backed store (`Lyric.Cache.Redis`) or guard access with an
-//! external mutex.  See lyric-lang #411; the backend gap is #7457.
+//! Thread safety: `InProcessCacheStore` is a `protected type` (docs/01 §7.5), so
+//! every `get`/`set`/`delete`/`clear` runs under the store's instance lock and
+//! the store may be shared freely between threads (it is process-wide in
+//! `Cache.Aspects`).  Each operation is atomic; a read-then-write sequence made
+//! of separate calls (`get` then `set`) is not.
 //!
 //! `CacheStore` is the public interface for the backing store.  Implement it
 //! to plug in Redis, Memcached, or any other remote store.  `InProcessCacheStore`
