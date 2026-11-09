@@ -1522,3 +1522,12 @@ test "a var without an initializer takes its annotation's type" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a for loop builds its iterable, its pattern and its body and verifies" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  for x in 0 ..< n {\n    t = t + x\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

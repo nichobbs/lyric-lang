@@ -773,7 +773,19 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
         case None -> None
       }
     }
-    case SFor(_, _, _, _) -> uncoveredStmt(env, s, "a for loop")
+    case SFor(label, pat, iter, body) -> {
+      val it = match buildExpr(env, iter) { case Some(x) -> x; case None -> return None }
+      pushScope(env)
+      val built = match buildPat(env, pat) {
+        case Some(tp) -> match loopBody(env, body) {
+          case Some(bt) -> Some(value = stmtOf(s, TsFor(label = label, pat = tp, iter = it, body = bt)))
+          case None -> None
+        }
+        case None -> None
+      }
+      popScope(env)
+      built
+    }
     case SAssign(t, op, v) -> {
       val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
