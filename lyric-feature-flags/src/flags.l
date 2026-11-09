@@ -89,8 +89,9 @@ pub interface FlagStore {
 /// can enumerate (the `Map` extern exposes no key iteration), and `descMap`
 /// carries each flag's description for round-tripping through `listFlags`.
 ///
-/// Not thread-safe in v1.  For concurrent access, wrap in a `protected type`
-/// once the protected-type weaver ships, or use a remote-backed implementation.
+/// The `FlagStore` interface has no mutating operation and the maps are filled
+/// before the store is returned, so a store is read-only once built and safe to
+/// share between threads.
 @stable(since = "0.1")
 pub ref record InProcessFlagStore {
   var valueMap: Map[String, FlagValue]

@@ -19,10 +19,9 @@
 //!
 //! WARNING (thread safety): NOT thread-safe.  Concurrent register/check calls
 //! from multiple threads produce undefined behaviour (lost updates, torn
-//! reads).  Until the `protected type` weaver ships, wrap access in an
-//! external mutex if the process registers flags concurrently with checking
-//! them.  Mirrors the same caveat on `Flags.InProcessFlagStore` and
-//! `Cache.InProcessCacheStore` (lyric-lang #411).
+//! reads).  Wrap access in an external mutex if the process registers flags
+//! concurrently with checking them; making the registry a `protected type` is
+//! tracked in #8950.
 @runtime_checked
 @io
 package Flags.Registry

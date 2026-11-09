@@ -17,3 +17,5 @@ output_assembly = "Cache.dll"
 [project.tests]
 "Cache.CacheTests"              = "tests/cache_tests.l"
 "Cache.CacheAspectWeavingTests" = "tests/cache_aspect_weaving_tests.l"
+"Cache.CacheConcurrencyDotnetTests" = "tests/cache_concurrency_dotnet_tests.l"
+"Cache.CacheConcurrencyJvmTests"    = "tests/cache_concurrency_jvm_tests.l"
