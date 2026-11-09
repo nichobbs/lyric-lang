@@ -12,9 +12,9 @@ Lyric compiles to several targets. They do not all carry the same stability prom
 |---|---|
 | `--target dotnet` | The reference channel. Lyric SemVer applies to the language and to the `@stable` standard library (`lyric-stdlib/STABILITY.md`, D040). |
 | `--target jvm` | Supported and tested, but carries **no v1.0 SemVer guarantee**: breaking changes may land in minor releases until JVM support is declared stable in a future release. It has its own independent versioning (G1, D-progress-620; `docs/44-jvm-production-readiness-plan.md`). |
-| `--target native` (LLVM) and `--triple wasm32-wasi` (`--shape module`, `--shape component`) | **Pending a project-lead decision.** The v1.0 channel status of the native and wasm32 targets has not been decided; see "Open decisions" in the "v1.0 exit checklist and work streams" section of `docs/12-todo-plan.md`. Until it is recorded, neither target is covered by the SemVer guarantee above. |
+| `--target native` (LLVM) and `--triple wasm32-wasi` (`--shape module`, `--shape component`) | Not part of v1.0. Supported and tested, but carry **no v1.0 SemVer guarantee** and are versioned independently of the compiler (D548). |
 
-The same pending decision covers the graphics and UI libraries built on the native target, and ecosystem libraries whose backends return `NOT_IMPLEMENTED` (each library's README lists them). Each library is versioned independently of the compiler.
+The graphics and UI libraries (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-gpu-window`, `lyric-text`, `lyric-draw`, `lyric-game`, `lyric-unicode`, `lyric-access`) are **experimental** at v1.0: their APIs may change in any release (D548). Ecosystem libraries whose backends return `NOT_IMPLEMENTED` (each library's README lists them) are versioned independently of the compiler.
 
 ## 1. Lexical structure
 
