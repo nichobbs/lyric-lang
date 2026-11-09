@@ -1593,3 +1593,12 @@ test "a function and a generic function with a doc comment or an annotation have
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a String member call takes its argument types from the checker's function type" {
+  val c = censusOf(
+    "package App\nfunc f(s: String, n: Int): String {\n  s.substring(0, 1) + s.substring(n) + s.replace(\"a\", \"b\")\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
