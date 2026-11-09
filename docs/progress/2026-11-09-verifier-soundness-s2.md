@@ -7,4 +7,4 @@ verifier has no heap model for (collections, mutable records, protected
 objects, closures, unmodelled values) fail closed with `V0033` instead of
 being congruent uninterpreted functions, with a regression test
 (`a read of a value after a non-@pure method call on it is not the earlier
-read (#8110)`). See D545 and docs/15 §"Method calls".
+read (#8110)`). See D546 and docs/15 §"Method calls".

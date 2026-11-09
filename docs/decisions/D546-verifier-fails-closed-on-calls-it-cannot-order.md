@@ -1,4 +1,4 @@
-# D545 — The verifier fails closed on method calls over values it has no heap for (#8110)
+# D546 — The verifier fails closed on method calls over values it has no heap for (#8110)
 
 **Status:** shipped
 
