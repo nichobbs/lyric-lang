@@ -73,22 +73,26 @@ extern func rtThreadSpawnDetached(start: (NativePtr[Byte]) -> NativePtr[Byte], a
 // Every read and write of `cancelled` holds the global lock, so a source may
 // be shared between tasks (D404).
 @sendable
+@experimental
 pub ref record CancellationTokenSource {
   var cancelled: Bool = false
   deadlineNanos: Long
 }
 
+@experimental
 pub record CancellationToken {
   source: Option[CancellationTokenSource]
 }
 
 /// A token that is never cancelled.
+@experimental
 pub func noCancellation(): CancellationToken {
   CancellationToken(source = None)
 }
 
 /// A fresh source.  Project its token with `sourceToken`; call `cancelSource`
 /// to request cancellation.
+@experimental
 pub func makeCancelSource(): CancellationTokenSource {
   CancellationTokenSource(deadlineNanos = 0i64)
 }
@@ -96,15 +100,18 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// A source that cancels itself `ms` milliseconds from now.  The deadline is
 /// checked by `isCancelled` against the monotonic clock, so a wall-clock step
 /// cannot fire it early or late.
+@experimental
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
   CancellationTokenSource(deadlineNanos = rtMonotonicNanos() + ms.toLong() * 1000000i64)
 }
 
+@experimental
 pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
   CancellationToken(source = Some(value = source))
 }
 
 /// Request cancellation.  Idempotent.
+@experimental
 pub func cancelSource(source: in CancellationTokenSource): Unit {
   rtGlobalLock()
   source.cancelled = true
@@ -113,6 +120,7 @@ pub func cancelSource(source: in CancellationTokenSource): Unit {
 }
 
 /// Nothing to release on this target; kept for API parity.
+@experimental
 pub func disposeSource(source: in CancellationTokenSource): Unit {
   ()
 }
@@ -132,6 +140,7 @@ func sourceCancelled(src: in CancellationTokenSource): Bool {
 }
 
 /// Has cancellation been requested, explicitly or by an elapsed deadline?
+@experimental
 pub func isCancelled(token: in CancellationToken): Bool {
   match token.source {
     case Some(src) -> sourceCancelled(src)
@@ -140,6 +149,7 @@ pub func isCancelled(token: in CancellationToken): Bool {
 }
 
 /// Panics once the token is cancelled.  Native has no way to catch the panic.
+@experimental
 pub func throwIfCancelled(token: in CancellationToken): Unit {
   if isCancelled(token) {
     panic("OperationCanceledException: cancellation was requested")
@@ -150,11 +160,13 @@ pub func throwIfCancelled(token: in CancellationToken): Unit {
 // Delay.  Both variants block the calling thread (module header).
 // =====================================================================
 /// A finished task: every `Task` this module returns has already resolved.
+@experimental
 pub record Task {
   done: Bool
 }
 
 /// Sleep for `ms` milliseconds.
+@experimental
 pub func delay(ms: in Int): Task {
   hostSleepMillis(ms)
   Task(done = true)
@@ -163,6 +175,7 @@ pub func delay(ms: in Int): Task {
 /// Sleep for `ms` milliseconds, returning as soon as `token` is cancelled
 /// (callers check `isCancelled` afterwards).  The wait ends at the earlier of
 /// the delay and the token's own deadline; `cancelSource` wakes it at once.
+@experimental
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
   match token.source {
     case None -> hostSleepMillis(ms)
@@ -195,6 +208,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
 // Threads.
 // =====================================================================
 /// One started action; `finished` is read and written under the global lock.
+@experimental
 pub ref record Job {
   var finished: Bool = false
 }
@@ -230,23 +244,27 @@ func waitFinished(job: in Job): Unit {
 // =====================================================================
 // Structured concurrency.
 // =====================================================================
+@experimental
 pub record Scope {
   source: CancellationTokenSource
   jobs: List[Job]
 }
 
 /// A fresh scope.  Start children with `scopeSpawn`, then `await awaitAll(s)`.
+@experimental
 pub func makeScope(): Scope {
   Scope(source = makeCancelSource(), jobs = newList())
 }
 
 /// The scope's cancellation token; children poll it to honour `cancelScope`.
+@experimental
 pub func scopeToken(s: in Scope): CancellationToken {
   sourceToken(s.source)
 }
 
 /// Registering an existing `Task` is a no-op: every `Task` here has already
 /// finished.
+@experimental
 pub func scopeAdd(s: in Scope, child: in Task): Unit {
   ()
 }
@@ -256,6 +274,7 @@ pub func scopeAdd(s: in Scope, child: in Task): Unit {
 /// inherits the spawning thread's ambient token.
 ///
 /// Named `scopeSpawn` because `spawn` is the keyword form.
+@experimental
 pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
   val job = Job()
   val inherited = currentToken()
@@ -285,6 +304,7 @@ pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
 }
 
 /// The children the scope still tracks: those not yet dropped by a later spawn.
+@experimental
 pub func scopePendingCount(s: in Scope): Int {
   rtGlobalLock()
   val n = s.jobs.count
@@ -293,6 +313,7 @@ pub func scopePendingCount(s: in Scope): Int {
 }
 
 /// Block until every child started so far has finished.
+@experimental
 pub func awaitAll(s: in Scope): Task {
   val snapshot: List[Job] = newList()
   rtGlobalLock()
@@ -307,10 +328,12 @@ pub func awaitAll(s: in Scope): Task {
 }
 
 /// Request cancellation of the scope's token.  Idempotent.
+@experimental
 pub func cancelScope(s: in Scope): Unit {
   cancelSource(s.source)
 }
 
+@experimental
 pub func disposeScope(s: in Scope): Unit {
   ()
 }
@@ -319,6 +342,7 @@ pub func disposeScope(s: in Scope): Unit {
 // Ambient cancellation token (per thread).
 // =====================================================================
 /// The ambient token; `noCancellation()` when none is installed on this thread.
+@experimental
 pub func currentToken(): CancellationToken {
   if rtThreadRefHas() == 1 {
     CancellationToken(source = Some(value = rtThreadRefGet()))
@@ -336,17 +360,20 @@ func setAmbient(token: in CancellationToken): Unit {
 
 /// Install `token` as the ambient on this thread; returns the previous value
 /// to pass to `restoreToken`.
+@experimental
 pub func installToken(token: in CancellationToken): CancellationToken {
   val previous = currentToken()
   setAmbient(token)
   previous
 }
 
+@experimental
 pub func restoreToken(previous: in CancellationToken): Unit {
   setAmbient(previous)
 }
 
 /// True when a cancellable token is installed on this thread.
+@experimental
 pub func hasAmbient(): Bool {
   rtThreadRefHas() == 1
 }
@@ -357,6 +384,7 @@ pub func hasAmbient(): Bool {
 /// Run `action` on its own thread (with the caller's ambient token) and wait at
 /// most `timeoutMs` milliseconds; true when it finished in time.  A timed-out
 /// action keeps running.
+@experimental
 pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
   requires: timeoutMs >= 0
 {
@@ -378,6 +406,7 @@ pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
 /// Run `f` on its own thread and wait at most `timeoutMs` milliseconds:
 /// `Some(result)` when it finished in time, `None` on timeout.  A timed-out
 /// `f` keeps running.  A panic in `f` ends the process (no unwinding).
+@experimental
 pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
   requires: timeoutMs >= 0
 {

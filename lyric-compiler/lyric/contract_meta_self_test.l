@@ -1813,3 +1813,97 @@ test "the operator marker lists of the checker, mono and the contract metadata a
   }
   assertTrue(not isBuiltinMarkerName("Show"), "an arbitrary name is not a marker")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N. diffContracts (in-process, #8927)
+// ─────────────────────────────────────────────────────────────────────────────
+func diffJson(decls: in String): String {
+  "{\"formatVersion\":3,\"packageName\":\"P\",\"version\":\"1.0.0\",\"level\":\"runtime_checked\",\"decls\":[" + decls +
+    "]}"
+}
+
+func fnDecl(name: in String, repr: in String, extra: in String): String {
+  "{\"kind\":\"func\",\"name\":\"" + name + "\",\"repr\":\"" + repr + "\"" + extra + "}"
+}
+
+func diffOf(a: in String, b: in String): List[String] {
+  diffContracts(diffJson(a), diffJson(b))
+}
+
+func firstOrEmpty(es: in List[String]): String {
+  if es.count == 0 {
+    ""
+  } else {
+    es[0]
+  }
+}
+
+test "identical contracts have no diff" {
+  val d = fnDecl("f", "func f(): Int", "")
+  assertEqualInt(diffOf(d, d).count, 0, "no entries")
+}
+
+test "a removed declaration is breaking" {
+  val es = diffOf(fnDecl("f", "func f(): Int", ""), "")
+  assertEqualInt(es.count, 1, "one entry")
+  assertEqual(es[0], "  - func f", "removed entry")
+  assertTrue(hasBreakingChanges(es), "removal breaks")
+}
+
+test "an added declaration is compatible" {
+  val es = diffOf("", fnDecl("f", "func f(): Int", ""))
+  assertEqual(firstOrEmpty(es), "  + func f", "added entry")
+  assertFalse(hasBreakingChanges(es), "addition does not break")
+}
+
+test "a changed signature is breaking" {
+  val es = diffOf(fnDecl("f", "func f(): Int", ""), fnDecl("f", "func f(x: Int): Int", ""))
+  assertEqualInt(es.count, 1, "one entry")
+  assertTrue(Str.startsWith(es[0], "  ~ func f: "), "changed entry")
+  assertTrue(hasBreakingChanges(es), "signature change breaks")
+}
+
+test "removing or changing an experimental declaration is not breaking" {
+  val ex = ",\"stability\":\"experimental\""
+  val removed = diffOf(fnDecl("f", "func f(): Int", ex), "")
+  assertEqual(removed[0], "  - func f [experimental]", "removed experimental")
+  assertFalse(hasBreakingChanges(removed), "experimental removal")
+  val changed = diffOf(fnDecl("f", "func f(): Int", ex), fnDecl("f", "func f(x: Int): Int", ex))
+  assertEqualInt(changed.count, 1, "one changed entry")
+  assertFalse(hasBreakingChanges(changed), "experimental change")
+}
+
+test "strengthening requires or weakening ensures is breaking" {
+  val base = fnDecl("f", "func f(x: Int): Int", ",\"requires\":[\"x > 0\"],\"ensures\":[\"result > 0\"]")
+  val strong = fnDecl("f", "func f(x: Int): Int", ",\"requires\":[\"x > 0\",\"x < 10\"],\"ensures\":[\"result > 0\"]")
+  val weakEns = fnDecl("f", "func f(x: Int): Int", ",\"requires\":[\"x > 0\"],\"ensures\":[]")
+  assertTrue(hasBreakingChanges(diffOf(base, strong)), "requires strengthened")
+  assertTrue(hasBreakingChanges(diffOf(base, weakEns)), "ensures weakened")
+}
+
+test "weakening requires or strengthening ensures is compatible" {
+  val base = fnDecl("f", "func f(x: Int): Int", ",\"requires\":[\"x > 0\"],\"ensures\":[\"result > 0\"]")
+  val weakReq = fnDecl("f", "func f(x: Int): Int", ",\"ensures\":[\"result > 0\"]")
+  val strongEns = fnDecl(
+    "f",
+    "func f(x: Int): Int",
+    ",\"requires\":[\"x > 0\"],\"ensures\":[\"result > 0\",\"result < 99\"]"
+  )
+  val a = diffOf(base, weakReq)
+  assertEqualInt(a.count, 1, "requires weakened entry")
+  assertFalse(hasBreakingChanges(a), "requires weakened is compatible")
+  assertFalse(hasBreakingChanges(diffOf(base, strongEns)), "ensures strengthened is compatible")
+}
+
+test "stable to experimental is breaking, experimental to stable is not" {
+  val st = fnDecl("f", "func f(): Int", ",\"stability\":\"stable:1.0\"")
+  val ex = fnDecl("f", "func f(): Int", ",\"stability\":\"experimental\"")
+  assertTrue(hasBreakingChanges(diffOf(st, ex)), "downgrade breaks")
+  assertFalse(hasBreakingChanges(diffOf(ex, st)), "promotion is compatible")
+}
+
+test "an unparseable contract is reported as breaking" {
+  val es = diffContracts("not json", diffJson(""))
+  assertEqualInt(es.count, 1, "one entry")
+  assertTrue(hasBreakingChanges(es), "unreadable contract breaks")
+}

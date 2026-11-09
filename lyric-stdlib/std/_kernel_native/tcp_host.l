@@ -154,6 +154,7 @@ import Std.IoWait as IoWait
 /// the first real consumer). Before this existed, `AcceptFailed` carried no
 /// detail at all, so every accept() failure -- transient or not -- looked
 /// identical to the caller and had to be treated as fatal.
+@experimental
 pub union AcceptFailureKind {
   // The listening socket itself is gone: the intentional
   // `hostStopListener` wake-pipe interrupt (see that function's own doc
@@ -175,6 +176,7 @@ pub union AcceptFailureKind {
   case AcceptOverloaded
 }
 
+@experimental
 pub union TcpError {
   case BindFailed(message: String)
   // `errno` is the raw platform errno (diagnostic detail alongside
@@ -192,6 +194,7 @@ pub union TcpError {
 
 /// Human-readable message for a TcpError.
 @pure
+@experimental
 pub func TcpError.message(e: in TcpError): String {
   match e {
     case BindFailed(m) -> "bind failed: " + m
@@ -206,6 +209,7 @@ pub func TcpError.message(e: in TcpError): String {
 /// a plain record (not `opaque type`) with package-private fields.
 /// `wakeReadFd`/`wakeWriteFd` back the portable accept()-interrupt seam
 /// (issue #6806) -- see `hostStopListener`'s doc comment.
+@experimental
 pub record Listener {
   fd: Int
   wakeReadFd: Int
@@ -217,6 +221,7 @@ pub record Listener {
 /// header) for a TLS one. `alpn` is the negotiated ALPN protocol (`""`
 /// for a plain connection, or a TLS connection where the peer offered
 /// none).
+@experimental
 pub record Conn {
   fd: Int
   tlsConnHandle: Long
@@ -231,6 +236,7 @@ pub record Conn {
 /// seam executes. `TlsTrustAdditive`/`TlsTrustExclusive` carry the PEM text
 /// directly (not a `Tls.Certificate`) so this file never depends on
 /// `Std.HttpHost`'s builder-level `Option[Certificate]` shape.
+@experimental
 pub union TlsClientTrust {
   // Verify against the platform's default trust store only
   // (`SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR`).
@@ -420,6 +426,7 @@ val alpnPreference: String = "h2,http/1.1"
 /// and reports `BindFailed` too, since a `Listener` this kernel cannot
 /// later interrupt is not safely usable.
 @unsafe_ffi
+@experimental
 pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
   val c = toC(host)
   val fd = rtSockListen(c, port, 128)
@@ -445,6 +452,7 @@ pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
 /// resolves it). A connect failure (refused, unreachable, unresolved) is
 /// `Err(TransportFailed(...))`.
 @unsafe_ffi
+@experimental
 pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
   val c = toC(host)
   val fd = rtSockConnect(c, port)
@@ -506,6 +514,7 @@ pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
 /// `wakeReadFd` — i.e. `hostAccept`/`hostAcceptTls` on the SAME `Listener`
 /// value. It does not touch any already-accepted `Conn` (use
 /// `hostShutdown` for that, per that function's own doc comment).
+@experimental
 pub func hostStopListener(l: in Listener): Unit {
   val _ = rtSockWakePipeSignal(l.wakeWriteFd)
 }
@@ -523,6 +532,7 @@ pub func hostStopListener(l: in Listener): Unit {
 /// this may be called directly there with no preceding `hostStopListener`
 /// call at all — signaling an unused wake pipe would be harmless but
 /// serves no purpose either.
+@experimental
 pub func hostCloseListener(l: in Listener): Unit {
   val _ = rtSockClose(l.fd)
   val _ = rtSockClose(l.wakeReadFd)
@@ -537,6 +547,7 @@ pub func hostCloseListener(l: in Listener): Unit {
 /// equivalent accessor (no consumer needs one there yet), so this is not
 /// a cross-target parity claim, just a native testing/operational
 /// convenience over a seam function that already existed for N9.1.
+@experimental
 pub func hostLocalPort(l: in Listener): Int {
   rtSockLocalPort(l.fd)
 }
@@ -569,6 +580,7 @@ func acceptFailureKindFromClass(classCode: in Int): AcceptFailureKind {
 /// — see `hostStopListener`'s doc comment for why (issue #6806: the prior
 /// `rtSockAccept`-based design relied on a Linux-only `shutdown()` side
 /// effect to unblock this call, which macOS/BSD do not share).
+@experimental
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
   val fd = rtSockAcceptInterruptible(l.fd, l.wakeReadFd)
   if fd >= 0 {
@@ -668,6 +680,7 @@ func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
 /// certificate or one that does not chain to `cfg.clientCa` — is
 /// `Err(TlsHandshakeFailed(...))`, and the underlying socket is closed
 /// before returning so a rejected peer never leaks a connection.
+@experimental
 pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   // No `validateServerConfig` call here: `hostUpgradeServerTls` below
   // validates `cfg` itself, and it is the only other caller of
@@ -685,6 +698,7 @@ pub func hostAcceptTls(l: in Listener, cfg: in Tls.TlsServerConfig): Result[Conn
 /// `SSL_new` calls against one context, so handshakes on different threads
 /// share it. The owner must call `hostReleaseServerTls` exactly once after
 /// the last upgrade that uses it has returned.
+@experimental
 pub record ServerTls {
   ctx: Long
 }
@@ -692,6 +706,7 @@ pub record ServerTls {
 /// Validate `cfg` and build its reusable server TLS context. A mutual-TLS
 /// misconfiguration (`requireClientCert` with no `clientCa`, #6042) or an
 /// identity OpenSSL rejects is `Err(TlsConfigInvalid(...))`.
+@experimental
 pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, TcpError] {
   match validateServerConfig(cfg) {
     case Some(e) -> Err(error = e)
@@ -704,6 +719,7 @@ pub func hostPrepareServerTls(cfg: in Tls.TlsServerConfig): Result[ServerTls, Tc
 
 /// Free the TLS context a `ServerTls` owns. Must run exactly once, after
 /// every upgrade that uses it has returned.
+@experimental
 pub func hostReleaseServerTls(t: in ServerTls): Unit {
   rtTlsCtxFree(t.ctx)
 }
@@ -712,6 +728,7 @@ pub func hostReleaseServerTls(t: in ServerTls): Unit {
 /// milliseconds of inactivity (`0` = no limit). A read or write that times
 /// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
 /// already closed ignores the call (its next read or write fails anyway).
+@experimental
 pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
   requires: timeoutMs >= 0
 {
@@ -726,6 +743,7 @@ pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
 /// timeout is cleared again on success. On `Err` the plain `conn` is left for
 /// the caller to `hostClose`, so a caller that tracks live connections can
 /// deregister it before its socket is released.
+@experimental
 pub func hostUpgradeServerTlsPrepared(
   conn: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int
 ): Result[Conn, TcpError]
@@ -755,6 +773,7 @@ pub func hostUpgradeServerTlsPrepared(
 /// connection; a driver upgrading many connections should call
 /// `hostPrepareServerTls` once and `hostUpgradeServerTlsPrepared` per
 /// connection instead.
+@experimental
 pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Result[Conn, TcpError] {
   match hostPrepareServerTls(cfg) {
     case Err(e) -> {
@@ -778,6 +797,7 @@ pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Resul
 /// The negotiated ALPN protocol for this connection (`"http/1.1"`, `"h2"`,
 /// or `""` when none was negotiated / the connection is plain). A driver
 /// selects the engine's connection FSM on this value (docs/61 §6.4).
+@experimental
 pub func hostAlpn(c: in Conn): String {
   c.alpn
 }
@@ -787,6 +807,7 @@ pub func hostAlpn(c: in Conn): String {
 /// slice means the peer closed its half of the connection (EOF). A
 /// socket/TLS error is `Err(TransportFailed(...))`.
 @unsafe_ffi
+@experimental
 pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
 {
@@ -806,6 +827,7 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
 /// Write all of `bytes` to the connection. A broken pipe / reset
 /// connection is `Err(TransportFailed(...))` rather than an uncaught
 /// panic.
+@experimental
 pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   val n = if c.tlsConnHandle != 0i64 { rtTlsWriteBytes(c.tlsConnHandle, bytes) } else { rtSockWriteBytes(c.fd, bytes) }
   if n < 0i64 {
@@ -826,6 +848,7 @@ pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
 // does not mean a whole TLS record is there (#8811).
 /// `hostAccept` for a coroutine: waits on the listening socket and on the
 /// listener's wake pipe, so `hostStopListener` still ends the accept loop.
+@experimental
 pub async func hostAcceptAsync(l: in Listener): Result[Conn, TcpError] {
   while true {
     val fd = rtSockTryAccept(l.fd)
@@ -850,6 +873,7 @@ pub async func hostAcceptAsync(l: in Listener): Result[Conn, TcpError] {
 /// `hostRead` for a coroutine.  The timeout `hostSetIoTimeout` gave the
 /// connection bounds the wait, as it bounds the synchronous read.
 @unsafe_ffi
+@experimental
 pub async func hostReadAsync(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
 {
@@ -875,6 +899,7 @@ pub async func hostReadAsync(c: in Conn, maxBytes: in Int): Result[slice[Byte], 
 
 /// `hostWrite` for a coroutine: writes what the socket takes and waits for
 /// room for the rest.
+@experimental
 pub async func hostWriteAsync(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   if c.tlsConnHandle != 0i64 {
     return hostWrite(c, bytes)
@@ -900,6 +925,7 @@ pub async func hostWriteAsync(c: in Conn, bytes: in slice[Byte]): Result[Unit, T
 
 /// Close the connection, releasing the socket and (for a TLS connection)
 /// the seam's connection handle. Swallows a double-close.
+@experimental
 pub func hostClose(c: in Conn): Unit {
   if c.tlsConnHandle != 0i64 {
     rtTlsShutdown(c.tlsConnHandle)
@@ -911,6 +937,7 @@ pub func hostClose(c: in Conn): Unit {
 /// The peer's address as `"ip:port"` (`"[ip]:port"` for IPv6), or `""` if it
 /// cannot be determined. Best effort, a diagnostic value that is never
 /// load-bearing for protocol correctness (same contract as the dotnet twin).
+@experimental
 pub func hostRemoteAddress(c: in Conn): String {
   rtSockPeerString(c.fd)
 }
@@ -920,6 +947,7 @@ pub func hostRemoteAddress(c: in Conn): String {
 /// live `Conn` in its own registry -- matching by fd -- without holding the
 /// whole `Conn` value past the point its natural owner (the thread that
 /// will eventually `hostClose` it) still needs it.
+@experimental
 pub func hostFd(c: in Conn): Int {
   c.fd
 }
@@ -937,6 +965,7 @@ pub func hostFd(c: in Conn): Int {
 /// on an already-reused fd is not safe); a mutex-protected active-connection
 /// registry that the owning thread removes itself from strictly BEFORE its
 /// own `hostClose` call (never after) gives exactly that guarantee.
+@experimental
 pub func hostShutdown(c: in Conn): Unit {
   val _ = rtShutdown(c.fd, 2)
 }
@@ -1030,6 +1059,7 @@ func applyClientIdentity(ctx: in Long, clientIdentity: in Option[Tls.Identity]):
 /// `Err(TransportFailed(...))`; a handshake failure (including hostname
 /// mismatch, or `TlsTrustInsecure` misuse — see the seam's own fail-closed
 /// guard) is `Err(TlsHandshakeFailed(...))`.
+@experimental
 pub func hostConnectTls(
   host: in String,
   port: in Int,
@@ -1052,6 +1082,7 @@ pub func hostConnectTls(
 /// dial host. The underlying socket is closed on every failure path so a
 /// rejected handshake never leaks a connection.
 @unsafe_ffi
+@experimental
 pub func hostUpgradeClientTls(
   conn: in Conn,
   sniHost: in String,

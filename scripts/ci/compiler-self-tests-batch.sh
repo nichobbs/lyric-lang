@@ -490,6 +490,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/cli-args-e2e.sh
   ran="$ran cli-args-e2e"
 fi
+# #8927: public-api-diff walks every per-package contract of a multi-package
+# bundle (and Lyric.Stdlib.dll) instead of only the bare `Lyric.Contract`.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/public-api-diff-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/public-api-diff-e2e.sh
+  ran="$ran public-api-diff-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

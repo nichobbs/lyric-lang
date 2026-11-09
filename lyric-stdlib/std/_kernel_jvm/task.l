@@ -101,11 +101,13 @@ extern type JReentrantLock = "java.util.concurrent.locks.ReentrantLock"
 // both can read it) plus an optional absolute-epoch-ms deadline for
 // `makeCancelSourceTimeout`'s lazy auto-cancel (see module header).
 // =====================================================================
+@experimental
 pub record CancellationTokenSource {
   flag: JAtomicBoolean
   deadlineMs: Long
 }
 
+@experimental
 pub record CancellationToken {
   flag: JAtomicBoolean
   deadlineMs: Long
@@ -123,6 +125,7 @@ val __noCancellationFlag: JAtomicBoolean = JAtomicBoolean.new(false)
 /// `CancellationToken.None` on .NET.  Use as the "no cancellation
 /// requested" sentinel when an API requires a token but the caller
 /// has no source.
+@experimental
 pub func noCancellation(): CancellationToken {
   CancellationToken(flag = __noCancellationFlag, deadlineMs = 0i64)
 }
@@ -130,6 +133,7 @@ pub func noCancellation(): CancellationToken {
 /// Create a fresh `CancellationTokenSource`.  Project its token via
 /// `sourceToken`; call `cancelSource` when you want cancellable
 /// operations observing it to abort.
+@experimental
 pub func makeCancelSource(): CancellationTokenSource {
   CancellationTokenSource(flag = JAtomicBoolean.new(false), deadlineMs = 0i64)
 }
@@ -150,6 +154,7 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// positive number, so a freshly computed deadline colliding with the
 /// `deadlineMs == 0` "no deadline" sentinel used by `isCancelled` below is
 /// not a practical concern.
+@experimental
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
   val deadlineNanos = JSystem.nanoTime() + ms.toLong() * 1000000i64
   CancellationTokenSource(flag = JAtomicBoolean.new(false), deadlineMs = deadlineNanos)
@@ -158,17 +163,20 @@ pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
 /// Project a token from a source.  The token shares the source's
 /// flag reference, so an explicit `cancelSource` call is always
 /// visible through any token derived from it.
+@experimental
 pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
   CancellationToken(flag = source.flag, deadlineMs = source.deadlineMs)
 }
 
 /// Request cancellation.  Idempotent: subsequent calls are no-ops.
+@experimental
 pub func cancelSource(source: in CancellationTokenSource): Unit {
   source.flag.set(true)
 }
 
 /// No unmanaged resources to release on this target; kept for API
 /// parity with .NET's `CancellationTokenSource.Dispose`.
+@experimental
 pub func disposeSource(source: in CancellationTokenSource): Unit {
   ()
 }
@@ -184,6 +192,7 @@ pub func disposeSource(source: in CancellationTokenSource): Unit {
 /// (matching `System.nanoTime()`'s own Javadoc) because two's-complement
 /// wraparound still yields the correct signed difference across the wrap
 /// boundary, whereas a direct `>=` would not.
+@experimental
 pub func isCancelled(token: in CancellationToken): Bool {
   if token.flag.get() {
     true
@@ -196,6 +205,7 @@ pub func isCancelled(token: in CancellationToken): Bool {
 
 /// Panic (Lyric's `catch Exception` observes it, matching .NET's
 /// `OperationCanceledException`) when the token has been cancelled.
+@experimental
 pub func throwIfCancelled(token: in CancellationToken): Unit {
   if isCancelled(token) {
     panic("OperationCanceledException: cancellation was requested")
@@ -211,6 +221,7 @@ func sleepChunkMs(): Int {
 }
 
 /// `Thread.sleep(ms)` — non-cancellable.
+@experimental
 pub func delay(ms: in Int): Task {
   JThread.sleep(ms.toLong())
   Task(done = true)
@@ -219,6 +230,7 @@ pub func delay(ms: in Int): Task {
 /// Chunked `Thread.sleep`, polling `throwIfCancelled` between chunks
 /// so an explicit cancel or an elapsed timeout deadline is observed
 /// within one chunk instead of only after the full duration.
+@experimental
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
   val chunk = sleepChunkMs()
   var remaining = ms
@@ -238,6 +250,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
 // blocked, or `awaitAll` already joined every spawned child) by the
 // time the caller holds it.
 // =====================================================================
+@experimental
 pub record Task {
   done: Bool
 }
@@ -274,6 +287,7 @@ pub record Task {
 //       }
 //     }
 // =====================================================================
+@experimental
 pub record Scope {
   threads: List[JThread]
   guard: JReentrantLock
@@ -284,6 +298,7 @@ pub record Scope {
 
 /// Construct a fresh scope.  Start children with `scopeSpawn`, then
 /// `await awaitAll(scope)` to join them.
+@experimental
 pub func makeScope(): Scope {
   Scope(
     threads = newList(),
@@ -297,6 +312,7 @@ pub func makeScope(): Scope {
 /// Project the scope's cancellation token.  Pass to child actions so
 /// they can cooperatively observe scope-level cancellation (explicit,
 /// or triggered by a sibling's fault).
+@experimental
 pub func scopeToken(s: in Scope): CancellationToken {
   CancellationToken(flag = s.flag, deadlineMs = 0i64)
 }
@@ -305,6 +321,7 @@ pub func scopeToken(s: in Scope): CancellationToken {
 /// no-op on this target: every `Task` value here is already resolved
 /// by construction (module header), so there is nothing left to join.
 /// Kept for API parity with `_kernel/task.l`.
+@experimental
 pub func scopeAdd(s: in Scope, child: in Task): Unit {
   ()
 }
@@ -341,6 +358,7 @@ func scopeThreadJoin(t: in JThread): Unit {
 /// Named `scopeSpawn` rather than the more idiomatic `spawn` because
 /// `spawn` is a soft keyword reserved for the `spawn expr` syntactic
 /// form (`ESpawn` in the parser AST).
+@experimental
 pub func scopeSpawn(s: in Scope, action: in () -> Unit): Unit {
   val t: JThread = JThread.startVirtualThread(ScopeJob(action = action, owner = s))
   scopeLock(s.guard)
@@ -368,6 +386,7 @@ func scopeThreadAlive(t: in JThread): Bool {
 /// The number of children the scope still tracks: those still running.  A
 /// child that finished is dropped the next time the scope spawns; a failure
 /// stays recorded for `awaitAll`.
+@experimental
 pub func scopePendingCount(s: in Scope): Int {
   scopeLock(s.guard)
   defer {
@@ -417,6 +436,7 @@ func scopeThreads(s: in Scope): List[JThread] {
 /// failure's message is re-panicked once every action has completed —
 /// matching `_kernel/task.l`'s "rethrows the underlying exception"
 /// contract.
+@experimental
 pub func awaitAll(s: in Scope): Task {
   for t in scopeThreads(s) {
     scopeThreadJoin(t)
@@ -430,12 +450,14 @@ pub func awaitAll(s: in Scope): Task {
 }
 
 /// Explicitly cancel the scope's flag.  Idempotent.
+@experimental
 pub func cancelScope(s: in Scope): Unit {
   s.flag.set(true)
 }
 
 /// No unmanaged resources to release on this target; kept for API
 /// parity with `_kernel/task.l`'s `disposeScope`.
+@experimental
 pub func disposeScope(s: in Scope): Unit {
   ()
 }
@@ -461,6 +483,7 @@ val __ambientNullProbe: JThreadLocal = JThreadLocal.new()
 
 /// Read the ambient cancellation token.  Returns the never-cancelled
 /// `noCancellation()` when nothing has been installed on this thread.
+@experimental
 pub func currentToken(): CancellationToken {
   val v: JAtomicBoolean = __ambientSlot.get()
   if v == __ambientNullProbe.get() {
@@ -473,6 +496,7 @@ pub func currentToken(): CancellationToken {
 
 /// Install `token` as the ambient on the calling thread.  Returns the
 /// previous value so the caller can restore it on exit.
+@experimental
 pub func installToken(token: in CancellationToken): CancellationToken {
   val previous = currentToken()
   __ambientSlot.set(token.flag)
@@ -481,6 +505,7 @@ pub func installToken(token: in CancellationToken): CancellationToken {
 }
 
 /// Restore the ambient slot to `previous`.
+@experimental
 pub func restoreToken(previous: in CancellationToken): Unit {
   __ambientSlot.set(previous.flag)
   __ambientDeadlineSlot.set(previous.deadlineMs)
@@ -492,6 +517,7 @@ pub func restoreToken(previous: in CancellationToken): Unit {
 /// `noCancellation()` (#5331; matches .NET's `CancellationToken
 /// .CanBeCanceled`, which is false for `CancellationToken.None` too, not
 /// an identity/"was install ever called" check).
+@experimental
 pub func hasAmbient(): Bool {
   val v: JAtomicBoolean = __ambientSlot.get()
   not (v == __ambientNullProbe.get()) and not (v == __noCancellationFlag)
@@ -571,6 +597,7 @@ func runWithinThreadStart(t: in JThread): Unit {
 /// means "wait forever," not "don't wait," on the JDK — so a zero
 /// budget is implemented as an immediate, un-joined check of whether
 /// `action` happened to already finish.
+@experimental
 pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
   requires: timeoutMs >= 0
 {
@@ -611,6 +638,7 @@ pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
 /// `runCheckIsolated` uses). A panic that occurs only after the deadline
 /// has already elapsed is unobservable — the same "keeps running in the
 /// background" caveat above.
+@experimental
 pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
   requires: timeoutMs >= 0
 {

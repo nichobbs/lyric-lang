@@ -3600,7 +3600,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 ### 13.5 Public API diff
 
-`lyric public-api-diff <old.dll> <new.dll>` compares the `pub` surface recorded in the `Lyric.Contract` resource of two assemblies and reports added, removed and changed declarations. It exits 0 when nothing breaks, 2 when a non-`@experimental` declaration was removed or changed (or a contract clause changed in a breaking way), and 1 on a usage error or an assembly without a `Lyric.Contract` resource. The baseline is an assembly kept from the previous release, not a git ref; how it is cut, and the current limit that it reads only single-package assemblies, is in `docs/22-distribution-and-tooling.md` §5.3.
+`lyric public-api-diff <old.dll> <new.dll>` compares the `pub` surface recorded in the contract resources of two assemblies and reports added, removed and changed declarations. A project-as-DLL bundle (such as `Lyric.Stdlib.dll`) embeds one `Lyric.Contract.<Pkg>` resource per package; the command pairs packages by name, groups changes under a `package <Name>:` line, and reports a package present only in the new assembly as added and one present only in the old as removed (breaking). It exits 0 when nothing breaks, 2 when a non-`@experimental` declaration or a whole package was removed or changed (or a contract clause changed in a breaking way), and 1 on a usage error or an assembly with no contract resource. The baseline is an assembly kept from the previous release, not a git ref; how it is cut is in `docs/22-distribution-and-tooling.md` §5.3.
 
 ### 13.5.1 Package interfaces
 

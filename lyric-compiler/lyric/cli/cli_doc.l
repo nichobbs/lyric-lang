@@ -194,22 +194,71 @@ func cmdPublicApiDiff(argv: in slice[String]): Int {
     return 1
   }
 
-  val oldJson = match Meta.readFromFile(oldDll) {
-    case Some(j) -> j
-    case None -> {
-      printErr("public-api-diff: '" + oldDll + "' has no Lyric.Contract resource")
-      return 1
-    }
+  val oldPkgs = Meta.readAllContractsFromFile(oldDll)
+  if oldPkgs.count == 0 {
+    printErr("public-api-diff: '" + oldDll + "' has no Lyric.Contract resource")
+    return 1
   }
-  val newJson = match Meta.readFromFile(newDll) {
-    case Some(j) -> j
-    case None -> {
-      printErr("public-api-diff: '" + newDll + "' has no Lyric.Contract resource")
-      return 1
+  val newPkgs = Meta.readAllContractsFromFile(newDll)
+  if newPkgs.count == 0 {
+    printErr("public-api-diff: '" + newDll + "' has no Lyric.Contract resource")
+    return 1
+  }
+
+  // Multi-package libraries (project-as-DLL bundles, `Lyric.Stdlib.dll`)
+  // carry one `Lyric.Contract.<Pkg>` resource per package; pair them by
+  // package name. A package present on only one side is an added (compatible)
+  // or removed (breaking) package. A single-package assembly on each side is
+  // paired regardless of its resource name, so the legacy bare `Lyric.Contract`
+  // form still diffs against a per-package one.
+  val entries: List[String] = newList()
+  if oldPkgs.count == 1 and newPkgs.count == 1 {
+    for d in Meta.diffContracts(oldPkgs[0].json, newPkgs[0].json).toArray() {
+      entries.add(d)
+    }
+  } else {
+    var oi = 0
+    while oi < oldPkgs.count {
+      val op = oldPkgs[oi]
+      var found: Option[Meta.ContractEntry] = None
+      var ni = 0
+      while ni < newPkgs.count {
+        if newPkgs[ni].packageName == op.packageName {
+          found = Some(value = newPkgs[ni])
+        }
+        ni += 1
+      }
+      match found {
+        case None -> entries.add("  - package " + op.packageName + " (removed)")
+        case Some(np) -> {
+          val pd = Meta.diffContracts(op.json, np.json)
+          if pd.count > 0 {
+            entries.add("package " + op.packageName + ":")
+            for d in pd.toArray() {
+              entries.add(d)
+            }
+          }
+        }
+      }
+      oi += 1
+    }
+    var ai = 0
+    while ai < newPkgs.count {
+      var existed = false
+      var oj = 0
+      while oj < oldPkgs.count {
+        if oldPkgs[oj].packageName == newPkgs[ai].packageName {
+          existed = true
+        }
+        oj += 1
+      }
+      if not existed {
+        entries.add("  + package " + newPkgs[ai].packageName + " (added)")
+      }
+      ai += 1
     }
   }
 
-  val entries = Meta.diffContracts(oldJson, newJson)
   if entries.count == 0 {
     Console.println("No public-API changes between the two assemblies.")
     return 0
