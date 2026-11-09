@@ -189,8 +189,8 @@ left is verification and release work, tracked in `docs/36`:
   annotation), and the `public-api-diff` baseline cut, which is blocked on
   the command reading multi-package bundles (`docs/22` §5.3).
 - The "supported but not v1.0 SemVer-guaranteed" JVM note is in `docs/01`
-  §0.1 (G1, D-progress-620); the native and wasm32 lines there are marked
-  pending the project-lead decision.
+  §0.1 (G1, D-progress-620); native and wasm32 are likewise outside the v1.0
+  guarantee and the UI and graphics libraries are experimental (D548).
 - Release items from `docs/63`: `--release` does no optimisation and does not
   relax overflow checking (#6263), `--shape standalone` unimplemented (#6262),
   bands B2-B7 (debug info, debugger).
@@ -221,7 +221,7 @@ artifacts must be built after it.
 6. The `@stable(since="1.0")` surface is walked, `lyric public-api-diff` has a
    baseline cut at the tag, and the channel-status notes below are in
    `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
-   note is in §0.1 (native and wasm32 lines pending the decision below); the
+   note is in §0.1 (native, wasm32, UI and graphics recorded in D548); the
    baseline cut is blocked because `lyric public-api-diff` cannot read
    multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3, #8927); the
    `Std.Task`, `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers are
@@ -232,11 +232,16 @@ artifacts must be built after it.
 
 ### Open decisions (owner: project lead)
 
-- **Channel status for native and wasm.**  G1 (D-progress-620) covers JVM only.
-  Proposal: SemVer applies to dotnet; JVM, native and wasm32 are supported with
-  independent versioning.
-- **`lyric-ui` and the graphics libraries** (`lyric-window`, `lyric-gpu`,
-  `lyric-text`, `lyric-draw`, `lyric-game`): in or out of the v1.0 story.
+Decided 2026-11-09 (D548):
+
+- **Native and wasm32 are not part of v1.0.**  SemVer applies to dotnet; JVM,
+  native and wasm32 are supported with independent versioning.
+- **`lyric-ui` and the graphics libraries are experimental** at v1.0
+  (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-gpu-window`, `lyric-text`,
+  `lyric-draw`, `lyric-game`, `lyric-unicode`, `lyric-access`).
+
+Still open:
+
 - **Ecosystem libraries with `NOT_IMPLEMENTED` backends** (lyric-storage S3 and
   Azure, lyric-mq brokers, lyric-mail JVM SMTP, lyric-search): label in release
   notes or exclude.  G4 already gives each library its own versioning.
