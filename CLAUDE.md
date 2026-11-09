@@ -1103,8 +1103,8 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
-  SMTP via `System.Net.Mail` on `dotnet` — **SMTP on `jvm` returns
-  `NOT_IMPLEMENTED` (#7462)**; Amazon SES (v2, SigV4) and SendGrid (v3) are
+  SMTP via `System.Net.Mail` on `dotnet` and Jakarta Mail on `jvm`
+  (**implemented on both targets, #7462**); Amazon SES (v2, SigV4) and SendGrid (v3) are
   pure-Lyric HTTPS clients over `Std.Http` on both targets; typed
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
@@ -1141,12 +1141,13 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   in-process stores; `SessionStore` interface; session config (TTL,
   cookie name, SameSite, Secure, HttpOnly).
 - `lyric-search/` — `lyric-search` library: search engine integration
-  (`Lyric.Search`). Elasticsearch (Elastic.Clients.Elasticsearch) and
-  Meilisearch backends — **real kernel-level bindings exist for both on
-  both targets, but the public `Search` API never calls them yet
-  (issue #5067), so neither is reachable today, see
-  `lyric-search/README.md`**; `SearchClient` interface with index/search/
-  suggest/delete/createIndex.
+  (`Lyric.Search`). Elasticsearch and Meilisearch backends, implemented
+  over plain HTTP and JSON on `Std.Http`/`Std.Json` (#5408), no native SDK —
+  **but not usable against a live server today: `HttpResponse.bodyText`
+  across packages throws `MissingMethodException`, so any operation that
+  reads a response body crashes, and neither backend has been driven against
+  a real cluster in CI (#8940), see `lyric-search/README.md`**;
+  `SearchClient` interface with index/search/suggest/delete/createIndex.
 - `lyric-feature-flags/` — `lyric-feature-flags` library: runtime feature
   toggles (`Lyric.Flags`). Only an in-process `FlagStore` (`InProcessFlagStore`)
   ships — **there is no remote (HTTP-polling) store**; a prior revision
