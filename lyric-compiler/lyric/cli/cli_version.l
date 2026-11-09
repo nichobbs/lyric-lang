@@ -322,7 +322,10 @@ pub func cmdVersion(argv: in slice[String]): Int {
       }
       manifestPath = Some(value = argv[i])
     } else if Str.startsWith(arg, "-") {
-      printErr("version: unknown flag: " + arg)
+      printErr("version: unknown option '" + arg + "' (run `lyric --help` for the options of `lyric version`)")
+      return 1
+    } else {
+      printErr("version: unexpected argument '" + arg + "'")
       return 1
     }
     i += 1

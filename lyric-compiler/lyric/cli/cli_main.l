@@ -417,9 +417,21 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "lsp" {
     // Dispatch to the self-hosted LSP stdio loop in
-    // `lyric-compiler/lyric/lsp.l`.  No CLI args are consumed —
-    // the language server speaks the Language Server Protocol
-    // over stdin/stdout per LSP §3.0.
+    // `lyric-compiler/lyric/lsp.l`.  The server speaks the Language
+    // Server Protocol over stdin/stdout per LSP §3.0; `--stdio`, which
+    // LSP clients conventionally pass, is accepted and is the only option.
+    var li = 1
+    while li < argv.length {
+      val larg = argv[li]
+      if larg != "--stdio" {
+        if rejectUnknownOption("lsp", larg) {
+          return 1
+        }
+        printErr("lsp: unexpected argument '" + larg + "'")
+        return 1
+      }
+      li += 1
+    }
     Lsp.lspRunLoop()
     return 0
   }

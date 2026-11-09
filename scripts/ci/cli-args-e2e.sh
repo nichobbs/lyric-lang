@@ -32,7 +32,7 @@ trap 'rm -rf "${work:?}"' EXIT
 
 run() {
   local rc=0
-  "$@" > "$out" 2> "$err" || rc=$?
+  "$@" > "$out" 2> "$err" < /dev/null || rc=$?
   echo "$rc"
 }
 
@@ -80,6 +80,36 @@ expect_extra_positional "build a.l b.l" "$lyric_bin" build hello.l other.l
 [ ! -e hello.dll ] || fail "build a.l b.l: no output may be written"
 expect_extra_positional "test a.l b.l" "$lyric_bin" test hello_tests.l hello.l
 expect_extra_positional "lint a.l b.l" "$lyric_bin" lint hello.l other.l
+
+# ── 1b. Commands outside the one-source-file family ───────────────────────
+# restore/publish used to print "unrecognised flag" and carry on; init/add/
+# remove took an option as a directory or name; public-api-diff, repl, lsp and
+# version ignored or misreported what they were given.
+expect_rejected() {
+  local label="$1" pattern="$2"; shift 2
+  local rc
+  rc="$(run "$@")"
+  [ "$rc" -ne 0 ] || fail "$label: expected a non-zero exit"
+  grep -q -- "$pattern" "$err" || fail "$label: expected '$pattern' on stderr"
+  if grep -q "Unhandled exception" "$out" "$err"; then
+    fail "$label: crashed"
+  fi
+  echo "PASS: $label"
+}
+expect_rejected "restore --bogus-flag" "restore: unknown option '--bogus-flag'" "$lyric_bin" restore --bogus-flag
+expect_rejected "restore stray argument" "restore: unexpected argument 'stray'" "$lyric_bin" restore stray
+expect_rejected "publish --bogus-flag" "publish: unknown option '--bogus-flag'" "$lyric_bin" publish --bogus-flag
+expect_rejected "publish stray argument" "publish: unexpected argument 'stray'" "$lyric_bin" publish stray
+expect_rejected "init --bogus-flag" "init: unknown option '--bogus-flag'" "$lyric_bin" init --bogus-flag
+[ ! -e ./--bogus-flag ] || fail "init --bogus-flag: must not create a directory named after the flag"
+expect_rejected "add --bogus-flag" "add: unknown option '--bogus-flag'" "$lyric_bin" add --bogus-flag
+expect_rejected "remove --bogus-flag" "remove: unknown option '--bogus-flag'" "$lyric_bin" remove --bogus-flag
+expect_rejected "public-api-diff --bogus-flag" "public-api-diff: unknown option '--bogus-flag'" "$lyric_bin" public-api-diff --bogus-flag a.dll b.dll
+expect_rejected "repl --bogus-flag" "repl: unknown option '--bogus-flag'" "$lyric_bin" repl --bogus-flag
+expect_rejected "repl stray argument" "repl: unexpected argument 'stray'" "$lyric_bin" repl stray
+expect_rejected "lsp --bogus-flag" "lsp: unknown option '--bogus-flag'" "$lyric_bin" lsp --bogus-flag
+expect_rejected "lsp stray argument" "lsp: unexpected argument 'stray'" "$lyric_bin" lsp stray
+expect_rejected "version stray argument" "version: unexpected argument 'stray'" "$lyric_bin" version stray
 
 # ── 2. F0050: a --features name the manifest does not declare ───────────────
 printf '[package]\nname = "ArgsProj"\nversion = "0.1.0"\n\n[project]\nname = "ArgsProj"\noutput = "single"\noutput_assembly = "ArgsProj.dll"\n\n[project.packages]\n"P" = "src/p"\n\n[features]\ndefault = []\nwide = []\n' > "$work/proj/lyric.toml"

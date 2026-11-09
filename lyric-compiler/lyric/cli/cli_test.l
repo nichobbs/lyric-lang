@@ -30,6 +30,18 @@ import Msil.Codegen as MsilCodegen
 // §11b. Repl command
 // ─────────────────────────────────────────────────────────────────────────────
 func cmdRepl(argv: in slice[String]): Int {
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg != "--verbose" and arg != "-v" {
+      if rejectUnknownOption("repl", arg) {
+        return 1
+      }
+      printErr("repl: unexpected argument '" + arg + "'")
+      return 1
+    }
+    i += 1
+  }
   Repl.runRepl(argv)
 }
 

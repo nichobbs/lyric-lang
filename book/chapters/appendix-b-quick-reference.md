@@ -944,6 +944,12 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 
 ## B.10 CLI commands
 
+Every command rejects an option or surplus argument it does not take
+(`<command>: unknown option '--x'` or `<command>: unexpected argument 'x'`,
+exit 1, no work done). This covers `restore`, `publish`, `init`, `add`,
+`remove`, `public-api-diff`, `repl` and `version` as well as the build family;
+`lyric lsp` accepts `--stdio` and nothing else.
+
 ```sh
 # Scaffold a new project
 lyric init demo                        # app package in ./demo (lyric.toml + src/main.l + .gitignore)

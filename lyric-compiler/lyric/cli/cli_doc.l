@@ -170,6 +170,9 @@ func cmdPublicApiDiff(argv: in slice[String]): Int {
   val positional: List[String] = newList()
   var i = 1
   while i < argv.length {
+    if rejectUnknownOption("public-api-diff", argv[i]) {
+      return 1
+    }
     positional.add(argv[i])
     i += 1
   }
