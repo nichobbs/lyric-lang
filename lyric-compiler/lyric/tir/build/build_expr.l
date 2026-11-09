@@ -774,7 +774,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SFor(label, pat, iter, body) -> {
-      val it = match buildExpr(env, iter) { case Some(x) -> x; case None -> return None }
+      val it = match buildForIter(env, iter) { case Some(x) -> x; case None -> return None }
       pushScope(env)
       val built = match buildPat(env, pat) {
         case Some(tp) -> match loopBody(env, body) {
@@ -800,6 +800,30 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SInvariant(_) -> uncoveredStmt(env, s, "a loop invariant")
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")
     case SItem(_) -> uncoveredStmt(env, s, "a local item")
+  }
+}
+
+/// The iterable of a `for`.  A range is typed by the checker only as the loop's
+/// element type, so its `XRange` takes the type of its bounds (docs/01: a range
+/// exists only in iterator position).
+func buildForIter(env: in BuildEnv, iter: in Expr): Option[TExpr] {
+  match iter.kind {
+    case ERange(bound) -> {
+      val parts = match bound {
+        case RBClosed(lo, hi) -> Some(value = (lo, hi, true))
+        case RBHalfOpen(lo, hi, _) -> Some(value = (lo, hi, false))
+        case _ -> None
+      }
+      match parts {
+        case None -> uncoveredExpr(env, iter, "an open-ended range")
+        case Some((lo, hi, inclusive)) -> {
+          val l = match buildExpr(env, lo) { case Some(x) -> x; case None -> return None }
+          val h = match buildExpr(env, hi) { case Some(x) -> x; case None -> return None }
+          Some(value = mkExpr(iter, l.ty, XRange(lo = l, hi = h, inclusive = inclusive)))
+        }
+      }
+    }
+    case _ -> buildExpr(env, iter)
   }
 }
 
