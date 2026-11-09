@@ -5239,6 +5239,29 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
         }
       }
     }
+    case DKProtected(_, pd) -> {
+      // A protected type's construction takes its fields as a record's: `Total()` leaves
+      // each to its default.  Only a non-generic one has them here.
+      if pd.generics.isSome() {
+        return
+      }
+      val scratch: List[Diagnostic] = newList()
+      val saved = enterDeclaringScope(tbl, sym)
+      for fd in ctorAllFields(sym) {
+        val fty = resolveType(tbl, newGenericContext(), scratch, fd.ty)
+        params.add(
+          ResolvedParam(
+            name = fd.name,
+            ty = fty,
+            mode = PMIn,
+            hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fty, fd.span),
+            span = fd.span,
+            dfltExpr = fd.dflt
+          )
+        )
+      }
+      restoreScope(tbl, saved)
+    }
     case DKUnionCase(_, uc) -> {
       val scratch: List[Diagnostic] = newList()
       val ftypes = caseFieldTypesInstantiated(tbl, scratch, sym, resultTy)

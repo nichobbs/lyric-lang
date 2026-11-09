@@ -309,6 +309,9 @@ pub record TFnDecl {
   postconds: List[TExpr]
   body: Option[TExpr]
   span: Span
+  /// A protected entry's `when:` guard, a `Bool` over the receiver's fields and the entry's
+  /// parameters.  The TIR carries no locks: backends lower locking and the wait from this.
+  barrier: Option[TExpr] = None
 }
 
 /// A callable's signature, as a call checks against it.
@@ -333,6 +336,9 @@ pub union TSymKind {
   case TSkVal
   case TSkConst
   case TSkInterfaceMethod
+  /// An entry or `func` of a protected type: callable like a method, with the protected
+  /// value as the first parameter and the lock taken by the backend (docs/70 §6.2).
+  case TSkEntry
 }
 
 /// What the verifier needs to know about a declaration it meets: this

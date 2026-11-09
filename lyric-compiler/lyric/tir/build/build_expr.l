@@ -2182,6 +2182,17 @@ func buildDirectCall(
   }
 }
 
+/// Whether `t` is a protected type: its members take no declared receiver.
+func recvIsProtected(env: in BuildEnv, t: in Type): Bool {
+  match t {
+    case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
+      case Some(s) -> match s.kind { case DKProtected(_, _) -> true; case _ -> false }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
 /// A method call `recv.m(args)`: the receiver first, then the arguments placed by
 /// parameter, to the method the checker resolved (`Direct`, or `Interface` for an
 /// interface-typed receiver).  Only a receiver passed `in` is built; a mutating
@@ -2199,10 +2210,17 @@ func buildMethodCall(
     case EMember(r, _) -> r
     case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
+  var isEntry = false
   match site.sig.recvMode {
     case Some(PMIn) -> ()
     case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
-    case None -> return uncoveredExpr(env, e, "a method call with no declared receiver")
+    // An entry or `func` of a protected type declares no receiver: the protected value is
+    // the receiver, passed `in` (a reference whose lock the backend takes).
+    case None -> if recvIsProtected(env, site.recvTy) {
+      isEntry = true
+    } else {
+      return uncoveredExpr(env, e, "a method call with no declared receiver")
+    }
   }
   val declared = match tyOfType(env.ctx, site.recvTy) {
     case Ok(t) -> t
@@ -2228,8 +2246,8 @@ func buildMethodCall(
     sym,
     site.sig,
     Some(value = site.recvTy),
-    site.sig.recvMode,
-    if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
+    if isEntry { Some(value = PMIn) } else { site.sig.recvMode },
+    if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
   )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
 }

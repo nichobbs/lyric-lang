@@ -343,6 +343,12 @@ conversions, and `Option` lifting. UFCS, method syntax and operator
 overloading are all `XCall` with a resolved `Callee`. Closures list their
 captures with capture mode. Patterns are typed and bind `LocalId`s.
 
+A protected type's entry (or `func`) is a callable symbol of kind `TSkEntry` whose first parameter
+is the protected value, passed `in`; `t.add(n)` is a direct `XCall` of it and `Total()` an
+`XConstruct`. A `TFnDecl` carries the entry's `when:` guard as `barrier: Option[TExpr]`, a `Bool`
+over the receiver's fields and the entry's parameters, which the verifier checks. The TIR carries
+no locks: backends lower locking and the barrier wait from the declaration (D552).
+
 ### 6.3 Who builds it
 
 The checker builds TIR. The first step (§13 phase 3) has the checker record,

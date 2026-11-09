@@ -1561,3 +1561,26 @@ test "a default that is not a literal or a name is counted, not guessed" {
   assertEqualInt(c.built, 1, "only g builds")
   assertTrue(c.firstErrors.count > 0, "f reports an I0002")
 }
+
+test "a protected type's construction and entry call build as a construction and a receiver-first call" {
+  val c = censusOf(
+    "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var entries = 0
+  for s in c.pkg.symbols {
+    match s.kind {
+      case TSkEntry -> {
+        entries = entries + 1
+        match s.sig {
+          case Some(sg) -> assertTrue(sg.params.count >= 1, "the protected value is the first parameter")
+          case None -> assertTrue(false, "an entry has a signature")
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(entries, 2, "add and get are recorded as entries")
+}
