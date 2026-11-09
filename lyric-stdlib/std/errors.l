@@ -75,7 +75,7 @@ pub func IOError.message(e: in IOError): String {
 // ---------------------------------------------------------------------------
 // HttpError - network and HTTP errors.
 // ---------------------------------------------------------------------------
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub union HttpError {
   case ConnectionFailed(url: String, message: String)
   case Timeout(url: String, durationMs: Long)

@@ -460,6 +460,14 @@ The other modes are `out` (the function must assign the parameter exactly once b
 **Why explicit parameter modes?** In C# and Java, pass-by-reference and pass-by-value are implicit. A `ref` parameter in C# is visible at the call site (`func(ref x)`) but nothing in the signature tells a reader whether the function reads the value, writes it, or both. Lyric's `in`/`out`/`inout` make this explicit in every signature, which is useful both for readability and for the proof system (a `requires:` clause on an `in` parameter is cleaner when you can trust the parameter won't be mutated). Omitting `in` is valid — the compiler defaults to it — but the formatter always inserts it, so in practice every parameter mode is visible in formatted code.
 :::
 
+## Targets and stability at v1.0
+
+| Target | Stability at v1.0 |
+|---|---|
+| `--target dotnet` | The reference channel: Lyric SemVer covers the language and the `@stable` standard library. |
+| `--target jvm` | Supported and tested, with no v1.0 SemVer guarantee; breaking changes may land in minor releases and the JVM channel is versioned independently. |
+| `--target native` and wasm32 | Status not yet decided by the project lead (see `docs/01-language-reference.md` section 0.1); not covered by the SemVer guarantee until it is. |
+
 ## The toolchain at a glance
 
 Core commands you will use constantly:

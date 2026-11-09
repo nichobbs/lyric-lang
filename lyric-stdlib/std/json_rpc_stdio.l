@@ -62,32 +62,32 @@ import Std.Time
 import Std.JsonRpc
 
 // ── Sans-IO seams ────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface CharReader {
   /// The next UTF-16 code unit, or a negative value at EOF — matches
   /// `Std.ConsoleHost.hostConsoleRead`'s contract.
   func next(): Int
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface LineReader {
   /// Matches `Std.Console.readLine`'s contract.
   func nextLine(): Result[String, IOError]
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface StringWriter {
   func write(s: in String): Unit
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub interface LineWriter {
   func writeLine(s: in String): Unit
 }
 
 /// Outcome of `ByteSource.readWithin`: the bytes read (never empty), clean
 /// end of stream, or nothing within the timeout.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub union ByteRead {
   case BytesRead(bytes: slice[Byte])
   case BytesEnd
@@ -95,7 +95,7 @@ pub union ByteRead {
 }
 
 /// A stream of raw bytes: the seam the byte-level framings read through.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub interface ByteSource {
   /// Block until at least one byte arrives (`Some`) or the stream ends
   /// (`None`).
@@ -172,7 +172,7 @@ val MAX_HEADER_LINES: Int = 64
 // ── NDJSON framing (sans-IO core) ───────────────────────────────────────────
 /// Read one NDJSON-framed message via `reader`. `EndOfInput` maps to clean
 /// `Ok(None)`; every other `IOError` maps to `Err`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func ndjsonReceiveVia(reader: in LineReader): Result[Option[String], String] {
   match reader.nextLine() {
     case Ok(line) -> match ndjsonAcceptLine(line) {
@@ -186,7 +186,7 @@ pub func ndjsonReceiveVia(reader: in LineReader): Result[Option[String], String]
 /// Apply the NDJSON framing limits to a line some other reader already
 /// split off (e.g. a bounded read of a child process's stdout): the line
 /// itself, or a framing `Err` when it exceeds the 16 MiB message limit.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func ndjsonAcceptLine(line: in String): Result[String, String] {
   if line.length > MAX_MESSAGE_BYTES or encodeUtf8(line).length > MAX_MESSAGE_BYTES {
     Err(error = ndjsonTooLong())
@@ -198,13 +198,13 @@ pub func ndjsonAcceptLine(line: in String): Result[String, String] {
 /// Write one NDJSON-framed message via `writer`. `writeValue` is always
 /// compact (no embedded newline), so `payload` is written as exactly one
 /// line.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func ndjsonSendVia(payload: in String, writer: in LineWriter): Result[Unit, String] {
   writer.writeLine(payload)
   Ok(value = ())
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record NdjsonTransport {
   source: ByteSource
   writer: LineWriter
@@ -231,7 +231,7 @@ impl RpcTransport for NdjsonTransport {
 /// Construct an `RpcTransport` that frames one JSON message per line over
 /// stdin/stdout — the MCP stdio transport. It owns stdin: do not also read
 /// it through `Std.Console.readLine`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func newNdjsonTransport(): NdjsonTransport {
   NdjsonTransport(
     source = HostStdinSource(reader = openStdinReader()),
@@ -483,7 +483,7 @@ func concatAll(parts: in List[String]): String {
 }
 
 /// Read one Content-Length-framed message via `reader`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func clReceiveVia(reader: in CharReader): Result[Option[String], String] {
   match clReadHeaders(reader) {
     case Err(e) -> Err(error = e)
@@ -504,14 +504,14 @@ pub func clReceiveVia(reader: in CharReader): Result[Option[String], String] {
 }
 
 /// Write one Content-Length-framed message via `writer`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func clSendVia(payload: in String, writer: in StringWriter): Result[Unit, String] {
   val n = encodeUtf8(payload).length
   writer.write("Content-Length: " + n.toString() + "\r\n\r\n" + payload)
   Ok(value = ())
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record ContentLengthTransport {
   source: ByteSource
   writer: StringWriter
@@ -538,7 +538,7 @@ impl RpcTransport for ContentLengthTransport {
 /// Construct an `RpcTransport` that frames messages with an LSP-style
 /// `Content-Length: N\r\n\r\n` header over stdin/stdout, byte-accurate on
 /// UTF-8 (see the module doc). It owns stdin, like `newNdjsonTransport`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func newContentLengthTransport(): ContentLengthTransport {
   ContentLengthTransport(
     source = HostStdinSource(reader = openStdinReader()),
@@ -562,7 +562,7 @@ pub func newContentLengthTransport(): ContentLengthTransport {
 /// (`Std.Encoding.encodeUtf8`, `Std.Hash`, `Std.Http`'s H2 framer), so
 /// appending a chunk of `n` bytes costs amortized O(n), and a full message
 /// costs O(message size) regardless of how many reads it arrived in.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub ref record FrameBuffer {
   var bytes: List[Byte]
   // Read cursor: bytes before `pos` belong to frames already returned.
@@ -573,7 +573,7 @@ pub ref record FrameBuffer {
   var ended: Bool
 }
 
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newFrameBuffer(): FrameBuffer {
   val empty: List[Byte] = newList()
   FrameBuffer(bytes = empty, pos = 0, scanned = 0, ended = false)
@@ -865,14 +865,14 @@ func receiveWithinFrom(
 
 /// Read one NDJSON-framed message from `source`, buffering in `buffer`.
 /// `Ok(None)` marks clean end of stream.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func ndjsonReceiveFrom(source: in ByteSource, buffer: in FrameBuffer): Result[Option[String], String] {
   receiveFrom(ndjsonFraming(), source, buffer)
 }
 
 /// `ndjsonReceiveFrom`, waiting at most `timeoutMs` milliseconds in total.
 /// On `RpcTimedOut` the bytes read so far stay in `buffer`.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func ndjsonReceiveWithinFrom(
   source: in ByteSource, buffer: in FrameBuffer, timeoutMs: in Int
 ): Result[ReceiveOutcome, String]
@@ -883,14 +883,14 @@ pub func ndjsonReceiveWithinFrom(
 
 /// Read one Content-Length-framed message from `source`, buffering in
 /// `buffer`. `Ok(None)` marks clean end of stream at a frame boundary.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func clReceiveFrom(source: in ByteSource, buffer: in FrameBuffer): Result[Option[String], String] {
   receiveFrom(clFraming(), source, buffer)
 }
 
 /// `clReceiveFrom`, waiting at most `timeoutMs` milliseconds in total. On
 /// `RpcTimedOut` the bytes read so far stay in `buffer`.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func clReceiveWithinFrom(
   source: in ByteSource, buffer: in FrameBuffer, timeoutMs: in Int
 ): Result[ReceiveOutcome, String]
@@ -901,14 +901,14 @@ pub func clReceiveWithinFrom(
 
 /// An NDJSON `RpcTransport` reading from `source` and writing through
 /// `writer` — the stdio transport over any byte stream.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newNdjsonTransportOver(source: in ByteSource, writer: in LineWriter): NdjsonTransport {
   NdjsonTransport(source = source, writer = writer, buffer = newFrameBuffer())
 }
 
 /// A Content-Length `RpcTransport` reading from `source` and writing
 /// through `writer`.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newContentLengthTransportOver(source: in ByteSource, writer: in StringWriter): ContentLengthTransport {
   ContentLengthTransport(source = source, writer = writer, buffer = newFrameBuffer())
 }
@@ -920,7 +920,7 @@ pub func newContentLengthTransportOver(source: in ByteSource, writer: in StringW
 /// source takes over loses nothing; once a transport owns the source, read
 /// stdout only through the transport, or its frame buffer and the line reads
 /// would each see part of the stream.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub record PipedProcessSource {
   process: PipedProcess
 }
@@ -943,7 +943,7 @@ impl ByteSource for PipedProcessSource {
 }
 
 /// A `ByteSource` over `process`'s stdout.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func pipedProcessSource(process: in PipedProcess): PipedProcessSource {
   PipedProcessSource(process = process)
 }
@@ -954,7 +954,7 @@ pub func pipedProcessSource(process: in PipedProcess): PipedProcessSource {
 /// `StringWriter.write` cannot return an error, so the first failed write is
 /// kept in `failure` and later writes are skipped; the process transports
 /// below report a failed send directly instead.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub ref record PipedProcessWriter {
   process: PipedProcess
   var failure: Option[String]
@@ -975,7 +975,7 @@ impl StringWriter for PipedProcessWriter {
 }
 
 /// A `StringWriter` over `process`'s stdin.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func pipedProcessWriter(process: in PipedProcess): PipedProcessWriter {
   PipedProcessWriter(process = process, failure = None)
 }
@@ -985,7 +985,7 @@ pub func pipedProcessWriter(process: in PipedProcess): PipedProcessWriter {
 /// message in a single `pipedWriteBytes` call and returns its error. `close`
 /// does nothing: the caller spawned the process and decides when to close its
 /// stdin, wait for it or kill it.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub record PipedProcessTransport {
   source: PipedProcessSource
   buffer: FrameBuffer
@@ -1024,14 +1024,14 @@ impl RpcTransport for PipedProcessTransport {
 
 /// A Content-Length (LSP-style) `RpcTransport` over a piped child process:
 /// reads the child's stdout, writes its stdin, byte-accurate on UTF-8.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newContentLengthTransportOverProcess(process: in PipedProcess): PipedProcessTransport {
   PipedProcessTransport(source = pipedProcessSource(process), buffer = newFrameBuffer(), contentLength = true)
 }
 
 /// An NDJSON `RpcTransport` over a piped child process. `writeValue` output
 /// is compact, so each message is written as exactly one line.
-@stable(since = "0.2")
+@stable(since = "1.0")
 pub func newNdjsonTransportOverProcess(process: in PipedProcess): PipedProcessTransport {
   PipedProcessTransport(source = pipedProcessSource(process), buffer = newFrameBuffer(), contentLength = false)
 }

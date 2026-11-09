@@ -342,6 +342,7 @@ func entryIdentityProblem(
   None
 }
 
+@experimental
 pub func parseCatalogue(text: in String): Result[Catalogue, String] {
   val v = match parseValue(text) {
     case Ok(value) -> value

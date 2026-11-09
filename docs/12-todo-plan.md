@@ -6,7 +6,9 @@ rewritten on 2026-10-21 after an audit of every planning doc against the
 progress log (`docs/progress/`, 313 entries), the decision log
 (`docs/decisions/`, D001-D200) and the issue tracker (379 open issues, most
 carrying a `group:*` label).  The previous version was stamped 2026-06-12 and
-had drifted four months.
+had drifted four months.  Counts on 2026-11-09: 611 progress entries, decision
+files up to D544 (plus the `D-progress-NNNN` series), 131 open issues of which
+107 carry a `group:*` label.
 
 Related status docs, each now carrying its own current-status header:
 `docs/36-v1-roadmap.md` (v1.0 gates), `docs/41-self-hosted-compiler-gap-analysis.md`
@@ -14,7 +16,9 @@ Related status docs, each now carrying its own current-status header:
 `docs/57-stdlib-ecosystem-library-review.md`, `docs/59-compiler-stdlib-deep-review.md`,
 `docs/67-native-graphics-plan.md`, `docs/68-structured-tasks-sketch.md`.
 
-_Last verified against source and tracker: **2026-10-21**._
+_Last verified against source and tracker: **2026-10-21**; the stability
+walk, the tracker-hygiene items and the header counts were re-verified on
+**2026-11-09**, the other sections were not._
 
 ---
 
@@ -159,9 +163,16 @@ The dotnet soundness floor that gated v1.0 (`docs/36` §R7) is closed; what is
 left is verification and release work, tracked in `docs/36`:
 
 - Re-run the Tier 1 triage; no open silent-miscompile on `--target dotnet`.
-- Stability promotions (#367) and the `@stable(since="1.0")` surface walk.
-- State the "supported but not v1.0 SemVer-guaranteed" JVM note in
-  `docs/01` §0.1 (G1, D-progress-620; flagged not-yet-done).
+- Stability promotions (#367): the `@stable(since="1.0")` surface walk of
+  `lyric-stdlib/std/*.l` against `lyric-stdlib/STABILITY.md` was done on
+  2026-11-09 (every module is listed; every `pub` item is `@stable` or
+  `@experimental`).  Left open: the tier of `Std.Task`, `Std.HttpServer`,
+  `Std.TcpHost` and `Std.Jvm` (they live in `_kernel/` and carry no
+  annotation), and the `public-api-diff` baseline cut, which is blocked on
+  the command reading multi-package bundles (`docs/22` §5.3).
+- The "supported but not v1.0 SemVer-guaranteed" JVM note is in `docs/01`
+  §0.1 (G1, D-progress-620); the native and wasm32 lines there are marked
+  pending the project-lead decision.
 - Release items from `docs/63`: `--release` does no optimisation and does not
   relax overflow checking (#6263), `--shape standalone` unimplemented (#6262),
   bands B2-B7 (debug info, debugger).
@@ -191,7 +202,12 @@ artifacts must be built after it.
    explicitly deferred with a dated issue.
 6. The `@stable(since="1.0")` surface is walked, `lyric public-api-diff` has a
    baseline cut at the tag, and the channel-status notes below are in
-   `docs/01` §0.1.
+   `docs/01` §0.1.  _Status 2026-11-09 (S6):_ the walk is done and the JVM
+   note is in §0.1 (native and wasm32 lines pending the decision below); the
+   baseline cut is blocked because `lyric public-api-diff` cannot read
+   multi-package bundles such as `Lyric.Stdlib.dll` (`docs/22` §5.3); the
+   `Std.Task`, `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers are
+   undecided.
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
@@ -294,7 +310,14 @@ tag.
   layoutText bidi in #8496), #7941 (G2: JVM `spawn` copy #8391, verifier array model
   #8394, copy-before-loop lint #8395), #8118 (NPM, items 2-8) and #8149
   (value-generic protected types cannot be `pub`, T0166).
-- Close the ten `review-finding` doc-hygiene issues (#6982, #6999, #7066,
-  #7068, #7070, #7073-#7077) after confirming each is fixed on `main`.
-- 239 of 379 open issues carry no `group:*` label; label them so clusters
-  above stay countable.
+- The ten `review-finding` doc-hygiene issues (#6982, #6999, #7066, #7068,
+  #7070, #7073-#7077) were verified fixed on `main` and are all closed
+  (checked 2026-11-09).  Decision-log ids are now guarded by
+  `scripts/ci/check-decision-ids.sh`; two ids (for example
+  `D-progress-0889`) still have two files each under its allowlist.
+- 24 of 131 open issues carry no `group:*` label (2026-11-09, after labelling
+  32 where an existing label clearly fit); the rest need a new cluster
+  (the `Char` scalar slices #8508-#8512, plugins, Windows host follow-ups)
+  or a judgement call, so they were left unlabelled.
+- #4601 (generic-collection erasure ABI) and #2280 (formatter and parser
+  losslessness) carry 2026-11-09 status comments; both stay open.

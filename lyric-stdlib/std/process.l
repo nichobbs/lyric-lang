@@ -170,7 +170,7 @@ pub func pipedReadLine(p: in PipedProcess): Result[Option[String], String] {
 /// Outcome of `pipedReadLineWithin`: one line of the child's stdout
 /// (excluding the trailing newline), clean end of stream (the child closed
 /// its stdout or exited), or no complete line within the timeout.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub union PipedReadOutcome {
   case PipedLine(line: String)
   case PipedEndOfStream
@@ -194,7 +194,7 @@ pub union PipedReadOutcome {
 /// out, and the next read of either kind joins it. It ends when data arrives
 /// or when `pipedKill` or `pipedClose` closes the stream, so a long-lived
 /// process abandoning a silent child should `pipedKill` it.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func pipedReadLineWithin(p: in PipedProcess, timeoutMs: in Int): Result[PipedReadOutcome, String]
   requires: timeoutMs >= 0
 {
@@ -218,7 +218,7 @@ pub func pipedWriteLine(p: in PipedProcess, line: in String): Result[Unit, Strin
 /// Outcome of `pipedReadBytesWithin`: bytes from the child's stdout (never
 /// empty), clean end of stream (the child closed its stdout or exited), or no
 /// bytes within the timeout.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub union PipedBytesOutcome {
   case PipedBytes(bytes: slice[Byte])
   case PipedBytesEnd
@@ -234,7 +234,7 @@ pub union PipedBytesOutcome {
 /// one piece; see `PipedProcess` for mixing line and byte reads. No text
 /// decoding is applied, so a multibyte UTF-8 character may be split across
 /// two reads.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func pipedReadBytes(p: in PipedProcess): Result[Option[slice[Byte]], String] {
   match hostPipedReadBytesResult(p.handle) {
     case Err(e) -> Err(error = e)
@@ -254,7 +254,7 @@ pub func pipedReadBytes(p: in PipedProcess): Result[Option[slice[Byte]], String]
 /// most one blocking read is left outstanding per process, however many
 /// calls time out; it ends when data arrives or when `pipedKill` or
 /// `pipedClose` closes the stream.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func pipedReadBytesWithin(p: in PipedProcess, timeoutMs: in Int): Result[PipedBytesOutcome, String]
   requires: timeoutMs >= 0
 {
@@ -271,7 +271,7 @@ pub func pipedReadBytesWithin(p: in PipedProcess, timeoutMs: in Int): Result[Pip
 /// Write `bytes` to the child's stdin exactly as given: no newline is
 /// appended and no text encoding is applied. The write is flushed before
 /// this returns. Writing an empty slice only flushes.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func pipedWriteBytes(p: in PipedProcess, bytes: in slice[Byte]): Result[Unit, String] {
   hostPipedWriteBytesResult(p.handle, bytes)
 }

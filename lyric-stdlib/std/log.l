@@ -173,7 +173,7 @@ pub func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Un
 /// value that is empty or contains a space, tab, `=` or `"` is written in
 /// double quotes (`user="bob role=admin"`), so it cannot be read as more
 /// than one field.  Never contains a line break, whatever the inputs.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func renderLogLine(msg: in String, fields: in slice[LogField]): String {
   val sb = StringBuilder.new()
   appendEscapedLogMessage(sb, msg)

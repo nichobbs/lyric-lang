@@ -1612,6 +1612,7 @@ func finalizeHeaders(
 /// application: header values reaching an HTTP/1 intermediary with CR/LF,
 /// or a request missing its method or path, are request-smuggling vectors
 /// (#7231).
+@experimental
 pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
   var sawRegular = false
   var method = ""
@@ -1757,6 +1758,7 @@ func extractRequestContentLength(headers: in List[HeaderField]): Long {
 /// Why a decoded trailer block is malformed (RFC 9113 sections 8.1 and
 /// 8.2), or `None`: trailers carry no pseudo-header fields, and every field
 /// follows the same name and value rules as request headers.
+@experimental
 pub func malformedTrailerReason(headers: in List[HeaderField]): Option[String] {
   var i = 0
   while i < headers.count {

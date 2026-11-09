@@ -159,7 +159,7 @@ Downstream compilation uses the contract metadata, not the source. When you comp
 
 This separation has a practical consequence: if you change a function body without changing its public signature or contracts, downstream packages do not need to recompile. Their `.lyric-contract` dependency has not changed. Incremental builds are fast not because the build tool is clever, but because the language design makes the dependency surface small and explicit.
 
-Contract metadata is also what powers `lyric public-api-diff`. Given a git ref, the tool compares the current `pub` surface against the previous version and reports whether any changes are breaking — additions are fine, removals are major, signature changes are major, contract narrowing is major. This runs in CI.
+Contract metadata is also what powers `lyric public-api-diff`. Given the previous release's DLL and the new one, the tool compares their `pub` surfaces and reports whether any changes are breaking — additions are fine, removals are major, signature changes are major, contract narrowing is major. This runs in CI.
 
 ## Split-file mode
 

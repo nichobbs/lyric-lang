@@ -40,7 +40,7 @@ import Std.String as Str
 import Std.String.{StringBuilder}
 
 // ── Data model ──────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union JsonValue {
   case JNull
   case JBool(value: Bool)
@@ -55,7 +55,7 @@ pub union JsonValue {
   // insertion-ordered; duplicate names preserved
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub record JsonField {
   name: String
   value: JsonValue
@@ -64,11 +64,11 @@ pub record JsonField {
 /// Default recursion depth limit for `parseValue` — see `parseValueWithDepthLimit`
 /// to override it. Guards against a hostile peer stack-crashing the process
 /// with a deeply nested array/object.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub val defaultMaxDepth: Int = 128
 
 // ── Error type ─────────────────────────────────────────────────────────────
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub union JsonParseError {
   case UnexpectedChar(pos: Int, expected: String)
   case UnexpectedEof(pos: Int, expected: String)
@@ -80,7 +80,7 @@ pub union JsonParseError {
   case EmptyInput
 }
 
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func JsonParseError.message(e: in JsonParseError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + pos.toString() + "; expected " +
@@ -503,7 +503,7 @@ func jParseValue(st: inout JState, depth: in Int): Result[JsonValue, JsonParseEr
 // ── Public parse API ───────────────────────────────────────────────────────
 /// Parse a strict RFC 8259 JSON document, with the default recursion depth
 /// limit (`defaultMaxDepth`, 128).
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseValue(src: in String): Result[JsonValue, JsonParseError] {
   parseValueWithDepthLimit(src, defaultMaxDepth)
 }
@@ -512,7 +512,7 @@ pub func parseValue(src: in String): Result[JsonValue, JsonParseError] {
 /// a document nested exactly `maxDepth` containers deep parses, one level
 /// deeper is `DepthExceeded`. The limit is capped at 1024 so a caller cannot
 /// accidentally configure away the stack-exhaustion guard.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseValueWithDepthLimit(src: in String, maxDepth: in Int): Result[JsonValue, JsonParseError]
   requires: maxDepth >= 1 and maxDepth <= 1024
 {
@@ -619,7 +619,7 @@ func writeObjectFields(fields: in List[JsonField]): String {
 /// Serialize a `JsonValue` to compact JSON text (no insignificant
 /// whitespace, no trailing newline). Object field insertion order is
 /// preserved.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func writeValue(v: in JsonValue): String {
   match v {
     case JNull -> "null"
@@ -685,7 +685,7 @@ func writeIndented(v: in JsonValue, width: in Int, depth: in Int): String {
 /// `": "` after each field name, and no trailing newline.  An empty array
 /// or object is written `[]` / `{}`.  Field order is preserved, and the
 /// text parses back to an equal value.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func writeValueIndented(v: in JsonValue, width: in Int): String
   requires: width >= 0 and width <= 16
 {
@@ -694,7 +694,7 @@ pub func writeValueIndented(v: in JsonValue, width: in Int): String
 
 // ── Query helpers ───────────────────────────────────────────────────────────
 /// True if the value is `JNull`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func isNull(v: in JsonValue): Bool {
   match v {
     case JNull -> true
@@ -703,7 +703,7 @@ pub func isNull(v: in JsonValue): Bool {
 }
 
 /// Extract a boolean value, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asBool(v: in JsonValue): Option[Bool] {
   match v {
     case JBool(b) -> Some(value = b)
@@ -712,7 +712,7 @@ pub func asBool(v: in JsonValue): Option[Bool] {
 }
 
 /// Extract an integral value, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asInt(v: in JsonValue): Option[Long] {
   match v {
     case JInt(n) -> Some(value = n)
@@ -722,7 +722,7 @@ pub func asInt(v: in JsonValue): Option[Long] {
 
 /// Extract a float value, or `None`. Does not coerce `JInt` — see the module
 /// doc comment on the `JInt`/`JFloat` classification convention.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asFloat(v: in JsonValue): Option[Double] {
   match v {
     case JFloat(f) -> Some(value = f)
@@ -731,7 +731,7 @@ pub func asFloat(v: in JsonValue): Option[Double] {
 }
 
 /// Extract a string value, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asString(v: in JsonValue): Option[String] {
   match v {
     case JString(s) -> Some(value = s)
@@ -740,7 +740,7 @@ pub func asString(v: in JsonValue): Option[String] {
 }
 
 /// Extract an array's items, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asArray(v: in JsonValue): Option[List[JsonValue]] {
   match v {
     case JArray(items) -> Some(value = items)
@@ -749,7 +749,7 @@ pub func asArray(v: in JsonValue): Option[List[JsonValue]] {
 }
 
 /// Extract an object's fields, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asObject(v: in JsonValue): Option[List[JsonField]] {
   match v {
     case JObject(fields) -> Some(value = fields)
@@ -761,7 +761,7 @@ pub func asObject(v: in JsonValue): Option[List[JsonField]] {
 /// is absent. When the key appears more than once, the *last* occurrence
 /// wins (matches the common `JSON.parse` convention) — `parseValue` itself
 /// never rejects or collapses duplicate keys.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getField(v: in JsonValue, key: in String): Option[JsonValue] {
   match asObject(v) {
     case None -> None
@@ -780,7 +780,7 @@ pub func getField(v: in JsonValue, key: in String): Option[JsonValue] {
 }
 
 /// Return the string at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getString(v: in JsonValue, key: in String): Option[String] {
   match getField(v, key) {
     case None -> None
@@ -789,7 +789,7 @@ pub func getString(v: in JsonValue, key: in String): Option[String] {
 }
 
 /// Return the integral value at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getInt(v: in JsonValue, key: in String): Option[Long] {
   match getField(v, key) {
     case None -> None
@@ -798,7 +798,7 @@ pub func getInt(v: in JsonValue, key: in String): Option[Long] {
 }
 
 /// Return the boolean at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getBool(v: in JsonValue, key: in String): Option[Bool] {
   match getField(v, key) {
     case None -> None
@@ -807,7 +807,7 @@ pub func getBool(v: in JsonValue, key: in String): Option[Bool] {
 }
 
 /// Return the float at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getFloat(v: in JsonValue, key: in String): Option[Double] {
   match getField(v, key) {
     case None -> None
@@ -816,7 +816,7 @@ pub func getFloat(v: in JsonValue, key: in String): Option[Double] {
 }
 
 /// Return the array items at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getArray(v: in JsonValue, key: in String): Option[List[JsonValue]] {
   match getField(v, key) {
     case None -> None
@@ -825,7 +825,7 @@ pub func getArray(v: in JsonValue, key: in String): Option[List[JsonValue]] {
 }
 
 /// Return the object fields at the given key in an object, or `None`.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getObject(v: in JsonValue, key: in String): Option[List[JsonField]] {
   match getField(v, key) {
     case None -> None

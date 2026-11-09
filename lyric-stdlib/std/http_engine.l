@@ -391,6 +391,7 @@ pub union HttpEvent {
 /// Internal per-connection parse phase. Never exposed outside this package
 /// — `Connection` is opaque so a driver can only observe it through
 /// `shouldClose`/`isFailed` and the events `feed` returns.
+@experimental
 pub union ConnPhase {
   case PhRequestLine
   case PhHeaders(method: String, target: String, version: HttpVersion, headers: List[HeaderField], headerBytes: Int)

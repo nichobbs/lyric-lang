@@ -39,12 +39,15 @@ import Std.HttpEngine
 
 /// Longest status line plus header block accepted before the response is
 /// refused as `Malformed` (matches `EngineLimits` order of magnitude).
+@experimental
 pub val MAX_RESPONSE_HEAD_BYTES: Int = 65536
 
 /// Largest response body accepted before the response is refused as `Malformed`.
+@experimental
 pub val MAX_RESPONSE_BODY_BYTES: Int = 67108864
 
 /// A parsed response. `headers` keeps wire order and the sender's case.
+@experimental
 pub record ClientResponse {
   status: Int
   reason: String
@@ -53,6 +56,7 @@ pub record ClientResponse {
 }
 
 /// Result of parsing the bytes received so far.
+@experimental
 pub union ClientParse {
   case Incomplete
   case Complete(response: ClientResponse)

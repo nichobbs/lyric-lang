@@ -28,6 +28,7 @@ import Std.Encoding
 import Std.Parse
 
 // ── Error type ─────────────────────────────────────────────────────────────────
+@stable(since = "1.0")
 pub union YamlError {
   case UnexpectedChar(pos: Int, expected: String)
   case UnexpectedEof(pos: Int, expected: String)
@@ -37,6 +38,7 @@ pub union YamlError {
   case InvalidDocument(message: String)
 }
 
+@stable(since = "1.0")
 pub func YamlError.message(e: in YamlError): String {
   match e {
     case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
@@ -50,11 +52,13 @@ pub func YamlError.message(e: in YamlError): String {
 }
 
 // ── Data model ─────────────────────────────────────────────────────────────────
+@stable(since = "1.0")
 pub record YamlPair {
   key: String
   value: YamlValue
 }
 
+@stable(since = "1.0")
 pub union YamlValue {
   case YNull
   case YBool(value: Bool)
@@ -875,7 +879,7 @@ func yCheckUnsupported(st: inout YamlState): Option[YamlError] {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 /// Parse a strict JSON string.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseJson(src: in String): Result[YamlValue, YamlError] {
   var st = YamlState(src = src, pos = 0, isJson = true)
   ySkipWs(st)
@@ -896,7 +900,7 @@ pub func parseJson(src: in String): Result[YamlValue, YamlError] {
 }
 
 /// Parse a YAML (or JSON) string.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
   var st = YamlState(src = src, pos = 0, isJson = false)
   ySkipBlankAndComment(st)
@@ -936,7 +940,7 @@ pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
 
 // ── Query helpers ──────────────────────────────────────────────────────────────
 /// True if the value is null.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func isNull(v: in YamlValue): Bool {
   match v {
     case YNull -> true
@@ -945,7 +949,7 @@ pub func isNull(v: in YamlValue): Bool {
 }
 
 /// Extract a string value, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asString(v: in YamlValue): Option[String] {
   match v {
     case YString(s) -> Some(value = s)
@@ -954,7 +958,7 @@ pub func asString(v: in YamlValue): Option[String] {
 }
 
 /// Extract a boolean value, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asBool(v: in YamlValue): Option[Bool] {
   match v {
     case YBool(b) -> Some(value = b)
@@ -963,7 +967,7 @@ pub func asBool(v: in YamlValue): Option[Bool] {
 }
 
 /// Extract an integer value, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asInt(v: in YamlValue): Option[Long] {
   match v {
     case YInt(n) -> Some(value = n)
@@ -972,7 +976,7 @@ pub func asInt(v: in YamlValue): Option[Long] {
 }
 
 /// Extract a float value, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asFloat(v: in YamlValue): Option[Double] {
   match v {
     case YFloat(f) -> Some(value = f)
@@ -981,7 +985,7 @@ pub func asFloat(v: in YamlValue): Option[Double] {
 }
 
 /// Extract a sequence, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asSequence(v: in YamlValue): Option[List[YamlValue]] {
   match v {
     case YSequence(items) -> Some(value = items)
@@ -990,7 +994,7 @@ pub func asSequence(v: in YamlValue): Option[List[YamlValue]] {
 }
 
 /// Extract a mapping, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func asMapping(v: in YamlValue): Option[List[YamlPair]] {
   match v {
     case YMapping(pairs) -> Some(value = pairs)
@@ -999,7 +1003,7 @@ pub func asMapping(v: in YamlValue): Option[List[YamlPair]] {
 }
 
 /// Look up a key in a mapping, or None if absent.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getField(v: in YamlValue, key: in String): Option[YamlValue] {
   match asMapping(v) {
     case None -> None
@@ -1018,7 +1022,7 @@ pub func getField(v: in YamlValue, key: in String): Option[YamlValue] {
 }
 
 /// Return the string at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getString(v: in YamlValue, key: in String): Option[String] {
   match getField(v, key) {
     case None -> None
@@ -1027,7 +1031,7 @@ pub func getString(v: in YamlValue, key: in String): Option[String] {
 }
 
 /// Return the integer at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getInt(v: in YamlValue, key: in String): Option[Long] {
   match getField(v, key) {
     case None -> None
@@ -1036,7 +1040,7 @@ pub func getInt(v: in YamlValue, key: in String): Option[Long] {
 }
 
 /// Return the boolean at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getBool(v: in YamlValue, key: in String): Option[Bool] {
   match getField(v, key) {
     case None -> None
@@ -1045,7 +1049,7 @@ pub func getBool(v: in YamlValue, key: in String): Option[Bool] {
 }
 
 /// Return the float at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func getFloat(v: in YamlValue, key: in String): Option[Double] {
   match getField(v, key) {
     case None -> None

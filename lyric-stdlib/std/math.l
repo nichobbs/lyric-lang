@@ -390,14 +390,14 @@ pub func intToLong(n: in Int): Long {
 /// is kept, NaN payloads included, so `floatFromBits(floatToBits(x))` is
 /// `x` bit for bit on every target.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func floatToBits(x: in Float): Int {
   Host.hostFloatToBits(x)
 }
 
 /// The `Float` whose IEEE 754 binary32 bit pattern is `bits`.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func floatFromBits(bits: in Int): Float {
   Host.hostFloatFromBits(bits)
 }
@@ -405,14 +405,14 @@ pub func floatFromBits(bits: in Int): Float {
 /// The IEEE 754 binary64 bit pattern of `x`, as a signed `Long`.  Every bit
 /// is kept, NaN payloads included.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func doubleToBits(x: in Double): Long {
   Host.hostDoubleToBits(x)
 }
 
 /// The `Double` whose IEEE 754 binary64 bit pattern is `bits`.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func doubleFromBits(bits: in Long): Double {
   Host.hostDoubleFromBits(bits)
 }

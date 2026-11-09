@@ -53,7 +53,7 @@ pub func join(base: in String, relative: in String): String {
 /// Otherwise returns `join(base, relative)`.  The check is syntactic: it does
 /// not resolve symbolic links, so a symlink inside `base` can still point
 /// elsewhere.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func joinWithin(base: in String, relative: in String): Result[String, IOError] {
   if base.length == 0 {
     return Err(
@@ -163,7 +163,7 @@ func resolvedDepth(segs: in List[String], from: in Int, rooted: in Bool): Int {
 ///   (`..`, `a/../..`), since that can reach a root depending on the
 ///   working directory.
 @pure
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func isFilesystemRoot(path: in String): Bool {
   if path.length == 0 {
     return false

@@ -153,6 +153,7 @@ func classifyBug(msg: in String): RegexError {
 // tracked in #1100.
 //
 // Public so the compatibility shim Std.RegexSafe can reuse it (#1108).
+@stable(since = "1.0")
 pub func isTimeout(msg: in String): Bool {
   Str.indexOfFromRaw(msg, "time-out", 0) >= 0
 }

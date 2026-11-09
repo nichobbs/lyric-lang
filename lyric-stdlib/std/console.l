@@ -108,14 +108,14 @@ pub func readAll(): Result[String, IOError] {
 /// Available on every target; on `--target native` a bounded read polls
 /// standard input instead of leaving a background read outstanding, with
 /// the same result (see `_kernel_native/console_host.l`).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub record StdinReader {
   handle: StdinHandle
 }
 
 /// Outcome of `readStdinWithin`: the bytes read (never empty), clean end of
 /// stream, or nothing within the timeout.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub union StdinChunk {
   case StdinBytes(bytes: slice[Byte])
   case StdinEnd
@@ -123,7 +123,7 @@ pub union StdinChunk {
 }
 
 /// Open a byte-level reader over standard input.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func openStdinReader(): StdinReader {
   StdinReader(handle = hostOpenStdin())
 }
@@ -145,7 +145,7 @@ func stdinChunkOf(r: in Result[HostStdinRead, String]): Result[StdinChunk, IOErr
 ///
 /// # Errors
 /// - `IoError("stdin", message)`: host read failure.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func readStdin(r: in StdinReader): Result[Option[slice[Byte]], IOError] {
   match stdinChunkOf(hostStdinReadResult(r.handle)) {
     case Err(e) -> Err(error = e)
@@ -168,7 +168,7 @@ pub func readStdin(r: in StdinReader): Result[Option[slice[Byte]], IOError] {
 ///
 /// # Errors
 /// - `IoError("stdin", message)`: host read failure.
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func readStdinWithin(r: in StdinReader, timeoutMs: in Int): Result[StdinChunk, IOError]
   requires: timeoutMs >= 0
 {
@@ -183,7 +183,7 @@ pub func readStdinWithin(r: in StdinReader, timeoutMs: in Int): Result[StdinChun
 /// rather than going through `print`/`println`'s text writer, which could
 /// re-encode. Best-effort, like `print`/`println`: output failures are not
 /// surfaced here (see this module's header for the input/output policy).
-@stable(since = "1.2")
+@stable(since = "1.0")
 pub func writeStdoutBytes(bytes: in slice[Byte]): Unit {
   hostConsoleWriteBytes(bytes)
 }
