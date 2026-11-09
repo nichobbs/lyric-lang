@@ -2258,7 +2258,7 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
 func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Option[TExpr] {
   val d = match p.dfltExpr {
     case Some(x) -> x
-    case None -> return uncoveredExpr(env, call, "a defaulted argument without its expression")
+    case None -> return uncoveredExpr(env, call, "a defaulted argument")
   }
   val pty = match tyOfType(env.ctx, p.ty) {
     case Ok(t) -> t

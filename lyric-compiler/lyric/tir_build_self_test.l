@@ -347,11 +347,11 @@ test "built-in and indirect calls build" {
   assertEqualInt(firstCallArgs(i.body), 1, "with its argument")
 }
 
-test "a call omitting a defaulted argument is counted, not guessed" {
+test "a call omitting a literal-defaulted argument builds with the default placed at the call" {
   val r = buildFirstFn("package App\nfunc m(): Int { k(1) }\nfunc k(a: Int, b: Int = 2): Int { a }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
+  assertTrue(r.body.isSome(), "builds")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 0, "not counted")
 }
 
 func firstTail(b: in Option[TExpr]): Option[TExpr] {
