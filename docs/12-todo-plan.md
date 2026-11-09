@@ -164,6 +164,80 @@ left is verification and release work, tracked in `docs/36`:
   bands B2-B7 (debug info, debugger).
 - Distribution: AOT binary and signing are shipped; ISO submission is Phase 6+.
 
+## v1.0 exit checklist and work streams
+
+_Added 2026-11-09 from a full review of docs/36, this file, docs/70 and the
+tracker._  The R1-R7 gates in `docs/36` are closed; this section is the list of
+what still stands between `main` and a `v1.0` tag.  docs/70 (resolver, TIR,
+package interfaces) proceeds in separate sessions and is a gate in its own
+right: the tag waits for docs/70 phase 5 (package interfaces) because the
+library artifact format changes there (docs/70 §12.3), so v1.0 library
+artifacts must be built after it.
+
+### Exit criteria
+
+1. No open silent miscompile or invalid-IL-where-a-diagnostic-is-owed on
+   `--target dotnet` (Tier 1 clusters 2, 3, 4).  Where a correct lowering is out
+   of scope, the node hard-errors and a dated 1.x issue exists.
+2. The verifier fails closed (Tier 1 cluster 5).
+3. No open `security`-labelled issue.
+4. The CLI hard-errors on unknown flags and undeclared features, and `prove`
+   and `build` agree on package files (Tier 1 cluster 6).
+5. `--release` is a real profile (#6263) or the "competitive with C#" criterion
+   in `docs/05` is restated; `--shape standalone` (#6262) is implemented or
+   explicitly deferred with a dated issue.
+6. The `@stable(since="1.0")` surface is walked, `lyric public-api-diff` has a
+   baseline cut at the tag, and the channel-status notes below are in
+   `docs/01` §0.1.
+7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
+   with a decision-log entry.
+8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
+
+### Open decisions (owner: project lead)
+
+- **Channel status for native and wasm.**  G1 (D-progress-620) covers JVM only.
+  Proposal: SemVer applies to dotnet; JVM, native and wasm32 are supported with
+  independent versioning.
+- **`lyric-ui` and the graphics libraries** (`lyric-window`, `lyric-gpu`,
+  `lyric-text`, `lyric-draw`, `lyric-game`): in or out of the v1.0 story.
+- **Ecosystem libraries with `NOT_IMPLEMENTED` backends** (lyric-storage S3 and
+  Azure, lyric-mq brokers, lyric-mail JVM SMTP, lyric-search): label in release
+  notes or exclude.  G4 already gives each library its own versioning.
+- **Cross-package contracts (docs/70 phase 6) before or after 1.0.**
+
+### Work streams
+
+Streams are grouped so each lands as one PR (two at most), because the
+stage-1 plus AOT rebuild and the test cycle dominate cost.  Streams touch
+disjoint directories where possible.  Generics-at-codegen (Tier 1 cluster 1) is
+deliberately not a stream: the monomorphizer and backends are rewritten by
+docs/70 phases 3-4, so re-triage that cluster after phase 4 and fix only what
+survives.
+
+| Stream | Scope | Issues | Area | PRs |
+|---|---|---|---|---|
+| S1 Ecosystem security | Review and fix every open `security`-labelled issue, plus lyric-web and lyric-db hardening | #7249, #7241, #7253, #7247, #7240, #7239, #7236, #7231 | `lyric-web/`, `lyric-db/`, `lyric-stdlib/std/` HTTP | 1 |
+| S2 Verifier soundness | Fail closed on guards, sorts, bounds, Float, sibling-file fields | #8142, #8354, #8157, #8141, #8306 | `lyric-compiler/lyric/verifier/` | 1 |
+| S3 CLI strictness | Unknown flags, undeclared features, `prove` vs build package files, `prove` stdlib preparation on JVM and native | #8321, #8362, #8245, #8311 | `lyric-compiler/lyric/cli/` | 1 |
+| S4 dotnet codegen tail | Invalid IL where a diagnostic is owed, async and inout lost writes (dotnet only) | #8344, #8355, #8273, #8313, #8144, #7219, #7963, #8229, #8318, #8287, #7822, #7196 | `lyric-compiler/msil/` | 1-2 |
+| S5 Checker diagnostics | List/Map argument checking, `in` writes, `?` on non-Result, unknown primitive methods, interface method contracts | #7683, #7978, #7786, #8104, #8161, #8289, #8249, #8334, #8331 | `lyric-compiler/lyric/type_checker/` | 1 |
+| S6 Release hygiene | JVM and channel notes in `docs/01` §0.1, stability walk and `public-api-diff` baseline, issue labels, stale epics and review-finding issues, this checklist kept current | #367, `review-finding` set | `docs/`, `lyric-stdlib/STABILITY.md`, tracker | 1 |
+
+Not started, needs an owner after S1-S6: `--release` profile (#6263) and
+`--shape standalone` (#6262); record invariants (#7222, epic #7221); the
+Tier 2 expected-type and lambda clusters; re-triage of Tier 1 cluster 1 after
+docs/70 phase 4.
+
+### Sequencing
+
+S1, S2, S3 and S6 are independent of docs/70 and of each other.  S4 and S5 edit
+files docs/70 is also editing (`type_checker/`, `msil/`), so they must rebase
+onto `main` before every push, add diagnostics rather than refactor, and stop
+and report if a fix needs structural change that docs/70 phase 3 or 4 owns.
+After S1-S6 merge: re-run the Tier 1 triage, then wait for docs/70 phase 4,
+re-triage cluster 1, then phase 5, freeze the API surface, cut the baseline and
+tag.
+
 ## Tier 5 — feature work, in dependency order
 
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker

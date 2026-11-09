@@ -1,5 +1,7 @@
 # 36 — v1.0 Roadmap
 
+> **Current v1.0 exit checklist and work streams: `docs/12-todo-plan.md`, section "v1.0 exit checklist and work streams" (2026-11-09).**
+>
 > **SUPERSEDED FOR TRACKING (2026-06-09).** §R1–R6 are all complete (see
 > status lines in each section below). §R7 (self-hosted soundness/correctness
 > floor) is the only remaining v1.0 work, and its tracking has moved to
