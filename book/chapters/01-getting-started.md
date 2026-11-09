@@ -466,7 +466,9 @@ The other modes are `out` (the function must assign the parameter exactly once b
 |---|---|
 | `--target dotnet` | The reference channel: Lyric SemVer covers the language and the `@stable` standard library. |
 | `--target jvm` | Supported and tested, with no v1.0 SemVer guarantee; breaking changes may land in minor releases and the JVM channel is versioned independently. |
-| `--target native` and wasm32 | Status not yet decided by the project lead (see `docs/01-language-reference.md` section 0.1); not covered by the SemVer guarantee until it is. |
+| `--target native` and wasm32 | Not part of v1.0: supported and tested, with no v1.0 SemVer guarantee, versioned independently (see `docs/01-language-reference.md` section 0.1). |
+
+The graphics and UI libraries (`lyric-ui`, `lyric-window`, `lyric-gpu`, `lyric-text`, `lyric-draw`, `lyric-game` and their companions) are experimental at v1.0: their APIs may change in any release.
 
 ## The toolchain at a glance
 
