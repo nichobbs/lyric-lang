@@ -773,7 +773,24 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
         case None -> None
       }
     }
-    case SFor(_, _, _, _) -> uncoveredStmt(env, s, "a for loop")
+    case SFor(label, pat, iter, body) -> {
+      val it = match buildForIter(env, iter) { case Some(x) -> x; case None -> return None }
+      pushScope(env)
+      val built = match buildPat(env, pat) {
+        case Some(tp) -> match loopBody(env, body) {
+          case Some(bt) -> Some(
+            value = stmtOf(
+              s,
+              TsFor(label = label, pat = tp, iter = it, body = bt)
+            )
+          )
+          case None -> None
+        }
+        case None -> None
+      }
+      popScope(env)
+      built
+    }
     case SAssign(t, op, v) -> {
       val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
@@ -791,6 +808,30 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
   }
 }
 
+/// The iterable of a `for`.  A range is typed by the checker only as the loop's
+/// element type, so its `XRange` takes the type of its bounds (docs/01: a range
+/// exists only in iterator position).
+func buildForIter(env: in BuildEnv, iter: in Expr): Option[TExpr] {
+  match iter.kind {
+    case ERange(bound) -> {
+      val parts = match bound {
+        case RBClosed(lo, hi) -> Some(value = (lo, hi, true))
+        case RBHalfOpen(lo, hi, _) -> Some(value = (lo, hi, false))
+        case _ -> None
+      }
+      match parts {
+        case None -> uncoveredExpr(env, iter, "an open-ended range")
+        case Some((lo, hi, inclusive)) -> {
+          val l = match buildExpr(env, lo) { case Some(x) -> x; case None -> return None }
+          val h = match buildExpr(env, hi) { case Some(x) -> x; case None -> return None }
+          Some(value = mkExpr(iter, l.ty, XRange(lo = l, hi = h, inclusive = inclusive)))
+        }
+      }
+    }
+    case _ -> buildExpr(env, iter)
+  }
+}
+
 func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[TStmt] {
   noteUncovered(env, what)
   env.errors.add(
@@ -803,19 +844,32 @@ func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[T
 /// A `val`, `let` or `var` of one name: its local takes the annotation's type when
 /// there is one (the initializer is converted to it) and the initializer's otherwise,
 /// declared after the initializer is built so the initializer cannot see it.  A
-/// pattern, or a `var` without an initializer, has no case yet.
+/// `var` without an initializer takes its annotation's type.
 func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
   match binding {
     case LBVal(pat, ann, init) -> match pat.kind {
       case PBinding(name, None) -> buildLet(env, s, pat, name, ann, init)
-      case _ -> uncoveredStmt(env, s, "a binding pattern")
+      case _ -> buildLetPattern(env, s, pat, ann, init)
     }
     case LBLet(name, ann, init) -> {
       val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = freshNodeId(env).id)
       buildLet(env, s, pat, name, ann, init)
     }
     case LBVar(name, ann, init) -> match init {
-      case None -> uncoveredStmt(env, s, "a var without an initializer")
+      case None -> match ann {
+        case Some(te) -> match annotatedTy(env, te) {
+          case Some(want) -> {
+            val d = declareLocal(env, name, want, true)
+            Some(value = stmtOf(s, TsVar(decl = d, init = None)))
+          }
+          case None -> None
+        }
+        case None -> uncoveredStmt(
+          env,
+          s,
+          "a var without an initializer or annotation"
+        )
+      }
       case Some(x) -> match buildInit(env, s, ann, x) {
         case Some(t) -> {
           val d = declareLocal(env, name, t.ty, true)
@@ -827,6 +881,25 @@ func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding):
   }
 }
 
+/// The type an annotation names, as a `Ty`.
+func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
+  // The checker has already reported an annotation that does not resolve, so the
+  // diagnostics of this second resolution are not read.
+  val diag: List[Diagnostic] = newList()
+  val gc = if env.generics.count > 0 {
+    env.generics[0]
+  } else {
+    GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  }
+  match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+    case Ok(w) -> Some(value = w)
+    case Err(msg) -> {
+      env.errors.add(msg)
+      None
+    }
+  }
+}
+
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
 func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
@@ -834,21 +907,7 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
   match ann {
     case None -> Some(value = t)
     case Some(te) -> {
-      // The checker has already reported an annotation that does not resolve, so the
-      // diagnostics of this second resolution are not read.
-      val diag: List[Diagnostic] = newList()
-      val gc = if env.generics.count > 0 {
-        env.generics[0]
-      } else {
-        GenericContext(params = newList(), owners = newList(), stackDepths = newList())
-      }
-      val want = match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
-        case Ok(w) -> w
-        case Err(msg) -> {
-          env.errors.add(msg)
-          return None
-        }
-      }
+      val want = match annotatedTy(env, te) { case Some(w) -> w; case None -> return None }
       match convertValue(env, t, want) {
         case Some(c) -> Some(value = c)
         case None -> {
@@ -861,6 +920,18 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
         }
       }
     }
+  }
+}
+
+/// A `val` of a pattern: the initializer is built first (it cannot see the names the
+/// pattern binds), then the pattern, which declares them.
+func buildLetPattern(
+  env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr
+): Option[TStmt] {
+  val t = match buildInit(env, s, ann, init) { case Some(x) -> x; case None -> return None }
+  match buildPat(env, pat) {
+    case Some(tp) -> Some(value = stmtOf(s, TsLet(pat = tp, init = t)))
+    case None -> None
   }
 }
 

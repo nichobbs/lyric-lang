@@ -22,9 +22,11 @@ func bindPattern(
   pat: in Pattern,
   ty: in Type,
 ): Unit {
+  recordPatType(tbl, pat, ty)
   match pat.kind {
     case PBinding(name, innerOpt) -> {
       if name != "_" {
+        recordPatBinding(tbl, pat)
         scopeAdd(sc, LocalBinding(name = name, ty = ty, isMutable = false))
       }
       match innerOpt {

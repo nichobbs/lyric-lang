@@ -1504,3 +1504,28 @@ test "an out argument builds as a place and a verifying call" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a val of a tuple pattern declares its names and verifies" {
+  val c = censusOf(
+    "package App\nfunc pair(): (Int, Int) { (1, 2) }\nfunc f(): Int {\n  val (a, b) = pair()\n  a + b\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a var without an initializer takes its annotation's type" {
+  val c = censusOf("package App\nfunc fill(q: out Int) { q = 1 }\nfunc f(): Int {\n  var r: Int\n  fill(r)\n  r\n}\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a for loop builds its iterable, its pattern and its body and verifies" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  for x in 0 ..< n {\n    t = t + x\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
