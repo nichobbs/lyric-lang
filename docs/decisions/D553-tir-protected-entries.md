@@ -1,4 +1,4 @@
-# D552 - Protected-type entries are TIR declarations with a barrier (docs/70 phase 3a, #8613)
+# D553 - Protected-type entries are TIR declarations with a barrier (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D319, D323 and D389; makes concrete what docs/70 section 9.2 already says
 ("protected types with entries and barriers").

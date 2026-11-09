@@ -1,4 +1,4 @@
-# TIR: protected-type construction and entry calls (D552, #8613)
+# TIR: protected-type construction and entry calls (D553, #8613)
 
 `Total()` builds as an `XConstruct` and `t.add(n)` as a receiver-first direct call to an entry
 symbol (`TSkEntry`); `TFnDecl` carries an optional `barrier` the verifier checks as `Bool`.
