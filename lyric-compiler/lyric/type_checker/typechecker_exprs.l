@@ -25378,6 +25378,11 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
   }
   var name = ""
   var allowArity = false
+  // The member name, for `Alias.f(x)` where `Alias` is an import alias of the
+  // package that declares `f`: tried by the signature's own span after the
+  // dot-named `Type.f` reading finds nothing.  Only the node is recorded (backends
+  // keep their own lookup by site, as for `f[A](x)`).
+  var aliased = ""
   match fn.kind {
     case EPath(path) -> {
       if path.segments.count == 0 {
@@ -25414,6 +25419,7 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         // name and arity.
         name = segs[0] + "." + member
         allowArity = true
+        aliased = member
       } else {
         return
       }
@@ -25436,7 +25442,12 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
   }
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> recordCalleeSiteAs(tbl, calleeKey(fn), dp, sig, callNode)
-    case None -> ()
+    case None -> if aliased.length > 0 {
+      match symTableFuncDefPathKey(tbl, sig, aliased, false) {
+        case Some(dp) -> recordCalleeNode(tbl, dp, sig, callNode)
+        case None -> ()
+      }
+    }
   }
 }
 
