@@ -1,6 +1,6 @@
 # D549 — Ecosystem backends ship labelled; cross-package contracts follow v1.0
 
-**Status:** accepted
+**Status:** accepted; item 1 superseded by D552 (backends without an implementation leave the public API instead of shipping as `NOT_IMPLEMENTED`)
 
 Context: several ecosystem libraries have backends that return
 `NOT_IMPLEMENTED` or do not exist (lyric-storage S3 and Azure Blob, the lyric-mq
