@@ -331,9 +331,6 @@ test "an invalid session id loads as None and cannot be saved" {
 }
 
 test "InProcessSessionStore requires a TTL between one second and one year" {
-  assertPanics(
-    "zero TTL (sessions that never expire)",
-    { -> val _ = Session.InProcessSessionStore(sessions = newMap(), ttlSeconds = 0i64) }
-  )
-  assertPanics("negative TTL", { -> val _ = Session.InProcessSessionStore(sessions = newMap(), ttlSeconds = -5i64) })
+  assertPanics("zero TTL (sessions that never expire)", { -> val _ = Session.inMemoryWithTtl(0i64) })
+  assertPanics("negative TTL", { -> val _ = Session.inMemoryWithTtl(-5i64) })
 }

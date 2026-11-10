@@ -18,3 +18,6 @@ output_assembly = "Flags.dll"
 [project.tests]
 "Flags.FlagsTests"              = "tests/flags_tests.l"
 "Flags.FlagsAspectWeavingTests" = "tests/flags_aspect_weaving_tests.l"
+
+"Flags.FlagsRegistryConcurrencyDotnetTests" = "tests/flags_registry_concurrency_dotnet_tests.l"
+"Flags.FlagsRegistryConcurrencyJvmTests" = "tests/flags_registry_concurrency_jvm_tests.l"

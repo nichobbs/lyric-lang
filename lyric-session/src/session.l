@@ -423,13 +423,26 @@ impl SessionStore for NativeSessionStore {
 /// In-process session store backed by a mutable Map.
 ///
 /// Suitable for single-instance deployments or development.  Session state is
-/// lost on process restart.  Not thread-safe; converting it to a protected
-/// type (as `Cache.InProcessCacheStore` is) is tracked in #8950.
+/// lost on process restart.
+///
+/// A protected type (as `Cache.InProcessCacheStore` is): every member holds the
+/// instance lock for its whole body, so concurrent requests never see or produce
+/// a half-updated session map.  Build one with `inMemory()` or
+/// `inMemoryWithTtl()`, which check the TTL bound (one second to one year).
 @stable(since = "0.1")
-pub ref record InProcessSessionStore {
-  var sessions: Map[String, SessionData]
+pub protected type InProcessSessionStore {
+  var sessions: Map[String, SessionData] = newMap()
   ttlSeconds: Long
   invariant: ttlSeconds >= 1i64 and ttlSeconds <= 31536000i64
+  // The one place a session is written; the interface's `save` and the
+  // read-modify-write members all go through it.
+  func putSession(data: in SessionData): Result[Unit, SessionError] {
+    if not isValidSessionId(data.id) {
+      return Err(invalidSessionIdError())
+    }
+    sessions[data.id] = data
+    return Ok(())
+  }
 }
 
 impl SessionStore for InProcessSessionStore {
@@ -441,9 +454,9 @@ impl SessionStore for InProcessSessionStore {
       entries = newMap(),
       createdAt = ts,
       lastAccessedAt = ts,
-      expiresAt = defaultExpiresAt(self.ttlSeconds)
+      expiresAt = defaultExpiresAt(ttlSeconds)
     )
-    self.sessions[id] = data
+    sessions[id] = data
     return Ok(id)
   }
 
@@ -454,13 +467,13 @@ impl SessionStore for InProcessSessionStore {
     // Use containsKey + indexer instead of mapGet to avoid isinst
     // TypeBuilderInstantiation issues with Option[SessionData] pattern
     // matching when SessionData is defined in the same compilation unit.
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Ok(None)
     } else {
-      val data = self.sessions[sessionId]
+      val data = sessions[sessionId]
       val ts = nowMs()
       if data.expiresAt != 0i64 and data.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Ok(None)
       } else {
         Ok(Some(value = data))
@@ -469,26 +482,22 @@ impl SessionStore for InProcessSessionStore {
   }
 
   func save(data: in SessionData): Result[Unit, SessionError] {
-    if not isValidSessionId(data.id) {
-      return Err(invalidSessionIdError())
-    }
-    self.sessions[data.id] = data
-    return Ok(())
+    return putSession(data)
   }
 
   func destroy(sessionId: in String): Result[Unit, SessionError] {
-    self.sessions.remove(sessionId)
+    sessions.remove(sessionId)
     return Ok(())
   }
 
   func touch(sessionId: in String): Result[Unit, SessionError] {
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Ok(())
     } else {
-      val data = self.sessions[sessionId]
+      val data = sessions[sessionId]
       val ts = nowMs()
       if data.expiresAt != 0i64 and data.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Ok(())
       } else {
         val updated = SessionData(
@@ -496,21 +505,21 @@ impl SessionStore for InProcessSessionStore {
           entries = data.entries,
           createdAt = data.createdAt,
           lastAccessedAt = ts,
-          expiresAt = defaultExpiresAt(self.ttlSeconds)
+          expiresAt = defaultExpiresAt(ttlSeconds)
         )
-        self.save(updated)
+        putSession(updated)
       }
     }
   }
 
   func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Ok(None)
     } else {
-      val data = self.sessions[sessionId]
+      val data = sessions[sessionId]
       val ts = nowMs()
       if data.expiresAt != 0i64 and data.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Ok(None)
       } else {
         Ok(mapGet(data.entries, key))
@@ -522,7 +531,7 @@ impl SessionStore for InProcessSessionStore {
     // SECURITY: do NOT auto-create a session here — see #316 and the
     // matching NativeSessionStore.set() comment.  Callers must obtain
     // a fresh id from create() before invoking set().
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Err(
         SessionError(
           message = "session not found; call create() to obtain a fresh id before set()",
@@ -530,10 +539,10 @@ impl SessionStore for InProcessSessionStore {
         )
       )
     } else {
-      val existing = self.sessions[sessionId]
+      val existing = sessions[sessionId]
       val ts = nowMs()
       if existing.expiresAt != 0i64 and existing.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Err(
           SessionError(
             message = "session not found; call create() to obtain a fresh id before set()",
@@ -559,19 +568,19 @@ impl SessionStore for InProcessSessionStore {
           lastAccessedAt = ts,
           expiresAt = existing.expiresAt
         )
-        self.save(updated)
+        putSession(updated)
       }
     }
   }
 
   func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Ok(())
     } else {
-      val data = self.sessions[sessionId]
+      val data = sessions[sessionId]
       val ts = nowMs()
       if data.expiresAt != 0i64 and data.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Ok(())
       } else {
         // See the JVM auto-FFI field-type-loss note in `set()` above.
@@ -584,19 +593,19 @@ impl SessionStore for InProcessSessionStore {
           lastAccessedAt = nowMs(),
           expiresAt = data.expiresAt
         )
-        self.save(updated)
+        putSession(updated)
       }
     }
   }
 
   func clear(sessionId: in String): Result[Unit, SessionError] {
-    if not self.sessions.containsKey(sessionId) {
+    if not sessions.containsKey(sessionId) {
       Ok(())
     } else {
-      val data = self.sessions[sessionId]
+      val data = sessions[sessionId]
       val ts = nowMs()
       if data.expiresAt != 0i64 and data.expiresAt < ts {
-        self.sessions.remove(sessionId)
+        sessions.remove(sessionId)
         Ok(())
       } else {
         val updated = SessionData(
@@ -606,7 +615,7 @@ impl SessionStore for InProcessSessionStore {
           lastAccessedAt = nowMs(),
           expiresAt = data.expiresAt
         )
-        self.save(updated)
+        putSession(updated)
       }
     }
   }
@@ -883,7 +892,15 @@ pub func connectRedis(): Result[SessionStore, SessionError] {
 @stable(since = "0.1")
 pub func inMemory(): InProcessSessionStore {
   val ttlSeconds = parseSessionTtlSeconds(Env.getVarOrDefault("LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS", "3600"), 3600)
-  return InProcessSessionStore(sessions = newMap(), ttlSeconds = ttlSeconds.toLong())
+  return InProcessSessionStore(ttlSeconds = ttlSeconds.toLong())
+}
+
+/// Create an in-process session store whose sessions live for `ttlSeconds`.
+@stable(since = "0.2")
+pub func inMemoryWithTtl(ttlSeconds: in Long): InProcessSessionStore
+  requires: ttlSeconds >= 1i64 and ttlSeconds <= 31536000i64
+{
+  return InProcessSessionStore(ttlSeconds = ttlSeconds)
 }
 
 // ─── Convenience public API ───────────────────────────────────────────────────

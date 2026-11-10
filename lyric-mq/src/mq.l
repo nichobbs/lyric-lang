@@ -159,34 +159,35 @@ pub interface DeadLetterStore {
 ///
 /// Entries are held in insertion order.  When `maxEntries` is reached the
 /// oldest entry is discarded to make room, preserving the configured capacity.
-/// Not thread-safe; converting it to a protected type (as
-/// `Cache.InProcessCacheStore` is) is tracked in #8950.
+/// A protected type (as `Cache.InProcessCacheStore` is): every member holds the
+/// instance lock, so concurrent consumers may dead-letter into one store.
+/// Build one with `inProcessDeadLetterStore(maxEntries)`.
 @stable(since = "0.1")
-pub ref record InProcessDeadLetterStore {
-  var entries: slice[DeadLetterEntry]
+pub protected type InProcessDeadLetterStore {
+  var entries: slice[DeadLetterEntry] = []
   maxEntries: Int
   invariant: maxEntries >= 1
 }
 
 impl DeadLetterStore for InProcessDeadLetterStore {
   func append(dlEntry: in DeadLetterEntry): Unit {
-    if self.entries.length < self.maxEntries {
-      self.entries = self.entries.append(dlEntry)
+    if entries.length < maxEntries {
+      entries = entries.append(dlEntry)
     } else {
       // At capacity: drop the oldest entry (the invariant keeps at least one
       // here). One sub-slice copy plus one append, not an append per retained
       // entry (#7279). The typed local is needed on MSIL (#7365).
-      val retained: slice[DeadLetterEntry] = self.entries.slice(1, self.entries.length)
-      self.entries = retained.append(dlEntry)
+      val retained: slice[DeadLetterEntry] = entries.slice(1, entries.length)
+      entries = retained.append(dlEntry)
     }
   }
 
   func list(): slice[DeadLetterEntry] {
-    return self.entries
+    return entries
   }
 
   func count(): Int {
-    return self.entries.length
+    return entries.length
   }
 }
 
@@ -309,7 +310,7 @@ pub func connectWithDeadLetter(): Result[(NativeQueue, InProcessDeadLetterStore)
       if maxEntries < 1 {
         return Err("lyric-mq: LYRIC_CONFIG_MQ_DEADLETTER_MAXENTRIES must be at least 1, got " + maxEntriesStr)
       }
-      val dlStore = InProcessDeadLetterStore(entries = [], maxEntries = maxEntries)
+      val dlStore = InProcessDeadLetterStore(maxEntries = maxEntries)
       Ok((queue, dlStore))
     }
   }
@@ -320,7 +321,7 @@ pub func connectWithDeadLetter(): Result[(NativeQueue, InProcessDeadLetterStore)
 pub func inProcessDeadLetterStore(maxEntries: in Int): InProcessDeadLetterStore
   requires: maxEntries >= 1
 {
-  return InProcessDeadLetterStore(entries = [], maxEntries = maxEntries)
+  return InProcessDeadLetterStore(maxEntries = maxEntries)
 }
 
 // ─── Convenience wrappers ─────────────────────────────────────────────────────
