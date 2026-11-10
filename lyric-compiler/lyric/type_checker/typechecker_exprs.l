@@ -8108,15 +8108,28 @@ func resolveExprPath(
         // expected type, which this site cannot see.
         case DKEnumCase(pid, _) -> {
           var unshared = true
+          var onlyEnums = true
+          val sharedOwners: List[SymbolId] = newList()
+          sharedOwners.add(pid)
           // Program-wide, not what the file can see: a case name another package's
           // enum also declares is told apart by the callee's parameter type (#6688).
           for other in symTableTryFindAllNamed(tbl, name) {
             match other.kind {
               case DKEnumCase(opid, _) -> if not (symbolIdEq(opid, pid) or (other.originPackage == sym.originPackage and typeNameOfId(tbl, opid) == typeNameOfId(tbl, pid))) {
                 unshared = false
+                var listed = false
+                for o in sharedOwners {
+                  if symbolIdEq(o, opid) {
+                    listed = true
+                  }
+                }
+                if not listed {
+                  sharedOwners.add(opid)
+                }
               }
               case _ -> {
                 unshared = false
+                onlyEnums = false
               }
             }
           }
@@ -8127,6 +8140,9 @@ func resolveExprPath(
           }
           // A case name several enums share is told apart by the expected
           // type, which an expression read on its own does not have.
+          if onlyEnums and sharedOwners.count > 1 {
+            return tyErrorSharedCase(tbl, sharedOwners)
+          }
           return tyErrorUnresolved()
         }
         case _ -> {
@@ -8263,33 +8279,32 @@ func qualifierOfSegs(segs: in List[String]): String {
 // unresolved when several do (`SiblingEnums.On` names `Beam.On` or `Ray.On`,
 // which the expected type tells apart); None when `pkg` has no such enum case.
 func packageEnumCaseValueType(tbl: in SymbolTable, pkg: in String, name: in String): Option[Type] {
-  var first: Option[SymbolId] = None
-  var shared = false
+  val owners: List[SymbolId] = newList()
   for cand in symTableTryFindAllNamed(tbl, name) {
     if cand.originPackage == pkg {
       match cand.kind {
-        case DKEnumCase(pid, _) -> match first {
-          case None -> {
-            first = Some(value = pid)
-          }
-          case Some(fid) -> {
-            if not symbolIdEq(fid, pid) {
-              shared = true
+        case DKEnumCase(pid, _) -> {
+          var seen = false
+          for o in owners {
+            if symbolIdEq(o, pid) {
+              seen = true
             }
+          }
+          if not seen {
+            owners.add(pid)
           }
         }
         case _ -> ()
       }
     }
   }
-  match first {
-    case None -> None
-    case Some(pid) -> if shared {
-      Some(value = tyErrorUnresolved())
-    } else {
-      Some(value = TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList()))
-    }
+  if owners.count == 0 {
+    return None
   }
+  if owners.count > 1 {
+    return Some(value = tyErrorSharedCase(tbl, owners))
+  }
+  Some(value = TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList()))
 }
 
 // True when `t` can stand where a `Bool` is required.  `typeEquiv` treats a
@@ -22507,7 +22522,7 @@ pub func inferExprExpected(
   expected: in Type,
 ): Type {
   val core = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
-  val t = sharedEnumCaseAgainstExpected(sc, tbl, e, core, expected)
+  val t = sharedEnumCaseAgainstExpected(tbl, core, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).  An expression with
@@ -22517,68 +22532,69 @@ pub func inferExprExpected(
   t
 }
 
-// A case name several enums share (`Lib.On` for `Beam.On` and `Ray.On`) reads
-// as an unresolved `TyError` on its own and is told apart by the expected
-// type (D355).  Against an enum that owns the case it is that enum; against a
-// primitive, tuple, function, array or slice, or a record, union or other enum
-// that does not own it, it is the first owning enum, so the caller's ordinary
-// mismatch check reports the wrong kind (#8845).  Any other expected type is
-// left to the caller, as an interface an enum implements is.  A local or
-// module value of that name is a value, not the case.
-func sharedEnumCaseAgainstExpected(sc: in Scope, tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
-  if not isUnresolvedTyError(t) {
-    return t
-  }
-  val segs: List[String] = newList()
-  if not flattenCalleePathSegs(e, segs) or segs.count == 0 or scopeHasName(sc, segs[0]) {
-    return t
-  }
-  match moduleValSymbolOfExpr(sc, tbl, e) {
-    case Some(_) -> return t
-    case None -> ()
-  }
-  val name = segs[segs.count - 1]
-  val owners: List[SymbolId] = newList()
-  for cand in symTableTryFindAllNamed(tbl, name) {
-    if segs.count == 1 or cand.originPackage == qualifierOfSegs(segs) {
-      match cand.kind {
-        case DKEnumCase(pid, _) -> {
-          var seen = false
-          for o in owners {
-            if symbolIdEq(o, pid) {
-              seen = true
-            }
-          }
-          if not seen {
-            owners.add(pid)
-          }
-        }
-        case _ -> ()
+// The `TyError` of a case name several enums share (`Lib.On` for `Beam.On` and
+// `Ray.On`): its `DiagId` names `owners` in `SymbolTable.sharedCaseOwners`.
+func tyErrorSharedCase(tbl: in SymbolTable, owners: in List[SymbolId]): Type {
+  val k = tbl.sharedCaseOwners.count
+  tbl.sharedCaseOwners.add(owners)
+  TyError(diag = DiagId(index = sharedCaseIndexBase - k))
+}
+
+// The enums that own the shared case `t` reads (see `tyErrorSharedCase`);
+// empty when `t` is anything else.
+func sharedCaseOwnersOf(tbl: in SymbolTable, t: in Type): List[SymbolId] {
+  match t {
+    case TyError(d) -> if d.index <= sharedCaseIndexBase {
+      val k = sharedCaseIndexBase - d.index
+      if k < tbl.sharedCaseOwners.count {
+        return tbl.sharedCaseOwners[k]
       }
     }
+    case _ -> ()
   }
-  if owners.count < 2 {
-    return t
-  }
+  val none: List[SymbolId] = newList()
+  none
+}
+
+// What a shared case read is where `expected` is wanted.  An enum that owns the
+// case: that enum.  A primitive, tuple, function, array or slice, or a record,
+// union or enum that does not own it: the first owner, so the ordinary
+// compatibility check reports the mismatch (#8845).  Any other expected type
+// (an interface an enum implements, a type parameter, a nullable) decides
+// nothing: `None`.
+func sharedCaseTypeAgainst(tbl: in SymbolTable, owners: in List[SymbolId], expected: in Type): Option[Type] {
   val firstOwner = TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
   match unrefine(expected) {
     case TyUser(eid, ename, eargs) -> {
       for o in owners {
         if symbolIdEq(o, eid) {
-          return TyUser(id = eid, name = ename, args = eargs)
+          return Some(value = TyUser(id = eid, name = ename, args = eargs))
         }
       }
       match symTableTypeSymbolOf(tbl, eid) {
-        case Some(esym) -> if isDataTypeKind(esym.kind) { firstOwner } else { t }
-        case None -> t
+        case Some(esym) -> if isDataTypeKind(esym.kind) { Some(value = firstOwner) } else { None }
+        case None -> None
       }
     }
-    case TyPrim(_) -> firstOwner
-    case TyTuple(_) -> firstOwner
-    case TyFunction(_, _, _) -> firstOwner
-    case TyArray(_, _, _) -> firstOwner
-    case TySlice(_) -> firstOwner
-    case _ -> t
+    case TyPrim(_) -> Some(value = firstOwner)
+    case TyTuple(_) -> Some(value = firstOwner)
+    case TyFunction(_, _, _) -> Some(value = firstOwner)
+    case TyArray(_, _, _) -> Some(value = firstOwner)
+    case TySlice(_) -> Some(value = firstOwner)
+    case _ -> None
+  }
+}
+
+// `t` where `expected` is wanted: a shared case read takes the type
+// `sharedCaseTypeAgainst` gives it.
+func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, t: in Type, expected: in Type): Type {
+  val owners = sharedCaseOwnersOf(tbl, t)
+  if owners.count == 0 {
+    return t
+  }
+  match sharedCaseTypeAgainst(tbl, owners, expected) {
+    case Some(ty) -> ty
+    case None -> t
   }
 }
 
@@ -24168,6 +24184,15 @@ func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in T
 }
 
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  // A shared enum case fits the parameters of the enums that own it, and no
+  // primitive or other data type's (#8872).
+  val sharedOwners = sharedCaseOwnersOf(tbl, argTy)
+  if sharedOwners.count > 0 {
+    return match sharedCaseTypeAgainst(tbl, sharedOwners, paramTy) {
+      case Some(ty) -> typeEquiv(ty, paramTy)
+      case None -> true
+    }
+  }
   if typeEquiv(paramTy, argTy) {
     return true
   }
