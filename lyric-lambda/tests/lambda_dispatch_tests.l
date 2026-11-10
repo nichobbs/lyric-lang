@@ -224,7 +224,11 @@ impl Lambda.SqsBatchHandler for SqsBatchHandlerImpl {
 test "dispatchInvocation: aws:sqs partial-batch response is encoded correctly" {
   val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.sqsBatchHandler(SqsBatchHandlerImpl()))
   match dispatchInvocation(app, sqsPayload(), testContext()) {
-    case Ok(body) -> assertEqual(body, "{\"batchItemFailures\":[{\"itemIdentifier\":\"msg-1\"}]}", "batch response JSON")
+    case Ok(body) -> assertEqual(
+      body,
+      "{\"batchItemFailures\":[{\"itemIdentifier\":\"msg-1\"}]}",
+      "batch response JSON"
+    )
     case Err(e) -> assertTrue(false, "expected Ok, got Err: " + Lambda.errorMessage(e))
   }
 }
@@ -401,11 +405,24 @@ impl Lambda.DynamoDbHandler for DynamoDbOkHandler {
     assertEqual(event.records[0].dynamodb.streamViewType, "NEW_AND_OLD_IMAGES", "streamViewType decoded")
     assertEqualLong(event.records[0].dynamodb.sizeBytes, 26i64, "sizeBytes decoded")
     match mapGet(event.records[0].dynamodb.keys, "Id") {
-      case Some(attr) -> match attr.n { case Some(v) -> assertEqual(v, "101", "Keys.Id.N decoded from the DynamoDB wire attribute-value shape"); case None -> assertTrue(false, "Keys.Id must have an N field") }
+      case Some(attr) -> match attr.n {
+        case Some(v) -> assertEqual(
+          v,
+          "101",
+          "Keys.Id.N decoded from the DynamoDB wire attribute-value shape"
+        )
+        case None -> assertTrue(false, "Keys.Id must have an N field")
+      }
       case None -> assertTrue(false, "dynamodb.keys must contain Id")
     }
     match event.records[0].dynamodb.newImage {
-      case Some(img) -> match mapGet(img, "Message") { case Some(attr) -> match attr.s { case Some(v) -> assertEqual(v, "New item!", "NewImage.Message.S decoded"); case None -> assertTrue(false, "NewImage.Message must have an S field") }; case None -> assertTrue(false, "newImage must contain Message") }
+      case Some(img) -> match mapGet(img, "Message") {
+        case Some(attr) -> match attr.s {
+          case Some(v) -> assertEqual(v, "New item!", "NewImage.Message.S decoded")
+          case None -> assertTrue(false, "NewImage.Message must have an S field")
+        }
+        case None -> assertTrue(false, "newImage must contain Message")
+      }
       case None -> assertTrue(false, "newImage must be Some for a NEW_AND_OLD_IMAGES stream view")
     }
     return Ok(value = ())
@@ -645,22 +662,22 @@ test "dispatchInvocation: HTTP API (v2) authorizer decodes the event and encodes
   }
 }
 
-// ─── dispatchInvocation: HTTP (API Gateway / ALB) fails closed ───────────────
-test "dispatchInvocation: API Gateway v1 with no router/streaming handler fails closed" {
+// ─── dispatchInvocation: HTTP (API Gateway / ALB) events are not handled ─────
+test "dispatchInvocation: API Gateway v1 event fails closed, naming the unsupported event" {
   val payload = "{\"httpMethod\":\"GET\",\"requestContext\":{\"resourceId\":\"abc\"}}"
   match dispatchInvocation(Lambda.newApp(), payload, testContext()) {
-    case Ok(_) -> assertTrue(false, "expected Err: no HTTP handler registered")
-    case Err(InternalError(_)) -> ()
+    case Ok(_) -> assertTrue(false, "expected Err: HTTP events are not handled")
+    case Err(InternalError(msg)) -> assertTrue(msg.contains("API Gateway"), "error names the HTTP event source")
     case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
   }
 }
 
-test "dispatchInvocation: API Gateway v2 with a streaming handler registered still fails closed (not implemented)" {
-  val app = Lambda.withStreamingHandler(Lambda.newApp(), "MyApp.Stream.handle")
-  val payload = "{\"version\":\"2.0\",\"routeKey\":\"GET /x\",\"requestContext\":{\"http\":{\"method\":\"GET\"}}}"
+test "dispatchInvocation: ALB event fails closed even with a raw handler registered" {
+  val app = Lambda.withDirect(Lambda.newApp(), Lambda.Direct.rawHandler(RawOkHandler()))
+  val payload = "{\"httpMethod\":\"GET\",\"requestContext\":{\"elb\":{\"targetGroupArn\":\"arn:x\"}}}"
   match dispatchInvocation(app, payload, testContext()) {
-    case Ok(_) -> assertTrue(false, "streaming dispatch is not implemented; must not silently succeed")
-    case Err(InternalError(msg)) -> assertTrue(msg.contains("stream") or msg.contains("Stream"), "error names streaming")
+    case Ok(_) -> assertTrue(false, "expected Err: HTTP events are not handled")
+    case Err(InternalError(_)) -> ()
     case Err(other) -> assertTrue(false, "expected InternalError, got: " + Lambda.errorMessage(other))
   }
 }

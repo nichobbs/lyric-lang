@@ -6361,12 +6361,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/jvm-ecosystem-suites.sh
 
-      # lyric-lambda suite on JVM (#7337, #7357); needs Undertow Maven-restored.
+      # lyric-lambda suite on JVM (#7337, #7357); no Maven dependencies since
+      # the HTTP bridge (and its lyric-web import) was withdrawn (D552).
       - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/manifest-jvm-maven-test.sh lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
+        run: bash scripts/ci/self-test.sh --manifest lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
 
       # lyric-aws-secrets suite on JVM (#7033) — pins the real
       # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
@@ -6395,7 +6396,7 @@ jobs:
       # process installs at a time; the others wait, then find `mvn` already
       # present (or perform a harmless redundant install/update).
       # `make maven-resolver` is similarly serialized — its other concurrent
-      # callers in this job are the ecosystem suites' `web`, lyric-lambda,
+      # callers in this job are the ecosystem suites' `web`,
       # the lyric-web and lyric-ws Undertow smokes and the UI suites — so two
       # `mvn package` builds never race into the same `resolver/target/`
       # output directory.
@@ -6995,7 +6996,6 @@ jobs:
           overall=0
           "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml || overall=$?
           "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
-          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features web || overall=$?
           exit "$overall"
 
       - name: Run tests (web)

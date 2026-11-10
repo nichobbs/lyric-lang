@@ -847,11 +847,7 @@ test "checkCacheTtl: rejects negative and over-long TTLs with InvalidConfig" {
   }
 }
 
-test "SecretsError.NotImplemented and InvalidConfig: errorMessage names the feature or field" {
-  assertTrue(
-    errorMessage(NotImplemented(feature = "x", message = "m")).contains("Not implemented: x"),
-    "NotImplemented message"
-  )
+test "SecretsError.InvalidConfig: errorMessage names the field" {
   assertTrue(errorMessage(InvalidConfig(field = "f", message = "m")).contains("f"), "InvalidConfig message")
 }
 

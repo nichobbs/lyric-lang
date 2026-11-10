@@ -63,7 +63,7 @@
 //!   func main(): Int {
 //!     // Before anything reads Database.* or Auth.*.
 //!     match AwsSecrets.init() {
-//!       Ok(_)    => Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+//!       Ok(_)    => Lambda.serve(Lambda.newApp() |> Lambda.withDirect(Lambda.Direct.rawHandler(MyHandler())))
 //!       Err(err) => {
 //!         Std.Core.log("ERROR", AwsSecrets.errorMessage(err))
 //!         return 1
@@ -84,6 +84,13 @@
 //!   without an AWS API call.  Set ttlSeconds = 0 to disable caching.
 //!   Match the TTL to your secret rotation period: a safe default is
 //!   ttlSeconds < rotationPeriodSeconds / 6.
+//!
+//! Targets:
+//!   The annotation-driven path (`registerSecrets`, `registerAnnotated`, and
+//!   the `aws` and `jvm` kernels that call them) exists on `--target dotnet`
+//!   and `--target jvm` only.  The native target embeds no annotation
+//!   metadata (#8524), so those two functions are not declared there; with
+//!   the `local` feature `init()` is a no-op and env vars are the only source.
 //!
 //! Runtime env vars:
 //!   LYRIC_CONFIG_AWSSECRETS_SECRETCACHE_TTLSECONDS  — cache TTL (default: 300)
@@ -127,10 +134,6 @@ pub union SecretsError {
   /// string-valued secrets — retrying will never succeed for a binary
   /// secret, unlike NetworkError.
   case BinaryValueUnsupported(name: String)
-  /// The requested capability is not available on this backend (for
-  /// example config-block annotation scanning, issue #6866).  Retrying
-  /// will never succeed, unlike NetworkError.
-  case NotImplemented(feature: String, message: String)
   /// A configuration value (for example SecretCache.ttlSeconds, read from
   /// its env var) is outside its allowed range.  Nothing was fetched.
   case InvalidConfig(field: String, message: String)
@@ -147,7 +150,6 @@ pub func errorMessage(err: in SecretsError): String {
     case NetworkError(name, msg) -> "Network error fetching " + name + ": " + msg
     case BinaryValueUnsupported(name) -> "Secret '" + name +
       "' is stored as binary (SecretBinary), not a string; this API only supports string-valued secrets"
-    case NotImplemented(feature, msg) -> "Not implemented: " + feature + ": " + msg
     case InvalidConfig(field, msg) -> "Invalid configuration " + field + ": " + msg
   }
 }
@@ -290,6 +292,7 @@ func invalidAnnotation(f: in Meta.AnnotatedField, what: in String): SecretsError
   InvalidConfig(field = fieldLabel(f), message = "@" + f.annotationName + " " + what)
 }
 
+@cfg(not(target = "native"))
 func fetchAnnotated(
   f: in Meta.AnnotatedField,
   fetchSecret: in (String, Option[String]) -> Result[String, SecretsError],
@@ -310,11 +313,9 @@ func fetchAnnotated(
   }
 }
 
+@cfg(not(target = "native"))
 func registerError(f: in Meta.AnnotatedField, err: in Override.ConfigOverrideError): SecretsError {
-  match err {
-    case Unsupported(reason) -> NotImplemented(feature = "initFromAnnotations", message = reason)
-    case _ -> InvalidConfig(field = fieldLabel(f), message = Override.errorMessage(err))
-  }
+  InvalidConfig(field = fieldLabel(f), message = Override.errorMessage(err))
 }
 
 /// Fetch the value of each field in `fields` (each carrying @secretsManager
@@ -328,9 +329,9 @@ func registerError(f: in Meta.AnnotatedField, err: in Override.ConfigOverrideErr
 /// - `InvalidConfig`: an annotation lacks its name/path argument, a field
 ///   carries both annotations, or the fetched value cannot be registered.
 /// - `ParseError`: a fetched value is empty (an empty override means none).
-/// - `NotImplemented`: the target has no config-override store (native).
 /// - Anything a fetch function returns.
 @stable(since = "0.1")
+@cfg(not(target = "native"))
 pub func registerSecrets(
   fields: in List[Meta.AnnotatedField],
   fetchSecret: in (String, Option[String]) -> Result[String, SecretsError],
@@ -369,6 +370,7 @@ pub func registerSecrets(
   Ok(value = ())
 }
 
+@cfg(not(target = "native"))
 func isSecretAnnotation(f: in Meta.AnnotatedField): Bool {
   f.annotationName == "secretsManager" or f.annotationName == "parameterStore"
 }
@@ -378,11 +380,12 @@ func isSecretAnnotation(f: in Meta.AnnotatedField): Bool {
 /// fetch functions.  The body of the aws and jvm kernels'
 /// `initFromAnnotations`.
 @stable(since = "0.1")
+@cfg(not(target = "native"))
 pub func registerAnnotated(ttlSeconds: in Int): Result[Unit, SecretsError]
   requires: ttlSeconds >= 0
 {
   match Meta.allAnnotatedFields() {
-    case Err(Unsupported(reason)) -> Err(error = NotImplemented(feature = "initFromAnnotations", message = reason))
+    case Err(Unsupported(reason)) -> Err(error = InvalidConfig(field = "Lyric.AnnotationMeta", message = reason))
     case Err(Malformed(message)) -> Err(error = InvalidConfig(field = "Lyric.AnnotationMeta", message = message))
     case Ok(all) -> {
       val secretFields: List[Meta.AnnotatedField] = newList()

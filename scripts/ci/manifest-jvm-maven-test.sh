@@ -3,7 +3,7 @@
 # manifest-jvm-maven-test.sh — run one manifest's `lyric test` on a JVM
 # target that needs Maven-restored dependencies resolved first.
 #
-#   bash scripts/ci/manifest-jvm-maven-test.sh lyric-lambda/lyric.toml \
+#   bash scripts/ci/manifest-jvm-maven-test.sh lyric-auth/lyric.toml \
 #     --target jvm --no-default-features --features jvm
 #
 # Unlike `self-test.sh` (a bare `lyric test`), this ensures `mvn` is on
@@ -12,7 +12,7 @@
 # <manifest>` before the test — the same sequence `lyric-web`'s Undertow
 # smoke test and the `lyric-aws-secrets` JVM suite already inline, extracted
 # here so a manifest whose JVM build pulls in a Maven-backed dependency
-# (like `lyric-lambda`'s unconditional `import Web`, #7337) can wire a CI
+# (like lyric-auth or lyric-web) can wire a CI
 # step in the same one-line `self-test.sh` form other JVM ecosystem suites
 # use. `flock` on the shared per-job lock files matches the other Maven call
 # sites so concurrent `background: true` steps in the same job don't race

@@ -1,6 +1,6 @@
 # lyric-lambda
 
-AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Deploy services built with `lyric-web` to Lambda with zero handler-code changes, plus support for all major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers.
+AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Typed handlers for the major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers. There is no HTTP (API Gateway / ALB) entry point and no response streaming; see "Withdrawn surface".
 
 > **Status**: @experimental — the `aws`/`local`/`jvm` runtime loop
 > (event-source detection, JSON marshalling, `Lambda.Direct` dispatch, and
@@ -10,12 +10,8 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 > `provided.al2`/`provided.al2023` custom runtime — a resolved
 > deployment-model decision, see "Known gaps"). `aws:sqs`, `aws:sns`,
 > `aws:s3`, `aws:dynamodb`, `aws:kinesis`, EventBridge, the `raw`
-> catch-all, and all three authorizer types are fully wired; the
-> `Lambda.Kernel.WebBridge` router-token registry is real and proven
-> (`Lambda.withRouter`'s `LambdaRouter` token resolves back to its
-> `Web.Router`), but routing an API Gateway/ALB event *through* the
-> resolved router, and response streaming, are both separate, larger,
-> not-yet-implemented features (see "Known gaps" below). See
+> catch-all, and all three authorizer types are fully wired. HTTP entry
+> points and response streaming were withdrawn (see "Withdrawn surface"). See
 > `docs/35-lambda-library.md` and the decision log (D062–D064, D099,
 > D-progress-882).
 
@@ -23,7 +19,7 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 
 | Feature flag | Runtime | Status |
 |---|---|---|
-| `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — all six event sources (`aws:sqs`/`aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge), `raw`, and authorizers wired; HTTP/streaming not implemented (see "Known gaps") |
+| `aws` | .NET custom runtime: HTTP long-polling against `$AWS_LAMBDA_RUNTIME_API` | Available — all six event sources (`aws:sqs`/`aws:sns`/`aws:s3`/`aws:dynamodb`/`aws:kinesis`/EventBridge), `raw`, and authorizers wired; HTTP and streaming are not offered (see "Withdrawn surface") |
 | `local` | Local test server (compatible with `sam local invoke`) | Available — same dispatch logic and gaps as `aws`, different transport |
 | `jvm` | JVM custom runtime (`provided.al2`/`provided.al2023`): the SAME `Lambda.Dispatch` HTTP long-polling loop as `aws` | Available, same dispatch logic and gaps as `aws`/`local`. The full suite (`lambda_tests.l`, `lambda_dispatch_tests.l`, `lambda_aspect_weaving_tests.l`) now builds and passes on `--target jvm` and runs in CI: #7337 fixed a J007 erased-receiver gap in the JVM backend's generic-return inference (`mapGet(...)` on a `Map` field reached through a chained receiver); #7357 fixed a bare/qualified cross-package type reference resolving to a phantom same-package class instead of the real one (hit `detectEventSource`'s `Std.Json.JsonElement` helper parameter, and the `DeadlineGuard` aspect's `Lambda.LambdaContext`-typed row-constraint args record) |
 
@@ -32,12 +28,10 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 | Package | Description |
 |---|---|
 | `Lambda` | Core: `LambdaApp` builder, `serve()` entry point, `LambdaContext`, the `Lambda.Direct` handler interfaces |
-| `Lambda.ApiGw` | API Gateway / ALB event types and response builders |
 | `Lambda.Events` | SQS, SNS, S3, EventBridge, DynamoDB, Kinesis event types |
 | `Lambda.Authorizer` | REST API TOKEN/REQUEST and HTTP API v2 authorizers |
 | `Lambda.Direct` | AOT-safe handler registration via typed interfaces |
 | `Lambda.Dispatch` | Event-source detection, JSON marshalling, and the `aws`/`local` transport loops |
-| `Lambda.Stream` | Response streaming support via `StreamWriter` — **not implemented** (no working transport) |
 | `Lambda.Aspects` | Template aspects: `EventLogging`, `DeadlineGuard` |
 | `Lambda.Kernel.Runtime` | Extern boundary (one per feature flag); `aws`/`local` are now thin wrappers around `Lambda.Dispatch` |
 
@@ -46,7 +40,6 @@ AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). 
 ```toml
 [dependencies]
 "Lyric.Lambda" = { path = "../lyric-lambda" }
-"Lyric.Web" = { path = "../lyric-web" }       # optional, for HTTP handlers
 
 [features]
 aws = []    # production Lambda runtime (.NET custom runtime)
@@ -59,18 +52,6 @@ jvm = []    # production Lambda runtime (JVM custom runtime, provided.al2/al2023
 > **Note:** The self-hosted compiler does not yet implement the `|>` pipe
 > operator (tracked in #3520). The examples below use the equivalent nested
 > call form; re-express as a left-to-right pipeline once pipe support lands.
-
-### HTTP service (API Gateway / ALB) — dispatch not yet implemented
-
-`Lambda.withRouter` compiles, registers a `Web.Router`, and the resulting
-`LambdaRouter` token DOES resolve back to that exact router at runtime
-(`Lambda.Kernel.WebBridge`'s registry is real — see
-`tests/lambda_webbridge_tests.l`). What's still missing is routing a live
-API Gateway/ALB event *through* the resolved router (method/path/header/
-body extraction, match-and-dispatch, `ApiGwResponse` encoding, CORS) — a
-separate, larger feature; `dispatchInvocation` still fails closed with
-`LambdaError.InternalError` for these events, now naming this specific
-gap. Use event-driven handlers (below) until that lands.
 
 ### Event-driven handlers (SQS, SNS, etc.)
 
@@ -164,13 +145,6 @@ updated `LambdaApp`; the `|>` pipe form is shown for readability, but the
 self-hosted compiler does not yet implement `|>` (#3520) — chain builders
 with nested calls or intermediate `var` reassignment, as in the Quick start
 examples above.
-
-### HTTP routing
-
-```lyric
-|> Lambda.withRouter(router)          // Attach a Web.Router for HTTP events
-|> Lambda.withStreamingHandler(name)  // Register a streaming handler (Function URL)
-```
 
 ### Event handlers
 
@@ -269,10 +243,6 @@ record SnsMessage {
 }
 ```
 
-### API Gateway v1 / v2 / ALB
-
-API Gateway events are automatically dispatched to the configured `Web.Router`. The response is serialized to `ApiGwResponse` with the appropriate format for each API type.
-
 ### S3, EventBridge, DynamoDB, Kinesis
 
 See the event type definitions in `Lambda.Events` for complete field references.
@@ -353,46 +323,6 @@ func verifyHttpAuthorizer(
     Ok(Lambda.Authorizer.denied())
   }
 }
-```
-
-## Response streaming (Function URL) — not implemented
-
-`Lambda.Stream.StreamWriter` has no working kernel: nothing constructs an
-instance or wires it to a real transport, and every function in
-`Lambda.Stream` panics with a clear "not implemented" message if called.
-The type signatures below are the intended future shape, kept so
-downstream code sketches compile against the interface once the
-transport exists — see "Known gaps".
-
-Use `Lambda.Stream.StreamWriter` to stream large responses:
-
-```lyric
-import Lambda
-import Lambda.Stream
-
-func streamLargeFile(
-  event: String,
-  ctx: Lambda.LambdaContext,
-  writer: Lambda.Stream.StreamWriter
-): Result[Unit, Lambda.LambdaError] {
-  // Stream response in chunks
-  val chunk1 = "chunk of data..."
-  Lambda.Stream.write(writer, chunk1)?
-  
-  val chunk2 = "more data..."
-  Lambda.Stream.write(writer, chunk2)?
-  
-  Lambda.Stream.close(writer)
-  Ok(Unit)
-}
-```
-
-Register with:
-```lyric
-Lambda.serve(
-  Lambda.newApp()
-    |> Lambda.withStreamingHandler("MyApp.Stream.streamLargeFile")
-)
 ```
 
 ## LambdaContext
@@ -498,17 +428,34 @@ handler itself failed.
 
 Local mode skips all AWS API calls. Set env vars for any config you need locally.
 
+## Withdrawn surface
+
+D552 item 2 removes unimplemented surface from public APIs instead of shipping
+it behind an error. These were withdrawn from `lyric-lambda`; each returned
+`InternalError` or panicked on every use, so no working program depended on
+them:
+
+| Removed | Was | Now |
+|---|---|---|
+| `Lambda.withRouter`, `LambdaRouter`, `LambdaApp.httpRouter`, `Lambda.Kernel.WebBridge` | Attach a `Web.Router` for API Gateway / ALB events; dispatch never routed an event through it | Gone. API Gateway v1/v2 and ALB events are detected and rejected with `InternalError` |
+| `Lambda.ApiGw` package (`ApiGwV1Event`, `ApiGwV2Event`, `AlbEvent`, `ApiGwResponse`, helpers) | Event and response types for the router bridge; nothing decoded into or encoded from them | Gone |
+| `Lambda.Stream` package, `Lambda.withStreamingHandler`, `LambdaApp.streamingHandler`, `Lambda.Direct.streamingHandler` | Response streaming; no transport existed and every function panicked | Gone |
+| `web` feature flag, `Lyric.Web` dependency | Enabled `withRouter` | Gone. A `web = []` entry in a consumer's own `[features]` is harmless but no longer does anything for this package |
+
+Migration: delete `Lambda.withRouter(...)`, `Lambda.withStreamingHandler(...)`
+and `import Lambda.ApiGw` / `import Lambda.Stream`, remove `web` from the
+features you pass to `lyric-lambda`, and drop the `Lyric.Web` dependency if
+nothing else needs it. The feature flags that remain are `aws`, `local` and
+`jvm`; `web` is the one that became meaningless. `lyric-lambda` no longer
+needs Maven-restored dependencies on the JVM.
+
 ## Known gaps
 
-Precise status of everything that is *not* fully implemented, so nothing
-here is a silent no-op — each one fails loudly (`LambdaError.InternalError`
-or a `panic` with an explanatory message) rather than pretending to work:
+Precise status of what is *not* fully implemented, so nothing here is a
+silent no-op:
 
 | Gap | Where it fails | What's needed |
 |---|---|---|
-| API Gateway v1/v2/ALB dispatch (`Lambda.withRouter`) | `dispatchInvocation` returns `InternalError` naming this gap specifically | Routing a live event through the now-resolvable `Web.Router` (method/path/header/body extraction, match-and-dispatch, `ApiGwResponse` encoding, CORS) — the router-token registry itself (`Lambda.Kernel.WebBridge.createRouterToken`/`lookupRouter`) is real and proven (`tests/lambda_webbridge_tests.l`) |
-| Response streaming (`Lambda.Stream`, `Lambda.withStreamingHandler`, `Lambda.Direct.streamingHandler`) | Every `Lambda.Stream` function panics; `streamingHandler` panics at registration time | A real streaming transport design (Function URL `RESPONSE_STREAM` uses a different invoke path than the GET-next/POST-response loop this library implements) |
-| `web` feature not target-gated | Compiles regardless of `--target`; `ConditionalWeakTable` (its extern boundary) is .NET-only | Target-gating, or a JVM-side registry (a plain `Map[LambdaRouter, Web.Router]` needs no weak table on that target) once a real JVM `feature = "web"` consumer exists |
 | String-based `on*`/`onTokenAuthorizer`/etc. registration | Registers successfully; dispatch fails closed if no `Lambda.Direct` handler also covers the same source | None planned — `Lambda.Direct` is the sanctioned replacement (D099) |
 
 ## Package layout
@@ -519,27 +466,22 @@ lyric-lambda/
   README.md                       this file
   src/
     lambda.l                      Lambda  (core types, LambdaApp, serve, Lambda.Direct's handler interfaces)
-    apigw.l                       Lambda.ApiGw  (API Gateway / ALB)
     events.l                      Lambda.Events  (SQS, SNS, S3, ...)
     authorizer.l                  Lambda.Authorizer  (authorizer types)
     direct.l                      Lambda.Direct  (AOT handler registration)
     dispatch.l                    Lambda.Dispatch  (event detection, JSON marshalling, aws/local transport loops)
-    stream.l                      Lambda.Stream  (response streaming — not implemented)
     lambda_aspects.l              Lambda.Aspects  (EventLogging, DeadlineGuard)
     _kernel/
       lambda_kernel_aws.l         Lambda.Kernel.Runtime @cfg(feature="aws")     — thin wrapper over Lambda.Dispatch
       lambda_kernel_local.l       Lambda.Kernel.Runtime @cfg(feature="local")   — thin wrapper over Lambda.Dispatch
       lambda_kernel_jvm.l         Lambda.Kernel.Runtime @cfg(feature="jvm")     — thin wrapper over the SAME Lambda.Dispatch loop as aws (custom runtime)
-      lambda_kernel_web.l         Lambda.Kernel.WebBridge @cfg(feature="web")  — real ConditionalWeakTable<LambdaRouter, Web.Router> registry
   tests/
     *_tests.l                          registered in [project.tests]
-    lambda_webbridge_tests.l           NOT registered (needs --features web; see file header)
     lambda_runtime_loop_tests.l        NOT registered (needs --target jvm --features jvm; see file header)
 ```
 
 ## See also
 
-- `lyric-web` — HTTP routing framework (for `withRouter`)
 - `lyric-aws-secrets` — AWS Secrets Manager / Parameter Store integration
 - `lyric-aws-xray` — AWS X-Ray active tracing
 - `docs/35-lambda-library.md` — complete design specification

@@ -59,17 +59,11 @@
 //!   erroring. This is a pre-existing limitation of the `DynamoDbAttributeValue`
 //!   record itself (see its doc comment in `events.l`); flagged here too since
 //!   this file is what actually wires that decoder into live dispatch.
-//! - API Gateway v1/v2 and ALB (`Lambda.withRouter`) dispatch:
-//!   `Lambda.Kernel.WebBridge`'s `ConditionalWeakTable<LambdaRouter,
-//!   Web.Router>` registry is proven (a `LambdaRouter` token now resolves
-//!   back to its `Web.Router` — see that kernel's header comment), but
-//!   mapping an API Gateway/ALB event through the resolved router (method/
-//!   path/header/body extraction, match-and-dispatch, `ApiGwResponse`
-//!   encoding, CORS) is separate, larger work, not done here
-//!   (docs/35-lambda-library.md §4).
-//! - Streaming (`Lambda.withStreamingHandler` / `Lambda.Direct.streamingHandler`):
-//!   `Lambda.Stream`'s `StreamWriter` has no working transport (see that
-//!   package's header comment).
+//! - API Gateway v1/v2 and ALB HTTP events are detected but never handled:
+//!   `dispatchInvocation` returns `InternalError` for them. The library has no
+//!   HTTP entry point (`Lambda.withRouter`, `Lambda.ApiGw` and
+//!   `Lambda.Stream` response streaming were withdrawn, D552 item 2; see
+//!   docs/35-lambda-library.md).
 //!
 //! Builds on both targets structurally (`Std.Http`/`Std.HttpServer`'s public
 //! surface is not target-gated), but is only exercised by the `aws`/`local`
@@ -1414,30 +1408,14 @@ func dispatchHttpAuthorizer(
   }
 }
 
-func dispatchHttp(app: in LambdaApp): Result[String, LambdaError] {
-  match app.httpRouter {
-    case Some(_) -> return Err(
-      error = InternalError(
-        "HTTP dispatch via Lambda.withRouter is not implemented yet: the LambdaRouter " +
-          "token now resolves back to its Web.Router (Lambda.Kernel.WebBridge's " +
-          "ConditionalWeakTable<LambdaRouter, Web.Router> registry is proven, see that file's " +
-          "header comment), but mapping an API Gateway v1/v2/ALB event through the resolved " +
-          "router (method/path/header/body extraction, match-and-dispatch, ApiGwResponse " +
-          "encoding, CORS) is separate, larger work not done here " +
-          "(see docs/35-lambda-library.md §4)"
-      )
+func dispatchHttp(): Result[String, LambdaError] {
+  return Err(
+    error = InternalError(
+      "API Gateway and ALB HTTP events are not handled by lyric-lambda: it has no HTTP " +
+        "entry point. Handle these invocations with a different integration, or register a " +
+        "Lambda.Direct handler for a supported event source"
     )
-    case None -> ()
-  }
-  match app.streamingHandler {
-    case Some(_) -> return Err(
-      error = InternalError(
-        "streaming HTTP dispatch is not implemented yet: Lambda.Stream has no working transport"
-      )
-    )
-    case None -> ()
-  }
-  return Err(error = InternalError("no HTTP handler registered on this LambdaApp"))
+  )
 }
 
 /// Classify `rawPayload` and dispatch it to the matching registered
@@ -1459,9 +1437,9 @@ pub func dispatchInvocation(
     case DynamoDbSrc -> dispatchDynamoDb(app, rawPayload, ctx)
     case KinesisSrc -> dispatchKinesis(app, rawPayload, ctx)
     case EventBridgeSrc -> dispatchEventBridge(app, rawPayload, ctx)
-    case ApiGwV1Src -> dispatchHttp(app)
-    case ApiGwV2Src -> dispatchHttp(app)
-    case AlbSrc -> dispatchHttp(app)
+    case ApiGwV1Src -> dispatchHttp()
+    case ApiGwV2Src -> dispatchHttp()
+    case AlbSrc -> dispatchHttp()
   }
 }
 

@@ -1,26 +1,14 @@
 //! Lambda — AWS Lambda runtime adapter for Lyric.
-//! Stability: @experimental — the API Gateway v1/v2/ALB bridges compile and
-//! unit tests cover the request-shape adapters, but the live AWS Lambda
-//! runtime has not been exercised in CI.
+//! Stability: @experimental — the live AWS Lambda runtime has not been
+//! exercised in CI.  HTTP entry points (API Gateway v1/v2, ALB) and response
+//! streaming are not part of this library: see README "Withdrawn surface".
 //!
 //! Provides the core vocabulary for writing Lambda functions in Lyric and
 //! the serve() entry point that drives the Lambda invocation loop.
 //!
-//! Two composition modes (may be combined in the same LambdaApp):
+//! One composition mode:
 //!
-//!   1. lyric-web router reuse
-//!      Build a Web.Router exactly as you would for a standalone lyric-web
-//!      service, then attach it with withRouter().  API Gateway v1 (REST
-//!      API), v2 (HTTP API), and ALB events are all routed through the same
-//!      Web.Route dispatch logic — the same handler functions work unchanged.
-//!
-//!      Example:
-//!        val router = Web.create()
-//!        val router = Web.addGet(router, "/users/{id}", MyApp.Users.getUser)
-//!        val router = Web.addPost(router, "/users", MyApp.Users.createUser)
-//!        Lambda.serve(Lambda.withRouter(Lambda.newApp(), router))
-//!
-//!   2. Custom event source handlers
+//!   Custom event source handlers
 //!      Register handlers as typed values with `Lambda.Direct.sqsHandler` /
 //!      `rawHandler` / the authorizer handlers, then attach them with
 //!      `Lambda.withDirect`.  Dispatch is by static value, not name-based
@@ -53,8 +41,6 @@ package Lambda
 import Std.Core
 import Std.Iter
 import Lambda.Kernel.Runtime as LambdaRuntime
-import Web
-import Lambda.Kernel.WebBridge as WebBridge
 import Lambda.Events
 import Lambda.Authorizer
 
@@ -143,12 +129,7 @@ pub interface HttpAuthorizerHandler {
 /// direction; see D099 in docs/03-decision-log.md, which killed the
 /// identical design for `lyric-health`).
 ///
-/// One case per registrable event source / authorizer type; there is no
-/// streaming case because `Lambda.Stream`'s `StreamWriter` transport has
-/// no working kernel yet (see `Lambda.Stream`'s header comment) — adding a
-/// case here would also create a `Lambda` <-> `Lambda.Stream` import cycle,
-/// since `Lambda.Stream` itself imports `Lambda` for `LambdaContext`/
-/// `LambdaError`. `Lambda.Direct.streamingHandler` documents this gap.
+/// One case per registrable event source / authorizer type.
 @stable(since = "0.1")
 pub union DirectHandler {
   case SqsDirect(handler: SqsHandler)
@@ -162,32 +143,6 @@ pub union DirectHandler {
   case TokenAuthorizerDirect(handler: TokenAuthorizerHandler)
   case RequestAuthorizerDirect(handler: RequestAuthorizerHandler)
   case HttpAuthorizerDirect(handler: HttpAuthorizerHandler)
-}
-
-// ─── LambdaRouter ────────────────────────────────────────────────────────────
-/// Opaque token representing a Web.Router registered with a LambdaApp.
-/// Created exclusively by Lambda.withRouter() (requires the `web` feature).
-/// The Lambda kernel resolves the actual Router via an internal registry keyed
-/// by this token's CLR identity; no Web types appear in LambdaApp's contract
-/// metadata, so consumers without lyric-web compile successfully.
-@stable(since = "0.1")
-pub opaque type LambdaRouter {
-  // kernel-held Web.Router reference managed by Lambda.Kernel.WebBridge via
-  // ConditionalWeakTable<LambdaRouter, Router>; zero visible Lyric fields.
-}
-
-/// Construct a fresh `LambdaRouter` identity token. Opaque-type construction
-/// is restricted to the type's declaring package (T0100), so
-/// `Lambda.Kernel.WebBridge` (a different package) cannot call
-/// `LambdaRouter()` directly — it calls this instead via a bare cross-package
-/// reference. `internal` (not `pub`): this constructor has no receiver to
-/// hang UFCS off, and only produces an unregistered token outside
-/// `Lambda.Kernel.WebBridge.createRouterToken`, so it stays out of the public
-/// API surface. (A cross-package bare-name reference to an `internal` free
-/// function used to fail to resolve — `error[T0020] unknown name` — forcing
-/// `pub` as a workaround; fixed compiler-side in #6580/#6886.)
-internal func newLambdaRouter(): LambdaRouter {
-  return LambdaRouter()
 }
 
 // ─── LambdaContext ────────────────────────────────────────────────────────────
@@ -273,16 +228,13 @@ pub record AuthorizerHandler {
 
 // ─── LambdaApp ────────────────────────────────────────────────────────────────
 /// Immutable Lambda application definition.
-/// Build one with newApp(), then attach a router and/or event handlers.
-/// All modes may coexist in a single LambdaApp: the kernel routes HTTP events
-/// to the router (or streaming handler), authorizer invocations to the
+/// Build one with newApp(), then attach event and authorizer handlers.
+/// The kernel routes authorizer invocations to the
 /// authorizer handler table, and all other events to the event handler table.
 /// AOT-safe direct handlers are resolved from directHandlers first; string-
 /// based handlers are the fallback for non-AOT builds.
 @stable(since = "0.1")
 pub record LambdaApp {
-  httpRouter: Option[LambdaRouter]
-  streamingHandler: Option[String]           // qualified name of a streaming HTTP handler
   eventHandlers: slice[EventHandler]
   authorizerHandlers: slice[AuthorizerHandler]
   directHandlers: slice[DirectHandler]  // AOT-safe function-reference handlers
@@ -291,51 +243,7 @@ pub record LambdaApp {
 /// Empty application.
 @stable(since = "0.1")
 pub func newApp(): LambdaApp {
-  return LambdaApp(
-    httpRouter = None,
-    streamingHandler = None,
-    eventHandlers = [],
-    authorizerHandlers = [],
-    directHandlers = []
-  )
-}
-
-/// Attach a streaming HTTP handler for Lambda Function URL or HTTP API streaming.
-/// All HTTP traffic is forwarded to this handler; Web.Router is not consulted.
-/// Handler signature:
-///   func h(rawEvent: String, ctx: Lambda.LambdaContext, writer: Lambda.Stream.StreamWriter): Result[Unit, Lambda.LambdaError]
-/// Cannot be combined with withRouter in the same LambdaApp.
-/// For AOT builds use Lambda.Direct.streamingHandler + withDirect instead.
-@stable(since = "0.1")
-pub func withStreamingHandler(app: in LambdaApp, handlerName: in String): LambdaApp
-  requires: handlerName.length > 0
-{
-  return LambdaApp(
-    httpRouter = app.httpRouter,
-    streamingHandler = Some(handlerName),
-    eventHandlers = app.eventHandlers,
-    authorizerHandlers = app.authorizerHandlers,
-    directHandlers = app.directHandlers
-  )
-}
-
-/// Attach a lyric-web Router for API Gateway and ALB HTTP events.
-/// API Gateway v1 (REST API), v2 (HTTP API), and ALB events are mapped
-/// to the router's method + path and dispatched through the same mechanism
-/// as Web.start().  CORS config is read from the Web.Cors config block.
-/// Cannot be combined with withStreamingHandler in the same LambdaApp.
-/// Requires the `web` feature to be active in the consumer's lyric.toml.
-@stable(since = "0.1")
-@cfg(feature = "web")
-pub func withRouter(app: in LambdaApp, router: in Router): LambdaApp {
-  val lr = WebBridge.createRouterToken(router)
-  return LambdaApp(
-    httpRouter = Some(lr),
-    streamingHandler = app.streamingHandler,
-    eventHandlers = app.eventHandlers,
-    authorizerHandlers = app.authorizerHandlers,
-    directHandlers = app.directHandlers
-  )
+  return LambdaApp(eventHandlers = [], authorizerHandlers = [], directHandlers = [])
 }
 
 /// Register an AOT-compatible direct handler created with Lambda.Direct.*Handler().
@@ -343,8 +251,6 @@ pub func withRouter(app: in LambdaApp, router: in Router): LambdaApp {
 @stable(since = "0.1")
 pub func withDirect(app: in LambdaApp, handler: in DirectHandler): LambdaApp {
   return LambdaApp(
-    httpRouter = app.httpRouter,
-    streamingHandler = app.streamingHandler,
     eventHandlers = app.eventHandlers,
     authorizerHandlers = app.authorizerHandlers,
     directHandlers = concat(app.directHandlers, [handler])
@@ -358,8 +264,6 @@ func addHandler(app: in LambdaApp, src: in String, name: in String): LambdaApp
 {
   val h = EventHandler(eventSource = src, handlerName = name)
   return LambdaApp(
-    httpRouter = app.httpRouter,
-    streamingHandler = app.streamingHandler,
     eventHandlers = concat(app.eventHandlers, [h]),
     authorizerHandlers = app.authorizerHandlers,
     directHandlers = app.directHandlers
@@ -373,8 +277,6 @@ func addAuthorizerHandler(app: in LambdaApp, authType: in String, name: in Strin
 {
   val h = AuthorizerHandler(authorizerType = authType, handlerName = name)
   return LambdaApp(
-    httpRouter = app.httpRouter,
-    streamingHandler = app.streamingHandler,
     eventHandlers = app.eventHandlers,
     authorizerHandlers = concat(app.authorizerHandlers, [h]),
     directHandlers = app.directHandlers
@@ -518,8 +420,7 @@ config Runtime {
 ///
 /// In production (feature="aws"):
 ///   Polls the Lambda Runtime API for events indefinitely.
-///   Dispatches each event to either the httpRouter (API Gateway / ALB) or
-///   the matching registered EventHandler.
+///   Dispatches each event to the matching registered handler.
 ///   Posts the response or error back to the runtime API.
 ///   Blocks until the Lambda execution environment terminates the process.
 ///
