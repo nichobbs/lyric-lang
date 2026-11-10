@@ -1688,3 +1688,27 @@ test "a distinct type's from builds as a wrap of the argument converted to the u
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a range subtype's from builds as a range check of the argument" {
+  val c = censusOf("package App\ntype Age = Int range 0 ..= 150\nfunc f(): Age { Age.from(5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an index on a buffer builds as a buffer index" {
+  val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call of an impl member on a record passes the value as the receiver" {
+  val c = censusOf(
+    "package App\ninterface Named { func name(): String }\nrecord P { n: String }\nimpl Named for P { func name(): String { self.n } }\nfunc f(p: P): String { p.name() }\n"
+  )
+  assertTrue(c.built >= 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

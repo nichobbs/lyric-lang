@@ -1483,27 +1483,34 @@ func buildDistinctFactory(
       case _ -> return None
     }
   }
-  val did = match target {
-    case TNamed(s, targs) -> if targs.count == 0 { s } else { return None }
-    case _ -> return None
-  }
   val tbl = env.ctx.tbl
-  val under = match symbolOfDefId(tbl, did) {
-    case Some(sym) -> match sym.kind {
-      case DKDistinctType(_, _) -> match distinctUnderlyingOf(tbl, TyUser(id = did, name = sym.name, args = newList())) {
-        case Some(u) -> u
+  var distinctId: Option[SymbolId] = None
+  val uty = match target {
+    case TRefined(u, _, _, _) -> u
+    case TNamed(did, targs) -> {
+      if targs.count != 0 {
+        return None
+      }
+      val under = match symbolOfDefId(tbl, did) {
+        case Some(sym) -> match sym.kind {
+          case DKDistinctType(_, _) -> match distinctUnderlyingOf(tbl, TyUser(id = did, name = sym.name, args = newList())) {
+            case Some(u) -> u
+            case None -> return None
+          }
+          case _ -> return None
+        }
         case None -> return None
       }
-      case _ -> return None
+      distinctId = Some(value = did)
+      match tyOfType(env.ctx, under) {
+        case Ok(t) -> t
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return Some(value = None)
+        }
+      }
     }
-    case None -> return None
-  }
-  val uty = match tyOfType(env.ctx, under) {
-    case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg)
-      return Some(value = None)
-    }
+    case _ -> return None
   }
   val xs = match positionalArgs(args) {
     case Some(v) -> v
@@ -1515,11 +1522,14 @@ func buildDistinctFactory(
   val built = match buildExpr(env, xs[0]) { case Some(t) -> t; case None -> return Some(value = None) }
   val arg = match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
   if mname == "from" {
-    return Some(value = Some(value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg))))
+    return Some(value = Some(value = match distinctId {
+      case Some(did) -> Some(value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg)))
+      case None -> convertValue(env, arg, ty)
+    }))
   }
   val one: List[TArg] = newList()
   one.add(TArgIn(value = arg))
-  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoTryFrom(target = did)), args = one))))
+  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoTryFrom), args = one))))
 }
 
 /// A host element as a `Ty`: the receiver's type argument, a Lyric primitive, or a
@@ -1802,6 +1812,9 @@ func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[TirT
     case TArray(_, _) -> return Some(value = IkArray)
     case TSlice(_) -> return Some(value = IkSlice)
     case TPrim(TPString) -> return Some(value = IkString)
+    case TNamed(s, targs) -> if targs.count == 1 and symbolIdEq(s, builtinBufferTypeId()) {
+      return Some(value = IkBuffer)
+    }
     case _ -> ()
   }
   match mapGet(env.ctx.tbl.exprTypes, recvExpr.nodeId) {
@@ -2419,6 +2432,7 @@ func buildMethodCall(
     case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
   var isEntry = false
+  var isImplMember = false
   match site.sig.recvMode {
     case Some(PMIn) -> ()
     case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
@@ -2431,7 +2445,9 @@ func buildMethodCall(
     } else if isSome(site.iface) {
       ()
     } else {
-      return uncoveredExpr(env, e, "a method call with no declared receiver")
+      // A member of an `impl Iface for T` block declares no receiver either: `self` is
+      // implicit, so the value it is called on is the receiver, passed `in`.
+      isImplMember = true
     }
   }
   val declared = match tyOfType(env.ctx, site.recvTy) {
@@ -2458,7 +2474,7 @@ func buildMethodCall(
     sym,
     site.sig,
     Some(value = site.recvTy),
-    if isEntry or (isSome(site.iface) and not isSome(site.sig.recvMode)) {
+    if isEntry or isImplMember or (isSome(site.iface) and not isSome(site.sig.recvMode)) {
       Some(value = PMIn)
     } else {
       site.sig.recvMode
