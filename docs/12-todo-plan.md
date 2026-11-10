@@ -348,8 +348,8 @@ tagging on the current contract-metadata format, accepting a format break in
    lyric-mq brokers, Hangfire/Quartz.NET, lyric-db JVM #8932) move to
    separate packages after docs/71 phase 1.  The phased plan, the `stability`
    manifest field and the compiler root causes it depends on are in docs/71.
-   Also: missing `Lyric.Testing` mocks (Jobs, Search, Queue
-   consumer, i18n, Ws); `.new()` migration of remaining `..ctor` wrappers in
+   Conformance suites and the Jobs, Search, Queue consumer and i18n mocks
+   shipped in `Lyric.Testing`; a Ws mock remains (#8968); `.new()` migration of remaining `..ctor` wrappers in
    lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.
 4. **Tooling.**  LSP: stdlib not loaded by the type check, hover/go-to on
    dot-named calls (#8304, #8338); formatter/parser losslessness (#2280);
