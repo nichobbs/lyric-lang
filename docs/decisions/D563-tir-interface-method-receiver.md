@@ -19,4 +19,6 @@ A signature with a declared mode keeps that mode, and a mutating receiver is sti
 
 ## Measured
 
-See the progress entry.
+`scripts/ci/tir-census.sh` over the 98 programs, on top of D562: bodies built 1039 -> 1053 of 1165,
+I0003 0; `a method call with no declared receiver` 30 -> 11 (what is left is calls on receivers that are
+neither protected types nor interfaces).
