@@ -1,4 +1,4 @@
-# D557 - A generic record's construction is recorded at its result type (docs/70 phase 3a, #8613)
+# D558 - A generic record's construction is recorded at its result type (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D388.
 

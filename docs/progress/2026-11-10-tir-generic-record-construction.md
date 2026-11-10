@@ -1,4 +1,4 @@
-# TIR: generic record construction (D557, #8613)
+# TIR: generic record construction (D558, #8613)
 
 The checker records the construction signature of a generic record at its closed result type, on
 both the plain and the expected-type construction paths, and the builder leaves the record's own
