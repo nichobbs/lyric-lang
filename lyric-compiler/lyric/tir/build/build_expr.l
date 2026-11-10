@@ -1522,10 +1522,14 @@ func buildDistinctFactory(
   val built = match buildExpr(env, xs[0]) { case Some(t) -> t; case None -> return Some(value = None) }
   val arg = match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
   if mname == "from" {
-    return Some(value = match distinctId {
-      case Some(did) -> Some(value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg)))
-      case None -> convertValue(env, arg, ty)
-    })
+    return Some(
+      value = match distinctId {
+        case Some(did) -> Some(
+          value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg))
+        )
+        case None -> convertValue(env, arg, ty)
+      }
+    )
   }
   val one: List[TArg] = newList()
   one.add(TArgIn(value = arg))
