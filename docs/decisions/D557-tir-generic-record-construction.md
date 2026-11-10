@@ -23,5 +23,5 @@ constructions passed as arguments of generic calls, left for its own slice).
 
 ## Measured
 
-`scripts/ci/tir-census.sh` over the 98 programs: `a method, constructor or member call` 56 -> 54,
-I0003 0; `collections_persistent_map_tests.l` builds all 10 bodies.
+`scripts/ci/tir-census.sh` over the 98 programs, on top of D556: bodies built 1006 -> 1007 of 1165,
+`a method, constructor or member call` 56 -> 54, I0003 0; `collections_persistent_map_tests.l` builds all 10 bodies.
