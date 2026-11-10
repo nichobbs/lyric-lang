@@ -2052,15 +2052,41 @@ func buildBuiltinCall(
               }
             }
             case None -> {
+              // A member the checker gave a function type (`String.substring`): its
+              // parameters, the call's leading ones when it leaves an optional one out.
+              var declared: Option[List[TParamTy]] = None
               if not genericBuiltin(name) {
-                for t in ts {
-                  if isWidenablePrim(t.ty) {
-                    return uncoveredExpr(env, e, "a built-in call with an argument the builder cannot check")
+                match mapGet(env.ctx.tbl.builtinFnTyByNode, e.nodeId) {
+                  case Some(ft) -> match tyOfType(env.ctx, ft) {
+                    case Ok(TFunc(ps, _, _)) -> if ts.count <= ps.count { declared = Some(value = ps) }
+                    case _ -> ()
                   }
+                  case None -> ()
                 }
               }
-              for t in ts {
-                res.add(t)
+              match declared {
+                case Some(ps) -> {
+                  var i = 0
+                  while i < ts.count {
+                    match coerceArg(env, ts[i], ps[i].ty) {
+                      case Some(c) -> res.add(c)
+                      case None -> return uncoveredExpr(env, e, "a built-in call needing a conversion")
+                    }
+                    i = i + 1
+                  }
+                }
+                case None -> {
+                  if not genericBuiltin(name) {
+                    for t in ts {
+                      if isWidenablePrim(t.ty) {
+                        return uncoveredExpr(env, e, "a built-in call with an argument the builder cannot check")
+                      }
+                    }
+                  }
+                  for t in ts {
+                    res.add(t)
+                  }
+                }
               }
             }
           }
