@@ -2171,7 +2171,7 @@ pub func symTableFuncDefPathKey(
 pub func symTableFuncSymOf(tbl: in SymbolTable, fn: in FunctionDecl): Option[SymbolId] {
   for s in symTableTryFindAllNamed(tbl, fn.name) {
     match s.kind {
-      case DKFunc(decl) -> if spanKey(s.declSpan) == spanKey(fn.span) {
+      case DKFunc(decl) -> if spanKey(decl.span) == spanKey(fn.span) {
         return Some(value = internDefPath(tbl.interner, funcDefPath(s.originPackage, s.name, decl.params)))
       }
       case _ -> ()
