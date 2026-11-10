@@ -19,21 +19,15 @@
 //! application/x-protobuf`), built by `OTel.Otlp.Codec` (pure Lyric, on
 //! top of `lyric-proto`) and sent via `_kernel/net/otlp_kernel.l`'s
 //! `netPostProtobuf` — a dedicated `HttpClient`/`ByteArrayContent`
-//! binding, not `Std.Http` (whose public POST/PUT/PATCH surface only
+//! binding (and its JVM twin), not `Std.Http` (whose public POST/PUT/PATCH surface only
 //! builds UTF-8 `StringContent` bodies and would corrupt arbitrary
 //! protobuf bytes >= 0x80).
 //!
-//! `OtlpProtocol.Grpc` is declared for API-shape parity with real OTel
-//! SDKs but is **not implemented**: OTLP/gRPC needs HTTP/2 trailers-based
-//! framing, well beyond what this redesign (issue #5410) scoped in.
-//! `configureOtlpTraces`/`configureOtlpMetrics` return `Err` immediately
-//! for `OtlpProtocol.Grpc` rather than silently ignoring it.
+//! On the `jvm` feature the same bytes are POSTed by
+//! `_kernel/jvm/otlp_kernel.l` over `java.net.http.HttpClient`.
 //!
-//! There is no OTLP **logs** exporter: `configureOtlpLogs` always
-//! returns `Err` — see "Known limitations" in README.md.
-//!
-//! `jvm`: every `configureOtlp*` function returns `Err` — OTLP/HTTP
-//! export is dotnet-only today (see `_kernel/jvm/otlp_kernel.l`).
+//! Only traces and metrics over OTLP/HTTP are exported; there is no logs
+//! exporter and no OTLP/gRPC transport.
 @io
 package OTel.Otlp
 
@@ -47,9 +41,7 @@ import Std.Collections
 // ─── Protocol selection ───────────────────────────────────────────────────────
 /// The OTLP transport protocol.
 pub enum OtlpProtocol {
-  /// gRPC + protobuf (OTLP/gRPC) — **not implemented**, see module doc.
-  case Grpc
-  /// HTTP/1.1 + protobuf (OTLP/HTTP) — the only implemented transport.
+  /// HTTP/1.1 + protobuf (OTLP/HTTP) — the only transport.
   /// Default collector port 4318, paths `/v1/traces` and `/v1/metrics`
   /// appended automatically to the configured `endpoint`.
   case HttpProtobuf
@@ -72,8 +64,7 @@ pub record OtlpExporterConfig {
 }
 
 /// A default OTLP config pointing at a local collector's OTLP/HTTP
-/// endpoint (port 4318 — the OTLP/HTTP default; port 4317 is OTLP/gRPC,
-/// which this library does not implement, see module doc).
+/// endpoint (port 4318, the OTLP/HTTP default).
 @stable(since = "0.2")
 pub func defaultConfig(): OtlpExporterConfig {
   OtlpExporterConfig(
@@ -112,25 +103,6 @@ func newExporterConfigState(): ExporterConfigState {
 
 val exporterState: ExporterConfigState = newExporterConfigState()
 
-// `netPostProtobuf` (dotnet) is a real transport; `jvmPostProtobuf` (jvm)
-// always returns `Err` (see `_kernel/jvm/otlp_kernel.l`'s module doc).
-// Before #5587/#5594, `configureOtlpTraces`/`configureOtlpMetrics` stored
-// the config and returned `Ok` unconditionally on *both* targets, so a JVM
-// caller believed export was configured — the module doc already claimed
-// "every `configureOtlp*` function returns `Err`" on `jvm`, but the code
-// didn't do that. Gate configuration itself on transport availability so
-// the `jvm` feature fails fast and honestly, instead of silently buffering
-// spans/metrics that can never be exported.
-@cfg(feature = "dotnet")
-func otlpTransportImplemented(): Bool {
-  true
-}
-
-@cfg(feature = "jvm")
-func otlpTransportImplemented(): Bool {
-  false
-}
-
 /// Why `cfg` cannot be used, or the empty string when it can: the request
 /// timeout must be positive and every header needs a non-empty name.
 pub func configProblem(cfg: in OtlpExporterConfig): String {
@@ -158,70 +130,33 @@ pub func effectiveTimeoutMs(configured: in Int, requested: in Int): Int {
   }
 }
 
-func otlpTransportNotImplementedError(): String {
-  "lyric-otel's JVM OTLP/HTTP transport is not implemented (dotnet-only today); see lyric-otel/README.md and docs/44-jvm-production-readiness-plan.md"
-}
-
 // ─── Signal-specific configure functions ──────────────────────────────────────
 /// Configure OTLP/HTTP trace export.  Returns `Err` for a non-positive
-/// `timeoutMs`, a header with an empty name,
-/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
-/// feature (OTLP/HTTP export is dotnet-only today).
+/// `timeoutMs` or a header with an empty name.
 @stable(since = "0.2")
 pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
-  if not otlpTransportImplemented() {
-    return Err(error = otlpTransportNotImplementedError())
+  val problem = configProblem(cfg)
+  if problem.length > 0 {
+    return Err(error = problem)
   }
-  match cfg.protocol {
-    case OtlpProtocol.Grpc -> Err(
-      error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
-    )
-    case OtlpProtocol.HttpProtobuf -> {
-      val problem = configProblem(cfg)
-      if problem.length > 0 {
-        return Err(error = problem)
-      }
-      exporterState.setTraces(cfg)
-      Ok(value = ())
-    }
-  }
+  exporterState.setTraces(cfg)
+  Ok(value = ())
 }
 
 /// Configure OTLP/HTTP metrics export.  Returns `Err` for a non-positive
-/// `timeoutMs`, a header with an empty name,
-/// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
-/// feature (OTLP/HTTP export is dotnet-only today).
+/// `timeoutMs` or a header with an empty name.
 @stable(since = "0.2")
 pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
-  if not otlpTransportImplemented() {
-    return Err(error = otlpTransportNotImplementedError())
+  val problem = configProblem(cfg)
+  if problem.length > 0 {
+    return Err(error = problem)
   }
-  match cfg.protocol {
-    case OtlpProtocol.Grpc -> Err(
-      error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
-    )
-    case OtlpProtocol.HttpProtobuf -> {
-      val problem = configProblem(cfg)
-      if problem.length > 0 {
-        return Err(error = problem)
-      }
-      exporterState.setMetrics(cfg)
-      Ok(value = ())
-    }
-  }
-}
-
-/// OTLP log export is not implemented (traces and metrics only).
-/// Always returns `Err`.
-@stable(since = "0.2")
-pub func configureOtlpLogs(cfg: OtlpExporterConfig): Result[Unit, String] {
-  Err(error = "lyric-otel does not implement OTLP log export (traces and metrics only); see README.md")
+  exporterState.setMetrics(cfg)
+  Ok(value = ())
 }
 
 /// Configure traces then metrics with the same config.  Stops at the
-/// first error (logs are not included — `configureOtlpLogs` always
-/// fails, so folding it in here would always mask the traces/metrics
-/// result).
+/// first error.
 @stable(since = "0.2")
 pub func configureOtlp(cfg: OtlpExporterConfig): Result[Unit, String] {
   match configureOtlpTraces(cfg) {

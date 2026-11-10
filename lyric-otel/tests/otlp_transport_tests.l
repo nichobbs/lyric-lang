@@ -34,7 +34,6 @@ import Std.String as Str
 import OTel
 import OTel.Types
 import OTel.Otlp
-import OTel.Kernel.Net.Otlp as OtelNetOtlp
 
 test "flushOtlpAsync sends real OTLP/HTTP protobuf to a live collector (env-gated)" {
   val url = getVarOrDefault("LYRIC_OTEL_TEST_COLLECTOR_URL", "")
@@ -117,11 +116,18 @@ test "effectiveTimeoutMs is the smaller of the configured and requested timeouts
 }
 
 // A header the HTTP stack refuses (`Content-Type` belongs to the content
-// headers, so `HttpRequestHeaders.TryAddWithoutValidation` returns false)
-// used to be skipped silently, dropping auth headers unnoticed.
-test "netPostProtobuf fails the export when a header is rejected" {
-  match await OtelNetOtlp.netPostProtobuf("http://127.0.0.1:1/v1/traces", [1u8, 2u8], ["Content-Type"], ["text/plain"], 1000) {
-    case Err(e) -> assertTrue(Str.contains(e, "Content-Type"), "the rejected header is named: " + e)
-    case Ok(_) -> assertTrue(false, "a rejected header must fail the export")
+// headers) used to be skipped silently, dropping auth headers unnoticed.
+// The export now fails and the span stays buffered, on both targets.
+test "flushOtlpAsync fails the export when a header is rejected" {
+  val _ = globalSpanBuffer.drain()
+  match configureOtlpTraces(cfgWith(1000, [OtlpHeader(key = "Content-Type", value = "text/plain")])) {
+    case Err(e) -> assertTrue(false, "configureOtlpTraces failed: " + e)
+    case Ok(_) -> {
+    }
   }
+  val span = startSpan("otlp_transport_tests.rejected_header", 0)
+  endSpan(span)
+  val ok = await flushOtlpAsync(1000)
+  assertFalse(ok, "a rejected header must fail the export")
+  assertEqualInt(globalSpanBuffer.count(), 1, "the span is still buffered")
 }

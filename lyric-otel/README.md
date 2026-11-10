@@ -5,10 +5,10 @@ span/metric recording plus OTLP/HTTP export, and three reusable `pub aspect`
 templates — `Tracing`, `Metrics`, and `RequestLogging` — that consumers bind
 to their own call-site selectors without modifying the instrumented code.
 
-> **Status** (issue #5410): span/metric recording (`OTel.startSpan`/
+> **Status** (issues #5410, #8953): span/metric recording (`OTel.startSpan`/
 > `endSpan`/`setSpanAttribute`/`setSpanError`/`incrementCounter`/
 > `recordHistogram`) and OTLP/HTTP export (`OTel.Otlp`) are genuinely
-> functional on the `dotnet` target — not a no-op. Earlier versions of
+> functional on both the `dotnet` and `jvm` targets, not a no-op. Earlier versions of
 > this library bound `System.Diagnostics.ActivitySource`/`Meter` for
 > recording and the OTel .NET SDK's fluent `AddOtlpExporter(...)` builder
 > for export; both were confirmed no-ops (`ActivitySource.StartActivity`
@@ -18,8 +18,8 @@ to their own call-site selectors without modifying the instrumented code.
 > on the OTel .NET SDK at all: span/metric state is a plain in-process
 > Lyric record, and OTLP export builds protobuf directly with
 > `lyric-proto` and POSTs it over a dedicated `HttpClient`/
-> `ByteArrayContent` kernel. See "Known limitations" below for what is
-> still out of scope, and "Platform support" for JVM's honest status.
+> `ByteArrayContent` kernel (and `java.net.http` on the JVM). See "Known
+> limitations" below for what is still out of scope.
 >
 > The aspect weaver (which performs the call-site rewriting the `Tracing`/
 > `Metrics`/`RequestLogging` templates rely on) has shipped since D047/
@@ -27,25 +27,22 @@ to their own call-site selectors without modifying the instrumented code.
 
 ## Platform support
 
-| Feature flag | Recording (span/metric bookkeeping) | OTLP/HTTP export       |
-|--------------|--------------------------------------|-------------------------|
-| `dotnet`     | Available (pure Lyric, no BCL)        | Available (protobuf/HTTP via `HttpClient`) |
-| `jvm`        | Available (same pure-Lyric code)      | **Not implemented** — every `configureOtlp*` call returns `Err`; see `docs/44-jvm-production-readiness-plan.md` |
+| Feature flag | Recording (span/metric bookkeeping) | OTLP/HTTP export |
+|--------------|--------------------------------------|-------------------|
+| `dotnet`     | Available (pure Lyric, no BCL)        | Available (protobuf over `HttpClient`) |
+| `jvm`        | Available (same pure-Lyric code)      | Available (protobuf over `java.net.http.HttpClient`) |
 
 Recording (`OTel.startSpan`/`endSpan`/`setSpanAttribute`/`setSpanError`/
-`incrementCounter`/`recordHistogram`) has no BCL dependency at all — it
-works identically on both targets. Only the OTLP/HTTP *export* step needs
-a real HTTP transport, which today exists for `dotnet` only. On `jvm`,
-spans/metrics still get recorded into the in-process buffer, but nothing
-ever drains it — `flushOtlpAsync` is effectively a no-op on that target.
+`incrementCounter`/`recordHistogram`) has no BCL or JDK dependency at all and
+works identically on both targets. Export builds the OTLP protobuf in pure
+Lyric (`OTel.Otlp.Codec` over `lyric-proto`) and POSTs the raw bytes with a
+small per-target kernel (`_kernel/net`, `_kernel/jvm`); `Std.Http` cannot be
+used because its request bodies are UTF-8 `String`s, which corrupt protobuf
+bytes at or above 0x80. The JVM transport is tested against an in-process
+collector in `jvm-ecosystem-suites.sh`.
 
-OTLP/**gRPC** transport (`OtlpProtocol.Grpc`) is declared for API-shape
-parity with real OTel SDKs but is **not implemented on either target** —
-it needs HTTP/2 trailers-based framing, well beyond what this redesign
-scoped in. `configureOtlpTraces`/`configureOtlpMetrics` return `Err`
-immediately for `OtlpProtocol.Grpc` rather than silently ignoring it;
-`defaultConfig()` returns an `OtlpProtocol.HttpProtobuf` config for
-exactly this reason.
+Only traces and metrics over OTLP/HTTP are exported. There is no OTLP logs
+exporter and no OTLP/gRPC transport.
 
 Select a platform by declaring the feature in your `lyric.toml`:
 
@@ -53,6 +50,24 @@ Select a platform by declaring the feature in your `lyric.toml`:
 [features]
 dotnet = []
 ```
+
+Use `jvm = []` instead when building with `--target jvm`.
+
+## Migration notes
+
+The unimplemented surface was removed rather than left returning `Err`
+(D552 item 2, #8953):
+
+- `OtlpProtocol.Grpc` is gone. `OtlpProtocol` now has the single case
+  `OtlpProtocol.HttpProtobuf`; the `protocol` field of `OtlpExporterConfig`
+  is kept so existing `defaultConfig()` users compile unchanged.
+- `configureOtlpLogs` is gone; it only ever returned `Err`.
+- `configureOtlpTraces`/`configureOtlpMetrics`/`configureOtlp` no longer
+  return `Err` merely because the target is `jvm`. They fail only for an
+  invalid config (non-positive `timeoutMs`, empty header name).
+- Feature flags: none became meaningless. `dotnet` and `jvm` still select
+  which transport kernel is compiled. `jvm` is no longer an "API-shape
+  parity" flag; it now gates a real transport.
 
 ## Installation
 
@@ -225,7 +240,6 @@ Logs function entry and exit via `Std.Log`.
 | `defaultConfig(): OtlpExporterConfig`                 | `http://localhost:4318`, `OtlpProtocol.HttpProtobuf` |
 | `configureOtlpTraces(cfg): Result[Unit, String]`      | Configure the traces exporter                      |
 | `configureOtlpMetrics(cfg): Result[Unit, String]`     | Configure the metrics exporter                     |
-| `configureOtlpLogs(cfg): Result[Unit, String]`        | Always `Err` — not implemented (see below)         |
 | `configureOtlp(cfg): Result[Unit, String]`            | Configure traces then metrics                      |
 | `flushOtlpAsync(timeoutMs): Bool`                     | POST every buffered span/metric; `true` iff every configured, non-empty signal got a 2xx response |
 
@@ -247,13 +261,9 @@ follow-up, not a promise this library doesn't yet keep:
   span exists, a child span will inherit its parent's sampled/unsampled
   decision and only roots will draw (parent-based sampling, D279), so a
   sampled trace is never missing spans below an unsampled one.
-- **No OTLP logs exporter.** `configureOtlpLogs` always returns `Err`.
-  Traces and metrics only.
-- **OTLP/gRPC is not implemented** (either target). Only OTLP/HTTP
+- **Traces and metrics only.** There is no OTLP logs exporter, and
+  OTLP/gRPC is not offered; only OTLP/HTTP
   (`Content-Type: application/x-protobuf`) is supported.
-- **JVM OTLP/HTTP export is not implemented.** Span/metric recording
-  works on `jvm` (it's pure Lyric), but nothing ever exports it — see
-  the platform-support table above.
 - **No background flush.** `flushOtlpAsync` is call-driven only; there
   is no timer or size-triggered auto-export thread. The span buffer is
   capped at 2048 entries (older spans silently dropped) so an
@@ -285,12 +295,14 @@ lyric-otel/
     otlp.l                          OTLP exporter configuration and lifecycle (OTel.Otlp)
     _kernel/
       net/otlp_kernel.l             .NET OTLP/HTTP transport kernel (@cfg dotnet)
-      jvm/otlp_kernel.l             JVM stub — always Err (@cfg jvm)
+      jvm/otlp_kernel.l             JVM OTLP/HTTP transport kernel (@cfg jvm)
   tests/
     otel_types_tests.l              SpanKind/MetricUnit enum matching
     otel_span_tests.l               span/metric recording + buffering behaviour
     otlp_codec_tests.l              byte-exact + decode-based OTLP protobuf encoder tests
-    otlp_transport_tests.l          env-gated live-collector transport test (no-op in CI)
+    otlp_transport_tests.l          target-neutral transport behaviour (failure, config, rejected header)
+    otlp_net_kernel_tests.l         dotnet kernel error text (dotnet only)
+    otlp_jvm_collector_tests.l      JVM export against an in-process collector (jvm only)
 ```
 
 ## See also
@@ -299,4 +311,4 @@ lyric-otel/
 - `docs/27-aspect-libraries.md` — cross-package aspect distribution design
 - `docs/03-decision-log.md` D050/D051/D122 — design decisions backing this library
 - `lyric-proto/README.md` — the pure-Lyric protobuf encoder this library builds on
-- `docs/44-jvm-production-readiness-plan.md` — JVM OTLP export tracking
+- `docs/71-ecosystem-remediation-plan.md` — the remediation this change belongs to

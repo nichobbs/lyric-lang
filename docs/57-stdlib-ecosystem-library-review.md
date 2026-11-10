@@ -155,11 +155,10 @@ affected by this constraint — `.new(args)` is safe to use there today.
   express) guarding the same read-modify-write logic as
   `Resilience.Kernel.Net`. `Retry`/`CircuitBreaker` now work identically
   on both targets.
-- **lyric-otel JVM kernel is compile-only** (`otel_kernel.l` JVM variant
-  header: "Marked `@phase(6)` — not compiled today; present to drive API
-  parity"). Accurately documented but worth a runtime-facing note in
-  `otel.l` so users importing on JVM don't expect traces to actually
-  export.
+- **lyric-otel JVM kernel** was an always-`Err` stub; it is now a real
+  OTLP/HTTP transport over `java.net.http` (D552 item 2, #8953), tested
+  against an in-process collector, and the unimplemented OTLP logs exporter
+  and OTLP/gRPC transport were removed from the public API.
 - **stdlib JVM gaps**: HTTP Unix-domain-socket support is **fixed**
   (#8560): `std/_kernel_jvm/http_host.l` writes the request to a
   `SocketChannel` and frames it with `Std.HttpClientWire`. Regex timeout (`std/_kernel_jvm/regex_host.l`, tracked #1103)
