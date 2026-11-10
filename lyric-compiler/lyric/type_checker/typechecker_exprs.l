@@ -6161,11 +6161,12 @@ func maybeUnknownMemberDiag(
         )
         return
       }
-      if isCall and stdCollectionMethodIsUnknown(tbl, sigs, tid, targs, name) {
+      if stdCollectionMethodIsUnknown(tbl, sigs, tid, targs, name) {
         diag.add(
           errorDiagnostic(
             "T0113",
-            "no method '" + name + "' on type '" + tname + "'; a " + tname + " has only the members " +
+            "no " + (if isCall { "method" } else { "member" }) + " '" + name + "' on type '" + tname + "'; a " + tname +
+              " has only the members " +
               stdCollectionSurfaceList(tbl, tid, targs),
             span
           )

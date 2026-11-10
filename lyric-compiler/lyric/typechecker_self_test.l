@@ -15734,3 +15734,35 @@ test "a method call on a collection names a built-in member: T0113" {
   )
   assertTrue(hasDiagCode(wrongTy, "T0043"), "element type: " + diagCodesOf(wrongTy))
 }
+
+// A plain member read on a collection is held to the same surface as a call
+// (#8930), and the `Set` and dot-named / UFCS escape hatches behave as for
+// `List` and `Map`.
+test "a member read and a Set method on a collection are T0113; dot-named and UFCS functions bind (#8930)" {
+  val head = "package P\nimport Std.CollectionsHost\n"
+  val read = checkWithImportedPackages(
+    parse(head + "func f(xs: in List[Int]): Unit {\n  val v = xs.bogus\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(hasDiagCode(read, "T0113"), "List member read: " + diagCodesOf(read))
+  val setCall = checkWithImportedPackages(
+    parse(head + "func f(s: in Set[Int]): Unit {\n  s.bogus(1)\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(hasDiagCode(setCall, "T0113"), "Set method: " + diagCodesOf(setCall))
+  val setOk = checkWithImportedPackages(
+    parse(head + "func f(s: in Set[Int]): Unit {\n  s.add(1)\n  val has: Bool = s.contains(1)\n  val n: Int = s.count\n  s.remove(1)\n  s.clear()\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(setOk), "", "Set built-in members")
+  val dotNamed = checkWithImportedPackages(
+    parse(head + "func List.second(self: in List[Int]): Int {\n  self.count\n}\nfunc f(xs: in List[Int]): Int {\n  xs.second()\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(dotNamed), "", "a dot-named function binds to the List: " + diagCodesOf(dotNamed))
+  val ufcs = checkWithImportedPackages(
+    parse(head + "func lastOr(xs: in List[Int]): Int {\n  xs.count\n}\nfunc f(xs: in List[Int]): Int {\n  xs.lastOr()\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(ufcs), "", "a bare function binds by UFCS: " + diagCodesOf(ufcs))
+}
