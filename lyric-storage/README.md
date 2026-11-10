@@ -4,29 +4,32 @@ Object and file storage with pluggable backend support.
 
 ## Platform parity
 
-**Only the local filesystem backend is production-ready today, on both
-targets.** `connectS3()` and `connectAzureBlob()` compile and type-check
-on both `dotnet` and `jvm`, but every operation on the returned bucket
-returns `Err(StorageError(code = "NOT_IMPLEMENTED"))` — they are not
-stubs limited to one target, they simply have no working backend yet on
-either. See `docs/57-stdlib-ecosystem-library-review.md` §3.
+The local filesystem backend is the only backend, and it is production-ready
+on both targets: `dotnet` through `Storage.Kernel.Net` and `jvm` through
+`Storage.Kernel.Jvm`, which needs nothing beyond `java.base`. There are no
+placeholder backends: every backend this library exposes works.
 
-| Feature flag | Backend                                                              | Status                                  |
-|--------------|----------------------------------------------------------------------|------------------------------------------|
-| `dotnet`     | Local filesystem                                                      | Available                               |
-| `dotnet`     | AWS SDK for .NET (S3), Azure Blob SDK                                | `NOT_IMPLEMENTED` — native bindings pending |
-| `jvm`        | Local filesystem                                                      | Available                               |
-| `jvm`        | AWS SDK for Java v2 (S3), Azure Blob SDK for Java                    | `NOT_IMPLEMENTED` — native bindings pending |
+| Feature flag | Backend          | Status    |
+|--------------|------------------|-----------|
+| `dotnet`     | Local filesystem | Available |
+| `jvm`        | Local filesystem | Available |
 
-The JVM kernel (`Storage.Kernel.Jvm`) declares S3 / Azure Blob
-bindings against `software.amazon.awssdk:s3` and
-`com.azure:azure-storage-blob`, plus `lyric.storage.*` helpers; the
-JVM helpers are supplied by the Lyric JVM stdlib JAR (out-of-repo).
-Until that JAR ships, only the `dotnet` feature produces a runnable
-artifact — and even there, only the local-filesystem path is real; S3
-and Azure Blob need direct `extern type` bindings against their
-respective SDKs before they do anything but return
-`NOT_IMPLEMENTED` (see D056 below).
+Select exactly one flag, matching `--target` (`--target jvm
+--no-default-features --features jvm`).
+
+## Migration: S3 and Azure Blob removed
+
+`connectS3` and `connectAzureBlob` were removed (docs/decisions/D552, docs/71).
+They only ever returned `Err(StorageError(code = "NOT_IMPLEMENTED"))`, so code
+that called them could never have run against a real bucket; calls now fail to
+compile instead of failing at run time. Replace them with `connectLocal`, or
+implement `StorageBucket` for the remote store in your own package.
+
+The `s3` and `azureblob` feature flags, and the AWS and Azure NuGet or Maven
+entries that went with them, no longer mean anything. They had already been
+dropped from this library's own `lyric.toml`, so only an application that
+forwarded them (for example `storage = ["s3"]` in its own `[features]`)
+needs a change: delete those entries.
 
 ## Packages
 
@@ -40,46 +43,27 @@ respective SDKs before they do anything but return
 ```lyric
 import Storage
 
-val bucket = Storage.connectS3({
-  region: "us-east-1",
-  bucket: "my-data",
-  accessKey: "AKIA...",
-  secretKey: "..."
-})
+val bucket = Storage.connectLocal("/var/data", "uploads")?
 
 // Upload a file
-Storage.put(bucket, "path/to/file.txt", "Hello, world!")
+Storage.put(bucket, "path/to/file.txt", base64Data, "text/plain")?
 
 // Download a file
 match Storage.get(bucket, "path/to/file.txt") {
-  case Some(data) -> println(data)
-  case None -> println("not found")
+  case Ok(obj) -> println(obj.metadata.contentType)
+  case Err(e)  -> println(e.message)
 }
 
 // List objects
-val result = Storage.list(bucket, "path/")
-for entry in result.entries {
+val listing = Storage.list(bucket, "path/")?
+for entry in listing.entries {
   println(entry.key)
-}
-
-// Check existence
-if Storage.exists(bucket, "path/to/file.txt") {
-  println("file exists")
 }
 ```
 
 ## Supported backends
 
-Feature-gate the backend you need in `lyric.toml`:
-
-```toml
-[features]
-storage = ["s3"]  # or "azureblob", "local"
-```
-
-- `s3` — Amazon S3 (`NOT_IMPLEMENTED` — see "Platform parity" above)
-- `azureblob` — Azure Blob Storage (`NOT_IMPLEMENTED` — see "Platform parity" above)
-- `local` — Local filesystem (production-ready)
+- `local` - local filesystem (production-ready on `dotnet` and `jvm`)
 
 ## Core types and functions
 
@@ -132,13 +116,7 @@ pub record StorageMetadata {
 ### Factory and core functions
 
 ```lyric
-Storage.connectS3(config: in S3Config)
-  -> Result[StorageBucket, StorageError]
-
-Storage.connectAzureBlob(config: in AzureBlobConfig)
-  -> Result[StorageBucket, StorageError]
-
-Storage.connectLocal(rootPath: in String)
+Storage.connectLocal(basePath: in String, bucketName: in String)
   -> Result[StorageBucket, StorageError]
 
 Storage.put(bucket: in StorageBucket, key: in String, data: in String)
@@ -162,53 +140,9 @@ Storage.exists(bucket: in StorageBucket, key: in String)
 
 ## Configuration
 
-### S3
-
-Config for `Storage.connectS3()`:
-
-```lyric
-pub record S3Config {
-  region: String
-  bucket: String
-  accessKey: String
-  secretKey: String
-  endpoint: Option[String]
-}
-```
-
-Environment variable defaults (env prefix `LYRIC_CONFIG_STORAGE_S3_`):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `REGION` | `us-east-1` | AWS region |
-| `BUCKET` | `""` | S3 bucket name |
-| `ACCESSKEY` | `""` | AWS Access Key ID |
-| `SECRETKEY` | `""` | AWS Secret Access Key |
-| `ENDPOINT` | `""` | Custom S3 endpoint (optional) |
-
-### Azure Blob
-
-Config for `Storage.connectAzureBlob()`:
-
-```lyric
-pub record AzureBlobConfig {
-  accountName: String
-  containerName: String
-  accountKey: String
-}
-```
-
-Environment variable defaults (env prefix `LYRIC_CONFIG_STORAGE_AZUREBLOB_`):
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `ACCOUNTNAME` | `""` | Storage account name |
-| `CONTAINERNAME` | `""` | Container name |
-| `ACCOUNTKEY` | `""` | Storage account key |
-
 ### Local Filesystem
 
-`Storage.connectLocal(rootPath)` uses a local directory as the storage root.
+`Storage.connectLocal(basePath, bucketName)` uses `basePath/bucketName` as the storage root, creating it if missing.
 Every backend checks each key with `Storage.isSafeKey` and returns
 `Err(StorageError(code = "INVALID_KEY"))` for a rejected one: empty keys,
 control characters, absolute keys, `..`, `.` and empty path segments

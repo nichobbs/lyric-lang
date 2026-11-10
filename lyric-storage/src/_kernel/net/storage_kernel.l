@@ -17,13 +17,6 @@
 //!   * `Directory.GetFiles` / `Directory.GetDirectories` for recursive
 //!     `list` walks.
 //!
-//! S3 (AWSSDK.S3) and Azure Blob (Azure.Storage.Blobs) backends are
-//! declared as Lyric stubs in `storage.l` that return "not yet
-//! implemented" errors and are tracked as follow-up tickets.  Native
-//! `extern type` bindings against the NuGet SDKs are a multi-day rewrite
-//! of substantial surface area (S3: 30+ request/response types; Azure
-//! Blob: similar) and have no `@cfg(feature=…)` users yet.
-//!
 //! Internal: only `Storage` (lyric-storage/src/storage.l) should import
 //! this; see `docs/14-native-stdlib-plan.md` for the kernel boundary
 //! contract.

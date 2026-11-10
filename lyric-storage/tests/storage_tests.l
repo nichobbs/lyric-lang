@@ -107,7 +107,7 @@ test "isSafeKey rejects control characters, '.' and empty segments (#7242)" {
   assertTrue(isSafeKey("a/b.c/d"), "dots inside a segment are fine")
   assertTrue(not isSafeKey("a\u{0001}b"), "C0 control character")
   assertTrue(not isSafeKey("a\nb"), "line feed")
-  assertTrue(not isSafeKey("ab"), "DEL")
+  assertTrue(not isSafeKey("a\u{007f}b"), "DEL")
   assertTrue(not isSafeKey("a/./b"), "'.' segment")
   assertTrue(not isSafeKey("a/%2e/b"), "encoded '.' segment")
   assertTrue(not isSafeKey("a//b"), "empty segment aliases a/b on local-fs")
@@ -160,31 +160,6 @@ test "connectLocal returns Err(INVALID_ARGUMENT) when GetFullPath rejects a NUL 
     case Ok(_) -> assertTrue(false, "a NUL-bearing bucketName must not succeed")
     case Err(e) -> assertEqual(e.code, "INVALID_ARGUMENT", "GetFullPath failure yields a structured Err, not a crash")
   }
-}
-
-test "connectS3 rejects empty region" {
-  assertTrue(isErr[StorageBucket, StorageError](connectS3("", "bucket", "k", "s", "")), "must reject empty region")
-}
-
-test "connectS3 rejects empty bucket name" {
-  assertTrue(
-    isErr[StorageBucket, StorageError](connectS3("us-east-1", "", "k", "s", "")),
-    "must reject empty bucket name"
-  )
-}
-
-test "connectAzureBlob rejects empty connection string" {
-  assertTrue(
-    isErr[StorageBucket, StorageError](connectAzureBlob("", "container")),
-    "must reject empty connection string"
-  )
-}
-
-test "connectAzureBlob rejects empty container name" {
-  assertTrue(
-    isErr[StorageBucket, StorageError](connectAzureBlob("DefaultEndpointsProtocol=https;...", "")),
-    "must reject empty container name"
-  )
 }
 
 // ─── LocalBucket data-plane smoke tests ───────────────────────────────────
