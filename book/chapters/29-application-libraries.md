@@ -144,11 +144,11 @@ func main(): Unit {
 ## lyric-mq — Message Queues
 
 `lyric-mq` provides a transport-agnostic message queue abstraction.
-**Only the `inmemory` backend is production-ready, and only on `dotnet`.**
-`rabbitmq`, `azureservicebus`, `sqs`, and `kafka` all type-check, but on
-`dotnet` every one of them returns `Err("... not yet implemented")` from
-`connect()`, and on `jvm` there is no working backend of any kind — see
-`lyric-mq/README.md` for the exact per-broker/per-target gaps.
+The package ships one backend, the in-process broker, which is pure Lyric
+and behaves the same on `dotnet` and `jvm`. Networked brokers (RabbitMQ, Azure
+Service Bus, SQS, Kafka) are not in the package: they belong in separate
+packages that implement `MessageQueue` and `QueueConsumer` and run the
+conformance suite `Testing.Conformance.Mq`. See `lyric-mq/README.md`.
 
 ```toml
 [dependencies]
@@ -159,7 +159,7 @@ func main(): Unit {
 import Mq
 
 func publishOrder(orderId: in String, orderJson: in String): Result[Unit, String] {
-  val queue = Mq.connectTo("amqp://localhost", "orders")?
+  val queue = Mq.connectTo("inmemory://local", "orders")?
   return Mq.publish(queue, Mq.Message(
     id            = orderId,
     body          = orderJson,
@@ -373,7 +373,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-proto | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
-| lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
+| lyric-mq | in-process broker (pure Lyric) | in-process broker (pure Lyric) | D056, D552 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
 | lyric-search | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |

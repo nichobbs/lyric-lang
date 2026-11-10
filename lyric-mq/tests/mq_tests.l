@@ -93,9 +93,8 @@ test "AckMode.Manual can be matched" {
 // End-to-end through the PUBLIC surface: connectTo → publish (with a header) →
 // consume → ack → close, against the default in-memory kernel.  Before #6511
 // the dispatch stubs never reached any kernel, so `Mq.connect()` returned
-// `Err` on every backend and none of this was reachable.  dotnet-only: the
-// jvm target has no in-memory kernel (#3385), so these tests erase there.
-@cfg(target = "dotnet")
+// `Err` on every backend and none of this was reachable.  Runs on both
+// targets (the in-process broker is pure Lyric).
 test "in-memory broker round-trips a published message (#6511)" {
   match Mq.connectTo("inmemory://local", "roundtrip-q") {
     case Err(e) -> assertTrue(false, "connectTo failed: " + e)
@@ -130,7 +129,6 @@ test "in-memory broker round-trips a published message (#6511)" {
   }
 }
 
-@cfg(target = "dotnet")
 test "consume on an empty queue reports timeout (#6511)" {
   match Mq.connectTo("inmemory://local", "empty-q") {
     case Err(e) -> assertTrue(false, "connectTo failed: " + e)
@@ -145,7 +143,6 @@ test "consume on an empty queue reports timeout (#6511)" {
 }
 
 // ─── Broker-supplied input is never a precondition (#7239) ───────────────────
-@cfg(target = "dotnet")
 func withQueue(name: in String, body: (NativeQueue) -> Unit): Unit {
   match Mq.connectTo("inmemory://local", name) {
     case Err(e) -> assertTrue(false, "connectTo failed: " + e)
@@ -156,7 +153,6 @@ func withQueue(name: in String, body: (NativeQueue) -> Unit): Unit {
   }
 }
 
-@cfg(target = "dotnet")
 test "control characters in a body round-trip instead of breaking the wire JSON (#7239)" {
   withQueue(
     "ctrl-q",
@@ -179,7 +175,6 @@ test "control characters in a body round-trip instead of breaking the wire JSON 
   )
 }
 
-@cfg(target = "dotnet")
 test "deliveryCount is 0 on first delivery and counts redeliveries (#7239)" {
   withQueue(
     "count-q",
@@ -202,7 +197,6 @@ test "deliveryCount is 0 on first delivery and counts redeliveries (#7239)" {
   )
 }
 
-@cfg(target = "dotnet")
 test "ack and nack answer an empty message id with Err (#7239)" {
   withQueue(
     "empty-id-q",
@@ -219,7 +213,6 @@ test "ack and nack answer an empty message id with Err (#7239)" {
   )
 }
 
-@cfg(target = "dotnet")
 test "publishBatch refuses a batch with an empty id before publishing any (#7239)" {
   withQueue(
     "batch-q",

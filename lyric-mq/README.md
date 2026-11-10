@@ -2,28 +2,24 @@
 
 Transport-agnostic message queue with pluggable broker backends.
 
-## Platform parity
+## Backends
 
-**Only the `inmemory` backend is production-ready, and only on `dotnet`.**
-The public API (`Mq.connect()` / `Mq.connectTo()`, `publish`, `consume`,
-`ack`, `nack`, `close`) dispatches into the in-memory kernel on `dotnet`
-(wired in #6511 — before that the dispatch stubs never reached any kernel
-and every `connect()` returned `Err("no broker configured")`).
-`rabbitmq`, `azureservicebus`, `sqs`, and `kafka` all compile and
-type-check (feature-gated `connect()` overloads exist for each), but:
+The package ships one backend, the in-process broker (`Mq.InMemory`). It is
+pure Lyric (protected types), thread-safe, and identical on `dotnet` and `jvm`.
+`Mq.connect()` / `Mq.connectTo()` open an independent in-process queue.
 
-- On `dotnet`, all four return `Err("... not yet implemented (Phase 5
-  follow-up of #733)")` from `connect()` — declarative placeholders
-  pending broker-specific Testcontainers infrastructure (#779).
-- On `jvm`, `rabbitmq` and `kafka` are declared with `@axiom`-annotated
-  function signatures but have **no real client binding at all** — no
-  `extern type`/`extern func` declarations back them, so every call is a
-  no-op returning a trivial `Ok(())`/`Err("")`. `azureservicebus` and
-  `sqs` aren't declared on `jvm` at all, and there is no `inmemory`
-  feature on `jvm` either — the JVM target currently has no working
-  backend.
+Networked brokers (RabbitMQ, Azure Service Bus, SQS, Kafka) are not part of
+this package (D552). They belong in their own packages, which implement
+`MessageQueue` and `QueueConsumer` and run the conformance suite
+`Testing.Conformance.Mq` from `lyric-testing`.
 
-See `docs/57-stdlib-ecosystem-library-review.md` §3.
+### Migration note
+
+The `rabbitmq`, `azureservicebus`, `sqs` and `kafka` features, and the
+`dotnet`, `jvm` and `inmemory` features that only selected kernels, are gone;
+the manifest declares no features. Builds that passed one of them must drop the
+flag. The `connect()` overloads that returned "not yet implemented" and the
+`[nuget]`/`[maven]` broker dependencies are gone too.
 
 ## Packages
 
@@ -53,32 +49,6 @@ Mq.consume(queue, 5000, { msg ->
 })?
 Mq.ack(queue, "msg-1")?
 ```
-
-## Supported platforms and brokers
-
-`Lyric.Mq` is multi-platform; activate the target platform feature and
-one broker feature when you build (per `docs/24-build-features.md`):
-
-```sh
-lyric build --features dotnet,rabbitmq
-```
-
-Platform features:
-
-- `dotnet` — Target the .NET kernel (`Mq.Kernel.Net`)
-- `jvm` — Target the JVM kernel (`Mq.Kernel.Jvm`)
-
-Broker features (see "Platform parity" above — only `inmemory` is real today):
-
-- `inmemory` — In-process queue (`dotnet` only); the only backend with a
-  working implementation
-- `rabbitmq` — AMQP 0.9.1 via RabbitMQ (`NOT_IMPLEMENTED` on `dotnet`;
-  declared-but-unbound on `jvm`)
-- `azureservicebus` — Azure Service Bus queues (`NOT_IMPLEMENTED` on
-  `dotnet`; not declared on `jvm`)
-- `sqs` — Amazon SQS (`NOT_IMPLEMENTED` on `dotnet`; not declared on `jvm`)
-- `kafka` — Apache Kafka topics (`NOT_IMPLEMENTED` on `dotnet`;
-  declared-but-unbound on `jvm`)
 
 ## Core types and functions
 
