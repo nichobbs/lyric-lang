@@ -2300,7 +2300,12 @@ func buildConstructCall(
         }
       }
       noteCaseSym(env, sym)
-      noteCtorSym(env, sym, sig)
+      // A generic record's entry is its declaration's (`typeEntries`), under its own
+      // parameters; the instantiated signature here would be the wrong fields.
+      val genericRecord = match ty { case TNamed(_, targs) -> targs.count > 0; case _ -> false }
+      if not genericRecord {
+        noteCtorSym(env, sym, sig)
+      }
       Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
     }
     case None -> None

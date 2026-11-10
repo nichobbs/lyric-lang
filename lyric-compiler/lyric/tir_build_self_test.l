@@ -1627,3 +1627,12 @@ test "an integer bitwise method call takes its argument type from the receiver" 
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a generic record construction builds as a construction of the record at its type arguments" {
+  val c = censusOf(
+    "package App\nrecord Pair[K, V] { key: K, value: V }\nfunc f(): Int {\n  val p = Pair(key = 1, value = \"one\")\n  p.key\n}\nfunc g(): String {\n  val q: Pair[Int, String] = Pair(key = 2, value = \"two\")\n  q.value\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

@@ -5203,7 +5203,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   // result type is closed (`Some(value = 42)` as `Option[Int]`) has them too.
   val isCase = match sym.kind { case DKUnionCase(_, _) -> true; case _ -> false }
   val closed = match unrefine(resultTy) {
-    case TyUser(_, _, a) -> if isCase { typeIsClosed(resultTy) } else { a.count == 0 }
+    case TyUser(_, _, a) -> if isCase or a.count > 0 { typeIsClosed(resultTy) } else { true }
     case _ -> false
   }
   if not closed {
@@ -5212,10 +5212,11 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   val params: List[ResolvedParam] = newList()
   match sym.kind {
     case DKRecord(id, rd) -> {
-      if rd.generics.isSome() {
-        return
+      // A generic record's fields are instantiated at the result type's arguments.
+      val fes = match unrefine(resultTy) {
+        case TyUser(_, _, targs) -> if rd.generics.isSome() { fieldsOfRecordInstantiated(tbl, id, targs) } else { fieldsOfRecord(tbl, id) }
+        case _ -> return
       }
-      val fes = fieldsOfRecord(tbl, id)
       var k = 0
       for m in rd.members {
         match m {
