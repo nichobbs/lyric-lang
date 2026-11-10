@@ -8,6 +8,57 @@ without real infrastructure.
 | Package | Purpose |
 |---|---|
 | `Testing` | Core mock types, `TestContext` factory, and assertion helpers |
+| `Testing.Conformance` | Harness shared by the conformance suites (`Checks`, `runCase`, `requireConformance`) |
+| `Testing.Conformance.Cache` / `.Flags` / `.Session` / `.Mq` / `.Storage` / `.Jobs` / `.Search` | One conformance suite per library interface |
+
+## Conformance suites
+
+Each library keeps an interface, one real in-tree backend and a conformance
+suite (D552). A suite is a function that takes a factory for the
+implementation and checks the contract the interface documents. It never stops
+at the first failure: every case runs, and `requireConformance` then fails the
+calling test once, naming each failed expectation.
+
+```lyric
+import Testing.Conformance
+import Testing.Conformance.Cache as CacheConformance
+
+test "MyRedisCacheStore conforms to CacheStore" {
+  requireConformance(CacheConformance.run({ -> connectMyStore() }, { n -> sleepSeconds(n) }))
+}
+```
+
+| Suite | Interface | Factory |
+|---|---|---|
+| `Cache.run(factory, advanceSeconds)` | `Cache.CacheStore` | fresh store; a hook that moves the store's clock (or sleeps) |
+| `Flags.run(factory)` | `Flags.FlagStore` | `(entries) -> store` seeded with the entries |
+| `Session.run(factory)` | `Session.SessionStore` | fresh store |
+| `Mq.runQueue(factory)` | `Mq.MessageQueue` + `Mq.QueueConsumer` | fresh queue as `QueueEnds` |
+| `Mq.runDeadLetterStore(factory)` | `Mq.DeadLetterStore` | `(maxEntries) -> store` |
+| `Storage.run(factory)` | `Storage.StorageBucket` | fresh, empty bucket |
+| `Jobs.run(factory)` | `Jobs.JobScheduler` | fresh scheduler (submission, status, cancel, cron; handler execution is backend-specific) |
+| `Search.run(factory)` (async) | `Search.SearchClient` | client over a fresh backend; `index` must make the document visible to `search` |
+
+Backends run their suite from `lyric-testing/tests/conformance_tests.l`
+(in-process cache, flag, session and job stores, the in-memory broker and
+dead-letter store, the local filesystem bucket, `MockJobScheduler`,
+`MockSearchClient`). The negative tests there run a suite against a broken
+store, so a suite that cannot fail is caught.
+
+Where backends legitimately differ the suite accepts exactly the documented
+alternatives: `presignedUrl` succeeds or answers `NOT_SUPPORTED`, and `put`
+with user metadata stores it or answers `USER_META_UNSUPPORTED`. The session
+suite pins the secure behaviour: `set` on an unknown session is
+`SESSION_NOT_FOUND` and never creates the session.
+
+## Mocks added alongside the suites
+
+`MockJobScheduler` (records submissions; `completeJob`/`failJob` drive the
+outcome), `MockQueueConsumer` (scripted deliveries, records ack/nack),
+`MockSearchClient` (in-memory engine with the real clients' validation) and
+`MockTranslationStore` (marks missing keys as `[locale:key]`, records
+requests). The Db mock (`MockDbConnection`) already existed. A `Ws` mock is
+tracked in #8968.
 
 ## Quick start
 

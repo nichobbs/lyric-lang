@@ -14,7 +14,7 @@
 //! failure-injection hooks are tracked as lyric-lang #410.
 //!
 //! Provides in-process mock implementations of Cache, Mail, Storage, Mq,
-//! Session, Flags, and Db interfaces so that unit tests can exercise
+//! Session, Flags, Db, Jobs, Search, and I18n interfaces so that unit tests can exercise
 //! application logic without real infrastructure.  Also provides assertion
 //! helpers for writing concise, readable test cases.
 //!
@@ -39,6 +39,7 @@ import Std.Iter
 import Std.Time
 import Std.Sort
 import Std.String as Str
+import Std.Parse
 import Cache as Cache
 import Mail
 import Storage
@@ -46,6 +47,9 @@ import Mq
 import Session
 import Flags
 import Db
+import Jobs
+import Search
+import I18n
 
 // ─── Test support types ───────────────────────────────────────────────────────
 /// A captured outbound email as recorded by MockMailSender.
@@ -619,7 +623,7 @@ impl Db.DbTransaction for MockDbTransaction {
   }
 }
 
-/// Mock database connection that hands out `MockDbTransaction` values from
+/// Mock database connection that hands acc `MockDbTransaction` values from
 /// `transaction()`.  `query`/`execute` succeed with empty/zero results by
 /// default; use `queryCount`/`executeCount`/`txCount` to verify call counts.
 @stable(since = "0.1")
@@ -655,6 +659,668 @@ pub func txCount(conn: in MockDbConnection): Int {
   return conn.txCount
 }
 
+// ─── MockJobScheduler ─────────────────────────────────────────────────────────
+/// Mock job scheduler that records every submitted job and lets a test drive
+/// its outcome.
+///
+/// `enqueue`/`schedule` store a `Jobs.JobSpec` and report `Pending`; a test
+/// then calls `completeJob` or `failJob` to put the job in the state the code
+/// under test should react to.  Nothing runs a handler (use
+/// `Jobs.inProcess()` with `Jobs.runNext` to execute handlers in a test).
+/// Cron expressions are validated like every real backend (`Jobs.parseCron`).
+@stable(since = "0.1")
+pub ref record MockJobScheduler {
+  var specs: List[Jobs.JobSpec]
+  var results: Map[String, Jobs.JobResult]
+  var counter: Int
+}
+
+impl Jobs.JobScheduler for MockJobScheduler {
+  func enqueue(name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int): Result[String, String]
+    requires: name.length > 0
+    requires: maxAttempts >= 1
+    requires: timeoutMs >= 1
+  {
+    self.counter = self.counter + 1
+    return Ok(mockRecordJob(self, "mock-job-" + self.counter.toString(), name, payload, maxAttempts, timeoutMs))
+  }
+  func schedule(
+    name: in String, payload: in String, cronExpr: in String, maxAttempts: in Int, timeoutMs: in Int
+  ): Result[String, String]
+    requires: name.length > 0
+    requires: cronExpr.length > 0
+    requires: maxAttempts >= 1
+    requires: timeoutMs >= 1
+  {
+    match Jobs.parseCron(cronExpr) {
+      case Err(e) -> return Err(e)
+      case Ok(_) -> {
+        self.counter = self.counter + 1
+        return Ok(mockRecordJob(self, "mock-cron-" + self.counter.toString(), name, payload, maxAttempts, timeoutMs))
+      }
+    }
+  }
+  func cancel(jobId: in String): Result[Unit, String]
+    requires: jobId.length > 0
+  {
+    val found: Option[Jobs.JobResult] = mapGet(self.results, jobId)
+    if isSome(found) {
+      val current = unwrapOr(found, mockJobResult(jobId, Jobs.JobStatus.Pending, "", ""))
+      match current.status {
+        case Jobs.JobStatus.Pending -> {
+          self.results[jobId] = mockJobResult(jobId, Jobs.JobStatus.Cancelled, "", "cancelled")
+        }
+        case Jobs.JobStatus.Running -> {
+          self.results[jobId] = mockJobResult(jobId, Jobs.JobStatus.Cancelled, "", "cancelled")
+        }
+        case _ -> ()
+      }
+    }
+    return Ok(())
+  }
+  func status(jobId: in String): Result[Jobs.JobStatus, String]
+    requires: jobId.length > 0
+  {
+    val found: Option[Jobs.JobResult] = mapGet(self.results, jobId)
+    if not isSome(found) {
+      return Err("job not found: " + jobId)
+    }
+    val current = unwrapOr(found, mockJobResult(jobId, Jobs.JobStatus.Pending, "", ""))
+    return Ok(current.status)
+  }
+  func results(jobId: in String): Result[Jobs.JobResultList, String]
+    requires: jobId.length > 0
+  {
+    val found: Option[Jobs.JobResult] = mapGet(self.results, jobId)
+    if not isSome(found) {
+      return Err("job not found: " + jobId)
+    }
+    return Ok(Jobs.JobResultList(items = [unwrapOr(found, mockJobResult(jobId, Jobs.JobStatus.Pending, "", ""))]))
+  }
+}
+
+func mockJobResult(jobId: in String, status: in Jobs.JobStatus, output: in String, error: in String): Jobs.JobResult {
+  return Jobs.JobResult(
+    jobId = jobId,
+    status = status,
+    output = output,
+    error = error,
+    startedAt = 0i64,
+    finishedAt = 0i64
+  )
+}
+
+func mockRecordJob(
+  s: in MockJobScheduler,
+  id: in String,
+  name: in String,
+  payload: in String,
+  maxAttempts: in Int,
+  timeoutMs: in Int,
+): String {
+  s.specs.add(
+    Jobs.JobSpec(
+      id = id,
+      name = name,
+      payload = payload,
+      maxAttempts = maxAttempts,
+      timeoutMs = timeoutMs,
+      scheduledAt = 0i64
+    )
+  )
+  s.results[id] = mockJobResult(id, Jobs.JobStatus.Pending, "", "")
+  return id
+}
+
+/// Mark the job as having succeeded with `output`.
+@stable(since = "0.1")
+pub func completeJob(scheduler: in MockJobScheduler, jobId: in String, output: in String): Unit
+  requires: jobId.length > 0
+{
+  scheduler.results[jobId] = mockJobResult(jobId, Jobs.JobStatus.Succeeded, output, "")
+}
+
+/// Mark the job as having failed with `error`.
+@stable(since = "0.1")
+pub func failJob(scheduler: in MockJobScheduler, jobId: in String, error: in String): Unit
+  requires: jobId.length > 0
+{
+  scheduler.results[jobId] = mockJobResult(jobId, Jobs.JobStatus.Failed, "", error)
+}
+
+/// The number of jobs submitted to the mock (enqueued or scheduled).
+@stable(since = "0.1")
+pub func submittedCount(scheduler: in MockJobScheduler): Int {
+  return scheduler.specs.count
+}
+
+/// The most recently submitted job, or None if there is none.
+@stable(since = "0.1")
+pub func lastSubmitted(scheduler: in MockJobScheduler): Option[Jobs.JobSpec] {
+  if scheduler.specs.count == 0 {
+    return None
+  }
+  return Some(value = scheduler.specs[scheduler.specs.count - 1])
+}
+
+// ─── MockQueueConsumer ────────────────────────────────────────────────────────
+/// Mock queue consumer that delivers a scripted list of messages and records
+/// how the code under test settled each one.
+///
+/// Load messages with `deliver`; each `consume` hands the next one to the
+/// handler (an empty script answers `Err("timeout")`, like a real empty
+/// queue).  `ackedIds` / `nackedIds` list the settlements in call order.
+@stable(since = "0.1")
+pub ref record MockQueueConsumer {
+  var pending: List[Mq.Message]
+  var acked: List[String]
+  var nacked: List[String]
+  var requeued: List[String]
+  var closed: Bool
+}
+
+impl Mq.QueueConsumer for MockQueueConsumer {
+  func consume(timeoutMs: in Int, handler: (Mq.Message) -> Result[Unit, String]): Result[Unit, String]
+    requires: timeoutMs >= 0
+  {
+    if self.pending.count == 0 {
+      return Err("timeout")
+    }
+    val next = self.pending[0]
+    self.pending.removeAt(0)
+    return handler(next)
+  }
+  func ack(messageId: in String): Result[Unit, String] {
+    if messageId.length == 0 {
+      return Err("lyric-mq: empty message id")
+    }
+    self.acked.add(messageId)
+    return Ok(())
+  }
+  func nack(messageId: in String, requeue: in Bool): Result[Unit, String] {
+    if messageId.length == 0 {
+      return Err("lyric-mq: empty message id")
+    }
+    self.nacked.add(messageId)
+    if requeue {
+      self.requeued.add(messageId)
+    }
+    return Ok(())
+  }
+  func close(): Unit {
+    self.closed = true
+  }
+}
+
+/// Create an empty `MockQueueConsumer`.
+@stable(since = "0.1")
+pub func newMockQueueConsumer(): MockQueueConsumer {
+  return MockQueueConsumer(
+    pending = newList(),
+    acked = newList(),
+    nacked = newList(),
+    requeued = newList(),
+    closed = false
+  )
+}
+
+/// Add `message` to the script the consumer will deliver.
+@stable(since = "0.1")
+pub func deliver(consumer: in MockQueueConsumer, message: in Mq.Message): Unit
+  requires: message.id.length > 0
+{
+  consumer.pending.add(message)
+}
+
+/// The ids passed to `ack`, in call order.
+@stable(since = "0.1")
+pub func ackedIds(consumer: in MockQueueConsumer): slice[String] {
+  return consumer.acked.toArray()
+}
+
+/// The ids passed to `nack`, in call order.
+@stable(since = "0.1")
+pub func nackedIds(consumer: in MockQueueConsumer): slice[String] {
+  return consumer.nacked.toArray()
+}
+
+// ─── MockSearchClient ─────────────────────────────────────────────────────────
+/// In-memory `Search.SearchClient` for tests of code that searches.
+///
+/// It keeps documents per index in insertion order and implements the query
+/// model faithfully enough to stand in for an engine: whole-word,
+/// case-insensitive text matching (every query word must match some field),
+/// `eq`/`contains`/`gt`/`gte`/`lt`/`lte` filters, one-field sorting, `from`/
+/// `size` paging with an exact `total`, prefix suggestions, and the same
+/// request validation as the real clients (`Search.validateSearchQuery`,
+/// `INVALID_PATH_SEGMENT`).  It runs the `Testing.Conformance.Search` suite
+/// itself, so it behaves as that contract says.
+@stable(since = "0.1")
+pub ref record MockSearchClient {
+  var docs: Map[String, Search.SearchDocument]
+  var order: List[String]
+  var versions: Map[String, Long]
+  var indexNames: List[String]
+  var requests: Int
+}
+
+/// Create an empty mock search client.
+@stable(since = "0.1")
+pub func newMockSearchClient(): MockSearchClient {
+  return MockSearchClient(docs = newMap(), order = newList(), versions = newMap(), indexNames = newList(), requests = 0)
+}
+
+/// The number of requests the mock has served.
+@stable(since = "0.1")
+pub func searchRequestCount(client: in MockSearchClient): Int {
+  return client.requests
+}
+
+func mockSearchKey(index: in String, id: in String): String {
+  return index + "\u{0000}" + id
+}
+
+func mockSearchError(code: in String, message: in String): Search.SearchError {
+  return Search.SearchError(message = message, code = code, statusCode = 0)
+}
+
+func mockBadSegment(value: in String): Bool {
+  return value == "" or value == "." or value == ".."
+}
+
+func mockSegmentError(what: in String, value: in String): Search.SearchError {
+  return mockSearchError("INVALID_PATH_SEGMENT", "invalid " + what + " '" + value + "'")
+}
+
+// Lowercased alphanumeric words of `s`.
+func mockWords(s: in String): slice[String] {
+  val acc: List[String] = newList()
+  var current = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.substring(i, 1)
+    val lower = Str.toLower(ch)
+    val isWordChar = (lower >= "a" and lower <= "z") or (lower >= "0" and lower <= "9") or lower.length > 1 or
+      Str.charAtOrReplacement(lower, 0) > '\u{007f}'
+    if isWordChar {
+      current = current + lower
+    } else if current.length > 0 {
+      acc.add(current)
+      current = ""
+    }
+    i = i + 1
+  }
+  if current.length > 0 {
+    acc.add(current)
+  }
+  return acc.toArray()
+}
+
+func mockDocHasWord(d: in Search.SearchDocument, word: in String): Bool {
+  for name in mockFieldNames(d) {
+    for w in mockWords(d.fields[name]) {
+      if w == word {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+func mockFieldNames(d: in Search.SearchDocument): slice[String] {
+  return mapKeys(d.fields).toArray()
+}
+
+func mockTextMatches(d: in Search.SearchDocument, text: in String): Bool {
+  for word in mockWords(text) {
+    if not mockDocHasWord(d, word) {
+      return false
+    }
+  }
+  return true
+}
+
+// Compare numerically when both sides parse as numbers, else as text.
+func mockCompare(a: in String, b: in String): Int {
+  match parseOptDouble(a) {
+    case Some(x) -> {
+      match parseOptDouble(b) {
+        case Some(y) -> return if x < y { -1 } else if x > y { 1 } else { 0 }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+  return Str.compare(a, b)
+}
+
+func mockFilterMatches(d: in Search.SearchDocument, f: in Search.SearchFilter): Bool {
+  if not d.fields.containsKey(f.field) {
+    return false
+  }
+  val actual = d.fields[f.field]
+  if f.operator == "eq" {
+    return actual == f.value
+  }
+  if f.operator == "contains" {
+    return Str.contains(Str.toLower(actual), Str.toLower(f.value))
+  }
+  val cmp = mockCompare(actual, f.value)
+  if f.operator == "gt" {
+    return cmp > 0
+  }
+  if f.operator == "gte" {
+    return cmp >= 0
+  }
+  if f.operator == "lt" {
+    return cmp < 0
+  }
+  return cmp <= 0
+}
+
+func mockSortValue(d: in Search.SearchDocument, field: in String): String {
+  if d.fields.containsKey(field) {
+    return d.fields[field]
+  }
+  return ""
+}
+
+impl Search.SearchClient for MockSearchClient {
+  async func index(doc: in Search.SearchDocument): Result[Search.IndexResult, Search.SearchError]
+    requires: doc.index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(doc.index) {
+      return Err(mockSegmentError("index name", doc.index))
+    }
+    if mockBadSegment(doc.id) {
+      return Err(mockSegmentError("document id", doc.id))
+    }
+    return Ok(mockStore(self, doc))
+  }
+
+  async func indexBatch(docs: in slice[Search.SearchDocument]): Result[slice[Search.IndexResult], Search.SearchError] {
+    self.requests = self.requests + 1
+    val acc: List[Search.IndexResult] = newList()
+    for d in docs {
+      if d.index.length == 0 or mockBadSegment(d.index) {
+        return Err(mockSegmentError("index name", d.index))
+      }
+      if mockBadSegment(d.id) {
+        return Err(mockSegmentError("document id", d.id))
+      }
+      acc.add(mockStore(self, d))
+    }
+    return Ok(acc.toArray())
+  }
+
+  async func search(query: in Search.SearchQuery): Result[Search.SearchResult, Search.SearchError]
+    requires: query.index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(query.index) {
+      return Err(mockSegmentError("index name", query.index))
+    }
+    match Search.validateSearchQuery(query) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
+    val matched: List[Search.SearchDocument] = newList()
+    for key in self.order.toArray() {
+      val d = self.docs[key]
+      if d.index == query.index and mockTextMatches(d, query.query) {
+        var keep = true
+        for f in query.filters {
+          if not mockFilterMatches(d, f) {
+            keep = false
+          }
+        }
+        if keep {
+          matched.add(d)
+        }
+      }
+    }
+    if query.sort.length > 0 {
+      val s = query.sort[0]
+      var i = 1
+      while i < matched.count {
+        var j = i
+        while j > 0 and mockSortOrdered(matched[j - 1], matched[j], s) {
+          val t = matched[j]
+          matched[j] = matched[j - 1]
+          matched[j - 1] = t
+          j = j - 1
+        }
+        i = i + 1
+      }
+    }
+    val hits: List[Search.SearchHit] = newList()
+    var n = query.from
+    while n < matched.count and hits.count < query.size {
+      val d = matched[n]
+      hits.add(Search.SearchHit(id = d.id, index = d.index, score = 1.0, highlights = [], source = d.fields))
+      n = n + 1
+    }
+    return Ok(Search.SearchResult(total = matched.count.toLong(), hits = hits.toArray(), tookMs = 0, scrollId = None))
+  }
+
+  async func suggest(
+    index: in String, text: in String, field: in String, size: in Int
+  ): Result[Search.SuggestResult, Search.SearchError]
+    requires: index.length > 0
+    requires: field.length > 0
+  {
+    self.requests = self.requests + 1
+    match Search.validateSuggestSize(size) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
+    val prefix = Str.toLower(text)
+    val acc: List[String] = newList()
+    for key in self.order.toArray() {
+      val d = self.docs[key]
+      if d.index == index and d.fields.containsKey(field) {
+        val value = d.fields[field]
+        if Str.startsWith(Str.toLower(value), prefix) and acc.count < size and not mockListHas(acc, value) {
+          acc.add(value)
+        }
+      }
+    }
+    return Ok(Search.SuggestResult(suggestions = acc.toArray(), tookMs = 0))
+  }
+
+  async func delete(index: in String, id: in String): Result[Unit, Search.SearchError]
+    requires: index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(index) {
+      return Err(mockSegmentError("index name", index))
+    }
+    if mockBadSegment(id) {
+      return Err(mockSegmentError("document id", id))
+    }
+    mockRemove(self, mockSearchKey(index, id))
+    return Ok(())
+  }
+
+  async func deleteIndex(index: in String): Result[Unit, Search.SearchError]
+    requires: index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(index) {
+      return Err(mockSegmentError("index name", index))
+    }
+    for key in self.order.toArray() {
+      if self.docs[key].index == index {
+        mockRemove(self, key)
+      }
+    }
+    val kept: List[String] = newList()
+    for n in self.indexNames.toArray() {
+      if n != index {
+        kept.add(n)
+      }
+    }
+    self.indexNames = kept
+    return Ok(())
+  }
+
+  async func exists(index: in String, id: in String): Result[Bool, Search.SearchError]
+    requires: index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(index) {
+      return Err(mockSegmentError("index name", index))
+    }
+    if mockBadSegment(id) {
+      return Err(mockSegmentError("document id", id))
+    }
+    return Ok(self.docs.containsKey(mockSearchKey(index, id)))
+  }
+
+  async func createIndex(index: in String, mappingJson: in String): Result[Unit, Search.SearchError]
+    requires: index.length > 0
+  {
+    self.requests = self.requests + 1
+    if mockBadSegment(index) {
+      return Err(mockSegmentError("index name", index))
+    }
+    mockNoteIndex(self, index)
+    return Ok(())
+  }
+}
+
+func mockListHas(items: in List[String], value: in String): Bool {
+  for it in items.toArray() {
+    if it == value {
+      return true
+    }
+  }
+  return false
+}
+
+func mockNoteIndex(c: in MockSearchClient, index: in String): Unit {
+  if not mockListHas(c.indexNames, index) {
+    c.indexNames.add(index)
+  }
+}
+
+func mockStore(c: in MockSearchClient, doc: in Search.SearchDocument): Search.IndexResult {
+  mockNoteIndex(c, doc.index)
+  val key = mockSearchKey(doc.index, doc.id)
+  val existed = c.docs.containsKey(key)
+  val version = if existed { c.versions[key] + 1i64 } else { 1i64 }
+  if not existed {
+    c.order.add(key)
+  }
+  c.docs[key] = doc
+  c.versions[key] = version
+  return Search.IndexResult(id = doc.id, version = version, status = if existed { "updated" } else { "created" })
+}
+
+func mockRemove(c: in MockSearchClient, key: in String): Unit {
+  if c.docs.containsKey(key) {
+    c.docs.remove(key)
+    c.versions.remove(key)
+    val kept: List[String] = newList()
+    for k in c.order.toArray() {
+      if k != key {
+        kept.add(k)
+      }
+    }
+    c.order = kept
+  }
+}
+
+// True when `a` must come after `b` under sort `s` (so the pair is swapped).
+func mockSortOrdered(a: in Search.SearchDocument, b: in Search.SearchDocument, s: in Search.SortField): Bool {
+  val cmp = mockCompare(mockSortValue(a, s.field), mockSortValue(b, s.field))
+  if s.descending {
+    return cmp < 0
+  }
+  return cmp > 0
+}
+
+// ─── MockTranslationStore ─────────────────────────────────────────────────────
+/// Translation store for tests of code that localises text.
+///
+/// Translations are registered with `addTranslation`.  A key with no
+/// registered translation comes back as `[<locale>:<key>]` rather than the bare
+/// key, so a test can tell a missing translation from a real one, and every
+/// requested key is recorded for `requestedKeys`.
+@stable(since = "0.1")
+pub ref record MockTranslationStore {
+  var translations: Map[String, String]
+  var localeKeys: List[String]
+  var requested: List[String]
+}
+
+/// Create an empty `MockTranslationStore`.
+@stable(since = "0.1")
+pub func newMockTranslationStore(): MockTranslationStore {
+  return MockTranslationStore(translations = newMap(), localeKeys = newList(), requested = newList())
+}
+
+/// Register `text` as the translation of `key` in `locale`.
+@stable(since = "0.1")
+pub func addTranslation(store: in MockTranslationStore, locale: in I18n.Locale, key: in String, text: in String): Unit
+  requires: key.length > 0
+{
+  val lk = I18n.localeKey(locale)
+  store.translations[lk + "|" + key] = text
+  if not mockListHas(store.localeKeys, lk) {
+    store.localeKeys.add(lk)
+  }
+}
+
+/// Every key passed to `translate` / `translateWith`, in call order.
+@stable(since = "0.1")
+pub func requestedKeys(store: in MockTranslationStore): slice[String] {
+  return store.requested.toArray()
+}
+
+func mockTranslate(store: in MockTranslationStore, key: in String, locale: in I18n.Locale): String {
+  store.requested.add(key)
+  val lk = I18n.localeKey(locale)
+  val full = lk + "|" + key
+  if store.translations.containsKey(full) {
+    return store.translations[full]
+  }
+  return "[" + lk + ":" + key + "]"
+}
+
+impl I18n.TranslationStore for MockTranslationStore {
+  func translate(key: in String, locale: in I18n.Locale): String
+    requires: key.length > 0
+  {
+    return mockTranslate(self, key, locale)
+  }
+  func translateWith(key: in String, locale: in I18n.Locale, vars: in Map[String, String]): String
+    requires: key.length > 0
+  {
+    var text = mockTranslate(self, key, locale)
+    for name in mapKeys(vars).toArray() {
+      text = Str.replace(text, "{" + name + "}", vars[name])
+    }
+    return text
+  }
+  func availableLocales(): slice[I18n.Locale] {
+    val acc: List[I18n.Locale] = newList()
+    for lk in self.localeKeys.toArray() {
+      match I18n.parseLocale(lk) {
+        case Some(l) -> acc.add(l)
+        case None -> ()
+      }
+    }
+    return acc.toArray()
+  }
+  func hasKey(key: in String, locale: in I18n.Locale): Bool
+    requires: key.length > 0
+  {
+    return self.translations.containsKey(I18n.localeKey(locale) + "|" + key)
+  }
+}
+
 // ─── TestContext ──────────────────────────────────────────────────────────────
 /// A bundle of mock service implementations for use in unit tests.
 ///
@@ -669,6 +1335,9 @@ pub record TestContext {
   session: MockSessionStore
   flags: MockFlagStore
   db: MockDbConnection
+  jobs: MockJobScheduler
+  search: MockSearchClient
+  translations: MockTranslationStore
   clock: TestClock
 }
 
@@ -688,6 +1357,9 @@ pub func newTestContext(): TestContext {
     session = MockSessionStore(entries = newMap(), sessionSeq = 0),
     flags = MockFlagStore(flags = newMap()),
     db = MockDbConnection(queryCount = 0, executeCount = 0, txCount = 0, closed = false),
+    jobs = MockJobScheduler(specs = newList(), results = newMap(), counter = 0),
+    search = newMockSearchClient(),
+    translations = newMockTranslationStore(),
     clock = TestClock(currentEpochMs = 0i64)
   )
 }
