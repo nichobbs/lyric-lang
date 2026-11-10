@@ -93,7 +93,7 @@ Concrete examples surfaced across the sweep:
 | stdlib | `std/_kernel/random_host.l`, `std/_kernel/task.l`, `std/_kernel/process_capture_host.l` | `Random`, `CancellationTokenSource`, `ProcessStartInfo`/`MemoryStream`/`StreamReader` |
 | stdlib | `std/_kernel_jvm/collections_host.l:24-33` | JVM parity (`ArrayList`, `HashMap`) |
 | lyric-web | `src/web.l:65` | **Done** (PR #5270, #5272) — `HttpListener` and 25+ other wrapper functions (`HttpListenerContext`, `HttpListenerResponse`, `Stream`, `Encoding`, …) migrated to `import extern`/`.new()`. |
-| lyric-ws, lyric-mq, lyric-jobs, lyric-resilience | `_kernel/net/*_kernel.l` | `ConcurrentDictionary`/`ConcurrentQueue` wrappers (5+ occurrences each in mq/jobs kernels) — still open |
+| lyric-ws, lyric-mq (gone, pure Lyric since D552), lyric-jobs, lyric-resilience | `_kernel/net/*_kernel.l` | `ConcurrentDictionary`/`ConcurrentQueue` wrappers (5+ occurrences each in mq/jobs kernels) — still open |
 | lyric-mail | `src/_kernel/net/mail_kernel.l:41-135` | **Done** (PR #5270, #5272) — `SmtpClient`, `NetworkCredential`, `MailMessage`, `MailAddress`, `MailAddressCollection`, `AttachmentCollection` migrated to `import extern` in `mail.l`. `MemoryStream`/`Attachment` constructor wrappers intentionally kept (no `.new()` benefit for these two call sites). |
 
 `import extern` grouping candidates (files with 3+ scattered single-line
@@ -174,16 +174,11 @@ affected by this constraint — `.new(args)` is safe to use there today.
   README should say so up front — a user reading "S3, Azure Blob, and
   local filesystem backends" in CLAUDE.md's library list would reasonably
   expect all three to work today.
-- **lyric-mq**: .NET `inmemory` backend works; RabbitMQ/SQS/Azure Service
-  Bus/Kafka all return `Err("... not yet implemented")` on `dotnet`
-  (`mq_kernel.l:213-237`, tracked #779). The JVM kernel does *not*
-  actually support RabbitMQ/Kafka either — `_kernel/jvm/mq_kernel.l`'s
-  `rabbitmq`/`kafka` functions are `@axiom`-annotated signatures with no
-  `extern type`/`extern func` binding behind them at all, so every call
-  is a no-op returning a trivial `Ok(())`/`Err("")` regardless of
-  arguments. JVM has zero working backends today (no `inmemory` feature
-  exists there either) — the two targets aren't even stubbing the same
-  subset, and neither has a real broker.
+- **lyric-mq** (resolved, D552): the in-process broker is pure Lyric
+  (`Mq.InMemory`, protected types) and works on dotnet and the JVM; the
+  RabbitMQ/SQS/Azure Service Bus/Kafka declarations and the BCL kernels were
+  removed from the package. Networked brokers return as separate packages
+  that run `Testing.Conformance.Mq`.
 - **lyric-jobs**: `InProcessJobScheduler` works on both targets (pure
   Lyric, no kernel dependency). Hangfire/Quartz.NET are stub-only on
   `dotnet` only (`connect()` returns `Err("... not yet implemented")`,

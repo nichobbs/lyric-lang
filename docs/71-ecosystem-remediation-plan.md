@@ -1,6 +1,6 @@
 # Ecosystem library remediation plan
 
-Status: accepted in D552 (2026-11-09). Source: the ecosystem audit of 2026-11-09
+Status: accepted in D552 (2026-11-09). Phase 2 progress: lyric-mq reference broker on both targets and broker declarations removed (see docs/progress/2026-11-10-mq-in-memory-reference.md). Source: the ecosystem audit of 2026-11-09
 (README, manifest, CI-script and source-marker review; suites were not re-run).
 Extends docs/57 and `docs/12-todo-plan.md` item 3.
 
