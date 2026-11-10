@@ -1637,3 +1637,19 @@ test "a generic record construction builds as a construction of the record at it
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a defer, a try without a catch binding and a scope build as statements" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  defer {\n    t = t + 1\n  }\n  try {\n    t = t + n\n  } catch Exception {\n    t = 0\n  } finally {\n    t = t + 2\n  }\n  scope {\n    t = t + 3\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an or-pattern that binds nothing builds, one that binds a name is counted" {
+  val ok = censusOf("package App\nfunc f(n: Int): Int {\n  match n {\n    case 1 | 2 -> 10\n    case _ -> 0\n  }\n}\n")
+  assertEqualInt(ok.built, 1, if ok.firstErrors.count > 0 { ok.firstErrors[0] } else { "built" })
+  val dsOk = verifyPackage(ok.pkg, newList())
+  assertEqualInt(dsOk.count, 0, if dsOk.count > 0 { renderVerifyDiag("test", dsOk[0]) } else { "verifies" })
+}
