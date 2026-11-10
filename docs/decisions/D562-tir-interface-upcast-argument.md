@@ -1,4 +1,4 @@
-# D561 - A declared type passed where an interface is expected is an explicit upcast (docs/70 phase 3a, #8613)
+# D562 - A declared type passed where an interface is expected is an explicit upcast (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D367 and D396.
 
