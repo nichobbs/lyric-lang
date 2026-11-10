@@ -5203,7 +5203,9 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   // result type is closed (`Some(value = 42)` as `Option[Int]`) has them too.
   val isCase = match sym.kind { case DKUnionCase(_, _) -> true; case _ -> false }
   val closed = match unrefine(resultTy) {
-    case TyUser(_, _, a) -> if isCase or a.count > 0 { typeIsClosed(resultTy) } else { true }
+    // A union case's result may carry an unsolved argument (`Err(error = 1)` is a
+    // `Result[?, Int]`); what the construction needs is closed field types, checked below.
+    case TyUser(_, _, a) -> if isCase { true } else if a.count > 0 { typeIsClosed(resultTy) } else { true }
     case _ -> false
   }
   if not closed {
@@ -5293,6 +5295,11 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
       }
     }
     case _ -> return
+  }
+  for p in params {
+    if not typeIsClosed(p.ty) {
+      return
+    }
   }
   val sig = ResolvedSignature(
     generics = newList(),
