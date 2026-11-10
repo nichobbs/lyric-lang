@@ -1681,3 +1681,10 @@ test "a call of an interface method declared without a receiver passes the value
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a distinct type's from builds as a wrap of the argument converted to the underlying type" {
+  val c = censusOf("package App\ntype Id = Int\nfunc f(): Id { Id.from(5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

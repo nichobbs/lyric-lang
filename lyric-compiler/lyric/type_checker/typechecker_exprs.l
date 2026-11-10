@@ -2159,7 +2159,7 @@ func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option
 }
 
 // The underlying type of the non-generic distinct type `t`.
-func distinctUnderlyingOf(tbl: in SymbolTable, t: in Type): Option[Type] {
+pub func distinctUnderlyingOf(tbl: in SymbolTable, t: in Type): Option[Type] {
   val tid = match t { case TyUser(id, _, _) -> id; case _ -> return None }
   var i = 0
   while i < tbl.symbols.count {

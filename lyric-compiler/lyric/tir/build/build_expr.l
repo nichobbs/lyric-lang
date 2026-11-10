@@ -1448,7 +1448,78 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
+  match buildDistinctFactory(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `T.from(x)` and `T.tryFrom(x)` on a non-generic distinct type `T` (language reference
+/// 2.3), which the checker types without recording a callee.  The call's own type names
+/// `T` (`from`) or `Result[T, String]` (`tryFrom`).  The argument is converted to `T`'s
+/// underlying type; `from` is then a `CvWrapDistinct` node and `tryFrom` an `IoTryFrom`
+/// intrinsic.  None when the call is not such a factory (the caller counts it); a
+/// factory the builder cannot finish is reported inside and yields Some(None).
+func buildDistinctFactory(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val mname = match fn.kind {
+    case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
+      match recv.kind {
+        case EPath(path) -> if path.segments.count == 1 { m } else { return None }
+        case _ -> return None
+      }
+    } else {
+      return None
+    }
+    case _ -> return None
+  }
+  val target = if mname == "from" {
+    ty
+  } else {
+    match ty {
+      case TNamed(_, rargs) -> if rargs.count == 2 { rargs[0] } else { return None }
+      case _ -> return None
+    }
+  }
+  val did = match target {
+    case TNamed(s, targs) -> if targs.count == 0 { s } else { return None }
+    case _ -> return None
+  }
+  val tbl = env.ctx.tbl
+  val under = match symbolOfDefId(tbl, did) {
+    case Some(sym) -> match sym.kind {
+      case DKDistinctType(_, _) -> match distinctUnderlyingOf(tbl, TyUser(id = did, name = sym.name, args = newList())) {
+        case Some(u) -> u
+        case None -> return None
+      }
+      case _ -> return None
+    }
+    case None -> return None
+  }
+  val uty = match tyOfType(env.ctx, under) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return Some(value = None)
+    }
+  }
+  val xs = match positionalArgs(args) {
+    case Some(v) -> v
+    case None -> return Some(value = uncoveredExpr(env, e, "a distinct factory with a named argument"))
+  }
+  if xs.count != 1 {
+    return None
+  }
+  val built = match buildExpr(env, xs[0]) { case Some(t) -> t; case None -> return Some(value = None) }
+  val arg = match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
+  if mname == "from" {
+    return Some(value = Some(value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg))))
+  }
+  val one: List[TArg] = newList()
+  one.add(TArgIn(value = arg))
+  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoTryFrom(target = did)), args = one))))
 }
 
 /// A host element as a `Ty`: the receiver's type argument, a Lyric primitive, or a
@@ -1963,14 +2034,8 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 /// A value of a declared type used where an interface is expected: the checker accepts
 /// that only for a type that implements it, so the node names the interface.
 func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
-  val iface = match to {
-    case TNamed(i, _) -> i
-    case _ -> return None
-  }
-  val src = match from {
-    case TNamed(a, _) -> a
-    case _ -> return None
-  }
+  val iface = match to { case TNamed(i, _) -> i; case _ -> return None }
+  val src = match from { case TNamed(a, _) -> a; case _ -> return None }
   if src.id == iface.id {
     return None
   }
@@ -2393,7 +2458,11 @@ func buildMethodCall(
     sym,
     site.sig,
     Some(value = site.recvTy),
-    if isEntry or (isSome(site.iface) and not isSome(site.sig.recvMode)) { Some(value = PMIn) } else { site.sig.recvMode },
+    if isEntry or (isSome(site.iface) and not isSome(site.sig.recvMode)) {
+      Some(value = PMIn)
+    } else {
+      site.sig.recvMode
+    },
     if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
   )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))

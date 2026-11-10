@@ -68,6 +68,9 @@ pub union IntrinsicOp {
   /// A built-in function by its name in the built-in table (`println`,
   /// `toString`, ...), whose signature is declared there.
   case IoBuiltin(name: String)
+  /// `T.tryFrom(x)` on the distinct type `target`: the argument (the underlying
+  /// type) checked into `T`, as `Result[T, String]`.
+  case IoTryFrom(target: SymbolId)
 }
 
 pub union Callee {
