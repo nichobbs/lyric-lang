@@ -2113,7 +2113,11 @@ func runRestoreWith(
     }
   }
 
-  val mavenRc = if restoreTarget == "native" or restoreTarget == "dotnet" { 0 } else { restoreMavenJars(manifest, mfDir) }
+  val mavenRc = if restoreTarget == "native" or restoreTarget == "dotnet" {
+    0
+  } else {
+    restoreMavenJars(manifest, mfDir)
+  }
   if mavenRc != 0 {
     return mavenRc
   }
