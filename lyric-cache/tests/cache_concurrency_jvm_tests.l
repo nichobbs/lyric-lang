@@ -11,6 +11,7 @@
 package Cache.CacheConcurrencyJvmTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Cache
 
