@@ -254,10 +254,12 @@ func getAvatar(userId: in String): Result[Storage.StorageObject, Storage.Storage
 
 `lyric-search` supports Elasticsearch and Meilisearch backends. Both are
 implemented over plain HTTP and JSON on `Std.Http` and `Std.Json` (#5408), with
-no native SDK and no per-target kernel. They have not been driven against a
-live cluster, and the README documents a crash when an operation reads a real
-response body, so the library cannot yet be used against a live server (see the
-library's README for the remaining defects).
+no native SDK and no per-target kernel. Every operation is tested on both
+targets against a fake engine served by `Std.HttpServer`, which answers only
+the requests the real engine would accept and returns real response bodies. The
+library has not been driven against a real cluster, which is why it is
+`experimental`; set `LYRIC_SEARCH_ELASTICSEARCH_URL` (or
+`LYRIC_SEARCH_MEILISEARCH_URL`) to run its gated round-trip test against one.
 
 ```toml
 [dependencies]
@@ -376,7 +378,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-mq | incomplete | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | incomplete | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
-| lyric-search | experimental | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
+| lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
 | lyric-jobs | incomplete | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `InProcessJobScheduler`, `inprocess` and Quartz real, suite in CI | D-progress-633 |

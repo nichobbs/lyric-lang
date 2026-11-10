@@ -11,7 +11,7 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 | Stable on both targets | proto, validation, i18n, health, testing, generator-sdk, unicode, unicode-dict; auth except `ValidateKey` on JVM |
 | Real, labelled `@experimental` | web, ws, mcp, grpc, forms, lambda, aws-xray, resilience, session, feature-flags, ui |
 | Headline backend missing | mq (only `inmemory`, dotnet), storage (S3, Azure), db (no JVM), jobs (Hangfire, Quartz.NET on dotnet), otel (OTLP JVM, logs, gRPC), lambda (HTTP, streaming), aws-secrets (native `config`) |
-| Broken in one configuration | session and jobs in-process stores on JVM (#5451, #5456); auth `ValidateKey` and aws-xray `Tracing` on JVM (B-prime weaver); cache thread safety (#7457); search against a live server (`HttpResponse.bodyText`) |
+| Broken in one configuration | session and jobs in-process stores on JVM (#5451, #5456); auth `ValidateKey` and aws-xray `Tracing` on JVM (B-prime weaver); cache thread safety (#7457); search against a live server (`HttpResponse.bodyText`; does not reproduce on `main`, see section 2) |
 | Docs out of step | logging README (weaver "planned"), book matrix rows (proto, logging, search, five libraries missing), `cache_aspects.l` header |
 | Out of scope | graphics, window, GPU, text, draw, game, access, native lyric-ui (D548) |
 
@@ -22,7 +22,7 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 | JVM erased generics (#5456, #5451, #5439, #5442, #5444) | jobs, session, i18n on JVM | session P1a |
 | B-prime weaver on JVM (`__LyricBModeCallContext`) | auth `ValidateKey`, aws-xray `Tracing`, ws aspects | session P1a |
 | `impl <Interface> for <protected type>` (#7457), both backends | cache thread safety, other in-process stores | session P1b |
-| Cross-package free async function and `HttpResponse.bodyText` from outside `Std.Http` (lyric-search README defects 1 to 3, lyric-lambda `dispatch.l` header) | search against a live server, lambda HTTP | phase 1c, after P1a/P1b (stdlib and checker, not JVM-only) |
+| ~~Cross-package free async function and `HttpResponse.bodyText` from outside `Std.Http` (lyric-search README defects 1 to 3, lyric-lambda `dispatch.l` header)~~ **Does not reproduce on `main`** (verified 2026-11-10, #8940: `tests/search_live_tests.l` reads every response body across packages from a fake `Std.HttpServer` engine on dotnet and the JVM, for both backends, and awaits a `SearchClient` call from an `async func`). The README text was stale; no compiler or stdlib change was needed | none (search is tested end to end; lambda HTTP is a missing feature, not this defect) | done |
 
 ## 3. Phases
 
@@ -56,8 +56,11 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 - **Q-ECO-002.** Compatibility policy between a library's interface version and
   an external backend (SemVer range on the interface package, conformance suite
   version pinned in the backend's CI).
-- **Q-ECO-003.** Whether search's JVM state is "no kernel" (README) or "passes
-  CI" (`jvm-ecosystem-suites.sh`); reconcile when phase 1c lands.
+- **Q-ECO-003.** Resolved 2026-11-10: search's JVM state is "passes CI". The
+  README's "no kernel" text predated docs/59 wave 4 (H5 fixed); `Std.Http`'s
+  JVM kernel is real and `search_live_tests.l` passes on `--target jvm` for
+  both backends. The remaining gap is that CI runs the JVM suite with the
+  default `elasticsearch` feature only.
 
 ## 5. Tracking
 
