@@ -308,6 +308,27 @@ After S1-S6 merge: re-run the Tier 1 triage, then wait for docs/70 phase 4,
 re-triage cluster 1, then phase 5, freeze the API surface, cut the baseline and
 tag.
 
+### Tag checklist, target 2026-12-01
+
+Target set by the project lead on 2026-11-10.  The checkpoint dates are
+proposals, not commitments; `postv1` is the label for issues deliberately
+postponed past the tag (#8946, #8616).
+
+| Gate | Owner | State at 2026-11-10 | Checkpoint |
+|---|---|---|---|
+| docs/70 phases 2 to 4 (#8612, #8613, #8614) | docs/70 sessions | phase 3a in progress, no phase closed | 2026-11-17: phase 4 status; decide whether phase 5 can land |
+| docs/70 phase 5, package interfaces (#8615) | docs/70 sessions | open; the tag waits for it because the library artifact format changes there (docs/70 §12.3) | 2026-11-24, or the fallback below |
+| Re-triage Tier 1 cluster 1, generics at codegen | any session | blocked on docs/70 phase 4 | 1 week after phase 4 |
+| Library matrix and READMEs under docs/71 (phase 1 compiler fixes) | docs/71 sessions | in progress; not a gate unless the project lead says so | 2026-11-24 |
+| Release candidate: full CI green, `lyric public-api-diff` baseline cut, #8935 tests re-run on the candidate binary | any session | not started | 2026-11-24 |
+| Release notes final read against the matrix, READMEs, #8940 and #8946 | any session | drafted, merged | 2026-11-27 |
+| Tag, publish workflow run | project lead | | 2026-12-01 |
+
+Schedule risk: docs/70 phases 2 to 5 are the long pole.  If phase 5 is not
+landed by 2026-11-24, the project lead must choose between moving the tag and
+tagging on the current contract-metadata format, accepting a format break in
+1.x (docs/70 §12.3).  That choice is open.
+
 ## Tier 5 — feature work, in dependency order
 
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
