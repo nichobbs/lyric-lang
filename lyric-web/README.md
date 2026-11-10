@@ -177,7 +177,7 @@ router = Web.withMiddleware(router, Web.requestLogger())
 
 `Web.start` attaches a CORS middleware automatically from the `LYRIC_CONFIG_WEB_CORS_*` env vars (below) when enabled. Call `Web.corsMiddleware` directly if you build your own pipeline instead of using `Web.start`.
 
-With `*` as the origin list the middleware answers `Access-Control-Allow-Origin: *` literally rather than echoing the request's `Origin`, so browsers refuse credentialed requests; list the origins explicitly to allow credentials. The settings are written into response headers, so they must pass `Web.corsSettingsError`: no control characters, method tokens only, and a non-negative max age. `Web.start` checks them at startup and fails closed, instead of failing on every cross-origin request.
+`Web.corsMiddleware` refuses `*`: answering every site is a decision, not a default. Call `Web.corsAnyOriginMiddleware` (or set `LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN=true` together with `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS=*` under `Web.start`) to ask for it; the middleware then answers `Access-Control-Allow-Origin: *` literally rather than echoing the request's `Origin`, so browsers refuse credentialed requests. List the origins explicitly to allow credentials. The settings are written into response headers, so they must pass `Web.corsSettingsError`: no control characters, method tokens only, and a non-negative max age. `Web.start` checks them at startup and fails closed, instead of failing on every cross-origin request.
 
 ### Routes, headers and statuses
 
@@ -392,7 +392,8 @@ match Web.tlsServerConfigFromWebTls(cfg) {
 | Env var | Type | Default | Description |
 |---|---|---|---|
 | `LYRIC_CONFIG_WEB_CORS_ENABLED` | `Bool` | `false` | Enable CORS middleware |
-| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | (none; required when enabled) | Comma-separated origins, or `*` for any origin without credentials |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `String` | (none; required when enabled) | Comma-separated origins, or `*` (only with `ALLOWANYORIGIN=true`) |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN` | `Bool` | `false` | Opt in to answering every origin; requires `ALLOWEDORIGINS=*` and is rejected with an explicit list |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS` | `String` | `GET,POST,PUT,DELETE,OPTIONS,PATCH` | Comma-separated methods |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `String` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `Int` | `86400` | Preflight cache duration |
