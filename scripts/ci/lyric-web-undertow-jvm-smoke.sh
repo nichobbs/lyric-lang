@@ -24,8 +24,8 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 # Serialized against ci.yml's other `make maven-resolver` callers on the
-# same runner (in compiler-self-tests-jvm-c: the lyric-aws-secrets and
-# lyric-lambda JVM suites, the ecosystem suites' `web`, the UI suites and
+# same runner (in compiler-self-tests-jvm-c: the lyric-aws-secrets suite,
+# the ecosystem suites' `web`, the UI suites and
 # the lyric-ws smoke) — this step runs `background: true`, so
 # without coordination two concurrent `mvn package` builds could race into
 # the same resolver/target/ output directory (#7108 follow-up).

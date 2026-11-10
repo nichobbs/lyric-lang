@@ -5,8 +5,8 @@ AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.c
 > **Status**: `local`, `jvm`, and `aws` are all production-ready for
 > `getSecret`/`getSecretField`/`getParameter`/`getParameterRaw` and for
 > `init()`'s config-block annotation path (`local`'s `init()` is a no-op).
-> `--target native` has no `config { }` lowering yet (#7435), so `init()` is
-> `NotImplemented` there.
+> The annotation-driven path is not offered on `--target native` (no annotation
+> metadata there, #8524); see "Withdrawn surface".
 
 ## Platform parity
 
@@ -20,9 +20,9 @@ AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.c
 fetches each annotated field and registers the value with
 `Std.ConfigOverride`, which the `config { }` block's initialiser reads before
 the environment (D230).  This works on `aws` and `jvm`; on `local` it is a
-no-op.  It requires a target that lowers `config { }` blocks: on
-`--target native` (no config blocks yet, #7435) `init()` returns
-`NotImplemented`.
+no-op.  It needs a target that embeds annotation metadata, which `--target native`
+does not (#8524): `registerSecrets` and `registerAnnotated` are not declared
+there.
 
 The `aws` (.NET) feature's `GetSecretValueAsync`/`GetParameterAsync` calls
 return `Task<T>`, but binding them did not require making `AwsSecrets`'s
@@ -31,6 +31,22 @@ supports `await` inside a plain (non-`async`) function, lowering it to a
 blocking `GetAwaiter().GetResult()` shim — the same mechanism
 `Std.HttpHost`'s `HttpClient.SendAsync` binding uses. `AwsSecrets`'s
 public surface stays exactly as synchronous as `local`/`jvm`'s.
+
+## Withdrawn surface
+
+D552 item 2: `--target native` has no annotation metadata (`Std.AnnotationMeta`
+reports `Unsupported`, #8524), so the annotation-driven `config { }` path cannot
+run there. It used to be a public API that returned an error; it is now absent.
+
+| Removed | Was | Now |
+|---|---|---|
+| `SecretsError.NotImplemented` | Returned by `init()` / `registerAnnotated` / `registerSecrets` on native | Gone. An annotation-metadata or override-store failure on `dotnet`/`jvm` is `InvalidConfig` |
+| `registerSecrets`, `registerAnnotated` on `--target native` | Native-reachable, always `NotImplemented` | `@cfg(not(target = "native"))`: not declared on native |
+
+Migration: delete any `case NotImplemented(...)` arm when matching
+`SecretsError`. No feature flag became meaningless (`aws`, `local` and `jvm`
+are unchanged). On native, use env var overrides (`local`) or the explicit
+`getSecret`/`getParameter` API.
 
 ## Packages
 
@@ -84,15 +100,13 @@ access, and a value registered afterwards is not seen by it.
 ```lyric
 import AwsSecrets
 import Lambda
-import Web
+import Lambda.Direct
 
 func main(): Int {
   match AwsSecrets.init() {
     Ok(_) -> {
       // Secrets are now available in config blocks
-      var router = Web.create()
-      router = Web.addGet(router, "/health", "MyApp.getHealth")
-      Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+      Lambda.serve(Lambda.withDirect(Lambda.newApp(), Lambda.Direct.rawHandler(MyHandler())))
     }
     Err(err) -> {
       Std.Core.log("ERROR", AwsSecrets.errorMessage(err))
@@ -241,7 +255,6 @@ union SecretsError {
   case ParseError(name: String, key: String, message: String)
   case NetworkError(name: String, message: String)
   case BinaryValueUnsupported(name: String)
-  case NotImplemented(feature: String, message: String)
   case InvalidConfig(field: String, message: String)
 }
 ```
@@ -253,7 +266,6 @@ union SecretsError {
 | `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
 | `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
 | `NetworkError` | A transient network/service error, or (on `jvm`/`aws`) any AWS error the best-effort message classifier didn't recognise | Retry, or read `errorMessage` for detail |
-| `NotImplemented` | `init()` on a target with no config-override store (`--target native`, #7435). Retrying never helps | Use the explicit `getSecret`/`getParameter` API or env var overrides |
 | `InvalidConfig` | `SecretCache.ttlSeconds` (from `LYRIC_CONFIG_AWSSECRETS_SECRETCACHE_TTLSECONDS`) is outside 0..86400, returned by `init()` and every get call without fetching; or, from `init()`, an annotation with no secret name/path, a field with both annotations, or an unregisterable value | Fix the env var or the annotation |
 | `BinaryValueUnsupported` | (`jvm`/`aws`) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
 
@@ -336,7 +348,7 @@ The Lambda execution role must have the following permissions:
 ```lyric
 import AwsSecrets
 import Lambda
-import Web
+import Lambda.Direct
 import Std.Core
 
 config Database {
@@ -367,9 +379,7 @@ pub func handleGetUser(userId: in Int): Result[User, Web.ApiError] {
 func main(): Int {
   match AwsSecrets.init() {
     Ok(_) -> {
-      var router = Web.create()
-      router = Web.addGet(router, "/users/{id}", "MyApp.handleGetUser")
-      Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+      Lambda.serve(Lambda.withDirect(Lambda.newApp(), Lambda.Direct.rawHandler(MyHandler())))
     }
     Err(err) -> {
       Std.Core.log("ERROR", AwsSecrets.errorMessage(err))

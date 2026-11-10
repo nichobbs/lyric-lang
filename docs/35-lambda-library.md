@@ -1,6 +1,27 @@
 # 35 — lyric-lambda and lyric-aws-secrets library design
 
-**Status:** Specced in D062, D063, D064.
+**Status:** Specced in D062, D063, D064. Partly withdrawn under D552 item 2 (see below).
+
+> **Withdrawn (D552 item 2, 2026-11).** Two parts of this design were never
+> implemented and were removed from the public API of `lyric-lambda` rather than
+> shipped as error-returning stubs:
+>
+> - The **HTTP entry point** (goal 1's API Gateway v1/v2/ALB to `Web.Router`
+>   bridge: section 4, `Lambda.withRouter`, `Lambda.ApiGw`, `LambdaRouter`, the
+>   `web` feature and the `Lyric.Web` dependency). `dispatchInvocation` detected
+>   these events but never routed one, so every request failed with
+>   `InternalError`.
+> - **Response streaming** (goal 8, section 11: `Lambda.Stream`,
+>   `withStreamingHandler`, `Lambda.Direct.streamingHandler`). No transport was
+>   ever built, and every function panicked.
+>
+> Both return only when they can be implemented end to end on each target; the
+> sections below that describe them are the original design, kept as the starting
+> point for that work. `lyric-aws-secrets` also drops `SecretsError.NotImplemented`
+> and the native-target annotation path (`registerSecrets` and `registerAnnotated`
+> are `@cfg(not(target = "native"))`), because `Std.AnnotationMeta` has no native
+> implementation (#8524). Migration notes are in each library's README under
+> "Withdrawn surface".
 
 This document describes the design of `lyric-lambda` (AWS Lambda runtime adapter),
 `lyric-aws-secrets` (Secrets Manager / Parameter Store config integration), and
