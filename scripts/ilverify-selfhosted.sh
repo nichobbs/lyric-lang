@@ -60,7 +60,8 @@ if [[ -z "$ILVERIFY" ]]; then
 fi
 if [[ -z "$ILVERIFY" ]]; then
   echo "[ilverify] installing dotnet-ilverify global tool"
-  dotnet tool install -g dotnet-ilverify >/dev/null 2>&1 || true
+  # Pinned: dotnet-ilverify 11.x ships no tool settings for SDK 10 (same pin as #8987).
+  dotnet tool install -g dotnet-ilverify --version 10.0.0 >/dev/null 2>&1 || true
   export PATH="$PATH:$HOME/.dotnet/tools"
   ILVERIFY="$(command -v ilverify || true)"
 fi
