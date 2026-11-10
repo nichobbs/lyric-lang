@@ -1744,3 +1744,19 @@ test "a bare case at a lambda's tail takes the lambda's return type" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a function body ending in a scope that returns builds without a tail value" {
+  val c = censusOf("package App\nfunc f(n: Int): Int {\n  scope {\n    val a = n + 1\n    return a\n  }\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a catch-bound exception's message is a built-in property read" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): String {\n  var m = \"\"\n  try {\n    m = \"ok\"\n  } catch Exception as e {\n    m = e.message\n  }\n  m\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

@@ -1859,7 +1859,10 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
     case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
-    case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
+    case TyException -> if name == "message" { return Some(value = "Exception.message") }
+    case TyUser(id, hd, _) -> if name == "length" and symbolIdEq(id, builtinBufferTypeId()) {
+      return Some(value = "buffer.length")
+    } else if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
       val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
         case Some(ts) -> ts.originPackage.startsWith("Std.")
         case None -> false
@@ -2160,9 +2163,32 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
 }
 
+/// Whether `t` is a block with no tail value whose last statement always leaves it.
+func blockNeverCompletes(t: in TExpr): Bool {
+  match t.kind {
+    case XBlock(stmts, None) -> {
+      if stmts.count == 0 {
+        return false
+      }
+      match stmts[stmts.count - 1].kind {
+        case TsReturn(_) -> true
+        case TsThrow(_) -> true
+        case TsScope(_, body) -> blockNeverCompletes(body)
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
 /// its own, or not at all (counted).  A branch that never completes fits any type.
 func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  // A block with no tail whose last statement always leaves it (`return`, `throw`, or a
+  // `scope` that ends in one) never completes, so it fits any type.
+  if blockNeverCompletes(t) {
+    return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+  }
   // A block is typed as the whole, but its tail keeps its own type, which is
   // the value that needs converting.
   match t.kind {
