@@ -139,12 +139,11 @@ programs rather than wrapped by a top-level `Std.*` module: `Std.Task`
 "Experimental at v1.0" table above and every `pub` item in them, including in
 their `_kernel_jvm/` and `_kernel_native/` twins, is `@experimental`.
 
-**This tier is a default awaiting project-lead review (#8928).**  The lead has
-not chosen their tiers; `@experimental` was applied because the `Std.Task` API
-in docs/68 is unbacked and `Std.HttpServer` is in flux with the docs/61 engine
-work.  Promoting any of them to `@stable(since="1.0")` before the v1.0 tag is a
-one-line-per-item annotation change plus a move to the first table; after the
-tag it is a minor-version change.
+**These four are `@experimental` at v1.0 (D557, #8928).**  The `Std.Task` API in
+docs/68 is unbacked and `Std.HttpServer` is in flux with the docs/61 engine
+work.  Promoting any of them to `@stable(since="1.0")` later is a
+one-line-per-item annotation change plus a move to the first table, and is a
+minor-version change.
 
 ---
 

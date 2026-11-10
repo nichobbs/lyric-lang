@@ -232,8 +232,8 @@ artifacts must be built after it.
    baseline cut was blocked because `lyric public-api-diff` could not read
    multi-package bundles such as `Lyric.Stdlib.dll`; it now walks every
    per-package contract (`docs/22` §5.3, #8927).  The `Std.Task`,
-   `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` tiers default to
-   `@experimental`, awaiting project-lead review (#8928).
+   `Std.HttpServer`, `Std.TcpHost` and `Std.Jvm` are `@experimental` at v1.0
+   (D557, #8928).  The baseline itself is still cut at the tag.
 7. docs/70 exit criteria (§13) met, or the unmet ones are listed as deferred
    with a decision-log entry.
 8. Docs, book and progress records match the shipped state (CLAUDE.md sync rule).
