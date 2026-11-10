@@ -638,12 +638,13 @@ test "a record pattern and an enum case pattern build" {
   assertTrue(matchSummary(e.body) == "2:exhaustive", matchSummary(e.body))
 }
 
-test "an or-pattern is counted, not guessed" {
+test "an or-pattern that binds a name is counted, not guessed" {
   val r = buildFirstFn(
-    "package App\nfunc f(n: Int): Int {\n  match n {\n    case 1 | 2 -> 1\n    case _ -> 0\n  }\n}\n"
+    "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) | B(n) -> n\n  }\n}\n"
   )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern"), 1, "counted")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern that binds a name"), 1, "counted")
 }
 
 test "an as-pattern binds its name before its sub-pattern" {

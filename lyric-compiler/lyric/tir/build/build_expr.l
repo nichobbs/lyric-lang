@@ -883,12 +883,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
       var tfin: Option[TExpr] = None
       match fin {
-        case Some(fb) -> match loopBody(env, fb) {
-          case Some(x) -> {
-            tfin = Some(value = x)
-          }
-          case None -> return None
-        }
+        case Some(fb) -> match loopBody(env, fb) { case Some(x) -> { tfin = Some(value = x) }; case None -> return None }
         case None -> ()
       }
       Some(value = stmtOf(s, TsTry(body = tb, catches = tcs, finallyBody = tfin)))
