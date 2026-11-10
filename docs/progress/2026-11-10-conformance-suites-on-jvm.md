@@ -9,5 +9,4 @@ Follow-up to the conformance suites in lyric-testing (the earlier entry of the s
   `requires: allHaveIds(messages)` clause that `MockMessageQueue` inherits from
   `Mq.MessageQueue.publishBatch` does not resolve in the implementing package
   (`J002: unresolved call to 'allHaveIds'`). `testing` therefore stays out of
-  `scripts/ci/jvm-ecosystem-suites.sh` until that is fixed; tracked in the issue linked
-  from the PR.
+  `scripts/ci/jvm-ecosystem-suites.sh` until that is fixed; tracked in #8983.
