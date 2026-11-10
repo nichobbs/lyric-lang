@@ -1467,26 +1467,16 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
 /// records no callee for: the receiver built once, then each named field converted to
 /// its type at the receiver's instantiation.  None when the call is not a record copy;
 /// Some(None) after a part could not be built (counted or reported there).
-func buildRecordCopy(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[Option[TExpr]] {
-  val recv = match fn.kind {
-    case EMember(r, m) -> if m == "copy" { r } else { return None }
-    case _ -> return None
-  }
+func buildRecordCopy(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val recv = match fn.kind { case EMember(r, m) -> if m == "copy" { r } else { return None }; case _ -> return None }
   if not env.ctx.tbl.recordCopySites.containsKey(recordCopySiteKey(e.span)) {
     return None
   }
-  val cty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
-    case Some(t) -> t
-    case None -> return None
-  }
-  val rid = match cty {
-    case TyUser(id, _, _) -> id
-    case _ -> return None
-  }
-  val targs = match cty {
-    case TyUser(_, _, a) -> a
-    case _ -> return None
-  }
+  val cty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  val rid = match cty { case TyUser(id, _, _) -> id; case _ -> return None }
+  val targs = match cty { case TyUser(_, _, a) -> a; case _ -> return None }
   val fields = fieldsOfRecordInstantiated(env.ctx.tbl, rid, targs)
   val base = match buildExpr(env, recv) { case Some(t) -> t; case None -> return Some(value = None) }
   val updates: List[TFieldUpdate] = newList()
@@ -1994,9 +1984,7 @@ func buildLambda(
   // lambda's return type, as an argument hole takes its parameter's.
   if body.statements.count > 0 {
     match body.statements[body.statements.count - 1].kind {
-      case SExpr(tail) -> if not env.settled.containsKey(tail.nodeId) {
-        env.settled.add(tail.nodeId, ls.ret)
-      }
+      case SExpr(tail) -> if not env.settled.containsKey(tail.nodeId) { env.settled.add(tail.nodeId, ls.ret) }
       case _ -> ()
     }
   }

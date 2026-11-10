@@ -946,14 +946,16 @@ func checkCopy(c: in Ctx, e: in TExpr, base: in TExpr, updates: in List[TFieldUp
   val owner = match base.ty {
     case TNamed(o, _) -> o
     case _ -> {
-      report(c, e.id, "copy-type", "a record copy of a value of type " + renderTy(base.ty) + ", which is not a declared type")
+      report(
+        c,
+        e.id,
+        "copy-type",
+        "a record copy of a value of type " + renderTy(base.ty) + ", which is not a declared type"
+      )
       return
     }
   }
-  val entry = match lookupSym(c, owner) {
-    case Some(en) -> en
-    case None -> return
-  }
+  val entry = match lookupSym(c, owner) { case Some(en) -> en; case None -> return }
   val subs: List[Subst] = newList()
   match base.ty {
     case TNamed(o, args) -> subs.add(Subst(owner = o, args = args))
@@ -961,9 +963,22 @@ func checkCopy(c: in Ctx, e: in TExpr, base: in TExpr, updates: in List[TFieldUp
   }
   for u in updates {
     if u.field.index < 0 or u.field.index >= entry.fields.count or entry.fields[u.field.index].name != u.field.name {
-      report(c, e.id, "field-exists", "copy updates field " + u.field.name + ", which is not field " + toString(u.field.index) + " of #" + toString(owner.id))
+      report(
+        c,
+        e.id,
+        "field-exists",
+        "copy updates field " + u.field.name + ", which is not field " + toString(u.field.index) + " of #" +
+          toString(owner.id)
+      )
     } else {
-      expectTy(c, e.id, u.value.ty, substTy(entry.fields[u.field.index].ty, subs, None), "copy-field-type", "field " + u.field.name)
+      expectTy(
+        c,
+        e.id,
+        u.value.ty,
+        substTy(entry.fields[u.field.index].ty, subs, None),
+        "copy-field-type",
+        "field " + u.field.name
+      )
     }
   }
 }
