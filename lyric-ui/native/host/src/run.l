@@ -380,12 +380,15 @@ func widthOfText(h: Host): (String) -> Float {
   { t: String -> advanceOf(m, t) }
 }
 
-/// Scrolls the text area `id` so the line the caret is on is in view.
+val inputScrollMargin: Float = 8.0f32
+
+/// Scrolls the text input `id` so its caret is in view: the line it is on for a text area, the
+/// caret's x for a single-line input.
 func revealCaret(h: Host, id: String): Unit {
   match findBox(h.page, id, h) {
     case Some(b) -> {
+      val e = editOf(h, id)
       if b.kind == "textArea" {
-        val e = editOf(h, id)
         val lines = areaLinesOf(h, b, b.text)
         val lh = h.metrics.lineHeight(0)
         val view = b.h - 2.0f32 * textAreaPadding
@@ -393,6 +396,19 @@ func revealCaret(h: Host, id: String): Unit {
         val sy = Interact.clampScroll(Wrap.scrollToRow(e.scrollY, row, lh, view), Wrap.contentHeight(lines, lh), view)
         if sy != e.scrollY {
           h.edits.add(id, e.copy(scrollY = sy))
+        }
+      } else if isTextInput(b.kind) {
+        val shown = Interact.shownValue(b, b.text)
+        val lines = areaLinesOf(h, b, shown)
+        val wo = widthOfText(h)
+        val edges = Wrap.lineEdgesOf(shown, lines, 0, wo)
+        val cps = Interact.cpCount(shown)
+        val caret = if e.caret > cps { cps } else { e.caret }
+        val cx = Wrap.offsetInRowAt(shown, lines, 0, caret, e.downstream, wo)
+        val view = b.w - 2.0f32 * h.theme.inputPadding
+        val sx = Interact.scrollToCaretX(e.scrollX, cx, edges[0], edges[1], view, inputScrollMargin)
+        if sx != e.scrollX {
+          h.edits.add(id, e.copy(scrollX = sx))
         }
       }
     }
@@ -603,7 +619,13 @@ func typeText(h: Host, text: String): Unit {
 }
 
 func focusBox(h: Host, b: Box): Unit {
-  h.focus = idOfBox(h, b)
+  val id = idOfBox(h, b)
+  if h.focus != id and isTextInput(b.kind) {
+    // An unfocused input is drawn from its start, so a focus begins from there too.
+    val e = editOf(h, id)
+    h.edits.add(id, e.copy(scrollX = 0.0f32))
+  }
+  h.focus = id
   h.composing = ""
   h.openSelect = ""
 }
@@ -880,7 +902,10 @@ func onKey(h: Host, key: Int, mods: Int): Unit {
   if key == keyTab {
     val order = Interact.focusOrder(h.page)
     match Interact.nextFocus(order, h.focus, { b: Box -> idOfBox(h, b) }, shift) {
-      case Some(b) -> focusBox(h, b)
+      case Some(b) -> {
+        focusBox(h, b)
+        revealCaret(h, idOfBox(h, b))
+      }
       case None -> ()
     }
     return
