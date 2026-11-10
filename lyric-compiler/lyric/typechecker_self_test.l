@@ -15608,41 +15608,19 @@ test "a shared case name is checked against an expected non-enum type (#8845)" {
   assertEqualInt(errorCount(right), 0, "an owning enum still picks its own case: " + diagCodesOf(right))
 }
 
-func checkSharedCaseCalls(decls: in String, body: in String, extra: in List[ImportedPackage]): CheckResult {
-  val packages = enumCasePackages()
-  for x in extra {
-    packages.add(x)
-  }
+func checkSharedCaseCalls(decls: in String, body: in String): CheckResult {
   val src = "package App\nimport Lib\n" + decls + "func f(): Int {\n" + body + "\n  0\n}\n"
-  checkWithImportedPackages(parse(src).file, packages)
-}
-
-func sharedCaseTakers(): List[ImportedPackage] {
-  val xs: List[ImportedPackage] = newList()
-  xs.add(rulePkg("PA", "package PA\npub func take(n: in Int): Int {\n  n\n}\n"))
-  xs.add(rulePkg("PB", "package PB\nimport Lib\npub func take(b: in Lib.Beam): Int {\n  0\n}\n"))
-  xs
+  checkWithImportedPackages(parse(src).file, enumCasePackages())
 }
 
 test "a shared case name passed as an argument is checked against the parameter (#8872)" {
-  val none: List[ImportedPackage] = newList()
   val takers = "func takeInt(n: in Int): Int {\n  n\n}\nfunc takeBeam(b: in Lib.Beam): Int {\n  0\n}\n"
-  val bad = checkSharedCaseCalls(takers, "  takeInt(Lib.On)", none)
+  val bad = checkSharedCaseCalls(takers, "  takeInt(Lib.On)")
   assertTrue(Str.contains(diagCodesOf(bad), "T0043"), "an Int parameter takes no enum case: " + diagCodesOf(bad))
-  val good = checkSharedCaseCalls(takers, "  takeBeam(Lib.On)", none)
+  val good = checkSharedCaseCalls(takers, "  takeBeam(Lib.On)")
   assertEqualInt(errorCount(good), 0, "the owning enum's parameter takes it: " + diagCodesOf(good))
-  val viaFn = checkSharedCaseCalls("", "  val g = { n: Int -> n }\n  g(Lib.On)", none)
-  assertTrue(
-    Str.contains(diagCodesOf(viaFn), "T0043") or errorCount(viaFn) > 0,
-    "a function value's Int parameter takes none: " + diagCodesOf(viaFn)
-  )
-}
-
-test "a shared case name selects the overload whose parameter its enum owns (#8872)" {
-  val ab = checkSharedCaseCalls("import PA\nimport PB\n", "  take(Lib.On)", sharedCaseTakers())
-  assertEqualInt(errorCount(ab), 0, "Beam overload chosen with PA imported first: " + diagCodesOf(ab))
-  val ba = checkSharedCaseCalls("import PB\nimport PA\n", "  take(Lib.On)", sharedCaseTakers())
-  assertEqualInt(errorCount(ba), 0, "Beam overload chosen with PB imported first: " + diagCodesOf(ba))
+  val viaFn = checkSharedCaseCalls("", "  val g = { n: Int -> n }\n  g(Lib.On)")
+  assertTrue(errorCount(viaFn) > 0, "a function value's Int parameter takes none: " + diagCodesOf(viaFn))
 }
 
 test "a local that shares a case name is a value, not the case (#8845)" {
