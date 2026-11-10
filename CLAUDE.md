@@ -1110,10 +1110,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
 - `lyric-storage/` — `lyric-storage` library: object storage
-  (`Lyric.Storage`). S3, Azure Blob, and local filesystem backends —
-  **only local filesystem is production-ready on either target; S3 and
-  Azure Blob return `NOT_IMPLEMENTED` pending native SDK bindings, see
-  `lyric-storage/README.md`**; `StorageBucket` interface with
+  (`Lyric.Storage`). Local filesystem is the only backend and is
+  production-ready on both targets; the unimplemented S3 and Azure Blob
+  factories were removed (D552, migration note in
+  `lyric-storage/README.md`); `StorageBucket` interface with
   put/get/delete/list/presignedUrl/exists; `AuditAccess` and
   `ValidateKey` aspects.
 - `lyric-auth/` — `lyric-auth` library: transport-agnostic authentication

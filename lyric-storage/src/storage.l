@@ -1,15 +1,13 @@
 //! Storage — object and file storage library for Lyric.
 //!
 //! Stability: @experimental — the local-filesystem backend is
-//! exercised by tests, but the S3 and Azure Blob backends have not
-//! been driven against a live provider in CI.
+//! exercised by tests on both targets.
 //! WARNING: experimental — no stability guarantee.  The
 //! `StorageBucket` interface and the `connect*` factories may change
 //! before the surface freezes for `1.0`.
 //!
-//! Provides a uniform `StorageBucket` interface over Amazon S3, Azure Blob
-//! Storage, and the local filesystem.  Obtain a bucket handle with one of the
-//! feature-gated `connect*` factory functions, then call the typed wrappers or
+//! Provides a uniform `StorageBucket` interface over the local filesystem.
+//! Obtain a bucket handle with `connectLocal`, then call the typed wrappers or
 //! the interface methods directly.
 //!
 //! Usage:
@@ -36,9 +34,9 @@
 //!     the `dotnet` / `jvm` features, so the inactive one is erased and
 //!     the unqualified calls below resolve to the survivor.  No host
 //!     shim on either target.
-//!   * S3 (AWSSDK.S3)        — returns `NOT_IMPLEMENTED` until the
-//!     direct `extern type` bindings against the NuGet SDK land.
-//!   * Azure Blob Storage    — same as S3.
+//!
+//! There are no S3 or Azure Blob backends; the `StorageBucket` interface is
+//! the seam a remote backend would implement (docs/decisions/D552).
 //!
 //! See docs/03-decision-log.md D056 and lyric-storage/README.md.
 @runtime_checked
@@ -129,7 +127,7 @@ pub func storageKeyHasDotDot(s: in String): Bool {
 //     object name and break log lines and HTTP headers (#7242)
 //   * `.` and empty path segments (`a/./b`, `a//b`, a trailing `/`): the
 //     local-fs backend collapses them, so `a//b` and `a/b` would name the
-//     same file there but different objects on S3 (#7242)
+//     same file there but different objects on an object store that keeps empty segments (#7242)
 //   * a segment ending in `.` or a space, which Windows strips (`a/foo.` is
 //     `a/foo` there, and `x.meta.json ` is a sidecar), a Windows device name
 //     (`CON`, `nul.txt`, `COM1`), and `:`, which names an NTFS alternate data
@@ -296,10 +294,10 @@ pub interface StorageBucket {
 
   /// List objects whose keys begin with `prefix`.  Pass an empty string to
   /// list all objects.  Use `continuationToken` and `maxKeys` for paging.
-  /// `maxKeys` is bounded by the S3 standard page size so cross-backend
-  /// callers see a uniform shape — local-fs, S3, and Azure Blob all
-  /// reject `maxKeys > 1000` at the interface contract before reaching
-  /// the per-backend implementation (#1456).
+  /// `maxKeys` is bounded by the common object-store page size so a
+  /// future remote backend keeps the same shape: `maxKeys > 1000` is
+  /// rejected at the interface contract before reaching the
+  /// per-backend implementation (#1456).
   ///
   /// Key restriction: every method returns `Err(INVALID_KEY)` for a key
   /// (or, for `list`, a non-empty prefix) that `isSafeKey` rejects.  Keys
@@ -313,8 +311,8 @@ pub interface StorageBucket {
     requires: maxKeys <= 1000
 
   /// Generate a pre-signed URL granting temporary access to `key`.
-  /// `expiresInSeconds` is capped at 604800 (7 days) to match the AWS S3
-  /// maximum and prevent permanent unrevocable access grants.
+  /// `expiresInSeconds` is capped at 604800 (7 days) to match the common
+  /// object-store maximum and prevent permanent unrevocable access grants.
   func presignedUrl(key: in String, expiresInSeconds: in Int): Result[String, StorageError]
     requires: expiresInSeconds >= 1
     requires: expiresInSeconds <= 604800
@@ -906,70 +904,10 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
   }
 }
 
-// `S3Bucket` / `AzureBucket` record types and their unreachable
-// `impl StorageBucket` blocks were removed (#1448): `connectS3` and
-// `connectAzureBlob` now fail fast at the factory with
-// `Err(NOT_IMPLEMENTED)` and never construct a backend record, so the
-// trait implementations were dead code on every code path.  When the
-// native NuGet SDK bindings land, reintroduce both records alongside
-// their `impl` blocks in the same PR so the runtime shape and the
-// factory return type flip from fail-fast to fail-late atomically.
 // ─── Factory functions ────────────────────────────────────────────────────────
-/// Open an Amazon S3 bucket.  **Fails fast** with
-/// `Err(StorageError(code = "NOT_IMPLEMENTED"))` until the native
-/// `AWSSDK.S3` bindings land in Lyric — callers that defensively
-/// branch on the `Err` from this factory will continue to do so.
-/// Tracked as a follow-up.
-@stable(since = "0.1")
-pub func connectS3(
-  region: in String,
-  bucket: in String,
-  accessKey: in String,
-  secretKey: in String,
-  endpointUrl: in String,
-): Result[StorageBucket, StorageError] {
-  if region.length == 0 {
-    return Err(StorageError(message = "region must be non-empty", code = "INVALID_ARGUMENT"))
-  }
-  if bucket.length == 0 {
-    return Err(StorageError(message = "bucket must be non-empty", code = "INVALID_ARGUMENT"))
-  }
-  // S3 backend is not yet implemented (the NuGet AWS SDK bindings are
-  // tracked as follow-up work).  Fail fast at the factory rather than
-  // returning a stub bucket that produces `NOT_IMPLEMENTED` on every
-  // subsequent operation — that fail-late shape silently swallowed
-  // caller code that defensively branched on `Err` from `connectS3`
-  // (#1441).  When the native bindings land, replace this with the
-  // real `Ok(S3Bucket(...))` construction.
-  return Err(
-    StorageError(message = "S3 backend not yet implemented (native bindings pending)", code = "NOT_IMPLEMENTED")
-  )
-}
-
-/// Open an Azure Blob Storage container.  Currently returns `Err`
-/// because the native Azure SDK bindings are tracked as follow-up
-/// work.  Fail-fast at the factory matches the historical F# host
-/// shim's semantics (#1441) — code that defensively branches on
-/// `Err` from `connectAzureBlob` must continue to do so.
-@stable(since = "0.1")
-pub func connectAzureBlob(connectionString: in String, containerName: in String): Result[StorageBucket, StorageError] {
-  if connectionString.length == 0 {
-    return Err(StorageError(message = "connectionString must be non-empty", code = "INVALID_ARGUMENT"))
-  }
-  if containerName.length == 0 {
-    return Err(StorageError(message = "containerName must be non-empty", code = "INVALID_ARGUMENT"))
-  }
-  return Err(
-    StorageError(
-      message = "Azure Blob backend not yet implemented (native bindings pending)",
-      code = "NOT_IMPLEMENTED"
-    )
-  )
-}
-
 /// Open a local filesystem store.  The bucket subdirectory is created
 /// inside `basePath` if it doesn't already exist (matches the local-fs
-/// idiom; S3 and Azure require the bucket to exist out-of-band).
+/// idiom).
 @stable(since = "0.1")
 pub func connectLocal(basePath: in String, bucketName: in String): Result[StorageBucket, StorageError] {
   if basePath.length == 0 {
@@ -999,12 +937,6 @@ pub func connectLocal(basePath: in String, bucketName: in String): Result[Storag
   }
 }
 
-// The previous `connect(provider: String)` dispatcher referenced the
-// `@cfg`-gated `connectS3` / `connectAzureBlob` / `connectLocal`
-// constructors unconditionally, so callers had to either enable every
-// feature or the manifest build failed with `T0020 unknown name`.
-// The explicit constructors are the canonical entry points and remain
-// the documented API.
 // ─── Convenience wrappers ─────────────────────────────────────────────────────
 /// Upload an object with the given content type and no user-defined metadata.
 @stable(since = "0.1")

@@ -650,7 +650,7 @@ The standard library (`Std.*`) covers the basics: collections, strings, JSON, ti
 | Observability (OpenTelemetry) | `lyric-otel` | `OTel`, `OTel.Otlp` |
 | Full-text search (Elasticsearch / Meilisearch) | `lyric-search` | `Search` |
 | Distributed sessions | `lyric-session` | `Session` |
-| Object storage (S3 / Azure Blob / local) | `lyric-storage` | `Storage`, `Storage.Aspects` |
+| Object storage (local filesystem) | `lyric-storage` | `Storage`, `Storage.Aspects` |
 | Input validation | `lyric-validation` | `Validation` |
 | WebSockets | `lyric-ws` | `Ws`, `Ws.Aspects` |
 | Feature flags | `lyric-feature-flags` | `Flags`, `Flags.Aspects` |

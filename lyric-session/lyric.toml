@@ -39,6 +39,8 @@ output_assembly = "Session.dll"
 "Session.SessionRedisJvmTests"    = "tests/session_redis_jvm_tests.l"
 "Session.SessionCookieTests"      = "tests/session_cookie_tests.l"
 "Session.SessionConfigEnvTests"   = "tests/session_config_env_tests.l"
+"Session.SessionConcurrencyDotnetTests" = "tests/session_concurrency_dotnet_tests.l"
+"Session.SessionConcurrencyJvmTests" = "tests/session_concurrency_jvm_tests.l"
 
 # `dotnet` and `jvm` are MUTUALLY EXCLUSIVE (#1444/#4-progress pattern shared with
 # lyric-storage/lyric-auth/lyric-resilience): activating both leaves two definitions

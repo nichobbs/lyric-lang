@@ -65,7 +65,6 @@ test "InProcessSessionStore conforms to SessionStore" {
 }
 
 // ─── Mq ──────────────────────────────────────────────────────────────────────
-@cfg(target = "dotnet")
 func makeInMemoryQueue(): MqConformance.QueueEnds {
   val queue = unwrapResult(Mq.connectTo("inmemory://conformance", "q-" + Uuid.uuidToString(Uuid.newUuid())))
   val publisher: Mq.MessageQueue = queue
@@ -78,9 +77,6 @@ func makeDeadLetterStore(maxEntries: in Int): Mq.DeadLetterStore {
   return s
 }
 
-// The in-memory broker has no JVM kernel yet; the JVM reference backend lands
-// in the next change of this series and removes the gate.
-@cfg(target = "dotnet")
 test "the in-memory broker conforms to MessageQueue and QueueConsumer" {
   requireConformance(MqConformance.runQueue({ -> makeInMemoryQueue() }))
 }

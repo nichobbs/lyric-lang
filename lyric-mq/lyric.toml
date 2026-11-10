@@ -21,6 +21,9 @@ output_assembly = "Mq.dll"
 "Mq.MqAspectWeavingTests" = "tests/mq_aspect_weaving_tests.l"
 "Mq.MqConcurrencyDotnetTests" = "tests/mq_concurrency_dotnet_tests.l"
 "Mq.MqConcurrencyJvmTests" = "tests/mq_concurrency_jvm_tests.l"
+"Mq.MqDeadLetterConcurrencyDotnetTests" = "tests/mq_deadletter_concurrency_dotnet_tests.l"
+"Mq.MqDeadLetterConcurrencyJvmTests" = "tests/mq_deadletter_concurrency_jvm_tests.l"
+
 
 [dependencies]
 "Lyric.Cache"  = { workspace = true }

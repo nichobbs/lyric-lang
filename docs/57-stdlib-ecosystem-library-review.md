@@ -167,15 +167,12 @@ affected by this constraint — `.new(args)` is safe to use there today.
   `hostReplace` now race each match on a daemon `Thread` against the
   compiled-in timeout, verified against a real catastrophic-backtracking
   pattern.
-- **lyric-storage**: only the local-filesystem backend is
-  production-grade; S3 and Azure Blob backends
-  (`storage_kernel.l:24-29`, `storage.l:850-880`) return
-  `NOT_IMPLEMENTED` pending native `extern type` bindings against the AWS
-  SDK / Azure SDK. Documented as deliberate (no active users yet) but the
-  library's own doc comment (`docs/03-decision-log.md` D056) and its
-  README should say so up front — a user reading "S3, Azure Blob, and
-  local filesystem backends" in CLAUDE.md's library list would reasonably
-  expect all three to work today.
+- **lyric-storage**: only the local-filesystem backend was
+  production-grade; the S3 and Azure Blob factories returned
+  `NOT_IMPLEMENTED`. _Resolved (docs/decisions/D552, progress
+  2026-11-10-storage-remove-s3-azure): `connectS3` and `connectAzureBlob`
+  were removed from the public API, so every backend the library exposes
+  works._
 - **lyric-mq** (resolved, D552): the in-process broker is pure Lyric
   (`Mq.InMemory`, protected types) and works on dotnet and the JVM; the
   RabbitMQ/SQS/Azure Service Bus/Kafka declarations and the BCL kernels were
@@ -578,7 +575,7 @@ verified end-to-end. See D-progress-810 for full detail.
    that got a dedicated issue rather than just a README sentence, since a
    silent no-op is worse than an undocumented stub — **shipped a real fix
    on `main` while this PR was open.** The remaining backend-completeness
-   asymmetries (storage S3/Azure, mq/jobs brokers, search backends) still
+   asymmetries (mq/jobs brokers, search backends; storage S3/Azure removed, D552) still
    need the one-README-sentence-per-library treatment.
 7. Expand `lyric-testing` mocks per §5.3, prioritized by #410
    (failure-injection) since it multiplies the value of every mock added
