@@ -237,7 +237,11 @@ test "connectTo with no queue name is an Err, not a panic (#7239)" {
 
 test "InProcessDeadLetterStore requires a capacity of at least 1 (#7239)" {
   assertPanics("capacity 0", { -> val _ = inProcessDeadLetterStore(0) })
-  assertEqualInt(Mq.inProcessDeadLetterStore(1).maxEntries, 1, "capacity 1 is valid")
+  val one = Mq.inProcessDeadLetterStore(1)
+  val m = Mq.Message(id = "a", body = "", headers = [], deliveryCount = 0)
+  one.append(Mq.DeadLetterEntry(message = m, reason = "r", failedAt = 1i64))
+  one.append(Mq.DeadLetterEntry(message = m, reason = "r", failedAt = 2i64))
+  assertEqualInt(one.count(), 1, "capacity 1 is valid and holds exactly one entry")
 }
 
 test "allHaveIds" {
