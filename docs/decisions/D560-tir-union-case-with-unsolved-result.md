@@ -20,4 +20,5 @@ Records and protected types are unchanged (they still need a closed result type 
 
 ## Measured
 
-See the progress entry.
+`scripts/ci/tir-census.sh` over the 98 programs, on top of D559: bodies built 1016 -> 1028 of 1165,
+I0003 0; `a name that is not a local` (the cascade) 64 -> 38.
