@@ -50,7 +50,7 @@ clang -fsyntax-only -I "$include" lyric-access/platform/native/accesskit_layout_
 
 echo "=== the lyric-access smoke program ==="
 manifest=lyric-access/platform/examples/smoke/lyric.toml
-"$LYRIC_BIN" restore --manifest "$manifest"
+"$LYRIC_BIN" restore --target native --manifest "$manifest"
 "$LYRIC_BIN" build --target native --manifest "$manifest" -o "$work/access-smoke"
 
 if [ "$variant" = macos ]; then
