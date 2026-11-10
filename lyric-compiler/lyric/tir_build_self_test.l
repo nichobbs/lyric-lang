@@ -1712,3 +1712,26 @@ test "a call of an impl member on a record passes the value as the receiver" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a record copy builds as a copy of the receiver with the named fields replaced" {
+  val c = censusOf("package App\nrecord P { x: Int, y: Int }\nfunc f(p: P): P { p.copy(x = 5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a copy of a generic record converts each field at the receiver's instantiation" {
+  val c = censusOf("package App\nrecord Box[T] { v: T, n: Int }\nfunc f(b: Box[Long]): Box[Long] { b.copy(v = 7) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a catch that binds the exception declares the binding as an exception-typed local" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  try {\n    t = n\n  } catch Exception as e {\n    t = 1\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

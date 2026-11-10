@@ -867,17 +867,21 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SThrow(_) -> uncoveredStmt(env, s, "a throw")
     case STry(body, catches, fin) -> {
-      // A catch that binds the exception has no type to give the binding yet.
-      for c in catches {
-        if isSome(c.bindName) {
-          return uncoveredStmt(env, s, "a try statement with a catch binding")
-        }
-      }
       val tb = match loopBody(env, body) { case Some(x) -> x; case None -> return None }
       val tcs: List[TCatch] = newList()
       for c in catches {
-        match loopBody(env, c.body) {
-          case Some(cb) -> tcs.add(TCatch(binding = None, exceptionType = c.typeName, body = cb))
+        pushScope(env)
+        var binding: Option[LocalDecl] = None
+        match c.bindName {
+          case Some(n) -> {
+            binding = Some(value = declareLocal(env, n, TException, false))
+          }
+          case None -> ()
+        }
+        val built = loopBody(env, c.body)
+        popScope(env)
+        match built {
+          case Some(cb) -> tcs.add(TCatch(binding = binding, exceptionType = c.typeName, body = cb))
           case None -> return None
         }
       }
@@ -1448,11 +1452,73 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
+  match buildRecordCopy(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match buildDistinctFactory(env, e, ty, fn, args) {
     case Some(r) -> return r
     case None -> ()
   }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `r.copy(f = x, ...)` on a record, which the checker validates as a copy site and
+/// records no callee for: the receiver built once, then each named field converted to
+/// its type at the receiver's instantiation.  None when the call is not a record copy;
+/// Some(None) after a part could not be built (counted or reported there).
+func buildRecordCopy(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[Option[TExpr]] {
+  val recv = match fn.kind {
+    case EMember(r, m) -> if m == "copy" { r } else { return None }
+    case _ -> return None
+  }
+  if not env.ctx.tbl.recordCopySites.containsKey(recordCopySiteKey(e.span)) {
+    return None
+  }
+  val cty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  val rid = match cty {
+    case TyUser(id, _, _) -> id
+    case _ -> return None
+  }
+  val targs = match cty {
+    case TyUser(_, _, a) -> a
+    case _ -> return None
+  }
+  val fields = fieldsOfRecordInstantiated(env.ctx.tbl, rid, targs)
+  val base = match buildExpr(env, recv) { case Some(t) -> t; case None -> return Some(value = None) }
+  val updates: List[TFieldUpdate] = newList()
+  for a in args {
+    match a {
+      case CAPositional(_) -> return Some(value = uncoveredExpr(env, e, "a record copy with a positional argument"))
+      case CANamed(name, value, _) -> {
+        var idx = -1
+        var i = 0
+        while i < fields.count {
+          if fields[i].name == name {
+            idx = i
+          }
+          i = i + 1
+        }
+        if idx < 0 {
+          return Some(value = uncoveredExpr(env, e, "a record copy naming no field"))
+        }
+        val fty = match tyOfType(env.ctx, fields[idx].ty) {
+          case Ok(t) -> t
+          case Err(msg) -> {
+            env.errors.add(msg)
+            return Some(value = None)
+          }
+        }
+        val bv = match settleArg(env, value, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        val cv = match coerceArg(env, bv, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        updates.add(TFieldUpdate(field = FieldRef(owner = rid, name = name, index = idx), value = cv))
+      }
+    }
+  }
+  Some(value = Some(value = mkExpr(e, ty, XCopy(base = base, updates = updates))))
 }
 
 /// `T.from(x)` and `T.tryFrom(x)` on a non-generic distinct type `T` (language reference

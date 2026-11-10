@@ -227,6 +227,12 @@ pub record TCatch {
   body: TExpr
 }
 
+/// A field a record copy replaces, with its new value.
+pub record TFieldUpdate {
+  field: FieldRef
+  value: TExpr
+}
+
 pub record TExpr {
   id: NodeId
   ty: Ty
@@ -243,6 +249,9 @@ pub union TExprKind {
   /// defaults filled in.
   case XConstruct(sym: SymbolId, fields: List[TExpr])
   case XField(recv: TExpr, field: FieldRef)
+  /// A record `.copy(...)`: the value of `base` with the listed fields replaced, of the
+  /// same type.  `base` is evaluated once, before the updates, which run in source order.
+  case XCopy(base: TExpr, updates: List[TFieldUpdate])
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])
