@@ -22662,6 +22662,8 @@ func inferExprExpectedCore(
           case Some(ctorSym) -> {
             val cargTypes = inferGenericRecordCtorArgsExpected(sc, tbl, sigs, diag, fn, ctorSym, cargs, expected)
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+            recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
+            recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
             ctorTy
