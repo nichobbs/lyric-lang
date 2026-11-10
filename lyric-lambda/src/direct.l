@@ -41,9 +41,6 @@
 //!     Lambda.withDirect(Lambda.newApp(), Lambda.Direct.sqsHandler(HandleQueue()))
 //!   )
 //!
-//!   // For API Gateway HTTP traffic use Lambda.withRouter (blocked on a
-//!   // ConditionalWeakTable feasibility spike — see docs/35-lambda-library.md
-//!   // and Lambda.Kernel.WebBridge's header comment).
 //!
 //! Both the interface-based (`Lambda.Direct`) and string-based (`on*`)
 //! registration models may coexist in the same LambdaApp — the kernel tries
@@ -61,11 +58,9 @@
 package Lambda.Direct
 
 import Std.Core
-import Web
 import Lambda
 import Lambda.Events
 import Lambda.Authorizer
-import Lambda.Stream
 
 // ─── Event source handler factories ──────────────────────────────────────────
 /// Wrap a SQS handler instance for AOT-safe registration.
@@ -136,24 +131,4 @@ pub func requestAuthorizerHandler(h: in RequestAuthorizerHandler): DirectHandler
 @stable(since = "0.1")
 pub func httpAuthorizerHandler(h: in HttpAuthorizerHandler): DirectHandler {
   return HttpAuthorizerDirect(handler = h)
-}
-
-// ─── Streaming handler factory ────────────────────────────────────────────────
-/// Wrap a streaming HTTP handler for AOT-safe registration.
-///
-/// **Not implemented.** `Lambda.Stream`'s `StreamWriter` has no working
-/// kernel (its transport was never built — see `Lambda.Stream`'s header
-/// comment), and `DirectHandler` has no streaming case because adding one
-/// here would create a `Lambda` <-> `Lambda.Stream` import cycle (`Stream`
-/// itself imports `Lambda`). Calling this panics loudly instead of
-/// silently accepting a handler that can never be invoked; response
-/// streaming is tracked as follow-up work once the streaming transport is
-/// designed.
-@stable(since = "0.1")
-pub func streamingHandler(h: in (String, LambdaContext, StreamWriter) -> Result[Unit, LambdaError]): DirectHandler {
-  return panic(
-    "Lambda.Direct.streamingHandler: response streaming has no working kernel yet " +
-      "(Lambda.Stream's StreamWriter transport was never implemented). " +
-      "Register a non-streaming handler instead, or track this as follow-up work."
-  )
 }

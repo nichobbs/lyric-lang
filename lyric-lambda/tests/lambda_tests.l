@@ -2,7 +2,7 @@
 //!
 //! Covers LambdaError construction and errorMessage formatting, LambdaApp builder
 //! (newApp / onSqs / onSns / onS3 / onEventBridge / onDynamoDb / onKinesis / onRaw /
-//! withStreamingHandler / onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer),
+//! onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer),
 //! event record construction (SqsEvent, SqsBatchResponse, SnsEvent, S3Event,
 //! EventBridgeEvent, DynamoDbEvent, KinesisEvent), and Lambda.Authorizer pure helpers
 //! (allow, allowAll, deny, withContext, withUsageKey, authorized,
@@ -96,10 +96,6 @@ test "newApp: creates empty LambdaApp" {
   assertTrue(app.eventHandlers.length == 0, "no event handlers initially")
   assertTrue(app.authorizerHandlers.length == 0, "no authorizer handlers initially")
   assertTrue(app.directHandlers.length == 0, "no direct handlers initially")
-  match app.httpRouter {
-    case None -> ()
-    case Some(_) -> assertTrue(false, "httpRouter must be None initially")
-  }
 }
 
 test "onSqs: registers SQS handler" {
@@ -149,14 +145,6 @@ test "chained event handlers: each produces a unique entry" {
     "MyApp.Events.handle"
   )
   assertEqualInt(app.eventHandlers.length, 3, "three handlers registered")
-}
-
-test "withStreamingHandler: sets streamingHandler name" {
-  val app = Lambda.withStreamingHandler(Lambda.newApp(), "MyApp.Stream.handle")
-  match app.streamingHandler {
-    case None -> assertTrue(false, "streamingHandler must be Some")
-    case Some(n) -> assertEqual(n, "MyApp.Stream.handle", "streaming handler name")
-  }
 }
 
 test "onTokenAuthorizer: registers token authorizer" {
