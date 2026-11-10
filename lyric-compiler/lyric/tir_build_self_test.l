@@ -464,10 +464,7 @@ test "a refined argument to a built-in member is unrefined to the parameter the 
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   var unrefined = false
   val call: Option[TExpr] = match r.body {
-    case Some(b) -> match b.kind {
-      case XBlock(_, tail) -> tail
-      case _ -> Some(value = b)
-    }
+    case Some(b) -> match b.kind { case XBlock(_, tail) -> tail; case _ -> Some(value = b) }
     case None -> None
   }
   match call {
@@ -475,12 +472,7 @@ test "a refined argument to a built-in member is unrefined to the parameter the 
       case XCall(_, args) -> {
         for a in args {
           match a {
-            case TArgIn(v) -> match v.kind {
-              case XConvert(CvUnrefine, _) -> {
-                unrefined = true
-              }
-              case _ -> ()
-            }
+            case TArgIn(v) -> match v.kind { case XConvert(CvUnrefine, _) -> { unrefined = true }; case _ -> () }
             case _ -> ()
           }
         }

@@ -2058,9 +2058,7 @@ func buildBuiltinCall(
               if not genericBuiltin(name) {
                 match mapGet(env.ctx.tbl.builtinFnTyByNode, e.nodeId) {
                   case Some(ft) -> match tyOfType(env.ctx, ft) {
-                    case Ok(TFunc(ps, _, _)) -> if ts.count <= ps.count {
-                      declared = Some(value = ps)
-                    }
+                    case Ok(TFunc(ps, _, _)) -> if ts.count <= ps.count { declared = Some(value = ps) }
                     case _ -> ()
                   }
                   case None -> ()
