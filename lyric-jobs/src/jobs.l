@@ -1,49 +1,29 @@
 //! Jobs — background job scheduling and execution library for Lyric.
-//! Stability: @experimental — the in-process scheduler has tests; the
-//! `NativeJobScheduler` (Hangfire/Quartz) path is tested against a real,
-//! live Quartz Scheduler on `jvm` (`tests/jobs_tests.l`); Hangfire/Quartz.NET
-//! on `dotnet` are not yet implemented (see README "Platform parity").
+//! Stability: @experimental — `InProcessJobScheduler`, the one in-tree
+//! reference backend, is real and tested on `dotnet` and `jvm`.  Hangfire,
+//! Quartz.NET and Quartz backends are not part of this package (docs/71,
+//! D552); see lyric-jobs/README.md for the migration note.
 //!
 //! `JobScheduler` is the public interface; implement it to add a custom
-//! backend.  Two implementations are provided:
+//! backend.  One implementation is provided:
 //!
-//!   NativeJobScheduler   — delegates to Jobs.Kernel.Net or Jobs.Kernel.Jvm
-//!                          (whichever the `dotnet`/`jvm` feature selects)
 //!   InProcessJobScheduler — in-memory queue for tests and single-process use
-//!
-//! Supported backends (feature-gated via lyric.toml [features]; exactly one
-//! of `inprocess`/`hangfire`/`quartz` must be active, alongside exactly one
-//! of `dotnet`/`jvm` selecting the platform kernel):
-//!   inprocess — ConcurrentDictionary (.NET) / ConcurrentHashMap (JVM) backend
-//!   hangfire  — Hangfire.Core + Hangfire.SqlServer on `dotnet` (not yet
-//!               implemented); real Quartz Scheduler on `jvm` (no JVM port)
-//!   quartz    — Quartz.NET on `dotnet` (not yet implemented); real Quartz
-//!               Scheduler (RAMJobStore) on `jvm`
 //!
 //! Usage:
 //!
 //!   import Jobs
 //!   import Std.Core
 //!
-//!   val scheduler = Jobs.connect()?
+//!   val scheduler = Jobs.inProcess()
 //!   val jobId     = Jobs.enqueue(scheduler, "send-email", "{\"to\":\"user@example.com\"}")?
 //!   match Jobs.status(scheduler, jobId) {
 //!     case Ok(s)  -> println("job status: " + s.toString())
 //!     case Err(e) -> println("error: " + e)
 //!   }
 //!
-//! `Jobs.connectHangfire()` / `Jobs.connectQuartz()` are explicit
-//! backend-named alternatives to `Jobs.connect()` (which just uses whichever
-//! single backend feature is active).
-//!
-//! Runtime config env vars (LYRIC_CONFIG_JOBS_DEFAULTS_*):
-//!   LYRIC_CONFIG_JOBS_DEFAULTS_MAXATTEMPTS       — retry limit (default: 3)
-//!   LYRIC_CONFIG_JOBS_DEFAULTS_DEFAULTTIMEOUTMS  — execution timeout ms (default: 30000)
-//!   LYRIC_CONFIG_JOBS_DEFAULTS_WORKERCOUNT       — parallel worker threads (default: 4)
-//!   LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING  — SQL Server/Redis connection
-//!                                                  string (`dotnet` only; a
-//!                                                  non-empty value is ignored
-//!                                                  with a warning on `jvm`)
+//! The `dotnet` and `jvm` features select the platform kernel
+//! (`Jobs.Kernel.Net` / `Jobs.Kernel.Jvm`) that supplies the clock, sleep and
+//! job-ID primitives; exactly one must be active, matching `--target`.
 //!
 //! See docs/03-decision-log.md D056 and lyric-jobs/README.md.
 @runtime_checked
@@ -54,21 +34,17 @@ import Std.Core
 import Std.Collections
 import Std.Parse
 import Std.Iter
-import Std.Log
-import Std.Environment
 import Std.Char
 import Jobs.Kernel.Net as KernelNet
 import Jobs.Kernel.Jvm as KernelJvm
 import Std.String as Str
 
 // ─── Platform kernel dispatch ─────────────────────────────────────────────────
-// `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` are imported aliased (rather than
-// bare, as an earlier draft of this file did) because a bare import would put
-// the kernel's own `connect(workerCount: Int)` in scope unqualified, directly
-// colliding with this package's zero-arg `pub func connect()` below.  These
-// thin wrappers re-export the platform's real threading/identity primitives
-// under `Jobs`'s own name so the rest of this file (and `Jobs.Aspects`, which
-// calls `nowMs()` bare after `import Jobs`) keeps working unqualified.
+// `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` are imported aliased so these thin
+// wrappers can re-export the platform's real clock, sleep and identity
+// primitives under `Jobs`'s own name; the rest of this file (and
+// `Jobs.Aspects`, which calls `nowMs()` bare after `import Jobs`) then keeps
+// working unqualified.
 @cfg(feature = "dotnet")
 pub func nowMs(): Long {
   KernelNet.nowMs()
@@ -184,9 +160,6 @@ pub record JobError {
 ///
 /// Field ranges: minute 0-59, hour 0-23, day-of-month 1-31, month 1-12,
 /// day-of-week 0-7 (both 0 and 7 mean Sunday, the Unix convention).
-/// `cronExprToQuartz` converts to Quartz's 6/7-field dialect (seconds
-/// prefix, `?` day-of-month/day-of-week disambiguation, 1-7 Sunday=1
-/// day-of-week numbering) for the JVM Quartz kernel.
 @stable(since = "0.1")
 pub opaque type CronExpr {
   minuteField: String
@@ -245,157 +218,6 @@ pub func parseCron(s: in String): Result[CronExpr, String] {
 @stable(since = "0.1")
 pub func cronExprToString(c: in CronExpr): String {
   return c.minuteField + " " + c.hourField + " " + c.domField + " " + c.monthField + " " + c.dowField
-}
-
-/// Convert to Quartz's 6/7-field dialect: a leading `"0"` seconds field,
-/// then minute/hour/day-of-month/month/day-of-week, with day-of-week
-/// renumbered from Unix's 0-7 (Sunday=0 or 7) to Quartz's 1-7 (Sunday=1).
-///
-/// Quartz requires exactly one of day-of-month/day-of-week to be `?`
-/// (`c.domField`/`c.dowField` cannot both be restricted at once — Quartz has
-/// no OR semantics between the two the way Unix cron does). When one field
-/// is `*`, it becomes `?` and the other field carries the restriction (both
-/// `*` maps to day-of-week `?`, matching common Quartz convention). `Err`
-/// when both are restricted (not representable as a single Quartz
-/// expression).
-@stable(since = "0.1")
-pub func cronExprToQuartz(c: in CronExpr): Result[String, String] {
-  val domIsStar = c.domField == "*"
-  val dowIsStar = c.dowField == "*"
-  if not domIsStar and not dowIsStar {
-    return Err(
-      "cron: Quartz requires exactly one of day-of-month/day-of-week to be '*'; got day-of-month='" + c.domField +
-        "' day-of-week='" +
-        c.dowField +
-        "' (Quartz has no OR semantics between the two fields the way Unix cron does)"
-    )
-  }
-  var quartzDom = "?"
-  var quartzDow = "?"
-  if dowIsStar {
-    quartzDom = c.domField
-  } else {
-    quartzDow = convertDowFieldToQuartz(c.dowField)
-  }
-  return Ok("0 " + c.minuteField + " " + c.hourField + " " + quartzDom + " " + c.monthField + " " + quartzDow)
-}
-
-// Convert a validated Unix day-of-week field (0-7, Sunday=0/7) to a Quartz
-// day-of-week field (1-7, Sunday=1).
-//
-// Rather than renumbering each list entry's text independently (which
-// mishandles a step's own digits and a range spanning both Sunday spellings,
-// e.g. `0-7`), every entry is EXPANDED to the set of raw Unix day values it
-// covers, each value is mapped to its Quartz day (`unix == 0 or unix == 7`
-// both land on Quartz `1`), and the resulting set is deduplicated and
-// rendered in ascending Quartz order — either a comma list, or `*` when the
-// set covers every day of the week.
-func convertDowFieldToQuartz(field: in String): String {
-  var d1 = false
-  var d2 = false
-  var d3 = false
-  var d4 = false
-  var d5 = false
-  var d6 = false
-  var d7 = false
-  val items = splitStr(field, ",")
-  var idx = 0
-  while idx < items.length {
-    val item = items[idx]
-    val slashParts = splitStr(item, "/")
-    val base = slashParts[0]
-    var step = 1
-    if slashParts.length == 2 {
-      match parseOptInt(slashParts[1]) {
-        case Some(s) -> {
-          step = s
-        }
-        case None -> ()    // unreachable: field is already validated
-      }
-    }
-    var lo = 0
-    var hi = 7
-    if base != "*" {
-      val dashParts = splitStr(base, "-")
-      if dashParts.length == 1 {
-        match parseOptInt(dashParts[0]) {
-          case Some(v) -> {
-            lo = v
-            hi = v
-          }
-          case None -> ()    // unreachable: field is already validated
-        }
-      } else {
-        match parseOptInt(dashParts[0]) {
-          case Some(v) -> {
-            lo = v
-          }
-          case None -> ()    // unreachable: field is already validated
-        }
-        match parseOptInt(dashParts[1]) {
-          case Some(v) -> {
-            hi = v
-          }
-          case None -> ()    // unreachable: field is already validated
-        }
-      }
-    }
-    var u = lo
-    while u <= hi {
-      val q = if u == 0 or u == 7 { 1 } else { u + 1 }
-      if q == 1 {
-        d1 = true
-      } else if q == 2 {
-        d2 = true
-      } else if q == 3 {
-        d3 = true
-      } else if q == 4 {
-        d4 = true
-      } else if q == 5 {
-        d5 = true
-      } else if q == 6 {
-        d6 = true
-      } else {
-        d7 = true
-      }
-      u = u + step
-    }
-    idx = idx + 1
-  }
-  if d1 and d2 and d3 and d4 and d5 and d6 and d7 {
-    return "*"
-  }
-  var result = ""
-  if d1 {
-    result = appendDowDigit(result, "1")
-  }
-  if d2 {
-    result = appendDowDigit(result, "2")
-  }
-  if d3 {
-    result = appendDowDigit(result, "3")
-  }
-  if d4 {
-    result = appendDowDigit(result, "4")
-  }
-  if d5 {
-    result = appendDowDigit(result, "5")
-  }
-  if d6 {
-    result = appendDowDigit(result, "6")
-  }
-  if d7 {
-    result = appendDowDigit(result, "7")
-  }
-  return result
-}
-
-// Append `digit` to the comma-separated accumulator `acc`.
-func appendDowDigit(acc: in String, digit: in String): String {
-  if acc.length == 0 {
-    return digit
-  }
-  return acc + "," + digit
 }
 
 // Validate one comma-separated cron field against [minV, maxV].
@@ -570,61 +392,6 @@ pub interface JobScheduler {
     requires: jobId.length > 0
 }
 
-// ─── Native scheduler (backend-backed) ───────────────────────────────────────
-/// Backend-backed scheduler.  Obtain one via `Jobs.connect()`.
-@stable(since = "0.1")
-pub record NativeJobScheduler {
-  schedulerId: Int    // opaque handle issued by the kernel
-}
-
-impl JobScheduler for NativeJobScheduler {
-  func enqueue(name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int): Result[String, String]
-    requires: name.length > 0
-    requires: maxAttempts >= 1
-    requires: timeoutMs >= 1
-  {
-    return jobsEnqueueBackend(self.schedulerId, name, payload, maxAttempts, timeoutMs)
-  }
-
-  func schedule(
-    name: in String, payload: in String, cronExpr: in String, maxAttempts: in Int, timeoutMs: in Int
-  ): Result[String, String]
-    requires: name.length > 0
-    requires: cronExpr.length > 0
-    requires: maxAttempts >= 1
-    requires: timeoutMs >= 1
-  {
-    match parseCron(cronExpr) {
-      case Err(e) -> Err(e)
-      case Ok(cron) -> jobsScheduleBackend(self.schedulerId, name, payload, cron, maxAttempts, timeoutMs)
-    }
-  }
-
-  func cancel(jobId: in String): Result[Unit, String]
-    requires: jobId.length > 0
-  {
-    return jobsCancelBackend(self.schedulerId, jobId)
-  }
-
-  func status(jobId: in String): Result[JobStatus, String]
-    requires: jobId.length > 0
-  {
-    match jobsStatusBackend(self.schedulerId, jobId) {
-      case Err(msg) -> Err(msg)
-      case Ok(rawStr) -> Ok(parseStatus(rawStr))
-    }
-  }
-
-  func results(jobId: in String): Result[JobResultList, String]
-    requires: jobId.length > 0
-  {
-    match jobsResultsBackend(self.schedulerId, jobId) {
-      case Err(msg) -> Err(msg)
-      case Ok(jsonStr) -> Ok(JobResultList(items = parseResults(jobId, jsonStr)))
-    }
-  }
-}
-
 // ─── In-process scheduler (for testing) ──────────────────────────────────────
 /// In-memory job scheduler; useful for unit tests and single-process apps.
 ///
@@ -682,7 +449,7 @@ impl JobScheduler for InProcessJobScheduler {
     // In-process scheduler does not evaluate cron expressions; the cron
     // string is stored for test inspection but the job is enqueued
     // immediately. `cronExpr` is validated (as a standard 5-field Unix
-    // dialect) before storage, matching NativeJobScheduler, and both it and
+    // dialect) before storage, and both it and
     // `payload` are embedded as JSON *string* values (not spliced in raw),
     // so neither can inject extra keys into the wrapper object.
     match parseCron(cronExpr) {
@@ -917,69 +684,6 @@ val defaultTimeoutMs: Int = 30000
 val defaultWorkerCount: Int = 4
 
 // ─── Factory functions ────────────────────────────────────────────────────────
-func connectNative(): Result[NativeJobScheduler, String] {
-  match jobsConnectBackend(defaultWorkerCount) {
-    case Ok(schedulerId) -> Ok(NativeJobScheduler(schedulerId = schedulerId))
-    case Err(msg) -> Err(msg)
-  }
-}
-
-/// Open a backend scheduler connection using the configured defaults.
-/// Returns a `NativeJobScheduler` backed by the active feature (`inprocess`,
-/// `hangfire`, or `quartz` — exactly one must be enabled in `[features]`).
-@stable(since = "0.1")
-pub func connect(): Result[NativeJobScheduler, String] {
-  connectNative()
-}
-
-@cfg(feature = "jvm")
-func warnIfHangfireConnectionStringIgnored(): Unit {
-  // Called bare (not `Std.Environment.getVarOrDefault(...)` /
-  // `Std.Log.warn(...)`): a fully package-qualified call to another Lyric
-  // package's function mis-resolves as a JVM auto-FFI instance call on a
-  // `java.lang.Object` receiver and fails to compile — a general JVM
-  // backend gap (reproduced independently of this file), not fixed here.
-  // Every kernel in this codebase already calls stdlib functions bare after
-  // a plain `import Std.X`, for the same reason.
-  val conn = getVarOrDefault("LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING", "")
-  if conn.length > 0 {
-    warn(
-      "lyric-jobs: Hangfire connection string ignored on JVM; Quartz uses RAMJobStore (in-memory). Persistence configured for .NET-only Hangfire.SqlServer."
-    )
-  }
-}
-
-@cfg(feature = "dotnet")
-func warnIfHangfireConnectionStringIgnored(): Unit {
-  ()
-}
-
-/// Open a Hangfire-backed scheduler (`hangfire` feature).  On `dotnet`,
-/// Hangfire integration itself is not yet implemented — the returned
-/// `Result` carries `Err(...)` (tracked, Phase 3 follow-up of #733).  On
-/// `jvm`, `hangfire` maps to a real Quartz Scheduler binding (Hangfire has
-/// no JVM port); see README "Platform parity".  The connection string is
-/// read from `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` — there is no
-/// connection-string parameter, since neither kernel's `connect` accepts one
-/// (the JVM path warns, rather than silently downgrading, when a non-empty
-/// value is set but can only be honoured on `dotnet`).
-@stable(since = "0.1")
-@cfg(feature = "hangfire")
-pub func connectHangfire(): Result[NativeJobScheduler, String] {
-  warnIfHangfireConnectionStringIgnored()
-  connectNative()
-}
-
-/// Open a Quartz-backed scheduler (`quartz` feature).  On `dotnet`, Quartz.NET
-/// integration is not yet implemented (same tracking as Hangfire above). On
-/// `jvm`, this is a real Quartz Scheduler binding backed by an in-memory
-/// `RAMJobStore` (not persistent); see README "Platform parity".
-@stable(since = "0.1")
-@cfg(feature = "quartz")
-pub func connectQuartz(): Result[NativeJobScheduler, String] {
-  connectNative()
-}
-
 /// Create an in-process scheduler for testing.
 @stable(since = "0.1")
 pub func inProcess(): InProcessJobScheduler {
@@ -1081,128 +785,7 @@ pub func newJobId(): String {
   return generateId()
 }
 
-// ─── Kernel backend dispatch ──────────────────────────────────────────────────
-// `Jobs.Kernel.Net` / `Jobs.Kernel.Jvm` each export identically-named
-// `connect`/`enqueue`/`schedule`/`cancel`/`status`/`results` functions, each
-// gated by the active backend feature (`inprocess`/`hangfire`/`quartz`,
-// #733). These wrappers pick the platform kernel via the mutually exclusive
-// `dotnet`/`jvm` features and forward under a distinct name so they don't
-// collide with `NativeJobScheduler`'s own same-named interface methods.
-//
-// Exactly one of {inprocess, hangfire, quartz} MUST be active for
-// `NativeJobScheduler`/`connect()`/`connectHangfire()`/`connectQuartz()` to
-// compile: selecting none is now a build-time error (an unresolved
-// `KernelNet.connect`/`KernelJvm.connect` symbol, since the entire backend
-// feature's function bodies are `@cfg`-erased) rather than a runtime call
-// that silently always fails.
-@cfg(feature = "dotnet")
-func jobsConnectBackend(workerCount: in Int): Result[Int, String] {
-  KernelNet.connect(workerCount)
-}
-
-@cfg(feature = "jvm")
-func jobsConnectBackend(workerCount: in Int): Result[Int, String] {
-  KernelJvm.connect(workerCount)
-}
-
-@cfg(feature = "dotnet")
-func jobsEnqueueBackend(
-  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
-): Result[String, String] {
-  KernelNet.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
-}
-
-@cfg(feature = "jvm")
-func jobsEnqueueBackend(
-  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
-): Result[String, String] {
-  KernelJvm.enqueue(schedulerId, name, payload, maxAttempts, timeoutMs)
-}
-
-// `cron` arrives pre-validated (via `parseCron`); each platform variant
-// below renders it into the dialect its real backend actually parses.
-// Today only `KernelJvm.schedule`'s real Quartz `CronScheduleBuilder` ever
-// looks at the field content — `KernelNet.schedule` either ignores it
-// (`inprocess`, "cron scheduling not supported") or never reaches it
-// (`hangfire`/`quartz` on `dotnet` fail at `connect()` first, both tracked
-// as Phase 3 follow-ups of #733) — but both variants render a dialect-
-// correct string on principle rather than assuming today's kernel behaviour.
-@cfg(feature = "dotnet")
-func jobsScheduleBackend(
-  schedulerId: in Int,
-  name: in String,
-  payload: in String,
-  cron: in CronExpr,
-  maxAttempts: in Int,
-  timeoutMs: in Int,
-): Result[String, String] {
-  KernelNet.schedule(schedulerId, name, payload, cronExprToString(cron), maxAttempts, timeoutMs)
-}
-
-// Quartz (real on `jvm` for both `hangfire` and `quartz` features, see the
-// kernel's file header) parses a 6/7-field expression with a leading
-// seconds field and `?`/1-7 day-of-week conventions, not the 5-field Unix
-// dialect `parseCron` validates — `cronExprToQuartz` renders that dialect
-// here so `KernelJvm.schedule`'s `JCronScheduleBuilder.cronSchedule(...)`
-// receives a string Quartz actually accepts.
-@cfg(feature = "jvm")
-func jobsScheduleBackend(
-  schedulerId: in Int,
-  name: in String,
-  payload: in String,
-  cron: in CronExpr,
-  maxAttempts: in Int,
-  timeoutMs: in Int,
-): Result[String, String] {
-  match cronExprToQuartz(cron) {
-    case Err(e) -> Err(e)
-    case Ok(quartzCron) -> KernelJvm.schedule(schedulerId, name, payload, quartzCron, maxAttempts, timeoutMs)
-  }
-}
-
-@cfg(feature = "dotnet")
-func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] {
-  KernelNet.cancel(schedulerId, jobId)
-}
-
-@cfg(feature = "jvm")
-func jobsCancelBackend(schedulerId: in Int, jobId: in String): Result[Unit, String] {
-  KernelJvm.cancel(schedulerId, jobId)
-}
-
-@cfg(feature = "dotnet")
-func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
-  KernelNet.status(schedulerId, jobId)
-}
-
-@cfg(feature = "jvm")
-func jobsStatusBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
-  KernelJvm.status(schedulerId, jobId)
-}
-
-@cfg(feature = "dotnet")
-func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
-  KernelNet.results(schedulerId, jobId)
-}
-
-@cfg(feature = "jvm")
-func jobsResultsBackend(schedulerId: in Int, jobId: in String): Result[String, String] {
-  KernelJvm.results(schedulerId, jobId)
-}
-
 // ─── Private helpers ──────────────────────────────────────────────────────────
-// Parse a status string returned by the kernel into a JobStatus variant.
-func parseStatus(raw: in String): JobStatus {
-  match raw {
-    case "Pending" -> JobStatus.Pending
-    case "Running" -> JobStatus.Running
-    case "Succeeded" -> JobStatus.Succeeded
-    case "Failed" -> JobStatus.Failed
-    case "Cancelled" -> JobStatus.Cancelled
-    case _ -> JobStatus.Failed
-  }    // Unknown status → treat as failed.
-}
-
 // Index of `needle` in `s` at or after `from`, or -1.  The 2-arg BCL
 // `IndexOf(str, from)` overload is not a Lyric surface (#4025) — the former
 // `s.indexOf(needle, from)` spelling lowered to a guaranteed runtime throw
@@ -1239,66 +822,6 @@ func splitStr(s: in String, sep: in String): slice[String] {
   return parts.toArray()
 }
 
-// Parse a JSON array of job result objects from the kernel into a list.
-// Wire format: [{"jobId":"...","status":"...","output":"...","error":"...",
-//                "startedAt":N,"finishedAt":N},...]
-func parseResults(jobId: in String, json: in String): slice[JobResult] {
-  if json == "[]" or json == "" {
-    return []
-  }
-  val results: List[JobResult] = newList()
-  var pos: Int = 0
-  while pos < json.length {
-    val objStart = indexOfFrom(json, "{", pos)
-    if objStart < 0 {
-      pos = json.length
-    } else {
-      val objEnd = findObjectEnd(json, objStart)
-      if objEnd < 0 {
-        pos = json.length
-      } else {
-        val obj = json.substring(objStart, objEnd + 1)
-        val statusStr = jsonExtractString(obj, "status")
-        val output = jsonExtractString(obj, "output")
-        val error = jsonExtractString(obj, "error")
-        val startedAt = jsonExtractLong(obj, "startedAt")
-        val finishedAt = jsonExtractLong(obj, "finishedAt")
-        results.add(
-          JobResult(
-            jobId = jobId,
-            status = parseStatus(statusStr),
-            output = output,
-            error = error,
-            startedAt = startedAt,
-            finishedAt = finishedAt
-          )
-        )
-        pos = objEnd + 1
-      }
-    }
-  }
-  return results.toArray()
-}
-
-// Find the closing brace of a JSON object, respecting nested braces.
-func findObjectEnd(json: in String, start: in Int): Int {
-  var depth: Int = 0
-  var i: Int = start
-  while i < json.length {
-    val ch = Str.charAtOrReplacement(json, i)
-    if ch == '{' {
-      depth = depth + 1
-    } else if ch == '}' {
-      depth = depth - 1
-      if depth == 0 {
-        return i
-      }
-    }
-    i = i + 1
-  }
-  return -1
-}
-
 // Escape a string for JSON serialization (handles \, ", and common control chars).
 func jsonEscapeStr(s: in String): String {
   var result = ""
@@ -1321,46 +844,4 @@ func jsonEscapeStr(s: in String): String {
     i = i + 1
   }
   return result
-}
-
-// Extract a string field from a JSON object literal (simple, no nesting).
-func jsonExtractString(json: in String, field: in String): String {
-  val needle = "\"" + field + "\":"
-  val start = Str.indexOfRaw(json, needle)
-  if start < 0 {
-    return ""
-  }
-  val afterColon = start + needle.length
-  val q1 = indexOfFrom(json, "\"", afterColon)
-  if q1 < 0 {
-    return ""
-  }
-  val q2 = indexOfFrom(json, "\"", q1 + 1)
-  if q2 < 0 {
-    return ""
-  }
-  return json.substring(q1 + 1, q2)
-}
-
-// Extract a Long field from a JSON object literal.
-func jsonExtractLong(json: in String, field: in String): Long {
-  val needle = "\"" + field + "\":"
-  val start = Str.indexOfRaw(json, needle)
-  if start < 0 {
-    return 0i64
-  }
-  val afterColon = start + needle.length
-  var i: Int = afterColon
-  while i < json.length and Str.charAtOrReplacement(json, i) == ' ' {
-    i = i + 1
-  }
-  var numStr: String = ""
-  while i < json.length and Str.charAtOrReplacement(json, i) != ',' and Str.charAtOrReplacement(json, i) != '}' {
-    numStr = numStr + Str.substring(json, i, 1)
-    i = i + 1
-  }
-  match parseOptLong(numStr.trim()) {
-    case Some(n) -> return n
-    case None -> return 0i64
-  }
 }

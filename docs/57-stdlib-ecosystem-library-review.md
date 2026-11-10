@@ -179,13 +179,14 @@ affected by this constraint — `.new(args)` is safe to use there today.
   removed from the package. Networked brokers return as separate packages
   that run `Testing.Conformance.Mq`.
 - **lyric-jobs**: `InProcessJobScheduler` works on both targets (pure
-  Lyric, no kernel dependency). Hangfire/Quartz.NET are stub-only on
-  `dotnet` only (`connect()` returns `Err("... not yet implemented")`,
-  `jobs_kernel.l:254,262`) — on `jvm`, both features route to a real
-  `extern package org.quartz.Scheduler` binding (Quartz substitutes for
-  Hangfire, which has no JVM port); genuine FFI, not a stub. `jvm` has
-  *more* real backend coverage than `dotnet` here, the opposite of the
-  usual pattern in this ecosystem.
+  Lyric, no kernel dependency). _Update (2026-11, D552, docs/71):_ the
+  Hangfire and Quartz.NET stubs on `dotnet` and the Quartz Scheduler binding
+  on `jvm` were removed from the public API, together with
+  `NativeJobScheduler` and `Jobs.connect*`. The JVM Quartz kernel scheduled
+  real Quartz jobs but could only run a fixed no-op command, never an
+  application handler, and the CI suite never selected the `quartz` feature.
+  The original text of this entry called it genuine FFI; that stands for the
+  binding, not for its usefulness as a scheduler.
 - **lyric-search** (issue #5067, revisited): `search.l`'s public functions
   now genuinely import and dispatch into `Search.Kernel.Net` /
   `Search.Kernel.Jvm` (the wiring gap this section originally described is
@@ -204,10 +205,9 @@ affected by this constraint — `.new(args)` is safe to use there today.
   but no Elasticsearch/Meilisearch connection can currently succeed on
   either target. This same bare-`extern package` pattern (not confirmed
   working end-to-end) also appears in `lyric-mail` (SES/SendGrid JVM),
-  `lyric-db`, `lyric-i18n`, `lyric-lambda`, `lyric-jobs` (JVM —
-  **including** the `org.quartz.Scheduler` binding this document's
-  original text above called "genuine FFI, not a stub"; that claim should
-  be re-verified against this finding, not taken at face value), `lyric-ws`
+  `lyric-db`, `lyric-i18n`, `lyric-lambda`, `lyric-jobs` (JVM; the
+  Quartz binding has since been rewritten to auto-FFI and then removed, see
+  the lyric-jobs entry above), `lyric-ws`
   (JVM), `lyric-feature-flags`, `lyric-grpc`,
   `lyric-otel`, `lyric-aws-secrets`, `lyric-auth` (JVM), `lyric-aws-xray`,
   and `lyric-session` (JVM, `redis` feature) — none independently verified

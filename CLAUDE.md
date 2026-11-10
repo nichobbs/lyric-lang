@@ -1098,10 +1098,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `MessageQueue`/`QueueConsumer`/`DeadLetterStore` interfaces; `Idempotent`
   and `DeadLetter` aspect templates.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
-  (`Lyric.Jobs`). Hangfire and Quartz.NET backends — **`InProcessJobScheduler`
-  is real on both targets; Hangfire/Quartz.NET are `NOT_IMPLEMENTED` on
-  `dotnet`, but genuinely implemented via Quartz Scheduler on `jvm`, see
-  `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
+  (`Lyric.Jobs`). **`InProcessJobScheduler` is the one backend and is real
+  on both targets; the Hangfire, Quartz.NET and JVM Quartz backends
+  (`Jobs.connect*`, `NativeJobScheduler`) were removed from the API (D552),
+  see `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
   SMTP via `System.Net.Mail` on `dotnet` and Jakarta Mail on `jvm`

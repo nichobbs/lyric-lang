@@ -39,6 +39,10 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
      mq, storage, jobs, db, otel, lambda (HTTP, `Lambda.Stream`), aws-secrets.
      Progress: lambda (HTTP entry point, `Lambda.Stream`) and aws-secrets (native
      annotation path, `NotImplemented`) done on `claude/eco-lambda-secrets`.
+     _Progress:_ jobs done. Hangfire, Quartz.NET, the JVM Quartz binding,
+     `NativeJobScheduler` and `Jobs.connect*` are removed; `InProcessJobScheduler`
+     is the reference backend (the Quartz kernel never ran application
+     handlers and CI never selected it).
   3. Conformance suites in `lyric-testing` for `MessageQueue`, `StorageBucket`,
      `JobScheduler`, `CacheStore`, `SessionStore`, `SearchClient`, `FlagStore`.
   4. Real in-tree reference backends where missing: lyric-db JVM (JDBC with

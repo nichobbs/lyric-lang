@@ -43,8 +43,7 @@
 #   search      the request-deadline branch against a silent in-process
 #               backend (`@cfg(target = "jvm")` test, #8571)
 #   jobs        InProcessJobScheduler (a `List[JobSpec]` queue field read back
-#               through the erased ArrayList) and the Retryable aspect, plus
-#               the Quartz-backed kernel; Quartz is Maven-restored first
+#               through the erased ArrayList) and the Retryable aspect
 #   session     InProcessSessionStore (`Map[String, Record]` values) and the
 #               Lettuce-backed kernel; Lettuce is Maven-restored first
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
@@ -94,7 +93,7 @@ trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java), `jobs` (Quartz),
+  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
   # `session` (Lettuce), `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
@@ -102,7 +101,7 @@ run_suite() {
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|jobs|session|aws-xray|ws|db)
+    web|mail|grpc|session|aws-xray|ws|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac
@@ -120,10 +119,6 @@ run_suite() {
   local features="jvm"
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"
-  fi
-  # `jobs`'s in-process scheduler is its own feature, beside the Quartz kernel.
-  if [ "$lib" = "jobs" ]; then
-    features="jvm,inprocess"
   fi
   # `db`'s two drivers are features beside the kernel; both are compiled in,
   # as under the `dotnet` defaults.
