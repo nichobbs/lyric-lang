@@ -22610,6 +22610,32 @@ func isDataTypeKind(k: in DeclKind): Bool {
   }
 }
 
+// Does `t` mention the hole (`TyError`) or an unsolved inference variable?
+func typeMentionsHole(t: in Type): Bool {
+  match t {
+    case TyError(_) -> true
+    case TyInfer(_) -> true
+    case TyUser(_, _, args) -> typesMentionHole(args)
+    case TySlice(e) -> typeMentionsHole(e)
+    case TyArray(_, e, _) -> typeMentionsHole(e)
+    case TyNullable(inner) -> typeMentionsHole(inner)
+    case TyTuple(elems) -> typesMentionHole(elems)
+    case TyRefined(u, _, _, _, _) -> typeMentionsHole(u)
+    case _ -> false
+  }
+}
+
+func typesMentionHole(ts: in List[Type]): Bool {
+  var i = 0
+  while i < ts.count {
+    if typeMentionsHole(ts[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func inferExprExpectedCore(
   sc: in Scope,
   tbl: in SymbolTable,
