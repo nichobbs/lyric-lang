@@ -2359,8 +2359,12 @@ func buildMethodCall(
     case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
     // An entry or `func` of a protected type declares no receiver: the protected value is
     // the receiver, passed `in` (a reference whose lock the backend takes).
+    // An interface method is declared without a receiver too: the value it is called
+    // on is the receiver, dispatched on its interface.
     case None -> if recvIsProtected(env, site.recvTy) {
       isEntry = true
+    } else if isSome(site.iface) {
+      ()
     } else {
       return uncoveredExpr(env, e, "a method call with no declared receiver")
     }
@@ -2389,7 +2393,7 @@ func buildMethodCall(
     sym,
     site.sig,
     Some(value = site.recvTy),
-    if isEntry { Some(value = PMIn) } else { site.sig.recvMode },
+    if isEntry or (isSome(site.iface) and not isSome(site.sig.recvMode)) { Some(value = PMIn) } else { site.sig.recvMode },
     if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
   )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
