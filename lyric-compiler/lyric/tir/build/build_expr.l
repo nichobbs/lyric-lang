@@ -476,6 +476,47 @@ func uncoveredPat(env: in BuildEnv, p: in Pattern, what: in String): Option[TPat
   None
 }
 
+/// Whether a built pattern binds a name anywhere inside it.
+func patBinds(p: in TPat): Bool {
+  match p.kind {
+    case TpBind(_, _) -> true
+    case TpCtor(_, args) -> {
+      for a in args {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TpRecord(_, fields) -> {
+      for f in fields {
+        if patBinds(f.pat) {
+          return true
+        }
+      }
+      false
+    }
+    case TpTuple(elems) -> {
+      for a in elems {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TpTypeTest(inner, _) -> patBinds(inner)
+    case TpOr(alts) -> {
+      for a in alts {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   val res: List[TPat] = newList()
   var ok = true
@@ -595,7 +636,17 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       case None -> uncoveredPat(env, p, "a record pattern the checker did not resolve")
     }
     case PRange(_, _, _, _) -> uncoveredPat(env, p, "a range pattern")
-    case POr(_) -> uncoveredPat(env, p, "an or-pattern")
+    case POr(alts) -> {
+      // Every alternative binds the same locals, and a local is declared once, so only
+      // alternatives that bind nothing (literals, constants, nullary cases) are built.
+      val built = match buildPats(env, alts) { case Some(x) -> x; case None -> return None }
+      for a in built {
+        if patBinds(a) {
+          return uncoveredPat(env, p, "an or-pattern that binds a name")
+        }
+      }
+      Some(value = mkPat(p, ty, TpOr(alts = built)))
+    }
     case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
     case PConstRef(_) -> uncoveredPat(env, p, "a constant pattern")
     case PError -> uncoveredPat(env, p, "an error pattern")
@@ -815,9 +866,42 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SThrow(_) -> uncoveredStmt(env, s, "a throw")
-    case STry(_, _, _) -> uncoveredStmt(env, s, "a try statement")
-    case SDefer(_) -> uncoveredStmt(env, s, "a defer")
-    case SScope(_, _) -> uncoveredStmt(env, s, "a scope")
+    case STry(body, catches, fin) -> {
+      // A catch that binds the exception has no type to give the binding yet.
+      for c in catches {
+        if isSome(c.bindName) {
+          return uncoveredStmt(env, s, "a try statement with a catch binding")
+        }
+      }
+      val tb = match loopBody(env, body) { case Some(x) -> x; case None -> return None }
+      val tcs: List[TCatch] = newList()
+      for c in catches {
+        match loopBody(env, c.body) {
+          case Some(cb) -> tcs.add(TCatch(binding = None, exceptionType = c.typeName, body = cb))
+          case None -> return None
+        }
+      }
+      var tfin: Option[TExpr] = None
+      match fin {
+        case Some(fb) -> match loopBody(env, fb) { case Some(x) -> { tfin = Some(value = x) }; case None -> return None }
+        case None -> ()
+      }
+      Some(value = stmtOf(s, TsTry(body = tb, catches = tcs, finallyBody = tfin)))
+    }
+    case SDefer(body) -> match loopBody(env, body) {
+      case Some(bt) -> Some(value = stmtOf(s, TsDefer(body = bt)))
+      case None -> None
+    }
+    case SScope(binding, body) -> {
+      // A scope's handle binding has no type to give yet.
+      if isSome(binding) {
+        return uncoveredStmt(env, s, "a scope with a handle binding")
+      }
+      match loopBody(env, body) {
+        case Some(bt) -> Some(value = stmtOf(s, TsScope(binding = None, body = bt)))
+        case None -> None
+      }
+    }
     case SInvariant(_) -> uncoveredStmt(env, s, "a loop invariant")
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")
     case SItem(_) -> uncoveredStmt(env, s, "a local item")

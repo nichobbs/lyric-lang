@@ -638,12 +638,13 @@ test "a record pattern and an enum case pattern build" {
   assertTrue(matchSummary(e.body) == "2:exhaustive", matchSummary(e.body))
 }
 
-test "an or-pattern is counted, not guessed" {
+test "an or-pattern that binds a name is counted, not guessed" {
   val r = buildFirstFn(
-    "package App\nfunc f(n: Int): Int {\n  match n {\n    case 1 | 2 -> 1\n    case _ -> 0\n  }\n}\n"
+    "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) | B(n) -> n\n  }\n}\n"
   )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern"), 1, "counted")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern that binds a name"), 1, "counted")
 }
 
 test "an as-pattern binds its name before its sub-pattern" {
@@ -1636,4 +1637,20 @@ test "a generic record construction builds as a construction of the record at it
   assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a defer, a try without a catch binding and a scope build as statements" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  defer {\n    t = t + 1\n  }\n  try {\n    t = t + n\n  } catch Exception {\n    t = 0\n  } finally {\n    t = t + 2\n  }\n  scope {\n    t = t + 3\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an or-pattern that binds nothing builds, one that binds a name is counted" {
+  val ok = censusOf("package App\nfunc f(n: Int): Int {\n  match n {\n    case 1 | 2 -> 10\n    case _ -> 0\n  }\n}\n")
+  assertEqualInt(ok.built, 1, if ok.firstErrors.count > 0 { ok.firstErrors[0] } else { "built" })
+  val dsOk = verifyPackage(ok.pkg, newList())
+  assertEqualInt(dsOk.count, 0, if dsOk.count > 0 { renderVerifyDiag("test", dsOk[0]) } else { "verifies" })
 }
