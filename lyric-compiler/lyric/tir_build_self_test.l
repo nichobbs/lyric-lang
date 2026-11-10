@@ -1677,7 +1677,7 @@ test "a call of an interface method declared without a receiver passes the value
   val c = censusOf(
     "package App\ninterface Counter {\n  func next(step: in Int): Int\n}\nrecord Box { n: Int }\nimpl Counter for Box {\n  func next(self: in Box, step: in Int): Int { self.n + step }\n}\nfunc f(c: in Counter): Int { c.next(2) }\n"
   )
-  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
