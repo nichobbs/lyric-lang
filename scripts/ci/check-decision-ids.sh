@@ -59,4 +59,9 @@ done
 if (( status != 0 )); then
   echo "Pick the next free id: one past the highest on main and in every open PR (docs/decisions/README.md)." >&2
 fi
+# Repo-metadata guardrail that rides this step because ci.yml is at its size
+# ceiling (scripts/ci/check-workflow-size.sh): a README's Stability line must
+# match its lyric.toml `[package] stability` (D552 item 4).
+bash "$(dirname "${BASH_SOURCE[0]}")/check-library-stability.sh" || exit 1
+
 exit "$status"
