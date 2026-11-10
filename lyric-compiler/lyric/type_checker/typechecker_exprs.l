@@ -5214,7 +5214,11 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
     case DKRecord(id, rd) -> {
       // A generic record's fields are instantiated at the result type's arguments.
       val fes = match unrefine(resultTy) {
-        case TyUser(_, _, targs) -> if rd.generics.isSome() { fieldsOfRecordInstantiated(tbl, id, targs) } else { fieldsOfRecord(tbl, id) }
+        case TyUser(_, _, targs) -> if rd.generics.isSome() {
+          fieldsOfRecordInstantiated(tbl, id, targs)
+        } else {
+          fieldsOfRecord(tbl, id)
+        }
         case _ -> return
       }
       var k = 0
