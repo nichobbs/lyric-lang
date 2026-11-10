@@ -1,5 +1,7 @@
 # lyric-db
 
+**Stability:** `incomplete`
+
 Driver-agnostic database access with typed rows, transactions, and pluggable backends.
 
 ## Platform parity

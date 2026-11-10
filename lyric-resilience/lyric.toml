@@ -22,6 +22,7 @@
 [package]
 name        = "Lyric.Resilience"
 version     = "0.1.0"
+stability = "experimental"
 description = "Retry and circuit-breaker aspect templates for Lyric services."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

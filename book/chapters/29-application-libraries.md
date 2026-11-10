@@ -366,38 +366,38 @@ func main(): Unit {
 
 ## Library availability matrix
 
-This matrix summarises which backends are real on which target; each library's README is the detailed source, and the two must agree. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. These backends are scheduled for removal from the public APIs, and SDK-bound backends will move to separate packages (D552, docs/71). At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
+This matrix summarises which backends are real on which target; each library's README is the detailed source, and the two must agree. The Stability column is the library's `[package] stability` manifest field: `stable` (the backends the library ships are real), `experimental` (real but its surface may still change; its README says `@experimental`) or `incomplete` (a headline backend is not implemented). `lyric publish` refuses an `incomplete` package (`F0052`), and `scripts/ci/check-library-stability.sh` fails CI when a library's README `**Stability:**` line and its manifest disagree. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. These backends are scheduled for removal from the public APIs, and SDK-bound backends will move to separate packages (D552, docs/71). At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
 
-| Library | .NET | JVM | Status |
-|---|---|---|---|
-| lyric-proto | stable | stable (suite in the JVM ecosystem CI job) | D067 |
-| lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
-| lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
-| lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
-| lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
-| lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
-| lyric-search | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
-| lyric-i18n | stable | stable (suite in CI) | D-progress-628 |
-| lyric-feature-flags | stable | stable | D-progress-627 |
-| lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `InProcessJobScheduler`, `inprocess` and Quartz real, suite in CI | D-progress-633 |
-| lyric-ws | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
-| lyric-session | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
-| lyric-auth | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
-| lyric-resilience | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
-| lyric-validation | stable | stable | — |
-| lyric-testing | stable | — | — |
-| lyric-cache | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
-| lyric-db | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
-| lyric-health | stable | stable | D057 |
-| lyric-web | stable | stable | D057 |
-| lyric-logging | stable | stable (suite in CI) | D054 |
-| lyric-forms | experimental | experimental | D137; see Chapter 31 |
-| lyric-mcp | experimental, real (stdio, spawned-child round trips) | experimental, real | D129, D133 |
-| lyric-docker | Unix-socket client real | Unix-socket client real (JDK 16+); named pipes planned | D056, D-progress-541 |
-| lyric-lambda | experimental; `aws` and `local` runtimes, six event sources and authorizers real; HTTP and `Lambda.Stream` not implemented | experimental; same dispatch and gaps | D062, D063, D064 |
-| lyric-aws-secrets | `local` and `aws` real | `jvm` real | D064, D230; `--target native` `init()` returns an error until #7435 |
-| lyric-aws-xray | experimental; real SDK binding | experimental; SDK binding real, `Tracing` aspect broken (B′-mode weaver, docs/71 phase 1) | D064 |
-| lyric-ui | experimental | experimental | D137, D139; see Chapter 31 |
+| Library | Stability | .NET | JVM | Status |
+|---|---|---|---|---|
+| lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
+| lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
+| lyric-otel | incomplete | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
+| lyric-mq | incomplete | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
+| lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
+| lyric-storage | incomplete | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
+| lyric-search | experimental | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
+| lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
+| lyric-feature-flags | stable | stable | stable | D-progress-627 |
+| lyric-jobs | incomplete | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `InProcessJobScheduler`, `inprocess` and Quartz real, suite in CI | D-progress-633 |
+| lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
+| lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
+| lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
+| lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
+| lyric-validation | stable | stable | stable | — |
+| lyric-testing | stable | stable | — | — |
+| lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
+| lyric-db | incomplete | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
+| lyric-health | stable | stable | stable | D057 |
+| lyric-web | experimental | stable | stable | D057 |
+| lyric-logging | stable | stable | stable (suite in CI) | D054 |
+| lyric-forms | experimental | experimental | experimental | D137; see Chapter 31 |
+| lyric-mcp | experimental | experimental, real (stdio, spawned-child round trips) | experimental, real | D129, D133 |
+| lyric-docker | experimental | Unix-socket client real | Unix-socket client real (JDK 16+); named pipes planned | D056, D-progress-541 |
+| lyric-lambda | incomplete | experimental; `aws` and `local` runtimes, six event sources and authorizers real; HTTP and `Lambda.Stream` not implemented | experimental; same dispatch and gaps | D062, D063, D064 |
+| lyric-aws-secrets | incomplete | `local` and `aws` real | `jvm` real | D064, D230; `--target native` `init()` returns an error until #7435 |
+| lyric-aws-xray | experimental | experimental; real SDK binding | experimental; SDK binding real, `Tracing` aspect broken (B′-mode weaver, docs/71 phase 1) | D064 |
+| lyric-ui | experimental | experimental | experimental | D137, D139; see Chapter 31 |
 
 > **Note:** `lyric-jobs`, `lyric-ws`, `lyric-session`, `lyric-auth`, `lyric-resilience`,
 > `lyric-validation`, `lyric-testing`, `lyric-cache`, `lyric-db`, `lyric-health`,

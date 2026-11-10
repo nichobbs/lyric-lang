@@ -1,5 +1,7 @@
 # lyric-lambda
 
+**Stability:** `incomplete`
+
 AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Deploy services built with `lyric-web` to Lambda with zero handler-code changes, plus support for all major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers.
 
 > **Status**: @experimental — the `aws`/`local`/`jvm` runtime loop

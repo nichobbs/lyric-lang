@@ -1,5 +1,7 @@
 # lyric-search
 
+**Stability:** `experimental`
+
 Search engine integration with pluggable backends (Elasticsearch, Meilisearch).
 
 ## Platform parity

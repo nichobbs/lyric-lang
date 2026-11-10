@@ -65,6 +65,7 @@
 [package]
 name        = "Lyric.Lambda"
 version     = "0.1.0"
+stability = "incomplete"
 description = "AWS Lambda runtime adapter with API Gateway → lyric-web bridge, typed event sources, authorizers, streaming, and AOT support."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

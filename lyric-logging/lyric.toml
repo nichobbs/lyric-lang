@@ -15,6 +15,7 @@
 [package]
 name        = "Std.Logging"
 version     = "0.1.0"
+stability = "stable"
 description = "Structured named logging with runtime config and aspect templates."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

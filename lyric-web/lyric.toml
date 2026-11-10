@@ -30,6 +30,7 @@
 [package]
 name        = "Lyric.Web"
 version     = "0.1.0"
+stability = "experimental"
 description = "OpenAPI-first web service library with typed routing, runtime config, and aspect templates."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

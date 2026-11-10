@@ -1,5 +1,7 @@
 # lyric-generator-sdk
 
+**Stability:** `stable`
+
 Source generator SDK for [Lyric](https://github.com/nichobbs/lyric-lang): the API
 package of the `SourceGenerator` plugin point (docs/40, docs/69 §15, D207). It
 declares the type descriptors the compiler sends, the response a generator

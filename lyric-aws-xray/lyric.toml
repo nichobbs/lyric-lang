@@ -44,6 +44,7 @@
 [package]
 name        = "Lyric.AwsXRay"
 version     = "0.1.0"
+stability = "experimental"
 description = "AWS X-Ray active tracing aspect for Lyric Lambda handlers."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

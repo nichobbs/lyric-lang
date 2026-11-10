@@ -1,5 +1,7 @@
 # lyric-proto
 
+**Stability:** `stable`
+
 Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level `slice[Byte]` marshalling suitable for manual message construction and as a foundation for higher-level code generators.
 
 > **Status**: Library source is complete and builds for `.NET` and the JVM from the same source: it declares no externs, and takes its IEEE 754 bit casts from `Std.Math`.

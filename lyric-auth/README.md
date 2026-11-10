@@ -1,5 +1,7 @@
 # lyric-auth
 
+**Stability:** `stable`
+
 Transport-agnostic authentication library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships JWT verification with algorithm pinning, claim extraction, constant-time API key comparison, and role-based access control helpers.
 
 > **Status**: `Auth` (JWT verification, claim extraction, API-key comparison,

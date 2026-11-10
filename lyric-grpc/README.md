@@ -1,5 +1,7 @@
 # lyric-grpc
 
+**Stability:** `experimental`
+
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
 > **Status**: @experimental. The **client** is real on both targets and covered by end-to-end tests against an in-process gRPC server: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`addUnary`, `addServerStreaming`, `start`, `startHandle`, `stop`) works on both targets for unary and server-streaming methods, plaintext HTTP/2, and is covered by `tests/server_tests.l`. The aspect templates in `Grpc.Aspects` are `dotnet` only.

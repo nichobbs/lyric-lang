@@ -473,6 +473,13 @@ func publishWasmBundle(
   0
 }
 
+/// The F0052 refusal: a package marked `stability = "incomplete"` is never published.
+pub func incompletePublishMessage(name: in String, mfPath: in String): String {
+  "error[F0052]: publish: package '" + name + "' is marked stability = \"incomplete\" in " + mfPath +
+    ", so it cannot be published: a headline backend is not implemented. Implement the backend, or remove it" +
+    " from the public API and set stability to \"experimental\" or \"stable\" (D552)"
+}
+
 func cmdPublish(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var dllOverride: Option[String] = None
@@ -621,6 +628,13 @@ func cmdPublish(argv: in slice[String]): Int {
   }
 
   val pkg: Mf.PackageSection = manifest.packageSection
+  match pkg.stability {
+    case Some(Incomplete) -> {
+      printErr(incompletePublishMessage(pkg.name, mfPath))
+      return 1
+    }
+    case _ -> ()
+  }
   val effectiveVersion = match packageVersionArg { case Some(v) -> v; case None -> pkg.version }
   val mfDir = Path.dirname(mfPath)
   if wasmMode {

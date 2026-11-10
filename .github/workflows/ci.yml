@@ -390,6 +390,11 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
+      # D552 item 4: each ecosystem library's README Stability line must
+      # match its lyric.toml `[package] stability`.
+      - name: Check library stability matches README
+        run: bash scripts/ci/check-library-stability.sh
+
       # Guardrail for #8537/#7141: parallel PRs claim the same decision id.
       # Fails when two files in docs/decisions/ share an id outside the
       # shrinking allow-list.

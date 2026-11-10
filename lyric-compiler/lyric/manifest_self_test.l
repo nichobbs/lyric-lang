@@ -42,6 +42,13 @@ func parseErr(toml: in String): ManifestError {
   }
 }
 
+func stabilityLabel(m: in Manifest): String {
+  match m.packageSection.stability {
+    case None -> "none"
+    case Some(s) -> stabilityName(s)
+  }
+}
+
 func isParseError(e: in ManifestError): Bool {
   match e {
     case ParseError(_, _, _, _) -> true
@@ -1472,4 +1479,24 @@ test "undeclaredCliFeatures lists the --features names [features] does not decla
     "a manifest with no [features] table declares nothing"
   )
   assertEqualInt(undeclaredCliFeatures(withTable, "lyric.toml", newList()).count, 0, "no --features names")
+}
+
+test "[package] stability parses each level and is absent by default (D552)" {
+  val head = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  match parseOk(head).packageSection.stability {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "stability absent by default")
+  }
+  assertEqual(stabilityLabel(parseOk(head + "stability = \"stable\"\n")), "stable", "stable")
+  assertEqual(stabilityLabel(parseOk(head + "stability = \"experimental\"\n")), "experimental", "experimental")
+  assertEqual(stabilityLabel(parseOk(head + "stability = \"incomplete\"\n")), "incomplete", "incomplete")
+}
+
+test "[package] stability rejects any other value with F0051 (D552)" {
+  val head = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val e = parseErr(head + "stability = \"beta\"\n")
+  assertTrue(isInvalidField(e, "package", "stability"), "invalid stability is an InvalidField")
+  assertTrue(Str.contains(manifestErrorText(e), "F0051"), "the message carries F0051")
+  assertTrue(Str.contains(manifestErrorText(e), "\"beta\""), "the message names the bad value")
+  assertTrue(isInvalidField(parseErr(head + "stability = 3\n"), "package", "stability"), "non-string stability")
 }

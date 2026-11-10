@@ -30,6 +30,7 @@
 [package]
 name        = "Lyric.Grpc"
 version     = "0.1.0"
+stability = "experimental"
 description = "gRPC client and server library for Lyric — unary, streaming, service hosting, and aspect templates."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

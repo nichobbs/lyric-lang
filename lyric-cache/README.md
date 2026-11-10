@@ -1,5 +1,7 @@
 # lyric-cache
 
+**Stability:** `stable`
+
 Typed key-value cache with TTL and a pluggable `CacheStore` interface.
 
 ## Packages

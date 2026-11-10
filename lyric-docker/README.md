@@ -1,5 +1,7 @@
 # lyric-docker — Docker API Client for Lyric
 
+**Stability:** `experimental`
+
 A type-safe Docker API client for Lyric, built on Unix domain socket support in `Std.Http`.
 
 ## Overview

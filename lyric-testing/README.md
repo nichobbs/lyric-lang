@@ -1,5 +1,7 @@
 # lyric-testing
 
+**Stability:** `stable`
+
 Mock implementations and assertion helpers for unit testing Lyric applications
 without real infrastructure.
 

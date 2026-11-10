@@ -1,5 +1,7 @@
 # lyric-session
 
+**Stability:** `stable`
+
 Distributed session management with pluggable backends (Redis, in-process).
 
 ## Platform parity

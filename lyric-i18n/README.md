@@ -1,5 +1,7 @@
 # lyric-i18n
 
+**Stability:** `stable`
+
 Internationalization with placeholder substitution and locale fallback.
 
 ## Platform parity

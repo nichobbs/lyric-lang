@@ -1,5 +1,7 @@
 # lyric-jobs
 
+**Stability:** `incomplete`
+
 Background job scheduling with pluggable backends (Hangfire, Quartz.NET, Quartz).
 
 ## Platform parity

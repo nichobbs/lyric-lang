@@ -1,5 +1,7 @@
 # lyric-ws
 
+**Stability:** `stable`
+
 WebSocket server with pluggable backends and aspect-based security.
 
 ## Platform parity

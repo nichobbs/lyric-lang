@@ -1,5 +1,7 @@
 # lyric-health
 
+**Stability:** `stable`
+
 Liveness and readiness health checks for Lyric web services.
 
 Checks are registered as **function references** (closures) and invoked
