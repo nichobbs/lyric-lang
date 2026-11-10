@@ -1599,9 +1599,13 @@ pub func runRestore(mfPath: in String, lockedMode: in Bool): Int {
 }
 
 /// `runRestore` for a build `restoreTarget` (`dotnet`, `jvm`, `native`, or
-/// empty for none given).  A native build never links Maven artifacts
-/// (docs/01 section 3.6), so it does not run the Maven resolver, which would
-/// otherwise need a Java 21+ runtime just to restore (#8836).
+/// empty for none given, which restores for every target).  Only a JVM build
+/// links Maven artifacts (docs/01 section 3.6), so the Maven resolver, which
+/// needs a Java 21+ runtime, runs for `jvm` and for no target only.  Only a
+/// .NET build links `[nuget]` packages, so for `jvm` and `native` the
+/// `dotnet restore` is skipped unless the project has registry dependencies,
+/// whose packages it also downloads to record their SHA-512 in `lyric.lock`
+/// (the lock must not depend on the target) (#8836).
 func runRestoreFor(mfPath: in String, lockedMode: in Bool, restoreTarget: in String): Int {
   val noUpdates: List[String] = newList()
   val noCarried: Map[String, String] = newMap()
@@ -1860,7 +1864,8 @@ func runRestoreWith(
     ri += 1
   }
 
-  if nugetCount > 0 or registryCount > 0 {
+  val nugetUnneeded = (restoreTarget == "native" or restoreTarget == "jvm") and registryCount == 0
+  if (nugetCount > 0 or registryCount > 0) and not nugetUnneeded {
     val target = match manifest.nuget {
       case Some(n) -> match n.target { case Some(t) -> t; case None -> "net10.0" }
       case None -> "net10.0"
@@ -2108,7 +2113,11 @@ func runRestoreWith(
     }
   }
 
-  val mavenRc = if restoreTarget == "native" { 0 } else { restoreMavenJars(manifest, mfDir) }
+  val mavenRc = if restoreTarget == "native" or restoreTarget == "dotnet" {
+    0
+  } else {
+    restoreMavenJars(manifest, mfDir)
+  }
   if mavenRc != 0 {
     return mavenRc
   }

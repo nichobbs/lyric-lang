@@ -84,7 +84,7 @@ text_includes="$(pkg-config --cflags-only-I freetype2 harfbuzz | sed 's/-I/-I /g
 
 build() {
   local manifest="$1" out="$2"
-  "$lyric_bin" restore --manifest "$manifest"
+  "$lyric_bin" restore --target native --manifest "$manifest"
   "$lyric_bin" build --target native --manifest "$manifest" -o "$out"
 }
 

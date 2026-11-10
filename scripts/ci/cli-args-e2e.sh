@@ -160,4 +160,57 @@ rc="$(run "$lyric_bin" run tool.l)"
 [ "$rc" -eq 0 ] || fail "run without --features: expected success"
 echo "PASS: run without --features, manifest without [features]"
 
+# ── 3. restore restores only what its target links (#8836) ───────────────────
+expect_rejected "restore --target bogus" "restore: --target requires one of dotnet, jvm, native" \
+  "$lyric_bin" restore --target bogus
+expect_rejected "restore --target without a value" "restore: --target requires one of dotnet, jvm, native" \
+  "$lyric_bin" restore --target
+
+# A project whose path dependency declares [maven]: only a JVM (or no-target)
+# restore touches the Maven resolver, so a native or .NET restore needs no Java.
+mkdir -p "$work/mvnapp/src" "$work/mvnlib/src"
+cat > "$work/mvnlib/lyric.toml" <<'TOML'
+[package]
+name = "Mvn.Lib"
+version = "0.1.0"
+
+[project]
+name = "Mvn.Lib"
+output = "single"
+output_assembly = "MvnLib.dll"
+
+[project.packages]
+"Mvn.Lib" = "src/lib.l"
+
+[maven]
+"io.undertow:undertow-core" = "2.3.13.Final"
+TOML
+printf 'package Mvn.Lib\n\npub func one(): Int {\n  1\n}\n' > "$work/mvnlib/src/lib.l"
+cat > "$work/mvnapp/lyric.toml" <<TOML
+[package]
+name = "Mvn.App"
+version = "0.1.0"
+
+[project]
+name = "Mvn.App"
+output = "single"
+output_assembly = "MvnApp.dll"
+
+[project.packages]
+"Mvn.App" = "src/app.l"
+
+[dependencies]
+"Mvn.Lib" = { path = "../mvnlib" }
+TOML
+printf 'package Mvn.App\n\nfunc main(): Unit {\n}\n' > "$work/mvnapp/src/app.l"
+cd "$work/mvnapp"
+for t in native dotnet; do
+  rc="$(run "$lyric_bin" restore --target "$t" --manifest lyric.toml)"
+  [ "$rc" -eq 0 ] || fail "restore --target $t: expected success"
+  if grep -qi "maven" "$out" "$err"; then
+    fail "restore --target $t: must not run or mention the Maven resolver"
+  fi
+  echo "PASS: restore --target $t skips the Maven resolver"
+done
+
 echo "cli-args-e2e: all checks passed"
