@@ -14,17 +14,26 @@ output_assembly = "Db.dll"
 "Db"            = "src/db.l"
 "Db.Aspects"    = "src/db_aspects.l"
 "Db.Kernel.Net" = "src/_kernel/net/db_kernel.l"
+"Db.Kernel.Jvm" = "src/_kernel/jvm/db_kernel.l"
 
 [project.tests]
 "Db.DbTests"                = "tests/db_tests.l"
 "Db.SqliteTests"            = "tests/db_sqlite_tests.l"
 "Db.PostgresConnectTests"   = "tests/db_postgres_connect_tests.l"
 "Db.KernelNetTests"         = "tests/db_kernel_net_tests.l"
+"Db.KernelJvmTests"         = "tests/db_kernel_jvm_tests.l"
 
 [features]
-default  = ["postgres", "sqlite"]    # both drivers compiled in unless overridden
-postgres = []    # enable the Npgsql (PostgreSQL) driver
-sqlite   = []    # enable the Microsoft.Data.Sqlite driver
+# `dotnet` and `jvm` are MUTUALLY EXCLUSIVE and select the kernel: `Db.Kernel.Net`
+# is gated on `dotnet`, `Db.Kernel.Jvm` on `jvm`.  `dotnet` is the default; a
+# `--target jvm` build swaps it for `jvm` (docs/24 §2.2 target normalization),
+# or select it explicitly:
+#   --target jvm --no-default-features --features jvm,sqlite,postgres
+default  = ["dotnet", "postgres", "sqlite"]    # both drivers compiled in unless overridden
+dotnet   = []    # ADO.NET kernel (Db.Kernel.Net)
+jvm      = []    # JDBC kernel (Db.Kernel.Jvm)
+postgres = []    # enable the PostgreSQL driver (Npgsql / org.postgresql)
+sqlite   = []    # enable the SQLite driver (Microsoft.Data.Sqlite / org.xerial sqlite-jdbc)
 
 [dependencies]
 "Std.Logging"   = { workspace = true }
@@ -34,3 +43,9 @@ sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 "Npgsql" = "8.0.3"
 # feature = "sqlite" — Microsoft.Data.Sqlite ADO.NET driver for SQLite
 "Microsoft.Data.Sqlite" = "8.0.3"
+
+[maven]
+# feature = "postgres" (target jvm) — PostgreSQL JDBC driver
+"org.postgresql:postgresql" = "42.7.14"
+# feature = "sqlite" (target jvm) — SQLite JDBC driver (bundles the native library)
+"org.xerial:sqlite-jdbc" = "3.53.4.0"

@@ -151,8 +151,8 @@ named in each item are still open.
   (#8242), wire bootstrap stackmap (#8372), inout through generic field or
   aspect weaving (#8272, #8368), inout `Ref` megamorphism (3-5x slowdown,
   #8371), array/buffer passed to `spawn` copied inside the task (#8391).
-  Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers,
-  lyric-db (no backend at all, #8932) (docs/57 §3).  lyric-mail
+  Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers
+  (docs/57 §3); lyric-db now has a real JDBC backend (#8932).  lyric-mail
   SMTP is real now (#7462); lyric-search is implemented but unusable against a
   live server until its response-body defect is fixed (see its README).  `F8`: `@externTarget`
   catches only `java/lang/Exception`, not `Error` (accepted limitation, see
@@ -324,7 +324,7 @@ tag.
 3. **Ecosystem backends (docs/57, docs/71).**  Superseded in shape by D552:
    each library keeps its interface, a real in-tree reference backend and a
    shared conformance suite; SDK-bound backends (lyric-storage S3/Azure,
-   lyric-mq brokers, Hangfire/Quartz.NET, lyric-db JVM #8932) move to
+   lyric-mq brokers, Hangfire/Quartz.NET) move to
    separate packages after docs/71 phase 1.  The phased plan, the `stability`
    manifest field and the compiler root causes it depends on are in docs/71.
    Also: missing `Lyric.Testing` mocks (Jobs, Search, Queue

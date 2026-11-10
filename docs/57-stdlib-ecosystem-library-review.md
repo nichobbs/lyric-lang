@@ -231,6 +231,12 @@ affected by this constraint — `.new(args)` is safe to use there today.
   writeup and reproduction steps. The whole module remains `@experimental`,
   which is still the right marker.
 
+  **Update (#8932, 2026-11-10):** `lyric-db`'s JVM kernel is no longer in that
+  list. `Db.Kernel.Jvm` is rewritten as pure Lyric over `extern type` +
+  auto-FFI against `java.sql` (`Connection`/`PreparedStatement`/`ResultSet`),
+  registered in the manifest, and `lyric-db`'s suites run on `--target jvm`
+  against sqlite-jdbc (and in the JVM ecosystem CI job).
+
 **Recommendation:** these backend gaps are individually reasonable
 (each is honestly stubbed, not silently broken), but CLAUDE.md's
 top-level library list describes several of them (storage, mq, jobs,

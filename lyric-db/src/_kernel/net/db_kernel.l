@@ -72,6 +72,7 @@
 //! wrapped in `try { … } catch Bug as b { Err(b.message) }`.
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+@cfg(feature = "dotnet")
 @io
 package Db.Kernel.Net
 

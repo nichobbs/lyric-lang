@@ -1059,7 +1059,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-cache/` — `lyric-cache` library: in-memory and disk-backed
   caching utilities (D-progress-225 / D056).
 - `lyric-db/` — `lyric-db` library: typed SQL query helpers over
-  `System.Data` / JDBC (D-progress-225 / D056).
+  `System.Data` (`Db.Kernel.Net`, Npgsql and Microsoft.Data.Sqlite) on
+  `dotnet` and JDBC (`Db.Kernel.Jvm`, org.postgresql and org.xerial
+  sqlite-jdbc) on `jvm`, selected by the exclusive `dotnet`/`jvm` features
+  (D-progress-225 / D056, #8932).
 - `lyric-health/` — `lyric-health` library: health-check endpoint
   and liveness/readiness probe helpers (D-progress-225 / D056).
 - `lyric-logging/` — `lyric-logging` library: structured logging
