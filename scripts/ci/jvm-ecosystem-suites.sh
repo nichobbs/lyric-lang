@@ -56,6 +56,11 @@
 #   logging     Std.Logging's `LogLevel` enum beside the stdlib's
 #               same-named `Std.Log.LogLevel` (type-scoped enum registry
 #               keys are re-pointed per file)
+#   db          Db.Kernel.Jvm over JDBC: the `@pN` -> `?` placeholder
+#               translation, JDBC URL construction and the shared SQLite
+#               suite (typed columns, transactions, error mapping) on
+#               sqlite-jdbc; the PostgreSQL driver is Maven-restored with it
+#               and checked for connect-failure mapping (#8932)
 #   grpc        the client against an in-process grpc-java server (unary,
 #               server streaming, metadata, deadlines, status mapping,
 #               early stream cancel, #8527 / #5409) and the Resilience-backed
@@ -83,20 +88,21 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
   # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java), `jobs` (Quartz),
-  # `session` (Lettuce), `aws-xray` (X-Ray recorder) and `ws` (Undertow) need
+  # `session` (Lettuce), `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
+  # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|jobs|session|aws-xray|ws)
+    web|mail|grpc|jobs|session|aws-xray|ws|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac
@@ -118,6 +124,11 @@ run_suite() {
   # `jobs`'s in-process scheduler is its own feature, beside the Quartz kernel.
   if [ "$lib" = "jobs" ]; then
     features="jvm,inprocess"
+  fi
+  # `db`'s two drivers are features beside the kernel; both are compiled in,
+  # as under the `dotnet` defaults.
+  if [ "$lib" = "db" ]; then
+    features="jvm,sqlite,postgres"
   fi
   # A manifest with no `[features]` table declares no feature to select
   # (`--features` naming one is F0050, #8362).

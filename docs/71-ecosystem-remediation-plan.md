@@ -1,6 +1,6 @@
 # Ecosystem library remediation plan
 
-Status: accepted in D552 (2026-11-09). Source: the ecosystem audit of 2026-11-09
+Status: accepted in D552 (2026-11-09). Phase 2 progress: lyric-mq reference broker on both targets and broker declarations removed (see docs/progress/2026-11-10-mq-in-memory-reference.md). Source: the ecosystem audit of 2026-11-09
 (README, manifest, CI-script and source-marker review; suites were not re-run).
 Extends docs/57 and `docs/12-todo-plan.md` item 3.
 
@@ -40,7 +40,7 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   3. Conformance suites in `lyric-testing` for `MessageQueue`, `StorageBucket`,
      `JobScheduler`, `CacheStore`, `SessionStore`, `SearchClient`, `FlagStore`.
   4. Real in-tree reference backends where missing: lyric-db JVM (JDBC with
-     SQLite, #8932), lyric-mq `inmemory` on JVM, lyric-otel OTLP/HTTP on JVM.
+     SQLite and PostgreSQL, #8932, done), lyric-mq `inmemory` on JVM, lyric-otel OTLP/HTTP on JVM.
 - **Phase 3, CI and tests.** Missing `Lyric.Testing` mocks (Db, Jobs, Search,
   i18n, Ws); every stable library in the JVM suite or a documented exemption.
 - **Phase 4, extraction.** New repository for SDK-bound backends, one package

@@ -6,43 +6,70 @@ Driver-agnostic database access with typed rows, transactions, and pluggable bac
 
 ## Platform parity
 
-| Feature flag | Backend                                                  | Status                |
-|--------------|-----------------------------------------------------------|-----------------------|
-| `dotnet`     | Npgsql + Microsoft.Data.Sqlite ADO.NET drivers            | **Real** (#5407)      |
-| `jvm`        | PostgreSQL JDBC + SQLite JDBC via `lyric.db.*` shim JAR   | Not real — see below  |
+| Feature flag | Backend                                                                   | Status           |
+|--------------|---------------------------------------------------------------------------|------------------|
+| `dotnet`     | Npgsql + Microsoft.Data.Sqlite ADO.NET drivers (`Db.Kernel.Net`)          | **Real** (#5407) |
+| `jvm`        | PostgreSQL JDBC + SQLite JDBC (`Db.Kernel.Jvm`, org.postgresql / org.xerial) | **Real** (#8932) |
 
-**`dotnet` is genuinely implemented**, not a stub: `query`, `execute`,
+`dotnet` and `jvm` are mutually exclusive and select the kernel; `dotnet` is
+in the default feature set, and a `--target jvm` build swaps it for `jvm`
+(docs/24 section 2.2). Build the JVM kernel explicitly with
+`--target jvm --no-default-features --features jvm,sqlite,postgres`, after
+`lyric restore` has fetched the two drivers declared in `[maven]`.
+
+**Both targets are genuinely implemented**, not stubs: `query`, `execute`,
 `transaction`/`commit`/`rollback` are real `System.Data.Common`
-(`DbConnection`/`DbCommand`/`DbDataReader`/`DbTransaction`) calls against
-whichever driver you connect with — this replaces the prior design, where
-every operation past `connect` unconditionally returned
-`Err("not available in bootstrap")` regardless of driver (#5407).
+(`DbConnection`/`DbCommand`/`DbDataReader`/`DbTransaction`) calls on `dotnet`
+and real `java.sql` (`Connection`/`PreparedStatement`/`ResultSet`) calls on
+`jvm`, against whichever driver you connect with. `tests/db_tests.l`,
+`tests/db_sqlite_tests.l` and `tests/db_postgres_connect_tests.l` run
+unchanged on both targets.
 
-- **SQLite (Microsoft.Data.Sqlite)** is exercised end-to-end in CI against
-  a real `:memory:` database: DDL, parameterised insert, typed value
-  extraction (`Long`/`Int`/`Double`/`String`/`Bool`/`NULL`/`Bytes`),
-  affected-row counts, transaction commit visibility, transaction rollback
-  invisibility, and SQL-error mapping. See `tests/db_sqlite_tests.l`.
-- **Postgres (Npgsql)** shares the exact same query/execute/transaction
-  code path as SQLite (both operate through the shared
-  `System.Data.Common` base classes) but has **no live server available
-  in CI/sandboxes**, so only connect-failure error mapping is verified
-  (`tests/db_postgres_connect_tests.l`: connecting to a closed TCP port
-  maps to a `CONNECT_ERROR` `DbError`, not a panic). The query/execute
-  code itself is not driver-specific — see "Kernel boundary" below — so
-  this is a live-server verification gap, not an implementation gap, but
-  it is an honest one: nothing has driven a real `INSERT`/`SELECT`
-  against a real PostgreSQL server.
+- **SQLite (Microsoft.Data.Sqlite / sqlite-jdbc)** is exercised end-to-end in
+  CI against a real `:memory:` database on both targets: DDL, parameterised
+  insert, typed value extraction (`Long`/`Int`/`Double`/`String`/`Bool`/`NULL`/
+  `Bytes`), affected-row counts, transaction commit visibility, transaction
+  rollback invisibility, and SQL-error mapping. See `tests/db_sqlite_tests.l`.
+- **Postgres (Npgsql / pgjdbc)** shares the exact same query/execute/
+  transaction code path as SQLite on each target but has **no live server
+  available in CI**, so CI verifies only connect-failure error mapping
+  (`tests/db_postgres_connect_tests.l`: connecting to a closed TCP port maps to
+  a `CONNECT_ERROR` `DbError`, not a panic). The JVM kernel was additionally
+  driven by hand against a live PostgreSQL 16 server when it landed (typed
+  columns `integer`/`bigint`/`real`/`double precision`/`numeric`/`boolean`/
+  `text`/`bytea`/`timestamp`/`timestamptz`/`date`/`uuid`/`jsonb`/`smallint`,
+  bound parameters, transaction commit, rollback after a failed statement, and
+  an authentication failure), but that run is not part of CI.
 
-**`jvm` is still vaporware**, unchanged by #5407: `Db.Kernel.Jvm`
-(`src/_kernel/jvm/db_kernel.l`) is not registered in this manifest's
-`[project.packages]`, so it is not even compiled today, and its shared
-operations depend on a `lyric.db.JdbcConnections` Java helper class that
-does not exist anywhere in this repository — the JDBC bindings against
-`org.postgresql:postgresql` and `org.xerial:sqlite-jdbc` are declarative
-only. Standing up a real `--target jvm` path (JDBC-backed, dropping the
-fictional helper) is out of scope for #5407 and tracked as follow-up
-work — see `docs/33-platform-parity-remediation.md`.
+### JVM kernel notes (`Db.Kernel.Jvm`)
+
+- **DSNs.** `postgres://` / `postgresql://` URIs and `jdbc:postgresql:` URLs;
+  `sqlite://<path>`, `sqlite::memory:` and `jdbc:sqlite:` URLs. The user name
+  and password are passed to the driver as connection properties, never spliced
+  into the URL. Npgsql keyword strings (`Host=...;Username=...`) and
+  Microsoft.Data.Sqlite `Data Source=...` strings are .NET-only and return a
+  `CONNECT_ERROR` on `jvm`.
+- **Placeholders.** The SQL text uses the same `@p0, @p1, ...` placeholders on
+  both targets. JDBC only has positional `?`, so the kernel rewrites each
+  `@p<N>` that is code (not inside a `'...'` literal, a `"..."` identifier, a
+  comment or a dollar-quoted body) to `?` and binds by index, which also lets a
+  placeholder repeat or appear out of order. Values are always bound with
+  `setString`, never interpolated.
+- **String binding.** The PostgreSQL connection sets `stringtype=unspecified`,
+  so the server infers the parameter type (`WHERE id = @p0` with `"42"`
+  compares as an integer), matching what SQLite's type affinity gives for free.
+- **Pooling.** `poolSize` is validated but one JDBC connection is opened; wrap
+  `connect` calls in your own pool if you need one. `connectTimeoutMs` maps to
+  the PostgreSQL `connectTimeout`/`loginTimeout` (whole seconds, rounded up)
+  and to SQLite's `busy_timeout`.
+- **Transactions.** JDBC has no transaction object, so `transaction()` turns
+  auto-commit off on the connection and `commit`/`rollback` turn it back on. A
+  transaction that is never finished leaves the connection in manual-commit
+  mode until it is closed (which rolls the work back).
+- **Typed columns.** Values are classified by the Java class of
+  `ResultSet.getObject`. `timestamptz` renders as a UTC instant (`...Z`);
+  `timestamp` and `date` render as the stored wall-clock value with no offset,
+  so the JVM's default zone never shifts them.
 
 ### Native SQLite asset deployment
 
@@ -61,7 +88,8 @@ which has no native asset dependency.
 |---|---|
 | `Db` | Core types, `DbConnection` / `DbTransaction` interfaces, connection factories |
 | `Db.Aspects` | Reusable aspect templates: `QueryLogging` and `SlowQueryAlert` |
-| `Db.Kernel.Net` | Extern boundary: Npgsql (PostgreSQL) and Microsoft.Data.Sqlite drivers |
+| `Db.Kernel.Net` | Extern boundary on `dotnet`: Npgsql (PostgreSQL) and Microsoft.Data.Sqlite drivers |
+| `Db.Kernel.Jvm` | Extern boundary on `jvm`: PostgreSQL JDBC and SQLite JDBC drivers |
 
 ## Quick start
 
@@ -91,7 +119,9 @@ conn.close()
 
 ```toml
 [features]
-default  = ["postgres", "sqlite"]
+default  = ["dotnet", "postgres", "sqlite"]
+dotnet   = []   # Db.Kernel.Net (ADO.NET)
+jvm      = []   # Db.Kernel.Jvm (JDBC); exclusive with dotnet
 postgres = []
 sqlite   = []
 ```
@@ -101,9 +131,9 @@ sqlite   = []
 what every path/workspace dependent gets; Lyric features are private to
 the package that declares them, so a consumer cannot override this
 library's own feature selection — see `docs/24-build-features.md` §2.2)
-links both drivers. Only the features you activate are linked; both can be
-active simultaneously (unlike, say, `lyric-session`'s `dotnet`/`jvm`
-features, which are mutually exclusive).
+links both drivers. Only the features you activate are linked; `postgres`
+and `sqlite` can be active simultaneously, whereas the `dotnet`/`jvm` kernel
+features are mutually exclusive, like `lyric-session`'s.
 
 ### Feature combinations
 
@@ -237,9 +267,13 @@ for row in rows {
 ### Typed column coverage
 
 Column values arrive **genuinely typed** from the driver (not stringified):
-the kernel inspects each column's real CLR type
-(`DbDataReader.GetFieldType`) and maps it to the matching `DbValue`
-variant. The `DbValue` variants are:
+the kernel inspects each value's real type (the CLR type from
+`DbDataReader.GetFieldType` on `dotnet`, the Java class of
+`ResultSet.getObject` on `jvm`) and maps it to the matching `DbValue`
+variant. The tables below give the CLR source; on `jvm` the equivalents are
+`Integer`/`Long`/`Short`/`Byte` (`DbInt`/`DbLong`, by magnitude), `Float`/
+`Double`, `Boolean`, `String`, `byte[]`, `BigDecimal` (`DbDecimal`, plain
+text), `Timestamp`/`Date` (`DbDateTime`). The `DbValue` variants are:
 
 | Variant | Payload | CLR source type |
 |---|---|---|
@@ -298,9 +332,9 @@ were verified correct in isolation (a standalone C# repro against
 library's own kernel end-to-end — a real gap, tracked as follow-up
 alongside live-server Postgres coverage.
 
-Any other CLR column type (e.g. `Int16`, `Guid`) is a documented scope
-boundary: it arrives as a plain `DbText` string via `Object.ToString()`
-rather than a dedicated typed variant.
+Any other column type (e.g. `Int16` on .NET, `Guid`/`UUID`, `jsonb`) is a
+documented scope boundary: it arrives as a plain `DbText` string via
+`Object.ToString()` rather than a dedicated typed variant.
 
 ## Transactions
 

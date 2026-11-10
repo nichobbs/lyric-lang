@@ -13,9 +13,18 @@ output_assembly = "Testing.dll"
 
 [project.packages]
 "Testing" = "src/testing.l"
+"Testing.Conformance" = "src/conformance/core.l"
+"Testing.Conformance.Cache" = "src/conformance/cache.l"
+"Testing.Conformance.Flags" = "src/conformance/flags.l"
+"Testing.Conformance.Session" = "src/conformance/session.l"
+"Testing.Conformance.Mq" = "src/conformance/mq.l"
+"Testing.Conformance.Storage" = "src/conformance/storage.l"
+"Testing.Conformance.Jobs" = "src/conformance/jobs.l"
+"Testing.Conformance.Search" = "src/conformance/search.l"
 
 [project.tests]
 "Testing.TestingTests" = "tests/testing_tests.l"
+"Testing.ConformanceTests" = "tests/conformance_tests.l"
 
 [dependencies]
 "Lyric.Cache"    = { workspace = true }
@@ -25,3 +34,6 @@ output_assembly = "Testing.dll"
 "Lyric.Session"  = { workspace = true }
 "Lyric.Flags"    = { workspace = true }
 "Lyric.Db"       = { workspace = true }
+"Lyric.Jobs"     = { workspace = true }
+"Lyric.Search"   = { workspace = true }
+"Lyric.I18n"     = { workspace = true }

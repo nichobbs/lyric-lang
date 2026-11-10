@@ -1,22 +1,15 @@
 //! Mq — transport-agnostic message queue library for Lyric.
 //!
-//! Stability: @stable(since="0.1") — the `MessageQueue` /
-//! `QueueConsumer` / `DeadLetterStore` interfaces, the
-//! `Idempotent` / `DeadLetter` aspect templates, and the built-in
-//! `NativeQueue` implementation are covered by the SemVer guarantee
-//! at the surface level.  Individual broker feature flags
-//! (rabbitmq / azureservicebus / sqs / kafka) carry their own
-//! experimental envelope until each has end-to-end CI coverage.
+//! Stability: @stable(since="0.1") for the `MessageQueue` / `QueueConsumer` /
+//! `DeadLetterStore` interfaces, the `Idempotent` / `DeadLetter` aspect
+//! templates and the in-process broker.
 //!
 //! `MessageQueue` and `QueueConsumer` are the public interfaces; implement
-//! them to plug in any broker.  `NativeQueue` is the built-in broker-backed
-//! implementation driven through the platform kernel.
-//!
-//! Supported brokers (feature-gated via lyric.toml [features]):
-//!   rabbitmq        — RabbitMQ via AMQP 0-9-1
-//!   azureservicebus — Azure Service Bus
-//!   sqs             — Amazon SQS
-//!   kafka           — Apache Kafka
+//! them to plug in any broker.  `NativeQueue` is the built-in implementation:
+//! the in-process broker (`Mq.InMemory`), pure Lyric and identical on dotnet
+//! and the JVM.  Networked brokers (RabbitMQ, Azure Service Bus, SQS, Kafka)
+//! are not part of this package; they implement these interfaces in their own
+//! packages and run the conformance suite in `Testing.Conformance.Mq`.
 //!
 //! Usage:
 //!
@@ -54,7 +47,7 @@ import Std.Json
 import Std.Iter
 import Std.Parse
 import Std.Environment as Env
-import Mq.Kernel.Net as KernelNet
+import Mq.InMemory as Broker
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 /// A single message metadata pair.
@@ -387,73 +380,32 @@ pub func allHaveIds(messages: in slice[Message]): Bool {
   true
 }
 
-// ─── Platform dispatch helpers (private) ─────────────────────────────────────
-// Target-gated dispatchers into the active broker kernel (the lyric-jobs
-// `nowMs()` pattern).  `Mq.Kernel.Net` is `@cfg(target = "dotnet")`-gated at
-// the file level, so on dotnet these forward to the real in-memory kernel and
-// on jvm both the kernel and the dotnet dispatcher erase — the jvm variants
-// return a clear error until a JVM in-memory kernel ships (#3385).
-@cfg(target = "dotnet")
+// ─── Broker dispatch (private) ───────────────────────────────────────────────
+// `Mq.InMemory` is the one broker: pure Lyric, identical on every target.
 func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
-  return KernelNet.connect(url, queueName)
+  return Broker.connect(url, queueName)
 }
 
-@cfg(target = "jvm")
-func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
-  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
-}
-
-@cfg(target = "dotnet")
 func mqKernelPublish(
   queueId: in Int, messageId: in String, body: in String, headersJson: in String
 ): Result[Unit, String] {
-  return KernelNet.publish(queueId, messageId, body, headersJson)
+  return Broker.publish(queueId, messageId, body, headersJson)
 }
 
-@cfg(target = "jvm")
-func mqKernelPublish(
-  queueId: in Int, messageId: in String, body: in String, headersJson: in String
-): Result[Unit, String] {
-  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
-}
-
-@cfg(target = "dotnet")
 func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
-  return KernelNet.consume(queueId, timeoutMs)
+  return Broker.consume(queueId, timeoutMs)
 }
 
-@cfg(target = "jvm")
-func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
-  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
-}
-
-@cfg(target = "dotnet")
 func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
-  return KernelNet.ack(queueId, deliveryTag)
+  return Broker.ack(queueId, deliveryTag)
 }
 
-@cfg(target = "jvm")
-func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
-  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
-}
-
-@cfg(target = "dotnet")
 func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
-  return KernelNet.nack(queueId, deliveryTag, requeue)
+  return Broker.nack(queueId, deliveryTag, requeue)
 }
 
-@cfg(target = "jvm")
-func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
-  return Err("lyric-mq: no broker kernel on target jvm (in-memory kernel is dotnet-only, #3385)")
-}
-
-@cfg(target = "dotnet")
 func mqKernelClose(queueId: in Int): Unit {
-  KernelNet.close(queueId)
-}
-
-@cfg(target = "jvm")
-func mqKernelClose(queueId: in Int): Unit {
+  Broker.close(queueId)
 }
 
 // ─── JSON serialisation helpers (private) ────────────────────────────────────

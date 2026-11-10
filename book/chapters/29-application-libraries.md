@@ -144,11 +144,11 @@ func main(): Unit {
 ## lyric-mq — Message Queues
 
 `lyric-mq` provides a transport-agnostic message queue abstraction.
-**Only the `inmemory` backend is production-ready, and only on `dotnet`.**
-`rabbitmq`, `azureservicebus`, `sqs`, and `kafka` all type-check, but on
-`dotnet` every one of them returns `Err("... not yet implemented")` from
-`connect()`, and on `jvm` there is no working backend of any kind — see
-`lyric-mq/README.md` for the exact per-broker/per-target gaps.
+The package ships one backend, the in-process broker, which is pure Lyric
+and behaves the same on `dotnet` and `jvm`. Networked brokers (RabbitMQ, Azure
+Service Bus, SQS, Kafka) are not in the package: they belong in separate
+packages that implement `MessageQueue` and `QueueConsumer` and run the
+conformance suite `Testing.Conformance.Mq`. See `lyric-mq/README.md`.
 
 ```toml
 [dependencies]
@@ -159,7 +159,7 @@ func main(): Unit {
 import Mq
 
 func publishOrder(orderId: in String, orderJson: in String): Result[Unit, String] {
-  val queue = Mq.connectTo("amqp://localhost", "orders")?
+  val queue = Mq.connectTo("inmemory://local", "orders")?
   return Mq.publish(queue, Mq.Message(
     id            = orderId,
     body          = orderJson,
@@ -375,7 +375,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | incomplete | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
-| lyric-mq | incomplete | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
+| lyric-mq | incomplete | in-process broker (pure Lyric) | in-process broker (pure Lyric) | D056, D552 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | incomplete | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
@@ -389,7 +389,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-validation | stable | stable | stable | — |
 | lyric-testing | stable | stable | — | — |
 | lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
-| lyric-db | incomplete | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
+| lyric-db | incomplete | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056 |
 | lyric-health | stable | stable | stable | D057 |
 | lyric-web | experimental | stable | stable | D057 |
 | lyric-logging | stable | stable | stable (suite in CI) | D054 |

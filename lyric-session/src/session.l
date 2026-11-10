@@ -111,8 +111,9 @@ pub interface SessionStore {
   /// Return the value for a key in the session, or None if absent.
   func get(sessionId: in String, key: in String): Result[Option[String], SessionError]
 
-  /// Set a key-value pair in the session, creating the session if it does
-  /// not already exist.
+  /// Set a key-value pair in an existing session.  Never creates the session:
+  /// an unknown id is `Err(SESSION_NOT_FOUND)`, so an attacker cannot choose the
+  /// id of a session a victim later uses (session fixation, #316).
   func set(sessionId: in String, key: in String, value: in String): Result[Unit, SessionError]
 
   /// Remove a key from the session.  No-op if the key is absent.

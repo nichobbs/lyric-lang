@@ -1059,7 +1059,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-cache/` — `lyric-cache` library: in-memory and disk-backed
   caching utilities (D-progress-225 / D056).
 - `lyric-db/` — `lyric-db` library: typed SQL query helpers over
-  `System.Data` / JDBC (D-progress-225 / D056).
+  `System.Data` (`Db.Kernel.Net`, Npgsql and Microsoft.Data.Sqlite) on
+  `dotnet` and JDBC (`Db.Kernel.Jvm`, org.postgresql and org.xerial
+  sqlite-jdbc) on `jvm`, selected by the exclusive `dotnet`/`jvm` features
+  (D-progress-225 / D056, #8932).
 - `lyric-health/` — `lyric-health` library: health-check endpoint
   and liveness/readiness probe helpers (D-progress-225 / D056).
 - `lyric-logging/` — `lyric-logging` library: structured logging
@@ -1086,17 +1089,14 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue
-  (`Lyric.Mq`). RabbitMQ, Azure Service Bus, SQS, and Kafka via feature
-  flags — **only the in-process `inmemory` backend is actually
-  implemented today (`dotnet` only), reachable through the public
-  `connect()`/`connectTo()` API since the #6511 dispatch wiring. All
-  four named brokers return `NOT_IMPLEMENTED` on `dotnet`; on `jvm`
-  only RabbitMQ/Kafka are even declared (as unbound `@axiom` no-ops),
-  Azure Service Bus/SQS aren't declared there at all — no working
-  broker exists on `jvm`,
-  see `lyric-mq/README.md`**; `MessageQueue`/`QueueConsumer`/`DeadLetterStore`
-  interfaces; `Idempotent` and `DeadLetter` aspect templates; .NET and
-  JVM kernel boundaries.
+  (`Lyric.Mq`). The reference backend is the in-process broker
+  (`Mq.InMemory`: protected types, pure Lyric, identical on dotnet and the
+  JVM), reachable through `connect()`/`connectTo()`. RabbitMQ, Azure Service
+  Bus, SQS and Kafka are not part of the package (D552): they will be
+  separate packages that implement `MessageQueue`/`QueueConsumer` and run
+  `Testing.Conformance.Mq`; see `lyric-mq/README.md`.
+  `MessageQueue`/`QueueConsumer`/`DeadLetterStore` interfaces; `Idempotent`
+  and `DeadLetter` aspect templates.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
   (`Lyric.Jobs`). Hangfire and Quartz.NET backends — **`InProcessJobScheduler`
   is real on both targets; Hangfire/Quartz.NET are `NOT_IMPLEMENTED` on
