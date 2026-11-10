@@ -9,9 +9,11 @@
 //! reach a real HTTP call (a closed TCP port deterministically produces a
 //! transport failure without needing a live search engine).
 //!
-//! A live Elasticsearch or Meilisearch server is not available in this
-//! repository's CI sandbox, so the true end-to-end round trip lives in a
-//! single gated integration test at the bottom of this file: set
+//! `search_live_tests.l` drives every operation against a fake engine served
+//! by `Std.HttpServer`. A real Elasticsearch or Meilisearch server is not
+//! available in this repository's CI sandbox, so the round trip against a
+//! real engine lives in a single gated integration test at the bottom of
+//! this file: set
 //! `LYRIC_SEARCH_ELASTICSEARCH_URL` (or `LYRIC_SEARCH_MEILISEARCH_URL`,
 //! whichever backend feature is active) to run it against a real engine;
 //! otherwise it asserts the clean-skip path.

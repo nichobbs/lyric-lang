@@ -418,23 +418,11 @@ pub async func connect(provider: in String): Result[SearchClient, SearchError]
 }
 
 // ─── Convenience helpers ──────────────────────────────────────────────────────
-// These are plain (non-`async`) functions, not `async func`, even though
-// their bodies `await` an interface-dispatched call. That's deliberate: an
-// `async func` whose state machine awaits a `SearchClient`-interface-
-// dispatched call (`client.search(...)` etc.) throws `System.
-// InvalidProgramException` at runtime — a third defect in the same family
-// documented at `HttpConfig`'s declaration above, reproduced independently
-// of the Std.Http ones (this one is triggered by `Search`'s *own*
-// interface, `SearchClient`, not `Std.Http`'s). A plain function awaiting
-// the same call directly ("awaits in place" — see
-// docs/01-language-reference.md's async section) does not hit it. Callers
-// may still `await Search.search(client, query)` etc. from their own
-// code — direct calls to a function work with or without `await` — but a
-// caller who writes their OWN `async func` around a raw `client.search(...)`
-// call (bypassing these helpers) can hit the same defect; prefer these
-// helpers, or `NativeSearchClient`'s own async impl methods called
-// directly from a non-`async` context, over rolling your own async
-// wrapper around the interface.
+// These are plain (non-`async`) functions that `await` the interface call in
+// place. They once worked around an `InvalidProgramException` from an
+// `async func` awaiting a `SearchClient` call; that no longer reproduces
+// (`searchViaAsync` in `tests/search_live_tests.l` awaits one from an
+// `async func` on both targets), so the plain shape is a style choice.
 /// Index a single document.
 @stable(since = "0.1")
 pub func index(client: in SearchClient, doc: in SearchDocument): Result[IndexResult, SearchError]

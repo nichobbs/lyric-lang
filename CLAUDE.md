@@ -1144,9 +1144,8 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-search/` — `lyric-search` library: search engine integration
   (`Lyric.Search`). Elasticsearch and Meilisearch backends, implemented
   over plain HTTP and JSON on `Std.Http`/`Std.Json` (#5408), no native SDK —
-  **but not usable against a live server today: `HttpResponse.bodyText`
-  across packages throws `MissingMethodException`, so any operation that
-  reads a response body crashes, and neither backend has been driven against
+  **tested on both targets against a fake `Std.HttpServer` engine
+  (`tests/search_live_tests.l`), but neither backend has been driven against
   a real cluster in CI (#8940), see `lyric-search/README.md`**;
   `SearchClient` interface with index/search/suggest/delete/createIndex.
 - `lyric-feature-flags/` — `lyric-feature-flags` library: runtime feature
