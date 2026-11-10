@@ -175,21 +175,17 @@ pub func tyErrorOpen(): Type {
   TyError(diag = DiagId(index = -4))
 }
 
+/// The `DiagId` index at and below which a `TyError` is a shared enum case
+/// (`SymbolTable.sharedCaseOwners`): index `-1000 - k` names the owners at
+/// position `k`.  Negative, so the I0001 gate does not count it.
+pub val sharedCaseIndexBase: Int = -1000
+
 /// True for a `TyError` the checker leaves unchecked on purpose and says so
 /// (`tyErrorHost`, `tyErrorGeneric`, `tyErrorUnresolved`, `tyErrorOpen`: a negative `DiagId`),
 /// which the I0001 gate does not count.
 pub func isNamedUncheckedTyError(t: in Type): Bool {
   match t {
     case TyError(d) -> d.index < 0
-    case _ -> false
-  }
-}
-
-/// True for the `TyError` of `tyErrorUnresolved`: a read whose type only its
-/// context (an expected type) can tell.
-pub func isUnresolvedTyError(t: in Type): Bool {
-  match t {
-    case TyError(d) -> d.index == -3
     case _ -> false
   }
 }

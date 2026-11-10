@@ -590,6 +590,12 @@ pub record SymbolTable {
   /// The built-in a call resolved to, keyed by the call's `NodeId` (D362): its
   /// name in TIR's built-in table, `println` or `List.add`.
   builtinByNode: Map[Int, String]
+  /// The enums that own each shared case name read as a value (`Lib.On` for
+  /// `Beam.On` and `Ray.On`): a `TyError` whose `DiagId` index is
+  /// `sharedCaseIndexBase - k` stands for `sharedCaseOwners[k]`, so an argument
+  /// of that type fits the parameters of the enums that own the case and no
+  /// others (#8872).
+  sharedCaseOwners: List[List[SymbolId]]
   /// The function type the checker gave a built-in member call's callee (`s.substring`),
   /// keyed by the call's `NodeId`: its parameters are what the call's arguments meet.
   builtinFnTyByNode: Map[Int, Type]
@@ -1236,6 +1242,7 @@ pub func newSymbolTable(): SymbolTable {
     exprTypes = newMap(),
     calleeByNode = newMap(),
     builtinByNode = newMap(),
+    sharedCaseOwners = newList(),
     builtinFnTyByNode = newMap(),
     indirectByNode = newMap(),
     callSigByNode = newMap(),
