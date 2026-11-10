@@ -221,13 +221,11 @@ fields is client-controllable data.
 
 ## lyric-storage — Object Storage
 
-`lyric-storage` abstracts over S3, Azure Blob, and the local filesystem
-via the `StorageBucket` interface. **Only the local filesystem backend is
-production-ready, and it is production-ready on both targets.**
-`connectS3()`/`connectAzureBlob()` compile and type-check on both
-targets, but every operation on the bucket they return is
-`Err(StorageError(code = "NOT_IMPLEMENTED"))` — native SDK bindings are
-still pending.
+`lyric-storage` offers object storage through the `StorageBucket`
+interface. The local filesystem is its only backend and is
+production-ready on both targets. S3 and Azure Blob were never implemented
+and were removed from the public API (`connectS3` and `connectAzureBlob`);
+implement `StorageBucket` in your own package for a remote store.
 
 ```toml
 [dependencies]
@@ -375,7 +373,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
 | lyric-mq | in-process broker (pure Lyric) | in-process broker (pure Lyric) | D056, D552 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
-| lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
+| lyric-storage | local filesystem (the only backend) | local filesystem (the only backend) | D056, D552 |
 | lyric-search | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
 | lyric-i18n | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | D-progress-627 |

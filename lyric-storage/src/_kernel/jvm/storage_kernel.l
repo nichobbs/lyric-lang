@@ -10,8 +10,6 @@
 //! that never existed at runtime (the same elimination as the stdlib
 //! `_kernel_jvm/file_host.l` / `console_host.l` rewrites, D-progress-555)
 //! and declared AWS/Azure SDK surfaces with no `[maven]` coordinates.
-//! S3 and Azure Blob remain Lyric-side stubs in `storage.l` on both
-//! targets (see the .NET kernel header).
 //!
 //! JDK surface bound here (all in `java.base` — no Maven dependencies):
 //!

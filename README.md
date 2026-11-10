@@ -35,7 +35,7 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 | `lyric-mail` / `lyric-jobs` / `lyric-feature-flags` / `lyric-docker` | Supported | Supported | Pure-Lyric subset | SMTP/SES mail, cron/job runner, feature flags, Docker Engine API |
 | `lyric-db` | Supported (Postgres, SQLite) | Returns `NOT_SUPPORTED_ON_TARGET` | — | JDBC kernel tracked separately |
 | `lyric-mq` | Supported (`inmemory`) | Returns `NOT_SUPPORTED_ON_TARGET` | — | Broker drivers (`redis://`, `amqp://`, `sqs://`) return explicit `Err` |
-| `lyric-storage` | Supported (`connectLocal`) | Supported (`connectLocal`) | — | `connectS3` / `connectAzureBlob` return `NOT_IMPLEMENTED` |
+| `lyric-storage` | Supported (`connectLocal`) | Supported (`connectLocal`) | — | Local filesystem is the only backend (S3 and Azure Blob removed, D552) |
 | `lyric-window` / `lyric-gpu` / `lyric-draw` | — | — | Supported | Native-only cross-platform windowing, WebGPU (`wgpu`), 2D GPU vector drawing |
 | `lyric-ui` / `lyric-game` / `lyric-access` | Supported | Supported | Supported | Pure-Lyric UI toolkit, 2D game engine, AccessKit tree |
 
