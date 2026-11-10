@@ -854,7 +854,7 @@ test "response builders require a status of 100 to 599" {
 test "dispatch: a `*` CORS origin answers with a literal `*`, never the reflected Origin" {
   var router = Web.create()
   router = Web.addGet(router, "/api", TextHandler(status = 200, body = "ok"))
-  router = Web.withMiddleware(router, Web.corsMiddleware("*", "GET", "Content-Type", 600))
+  router = Web.withMiddleware(router, Web.corsAnyOriginMiddleware("GET", "Content-Type", 600))
   val resp = Web.dispatch(router, requestWithHeader("GET", "/api", "Origin", "https://any.example"))
   assertEqual(mapGetOr(resp.headers, "Access-Control-Allow-Origin"), "*", "browsers never send credentials to `*`")
   val pre = Web.dispatch(router, requestWithHeader("OPTIONS", "/api", "Origin", "https://any.example"))
@@ -864,10 +864,19 @@ test "dispatch: a `*` CORS origin answers with a literal `*`, never the reflecte
 test "corsSettingsError: settings that cannot be written into headers" {
   assertTrue(Web.corsSettingsValid("https://a.example,https://b.example", "GET, POST", "Content-Type", 600), "valid")
   assertFalse(Web.corsSettingsValid("", "GET", "Content-Type", 600), "empty origins")
-  assertFalse(Web.corsSettingsValid("*", "GET\r\nX: 1", "Content-Type", 600), "method with CRLF")
-  assertFalse(Web.corsSettingsValid("*", "GET", "Content-Type\n", 600), "headers with LF")
-  assertFalse(Web.corsSettingsValid("*", "GET", "Content-Type", -1), "negative max age")
-  assertPanics("corsMiddleware refuses invalid settings", { -> val _ = Web.corsMiddleware("*", "GET", "X", -5) })
+  assertFalse(Web.corsSettingsValid("https://a.example", "GET\r\nX: 1", "Content-Type", 600), "method with CRLF")
+  assertFalse(Web.corsSettingsValid("https://a.example", "GET", "Content-Type\n", 600), "headers with LF")
+  assertFalse(Web.corsSettingsValid("https://a.example", "GET", "Content-Type", -1), "negative max age")
+  assertPanics(
+    "corsMiddleware refuses invalid settings",
+    { -> val _ = Web.corsMiddleware("https://a.example", "GET", "X", -5) }
+  )
+  assertFalse(Web.corsSettingsValid("*", "GET", "Content-Type", 600), "corsMiddleware refuses the wildcard")
+  assertPanics("corsMiddleware refuses `*`", { -> val _ = Web.corsMiddleware("*", "GET", "X", 600) })
+  assertPanics(
+    "corsAnyOriginMiddleware refuses invalid settings",
+    { -> val _ = Web.corsAnyOriginMiddleware("GET", "X\r\nY: 1", 600) }
+  )
 }
 
 test "isValidStaticFiles: root, mount prefix and cache lifetime" {

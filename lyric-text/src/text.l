@@ -560,12 +560,16 @@ func isSpaceCp(cp: Int): Bool {
   cp == 32 or cp == 9
 }
 
-// A character that takes the font of the one before it: spaces, joiners, combining marks.
+// A character that takes the font of the one before it: spaces, joiners, combining marks.  The marks
+// are those Unicode.Data flags Mn/Mc or gives the CM and ZWJ line-break classes, so Hebrew points,
+// Indic vowel signs and the like stay in their base's run instead of shaping alone on a dotted circle.
 func isNeutralCp(cp: Int): Bool {
-  cp <= 32 or cp == 160 or (cp >= 768 and cp <= 879) or (cp >= 1552 and cp <= 1562) or (cp >= 1611 and cp <= 1631) or
-    (cp >= 8203 and cp <= 8207) or
-    (cp >= 8400 and cp <= 8447) or
-    (cp >= 65024 and cp <= 65039)
+  if cp <= 32 or cp == 160 or (cp >= 65024 and cp <= 65039) {
+    return true
+  }
+  val v = UnicodeData.lineBreakValueOf(cp)
+  val cls = v.and(63)
+  v.and(1024) != 0 or cls == 9 or cls == 42 or cls == 12 or cls == 30 or cls == 28
 }
 
 // The characters rule L1 of UAX #9 may give the paragraph's level at the end of a line or before a

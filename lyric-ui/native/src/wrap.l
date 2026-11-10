@@ -470,6 +470,28 @@ pub func offsetInRowAt(
   placeX(cps, l, buildPieces(cps, l, widthOf), position, downstream, widthOf)
 }
 
+/// The left and right edges of the text of line `row`, trailing spaces included, in the box's
+/// coordinates: `[0, width]` for a line with no right to left text, otherwise where its pieces sit
+/// (a right to left line that fits in the box starts at its right edge).
+pub func lineEdgesOf(
+  value: in String, lines: in List[VisualLine], row: in Int, widthOf: in (String) -> Float
+): List[Float] {
+  val edges: List[Float] = newList()
+  if lines.count == 0 {
+    edges.add(0.0f32)
+    edges.add(0.0f32)
+    return edges
+  }
+  val l = lines[clampRow(lines, row)]
+  val cps = codePoints(value)
+  if isPlain(l) {
+    edges.add(0.0f32)
+    edges.add(spanWidth(cps, l.from, l.to, widthOf))
+    return edges
+  }
+  lineEdges(cps, l, buildPieces(cps, l, widthOf), widthOf)
+}
+
 /// The x offset, from the left edge of the box, of a caret at code point `caret`.
 pub func caretOffset(value: in String, lines: in List[VisualLine], caret: in Int, widthOf: in (String) -> Float): Float {
   offsetInRow(value, lines, lineIndexOf(lines, caret), caret, widthOf)
