@@ -1616,6 +1616,9 @@ test "a String member call takes its argument types from the checker's function 
 test "an integer bitwise method call takes its argument type from the receiver" {
   val c = censusOf("package App\nfunc f(a: Int, b: Int): Int {\n  a.and(255).or(b).shl(2)\n}\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
 
 test "a function and a generic function with a doc comment or an annotation have their symbol" {
   val c = censusOf(
