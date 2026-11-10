@@ -1735,3 +1735,12 @@ test "a catch that binds the exception declares the binding as an exception-type
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a bare case at a lambda's tail takes the lambda's return type" {
+  val c = censusOf(
+    "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc run[T](f: () -> Opt[T]): Opt[T] { f() }\nfunc g(): Opt[Int] { run[Int]({ -> Nada }) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

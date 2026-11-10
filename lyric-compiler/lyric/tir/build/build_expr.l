@@ -1987,6 +1987,16 @@ func buildLambda(
     decls.add(declareLocal(env, params[i].name, ls.params[i].ty, false))
     i = i + 1
   }
+  // The checker leaves a bare `None` or `[]` at a lambda's tail untyped; it takes the
+  // lambda's return type, as an argument hole takes its parameter's.
+  if body.statements.count > 0 {
+    match body.statements[body.statements.count - 1].kind {
+      case SExpr(tail) -> if not env.settled.containsKey(tail.nodeId) {
+        env.settled.add(tail.nodeId, ls.ret)
+      }
+      case _ -> ()
+    }
+  }
   val built = buildBlock(env, body, None, freshNodeId(env))
   env.lambdas.removeAt(env.lambdas.count - 1)
   popScope(env)
