@@ -53,6 +53,9 @@
 #   ws          frames, handshake and the WsSecurity aspects; the dotnet-only
 #               `Ws.WsDotnetE2eTests` suite (it dials Std.TcpHost, which has
 #               no JVM kernel) is left out with --suite
+#   testing     the conformance suites against every in-tree backend (cache, flag,
+#               session, job, dead-letter, in-memory broker, local bucket) and
+#               the mocks; Maven-restored for Jakarta Mail and the JDBC drivers
 #   logging     Std.Logging's `LogLevel` enum beside the stdlib's
 #               same-named `Std.Log.LogLevel` (type-scoped enum registry
 #               keys are re-pointed per file)
@@ -88,7 +91,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db testing)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
@@ -102,7 +105,7 @@ run_suite() {
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|jobs|session|aws-xray|ws|db)
+    web|mail|grpc|jobs|session|aws-xray|ws|db|testing)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac
