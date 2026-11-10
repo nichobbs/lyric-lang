@@ -22,4 +22,7 @@ census), so any function containing one never built.
 
 ## Measured
 
-See the progress entry.
+`scripts/ci/tir-census.sh` over the 98 programs, on top of D558: bodies built 1007 -> 1016 of 1165,
+I0003 0; `a defer`, `a scope` and `an or-pattern` 0; all 6 `try` statements the stdlib programs contain
+bind the exception, so they remain under `a try statement with a catch binding` (6): the next slice
+is a type for the catch binding.
