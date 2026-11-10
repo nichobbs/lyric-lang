@@ -457,6 +457,39 @@ pub func moveToLineEdge(
   moveCaret(value, c, if toEnd { Wrap.lastCaret(lines, row) } else { Wrap.firstCaret(lines, row) }, select)
 }
 
+// ─── Single-line input scrolling ─────────────────────────────────────────────
+/// The horizontal scroll of a single-line input that keeps a caret at `caretX` in view, given the
+/// current `scroll`, the text's `left` and `right` edges and a content box `viewWidth` wide, all in
+/// the same coordinates.  The caret stays `margin` pixels inside the box where there is room, and the
+/// scroll never goes past the text's edges.  Text that fits is not scrolled.
+pub func scrollToCaretX(
+  scroll: in Float,
+  caretX: in Float,
+  left: in Float,
+  right: in Float,
+  viewWidth: in Float,
+  margin: in Float,
+): Float {
+  if right - left <= viewWidth {
+    return 0.0f32
+  }
+  val m = if margin * 2.0f32 > viewWidth { viewWidth / 2.0f32 } else { margin }
+  var s = scroll
+  if caretX - m < s {
+    s = caretX - m
+  } else if caretX + m > s + viewWidth {
+    s = caretX + m - viewWidth
+  }
+  val most = right - viewWidth
+  if s > most {
+    s = most
+  }
+  if s < left {
+    s = left
+  }
+  s
+}
+
 // ─── Data grid scrolling ──────────────────────────────────────────────────────
 /// `scroll` limited to a body of height `bodyHeight` over `contentHeight` of rows.
 pub func clampScroll(scroll: in Float, contentHeight: in Float, bodyHeight: in Float): Float {

@@ -192,7 +192,8 @@ Runtime config (all read once at startup, fail-fast if invalid):
 | `LYRIC_CONFIG_WEB_SERVER_HOST` | `0.0.0.0` | Bind address |
 | `LYRIC_CONFIG_WEB_SERVER_PORT` | `8080` | Bind port (1–65535) |
 | `LYRIC_CONFIG_WEB_CORS_ENABLED` | `false` | Enable CORS middleware |
-| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `*` | Comma-separated origins (required when enabled) |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` | `*` | Comma-separated origins (required when enabled); `*` also needs `ALLOWANYORIGIN=true` |
+| `LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN` | `false` | Opt in to answering every origin |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS` | `GET,POST,PUT,DELETE,OPTIONS,PATCH` | Comma-separated methods |
 | `LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS` | `Content-Type,Authorization,Accept` | Comma-separated headers |
 | `LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS` | `86400` | Preflight cache duration |

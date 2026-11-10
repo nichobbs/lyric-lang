@@ -118,3 +118,11 @@ test "parseCorsMaxAge: malformed falls back to default" {
 test "parseCorsMaxAge: negative falls back to default" {
   assertEqualInt(Web.parseCorsMaxAge("-5", 86400), 86400, "negative -> default")
 }
+
+test "corsWildcardError: `*` needs the explicit allow-any-origin opt-in (#8933)" {
+  assertTrue(isSome(corsWildcardError(true, "*", false)), "wildcard without opt-in is refused")
+  assertTrue(isNone(corsWildcardError(true, "*", true)), "wildcard with opt-in is accepted")
+  assertTrue(isSome(corsWildcardError(true, "https://a.example", true)), "opt-in with a list is contradictory")
+  assertTrue(isNone(corsWildcardError(true, "https://a.example", false)), "a list needs no opt-in")
+  assertTrue(isNone(corsWildcardError(false, "*", false)), "disabled CORS is never checked")
+}

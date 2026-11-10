@@ -37,6 +37,8 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
      diagnostic), README and matrix generated or checked from it.
   2. Remove `NOT_IMPLEMENTED` backends from public APIs per D552 item 2:
      mq, storage, jobs, db, otel, lambda (HTTP, `Lambda.Stream`), aws-secrets.
+     Progress: lambda (HTTP entry point, `Lambda.Stream`) and aws-secrets (native
+     annotation path, `NotImplemented`) done on `claude/eco-lambda-secrets`.
   3. Conformance suites in `lyric-testing` for `MessageQueue`, `StorageBucket`,
      `JobScheduler`, `CacheStore`, `SessionStore`, `SearchClient`, `FlagStore`.
   4. Real in-tree reference backends where missing: lyric-db JVM (JDBC with

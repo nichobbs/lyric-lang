@@ -1,11 +1,9 @@
 # lyric-lambda — AWS Lambda runtime adapter for Lyric.
 #
-# Ships nine packages:
+# Ships seven packages:
 #   Lambda                 — core types (LambdaContext, LambdaError, LambdaApp
 #                            builder), the Lambda.Direct handler interfaces,
 #                            and the serve() entry point.
-#   Lambda.ApiGw           — API Gateway v1 / v2 / ALB event types; the
-#                            typed bridge from HTTP events to Web.Router dispatch.
 #   Lambda.Events          — non-HTTP event types: SQS, SNS, S3, EventBridge,
 #                            DynamoDB Streams, Kinesis Data Streams.
 #   Lambda.Authorizer      — authorizer event types and response helpers:
@@ -18,9 +16,6 @@
 #                            the aws/local transport loops (pure Lyric,
 #                            no FFI) shared by Lambda.Kernel.Runtime's aws
 #                            and local feature variants.
-#   Lambda.Stream          — response streaming: StreamWriter type and helpers
-#                            for Lambda Function URL / HTTP API streaming.
-#                            Not implemented (no working transport).
 #   Lambda.Aspects         — pub aspect templates: EventLogging, DeadlineGuard.
 #   Lambda.Kernel.Runtime  — extern boundary to the Lambda runtime loop.
 #                            Exactly one file is compiled per build; all
@@ -35,38 +30,22 @@
 #
 # Feature flags:
 #   aws, local, jvm  — runtime target (exactly one should be active per build).
-#   web              — enables Lambda.withRouter() for lyric-web Router integration.
-#                      Consumers must also declare Lyric.Web in their [dependencies].
-#                      The LambdaRouter <-> Web.Router registry is real (see
-#                      Lambda.Kernel.WebBridge); routing an API Gateway/ALB
-#                      event through the resolved router is separate,
-#                      larger work not done yet (Lambda.Dispatch's header).
 #
-# Composition modes (may be combined in the same LambdaApp):
-#   1. lyric-web router reuse — attach a Web.Router with Lambda.withRouter().
-#      The router-token registry works (Lambda.Kernel.WebBridge); actually
-#      routing an API Gateway/ALB event through it does not yet (see
-#      Lambda.Dispatch's header comment).
-#   2. Streaming HTTP handler — Lambda.withStreamingHandler(handlerName).
-#      Not implemented — see Lambda.Stream.
-#   3. Custom event handlers — onSqs / onSns / onS3 / onEventBridge /
-#      onDynamoDb / onKinesis / onRaw (string-based). Registration succeeds
-#      but dispatch never resolves these (D099 rejects the reflection design
-#      this implied) — use Lambda.Direct instead.
-#   4. Authorizer handlers — onTokenAuthorizer / onRequestAuthorizer / onHttpAuthorizer.
-#      Same caveat as #3 — use Lambda.Direct.*AuthorizerHandler instead.
-#   5. Lambda.Direct handlers — Lambda.withDirect(Lambda.Direct.*Handler(impl)).
-#      The only dispatch path that actually invokes a handler today; aws:sqs,
-#      raw, and all three authorizer types are wired, the rest fail closed
-#      with InternalError (see Lambda.Dispatch's header comment).
+# Not offered: HTTP entry points (API Gateway v1/v2, ALB, Lambda.withRouter)
+# and response streaming (Lambda.Stream). Both were withdrawn under D552 item 2
+# because no transport or dispatch backed them; see README "Withdrawn surface".
+#
+# Composition: attach typed handlers with Lambda.withDirect(Lambda.Direct.*Handler(impl)).
+# aws:sqs, raw, and all three authorizer types are wired; the other event
+# sources fail closed with InternalError (see Lambda.Dispatch's header comment).
 #
 # See docs/35-lambda-library.md and decision logs D062, D063, D064, D099.
 
 [package]
 name        = "Lyric.Lambda"
 version     = "0.1.0"
-stability = "incomplete"
-description = "AWS Lambda runtime adapter with API Gateway → lyric-web bridge, typed event sources, authorizers, streaming, and AOT support."
+stability = "experimental"
+description = "AWS Lambda runtime adapter with typed event sources, authorizers, and AOT support."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
@@ -80,8 +59,6 @@ local = []
 # as `aws`, not the managed java21 runtime's RequestStreamHandler. No Maven
 # dependency needed (see _kernel/lambda_kernel_jvm.l's header comment).
 jvm   = []
-# lyric-web router integration (withRouter).  Requires Lyric.Web as a dep.
-web   = []
 
 [project]
 name            = "Lyric.Lambda"
@@ -89,19 +66,14 @@ output          = "single"
 output_assembly = "Lambda.dll"
 
 [project.packages]
-# Core types, LambdaApp builder, serve() entry point, and (when feature = "web")
-# withRouter() for lyric-web Router integration.
+# Core types, LambdaApp builder, and serve() entry point.
 "Lambda"               = "src/lambda.l"
-# API Gateway v1 / v2 / ALB event types and lyric-web bridge.
-"Lambda.ApiGw"         = "src/apigw.l"
 # Non-HTTP event types: SQS, SNS, S3, EventBridge, DynamoDB Streams, Kinesis.
 "Lambda.Events"        = "src/events.l"
 # Authorizer event types and response helpers (TOKEN, REQUEST, HTTP API v2).
 "Lambda.Authorizer"    = "src/authorizer.l"
 # AOT-compatible handler registration via function references.
 "Lambda.Direct"        = "src/direct.l"
-# Response streaming support (StreamWriter, write, close).
-"Lambda.Stream"        = "src/stream.l"
 # Pub aspect templates for cross-cutting Lambda handler concerns.
 "Lambda.Aspects"       = "src/lambda_aspects.l"
 # Event-source detection, JSON marshalling, and the aws/local transport
@@ -118,22 +90,14 @@ output_assembly = "Lambda.dll"
   "src/_kernel/lambda_kernel_local.l",
   "src/_kernel/lambda_kernel_jvm.l",
 ]
-# Web bridge (compiled only when feature = "web"): real Lyric-level
-# ConditionalWeakTable<LambdaRouter, Web.Router> registry (extern type +
-# @externInstance Add/TryGetValue), no F#/host shim.
-"Lambda.Kernel.WebBridge" = "src/_kernel/lambda_kernel_web.l"
 
 [project.tests]
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
 "Lambda.DispatchTests" = "tests/lambda_dispatch_tests.l"
 "Lambda.AspectWeavingTests" = "tests/lambda_aspect_weaving_tests.l"
-# Both suites below gate themselves with a file-level `@cfg`, so they are
-# absent (0 tests, exit 0) from builds where their feature is inactive.
-"Lambda.WebBridgeTests" = "tests/lambda_webbridge_tests.l"
+# Gates itself with a file-level `@cfg`, so it is absent (0 tests, exit 0)
+# from builds where its feature is inactive.
 "Lambda.RuntimeLoopTests" = "tests/lambda_runtime_loop_tests.l"
-
-[dependencies]
-"Lyric.Web"    = { workspace = true }
 
 # No [nuget] table: the aws feature previously declared Amazon.Lambda.RuntimeSupport
 # / Amazon.Lambda.Serialization.SystemTextJson for an extern package that was never

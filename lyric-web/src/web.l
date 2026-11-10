@@ -122,7 +122,11 @@ func pathGetFullPath(path: in String): String {
       cur = if isUnc and cut <= 1 {
         cur
       } else if cut <= 0 {
-        if win and cur.length >= 2 and codeUnitAt(cur, 1) == 58 { cur.substring(0, 2) } else { "" }
+        if win and cur.length >= 2 and codeUnitAt(cur, 1) == 58 {
+          cur.substring(0, 2)
+        } else {
+          ""
+        }
       } else {
         cur.substring(0, cut)
       }
@@ -155,7 +159,11 @@ func pathGetFullPath(path: in String): String {
     cur = ""
   }
   if cur.length == 0 {
-    if isUnc { "//" } else { "/" }
+    if isUnc {
+      "//"
+    } else {
+      "/"
+    }
   } else if win and not isUnc and cur.length == 2 and codeUnitAt(cur, 1) == 58 {
     cur + "/"
   } else {
@@ -1299,10 +1307,11 @@ impl Middleware for CorsMiddleware {
 /// Build a CORS middleware.  `Web.start` attaches one automatically from
 /// the `LYRIC_CONFIG_WEB_CORS_*` env vars when CORS is enabled; call this
 /// directly if you build your own middleware pipeline instead of using
-/// `Web.start`.  `allowedOrigins` is `*` or a comma-separated origin list;
-/// with `*` the response carries a literal `Access-Control-Allow-Origin: *`,
-/// so browsers refuse credentialed requests.  The settings must satisfy
-/// `corsSettingsError` (they are written into response headers).
+/// `Web.start`.  `allowedOrigins` is a comma-separated origin list; a `*`
+/// origin is refused here so that answering every origin is never configured
+/// by accident (#8933): use `corsAnyOriginMiddleware` to ask for it.  The
+/// settings must satisfy `corsSettingsError` (they are written into response
+/// headers).
 @stable(since = "0.2")
 pub func corsMiddleware(
   allowedOrigins: in String,
@@ -1314,6 +1323,24 @@ pub func corsMiddleware(
 {
   return CorsMiddleware(
     allowedOrigins = allowedOrigins,
+    allowedMethods = allowedMethods,
+    allowedHeaders = allowedHeaders,
+    maxAgeSeconds = maxAgeSeconds
+  )
+}
+
+/// A CORS middleware that answers every origin, chosen on purpose.  The
+/// response carries a literal `Access-Control-Allow-Origin: *`, so browsers
+/// refuse credentialed requests.  The methods, headers and max age must satisfy
+/// `corsAnyOriginSettingsError`.
+@stable(since = "0.4")
+pub func corsAnyOriginMiddleware(
+  allowedMethods: in String, allowedHeaders: in String, maxAgeSeconds: in Int
+): Middleware
+  requires: corsAnyOriginSettingsValid(allowedMethods, allowedHeaders, maxAgeSeconds)
+{
+  return CorsMiddleware(
+    allowedOrigins = "*",
     allowedMethods = allowedMethods,
     allowedHeaders = allowedHeaders,
     maxAgeSeconds = maxAgeSeconds
@@ -1857,7 +1884,7 @@ impl Handler for StreamingAwareDispatchHandler {
 /// Returns `Some(error)` when the configuration is unsafe to bind a server with,
 /// `None` when it is acceptable.  Enabling CORS without an explicit origin list
 /// is a fail-closed configuration mistake; a disabled CORS layer never errors,
-/// and a wildcard origin (`*`) is accepted (the kernel warns rather than rejects).
+/// and a wildcard origin (`*`) is accepted here (`corsWildcardError` decides whether it was asked for).
 /// `start()` calls this so the panic path and this pure helper share one rule.
 @stable(since = "0.1")
 pub func corsConfigError(enabled: in Bool, origins: in String): Option[String] {
@@ -1871,10 +1898,12 @@ pub func corsConfigError(enabled: in Bool, origins: in String): Option[String] {
 }
 
 /// `Some(error)` when CORS settings cannot be written into response headers:
-/// an empty origin list, a non-token method, a header list or origin list
-/// with a control character, or a negative max age.  `start()` checks this
-/// at startup, so a bad `LYRIC_CONFIG_WEB_CORS_*` value fails closed there
-/// instead of on every cross-origin request.
+/// an empty origin list, a `*` origin (answering every origin must be asked for
+/// with `corsAnyOriginMiddleware` or `LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN=true`,
+/// #8933), a non-token method, a header list or origin list with a control
+/// character, or a negative max age.  `start()` checks this at startup, so a bad
+/// `LYRIC_CONFIG_WEB_CORS_*` value fails closed there instead of on every
+/// cross-origin request.
 @pure
 @stable(since = "0.3")
 pub func corsSettingsError(
@@ -1884,8 +1913,25 @@ pub func corsSettingsError(
   maxAgeSeconds: in Int,
 ): Option[String] {
   if allowedOrigins.length == 0 or not isSafeHeaderValue(allowedOrigins) {
-    return Some("CORS allowed origins must be `*` or a non-empty comma-separated list without control characters")
+    return Some("CORS allowed origins must be a non-empty comma-separated list without control characters")
   }
+  if allowedOrigins.trim() == "*" {
+    return Some(
+      "a CORS `*` origin answers every site; ask for it with corsAnyOriginMiddleware " +
+        "(or LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN=true), or list the origins"
+    )
+  }
+  corsAnyOriginSettingsError(allowedMethods, allowedHeaders, maxAgeSeconds)
+}
+
+/// `Some(error)` when the methods, headers or max age of a CORS configuration
+/// cannot be written into response headers (the checks of `corsSettingsError`
+/// other than the origin list).
+@pure
+@stable(since = "0.4")
+pub func corsAnyOriginSettingsError(
+  allowedMethods: in String, allowedHeaders: in String, maxAgeSeconds: in Int
+): Option[String] {
   if not isSafeHeaderValue(allowedHeaders) {
     return Some("CORS allowed headers must not contain control characters")
   }
@@ -1916,6 +1962,43 @@ pub func corsSettingsValid(
     case Some(_) -> false
     case None -> true
   }
+}
+
+/// True when `corsAnyOriginSettingsError` finds nothing wrong.
+@pure
+@stable(since = "0.4")
+pub func corsAnyOriginSettingsValid(allowedMethods: in String, allowedHeaders: in String, maxAgeSeconds: in Int): Bool {
+  match corsAnyOriginSettingsError(allowedMethods, allowedHeaders, maxAgeSeconds) {
+    case Some(_) -> false
+    case None -> true
+  }
+}
+
+/// `Some(error)` when `LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS` and
+/// `LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN` disagree: a `*` origin list without
+/// the explicit opt-in (so a wildcard is never configured by accident, #8933),
+/// or the opt-in with an origin list that is not `*`.  `start()` panics with it;
+/// a disabled CORS layer never errors.
+@pure
+@stable(since = "0.4")
+pub func corsWildcardError(enabled: in Bool, origins: in String, allowAnyOrigin: in Bool): Option[String] {
+  if not enabled {
+    return None
+  }
+  val wildcard = origins.trim() == "*"
+  if wildcard and not allowAnyOrigin {
+    return Some(
+      "LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS=* answers every site; set LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN=true " +
+        "to ask for that, or list the origins"
+    )
+  }
+  if allowAnyOrigin and not wildcard {
+    return Some(
+      "LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN=true needs LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS=*; " +
+        "remove one of them"
+    )
+  }
+  None
 }
 
 /// Parse `LYRIC_CONFIG_WEB_SERVER_PORT` into a validated TCP port.
@@ -2486,6 +2569,7 @@ func resolveStartConfig(router: in Router): (Router, String, Int) {
   val corsMethods = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS", "GET,POST,PUT,DELETE,OPTIONS,PATCH")
   val corsHeaders = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS", "Content-Type,Authorization,Accept")
   val corsMaxAgeStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS", "86400")
+  val corsAllowAny = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWANYORIGIN", "false") == "true"
 
   // Parse the configured port/CORS-max-age (previously hardcoded, ignoring the
   // documented env vars).  Fail closed on an invalid port.
@@ -2500,14 +2584,31 @@ func resolveStartConfig(router: in Router): (Router, String, Int) {
     case None -> ()
   }
 
+  match corsWildcardError(corsEnabled, corsOrigins, corsAllowAny) {
+    case Some(err) -> panic(err)
+    case None -> ()
+  }
+
   if corsEnabled {
-    match corsSettingsError(corsOrigins, corsMethods, corsHeaders, corsMaxAge) {
+    val settingsError = if corsAllowAny {
+      corsAnyOriginSettingsError(corsMethods, corsHeaders, corsMaxAge)
+    } else {
+      corsSettingsError(corsOrigins, corsMethods, corsHeaders, corsMaxAge)
+    }
+    match settingsError {
       case Some(err) -> panic("invalid LYRIC_CONFIG_WEB_CORS_* setting: " + err)
       case None -> ()
     }
   }
   val routerWithCors = if corsEnabled {
-    withMiddleware(router, corsMiddleware(corsOrigins, corsMethods, corsHeaders, corsMaxAge))
+    withMiddleware(
+      router,
+      if corsAllowAny {
+        corsAnyOriginMiddleware(corsMethods, corsHeaders, corsMaxAge)
+      } else {
+        corsMiddleware(corsOrigins, corsMethods, corsHeaders, corsMaxAge)
+      }
+    )
   } else {
     router
   }

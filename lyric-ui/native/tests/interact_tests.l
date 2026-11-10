@@ -237,3 +237,41 @@ test "a password shows one bullet per code point and nothing of its value" {
   assertFalse(Interact.isMasked(email), "other inputs are not")
   assertEqual(Interact.shownValue(email, email.text), "a@b.c", "and draw their value")
 }
+
+func tenWide(s: String): Float {
+  Interact.cpCount(s).toFloat() * 10.0f32
+}
+
+func caretScroll(value: String, caret: Int, scroll: Float, view: Float): Float {
+  val w = { s: String -> tenWide(s) }
+  val lines = Wrap.singleLine(value, view, w)
+  val edges = Wrap.lineEdgesOf(value, lines, 0, w)
+  val cx = Wrap.offsetInRowAt(value, lines, 0, caret, false, w)
+  Interact.scrollToCaretX(scroll, cx, edges[0], edges[1], view, 8.0f32)
+}
+
+test "a single-line input scrolls to keep the caret in view, never past the text (#8813)" {
+  // 20 characters of 10 px in a 100 px box.
+  val v = "abcdefghijklmnopqrst"
+  assertTrue(caretScroll(v, 3, 0.0f32, 100.0f32) == 0.0f32, "a caret inside the box leaves the scroll alone")
+  assertTrue(caretScroll(v, 20, 0.0f32, 100.0f32) == 100.0f32, "the end of the text scrolls to its last pixel")
+  assertTrue(caretScroll(v, 12, 0.0f32, 100.0f32) == 28.0f32, "a caret past the right edge ends 8 px inside it")
+  assertTrue(caretScroll(v, 2, 100.0f32, 100.0f32) == 12.0f32, "a caret before the left edge ends 8 px inside it")
+  assertTrue(caretScroll(v, 0, 60.0f32, 100.0f32) == 0.0f32, "the start is never scrolled past")
+  assertTrue(caretScroll("abcde", 5, 40.0f32, 100.0f32) == 0.0f32, "text that fits is not scrolled")
+}
+
+test "a right to left value wider than the box scrolls over its visual extent (#8813)" {
+  val v = "אבגדהוזחטיךכ"
+  // Twelve characters, 120 px, in a 100 px box: laid out from the left edge, caret 0 at the right end.
+  assertTrue(caretScroll(v, 0, 0.0f32, 100.0f32) == 20.0f32, "the logical start is at the right end")
+  assertTrue(caretScroll(v, 12, 20.0f32, 100.0f32) == 0.0f32, "the logical end is at the left end")
+  assertTrue(caretScroll("אבג", 0, 30.0f32, 100.0f32) == 0.0f32, "a value that fits is not scrolled")
+}
+
+test "a mixed value scrolls to the caret's visual place (#8813)" {
+  // Latin, a Hebrew word, Latin: 21 characters, 210 px, in a 100 px box.
+  val v = "abcdefghijאבגדklmnopq"
+  assertTrue(caretScroll(v, 0, 50.0f32, 100.0f32) == 0.0f32, "the start of the line")
+  assertTrue(caretScroll(v, 21, 0.0f32, 100.0f32) == 110.0f32, "the end of the line")
+}

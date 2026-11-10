@@ -332,6 +332,16 @@ func run(lib: Text.TextLib, latinPath: String, cjkPath: String): Int {
   if countFont(mixed, 0) < 3 {
     return fail("the Latin characters left the first font")
   }
+  // A combining mark keeps the font of its base even when only a later font has it (#8827): U+3099
+  // is in the CJK font alone, and a mark that left the Latin run would be shaped alone on a dotted circle.
+  val marked = Text.layoutText(chain, "a゙b", 0.0)
+  if countFont(marked, 1) != 0 {
+    return fail("a combining mark left the font of its base")
+  }
+  val points = Text.layoutText(chain, "שָׁ", 0.0)
+  if countFont(points, 0) != 3 {
+    return fail("Hebrew points left the font of their letter")
+  }
   val wrapped = Text.layoutText(chain, "alpha beta gamma delta", 200.0)
   if wrapped.lineCount < 2 {
     return fail("a 200 px column did not wrap")

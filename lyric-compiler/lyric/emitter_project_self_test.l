@@ -377,6 +377,52 @@ test "emitProject dot-named overloads chosen by argument type (JVM)" {
   assertEqual(Str.trim(result.stdout), "1\n105", "dot_named_overload_jvm: each call lowers the overload it names")
 }
 
+// ─── Two packages' unions sharing a case name (#8481) ────────────────────────
+// `Both` is a case of `Left` in one package and of `Right` in another; the
+// importing package builds each by the type the checker expects, and the
+// backends must build exactly that union's case.
+func sharedCaseAcrossPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "SharedCase.One",
+      "package SharedCase.One\n\npub union Left {\n  case Both(n: Int)\n  case OnlyLeft\n}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "SharedCase.Two",
+      "package SharedCase.Two\n\npub union Right {\n  case Both(n: Int)\n  case OnlyRight\n}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "SharedCase.App",
+      "package SharedCase.App\n\nimport SharedCase.One\nimport SharedCase.Two\n\n" +
+        "func leftBoth(): Left {\n  Both(n = 1)\n}\n\n" +
+        "func rightBoth(c: in Bool): Right {\n  if c {\n    return Both(n = 2)\n  }\n  OnlyRight\n}\n\n" +
+        "func takeRight(r: in Right): Int {\n  match r {\n    case Both(n) -> n + 100\n    case OnlyRight -> 0\n  }\n}\n\n" +
+        "func leftValue(l: in Left): Int {\n  match l {\n    case Both(n) -> n\n    case OnlyLeft -> -1\n  }\n}\n\n" +
+        "func rightValue(r: in Right): Int {\n  match r {\n    case Both(n) -> n\n    case OnlyRight -> -2\n  }\n}\n\n" +
+        "func main(): Unit {\n  val r: Right = Both(n = 4)\n" +
+        "  println(toString(leftValue(leftBoth())) + \" \" + toString(rightValue(rightBoth(true))) + \" \" + toString(takeRight(Both(n = 3))) + \" \" + toString(rightValue(r)))\n}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject shared union case name across packages (MSIL)" {
+  val result = runEmitProject("shared-case-msil", sharedCaseAcrossPkgs(), "SharedCase")
+  assertEqualInt(result.exitCode, 0, "shared_case_msil: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1 2 103 4", "shared_case_msil: each call builds the expected union's case")
+}
+
+test "emitProject shared union case name across packages (JVM)" {
+  val result = runEmitProjectJvmOpts("shared-case-jvm", sharedCaseAcrossPkgs(), "SharedCase")
+  assertEqualInt(result.exitCode, 0, "shared_case_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1 2 103 4", "shared_case_jvm: each call builds the expected union's case")
+}
+
 // ─── Alias-qualified extern type in a function SIGNATURE (#6338) ────────────
 // An `import X as Y` + `Y.ExternType` reference used as a function
 // PARAMETER type: `Lyric.AliasRewriter` flattens it to the fully-qualified

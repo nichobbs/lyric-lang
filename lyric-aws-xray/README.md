@@ -265,9 +265,7 @@ func handleGetUser(userId: in Int): Result[User, Web.ApiError] {
 }
 
 func main(): Int {
-  var router = Web.create()
-  router = Web.addGet(router, "/users/{id}", "MyApp.handleGetUser")
-  Lambda.serve(Lambda.newApp() |> Lambda.withRouter(router))
+  Lambda.serve(Lambda.withDirect(Lambda.newApp(), Lambda.Direct.rawHandler(MyHandler())))
 }
 ```
 
