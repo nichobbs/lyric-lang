@@ -387,7 +387,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-validation | stable | stable | — |
 | lyric-testing | stable | — | — |
 | lyric-cache | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
-| lyric-db | Npgsql and SQLite real (#5407) | no JVM backend (#8932) | D056 |
+| lyric-db | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056 |
 | lyric-health | stable | stable | D057 |
 | lyric-web | stable | stable | D057 |
 | lyric-logging | stable | stable (suite in CI) | D054 |

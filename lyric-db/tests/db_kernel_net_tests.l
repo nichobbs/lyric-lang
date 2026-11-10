@@ -3,6 +3,9 @@
 //! `buildPgConnStr` and its `msToWholeSecondsRoundedUp` timeout helper
 //! directly (no live Postgres server needed) rather than only through
 //! `connectPostgres`'s connect-failure path.
+//! Erased on `--target jvm` (`Db.Kernel.Net` is the `dotnet` kernel);
+//! `db_kernel_jvm_tests.l` is its JDBC counterpart.
+@cfg(feature = "dotnet")
 @test_module
 package Db.KernelNetTests
 

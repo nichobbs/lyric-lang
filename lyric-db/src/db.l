@@ -1,12 +1,14 @@
 //! Db — driver-agnostic database access with typed rows and transactions.
-//! Stability: @stable — `query`/`execute`/`transaction` are real ADO.NET
-//! calls (`Db.Kernel.Net`, `System.Data.Common`), not the historical
-//! hardcoded-`Err` stubs (#5407). The SQLite path (Microsoft.Data.Sqlite)
-//! is exercised end-to-end in CI against a real `:memory:` database
-//! (`tests/db_sqlite_tests.l`); the Postgres path (Npgsql) shares the exact
-//! same query/execute/transaction code and is verified for connect-failure
-//! error mapping only — no live Postgres server is available in CI/sandboxes
-//! (`tests/db_postgres_connect_tests.l`). See lyric-db/README.md "Platform
+//! Stability: @stable — `query`/`execute`/`transaction` are real driver
+//! calls on both targets: ADO.NET (`Db.Kernel.Net`, `System.Data.Common`) on
+//! `dotnet` and JDBC (`Db.Kernel.Jvm`, `java.sql`) on `jvm`, not the
+//! historical hardcoded-`Err` stubs (#5407, #8932). The SQLite path
+//! (Microsoft.Data.Sqlite / sqlite-jdbc) is exercised end-to-end in CI
+//! against a real `:memory:` database on both targets
+//! (`tests/db_sqlite_tests.l`); the Postgres path shares the same
+//! query/execute/transaction code and is verified in CI for connect-failure
+//! error mapping only (`tests/db_postgres_connect_tests.l`) — no live
+//! Postgres server is available there. See lyric-db/README.md "Platform
 //! parity" for the full, honest breakdown.
 //!
 //! `DbConnection` is the public interface; implement it to add a new driver.
@@ -51,8 +53,8 @@ import Std.Environment as Environment
 import Std.Encoding
 import Std.String as Str
 import Std.Parse
-import Db.Kernel.Net as DbKernel
-import extern System.{Convert}
+import Db.Kernel.Net as KernelNet
+import Db.Kernel.Jvm as KernelJvm
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 /// A database error with a driver-reported code and message.
@@ -412,11 +414,200 @@ pub interface DbConnection {
   func close(): Unit
 }
 
+// ─── Platform kernel dispatch ─────────────────────────────────────────────────
+// `Db.Kernel.Net` (ADO.NET) is active on `dotnet`, `Db.Kernel.Jvm` (JDBC) on
+// `jvm`; the inactive package is erased, so the thin wrappers and handle
+// records below are the only place the two kernels are named.  Both kernels
+// export the same operations over a connection handle and a transaction
+// handle.  The wrappers that open a connection or transaction return the
+// finished `Db` types (`DbConnection`, `DbTransaction`) so no kernel handle
+// type appears as a generic argument: `Result[KernelNet.DbConn, String]` as a
+// `@cfg`-gated wrapper's return type failed MSIL codegen ("match not
+// exhaustive" on the caller's `match`) with the 0.7.12 compiler.
+@cfg(feature = "dotnet")
+func kQuery(conn: in KernelNet.DbConn, sql: in String, params: in slice[String]): Result[String, String] {
+  KernelNet.query(conn, sql, params)
+}
+
+@cfg(feature = "jvm")
+func kQuery(conn: in KernelJvm.DbConn, sql: in String, params: in slice[String]): Result[String, String] {
+  KernelJvm.query(conn, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func kExecute(conn: in KernelNet.DbConn, sql: in String, params: in slice[String]): Result[Int, String] {
+  KernelNet.execute(conn, sql, params)
+}
+
+@cfg(feature = "jvm")
+func kExecute(conn: in KernelJvm.DbConn, sql: in String, params: in slice[String]): Result[Int, String] {
+  KernelJvm.execute(conn, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func kBegin(conn: in KernelNet.DbConn): Result[DbTransaction, String] {
+  match KernelNet.beginTransaction(conn) {
+    case Ok(tx) -> {
+      val t: DbTransaction = NativeTransaction(conn = conn, tx = tx, finished = false)
+      Ok(t)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(feature = "jvm")
+func kBegin(conn: in KernelJvm.DbConn): Result[DbTransaction, String] {
+  match KernelJvm.beginTransaction(conn) {
+    case Ok(tx) -> {
+      val t: DbTransaction = NativeTransaction(conn = conn, tx = tx, finished = false)
+      Ok(t)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(feature = "dotnet")
+func kTxQuery(
+  conn: in KernelNet.DbConn, tx: in KernelNet.DbTxT, sql: in String, params: in slice[String]
+): Result[String, String] {
+  KernelNet.txQuery(conn, tx, sql, params)
+}
+
+@cfg(feature = "jvm")
+func kTxQuery(
+  conn: in KernelJvm.DbConn, tx: in KernelJvm.DbTxT, sql: in String, params: in slice[String]
+): Result[String, String] {
+  KernelJvm.txQuery(conn, tx, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func kTxExecute(
+  conn: in KernelNet.DbConn, tx: in KernelNet.DbTxT, sql: in String, params: in slice[String]
+): Result[Int, String] {
+  KernelNet.txExecute(conn, tx, sql, params)
+}
+
+@cfg(feature = "jvm")
+func kTxExecute(
+  conn: in KernelJvm.DbConn, tx: in KernelJvm.DbTxT, sql: in String, params: in slice[String]
+): Result[Int, String] {
+  KernelJvm.txExecute(conn, tx, sql, params)
+}
+
+@cfg(feature = "dotnet")
+func kCommit(tx: in KernelNet.DbTxT): Result[Unit, String] {
+  KernelNet.commitTransaction(tx)
+}
+
+@cfg(feature = "jvm")
+func kCommit(tx: in KernelJvm.DbTxT): Result[Unit, String] {
+  KernelJvm.commitTransaction(tx)
+}
+
+@cfg(feature = "dotnet")
+func kRollback(tx: in KernelNet.DbTxT): Result[Unit, String] {
+  KernelNet.rollbackTransaction(tx)
+}
+
+@cfg(feature = "jvm")
+func kRollback(tx: in KernelJvm.DbTxT): Result[Unit, String] {
+  KernelJvm.rollbackTransaction(tx)
+}
+
+@cfg(feature = "dotnet")
+func kClose(conn: in KernelNet.DbConn): Unit {
+  KernelNet.close(conn)
+}
+
+@cfg(feature = "jvm")
+func kClose(conn: in KernelJvm.DbConn): Unit {
+  KernelJvm.close(conn)
+}
+
+@cfg(feature = "dotnet")
+func kConnectDsn(connStr: in String): Result[DbConnection, String] {
+  match KernelNet.connectDsn(connStr) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(feature = "jvm")
+func kConnectDsn(connStr: in String): Result[DbConnection, String] {
+  match KernelJvm.connectDsn(connStr) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(all(feature = "dotnet", feature = "postgres"))
+func kConnectPostgres(
+  url: in String, poolSize: in Int, connectTimeoutMs: in Int, password: in String
+): Result[DbConnection, String] {
+  match KernelNet.connectPostgres(url, poolSize, connectTimeoutMs, password) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(all(feature = "jvm", feature = "postgres"))
+func kConnectPostgres(
+  url: in String, poolSize: in Int, connectTimeoutMs: in Int, password: in String
+): Result[DbConnection, String] {
+  match KernelJvm.connectPostgres(url, poolSize, connectTimeoutMs, password) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(all(feature = "dotnet", feature = "sqlite"))
+func kConnectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConnection, String] {
+  match KernelNet.connectSqlite(url, connectTimeoutMs) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
+@cfg(all(feature = "jvm", feature = "sqlite"))
+func kConnectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConnection, String] {
+  match KernelJvm.connectSqlite(url, connectTimeoutMs) {
+    case Ok(conn) -> {
+      val c: DbConnection = NativeConnection(conn = conn)
+      Ok(c)
+    }
+    case Err(msg) -> Err(msg)
+  }
+}
+
 // ─── Native connection wrapper (internal) ────────────────────────────────────
-// Holds a real ADO.NET `DbConnection` reference (Db.Kernel.Net.DbConn) — not
-// an integer registry handle; the connection object itself is the handle.
+// Holds a real driver connection reference (`Db.Kernel.Net.DbConn`, an ADO.NET
+// `DbConnection`, or `Db.Kernel.Jvm.DbConn`, a `java.sql.Connection`) — not an
+// integer registry handle; the connection object itself is the handle.  One
+// `@cfg`-gated declaration per kernel: the field type names the active kernel's
+// handle type directly.
+@cfg(feature = "dotnet")
 record NativeConnection {
-  conn: DbKernel.DbConn
+  conn: KernelNet.DbConn
+}
+
+@cfg(feature = "jvm")
+record NativeConnection {
+  conn: KernelJvm.DbConn
 }
 
 impl DbConnection for NativeConnection {
@@ -425,7 +616,7 @@ impl DbConnection for NativeConnection {
       case Some(e) -> return Err(e)
       case None -> ()
     }
-    match DbKernel.query(self.conn, sql.text, params) {
+    match kQuery(self.conn, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "QUERY_ERROR"))
     }
@@ -436,27 +627,35 @@ impl DbConnection for NativeConnection {
       case Some(e) -> return Err(e)
       case None -> ()
     }
-    match DbKernel.execute(self.conn, sql.text, params) {
+    match kExecute(self.conn, sql.text, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "EXECUTE_ERROR"))
     }
   }
 
   func transaction(): Result[DbTransaction, DbError] {
-    match DbKernel.beginTransaction(self.conn) {
-      case Ok(tx) -> Ok(NativeTransaction(conn = self.conn, tx = tx, finished = false))
+    match kBegin(self.conn) {
+      case Ok(tx) -> Ok(tx)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_BEGIN_ERROR"))
     }
   }
 
   func close(): Unit {
-    DbKernel.close(self.conn)
+    kClose(self.conn)
   }
 }
 
+@cfg(feature = "dotnet")
 ref record NativeTransaction {
-  conn: DbKernel.DbConn
-  tx: DbKernel.DbTxT
+  conn: KernelNet.DbConn
+  tx: KernelNet.DbTxT
+  var finished: Bool
+}
+
+@cfg(feature = "jvm")
+ref record NativeTransaction {
+  conn: KernelJvm.DbConn
+  tx: KernelJvm.DbTxT
   var finished: Bool
 }
 
@@ -473,7 +672,7 @@ impl DbTransaction for NativeTransaction {
       case Some(e) -> return Err(e)
       case None -> ()
     }
-    match DbKernel.txQuery(self.conn, self.tx, sql.text, params) {
+    match kTxQuery(self.conn, self.tx, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
     }
@@ -487,7 +686,7 @@ impl DbTransaction for NativeTransaction {
       case Some(e) -> return Err(e)
       case None -> ()
     }
-    match DbKernel.txExecute(self.conn, self.tx, sql.text, params) {
+    match kTxExecute(self.conn, self.tx, sql.text, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_EXECUTE_ERROR"))
     }
@@ -503,7 +702,7 @@ impl DbTransaction for NativeTransaction {
     }
     // A failed commit leaves the driver transaction unusable too.
     self.finished = true
-    match DbKernel.commitTransaction(self.tx) {
+    match kCommit(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_COMMIT_ERROR"))
     }
@@ -514,7 +713,7 @@ impl DbTransaction for NativeTransaction {
       return Ok(())
     }
     self.finished = true
-    match DbKernel.rollbackTransaction(self.tx) {
+    match kRollback(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_ROLLBACK_ERROR"))
     }
@@ -535,11 +734,8 @@ impl DbTransaction for NativeTransaction {
 pub func connect(connStr: in String): Result[DbConnection, DbError]
   requires: connStr.length > 0
 {
-  match DbKernel.connectDsn(connStr) {
-    case Ok(conn) -> {
-      val c: DbConnection = NativeConnection(conn = conn)
-      Ok(c)
-    }
+  match kConnectDsn(connStr) {
+    case Ok(c) -> Ok(c)
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
 }
@@ -623,11 +819,8 @@ pub func connectPostgres(
   requires: poolSize >= 1
   requires: connectTimeoutMs >= 100
 {
-  match DbKernel.connectPostgres(url, poolSize, connectTimeoutMs, password) {
-    case Ok(conn) -> {
-      val c: DbConnection = NativeConnection(conn = conn)
-      Ok(c)
-    }
+  match kConnectPostgres(url, poolSize, connectTimeoutMs, password) {
+    case Ok(c) -> Ok(c)
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
 }
@@ -643,11 +836,8 @@ pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConne
   requires: url.length > 0
   requires: connectTimeoutMs >= 100
 {
-  match DbKernel.connectSqlite(url, connectTimeoutMs) {
-    case Ok(conn) -> {
-      val c: DbConnection = NativeConnection(conn = conn)
-      Ok(c)
-    }
+  match kConnectSqlite(url, connectTimeoutMs) {
+    case Ok(c) -> Ok(c)
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
 }
@@ -801,7 +991,7 @@ pub func getLong(row: in DbRow, name: in String): Long
 {
   match col(row, name) {
     case DbLong(v) -> return v
-    case DbInt(v) -> return Convert.ToInt64(v)
+    case DbInt(v) -> return v.toLong()
     case _ -> return 0i64
   }
 }
@@ -858,7 +1048,7 @@ pub func getLongOpt(row: in DbRow, name: in String): Option[Long]
   match col(row, name) {
     case DbNull -> return None
     case DbLong(v) -> return Some(value = v)
-    case DbInt(v) -> return Some(value = Convert.ToInt64(v))
+    case DbInt(v) -> return Some(value = v.toLong())
     case _ -> return None
   }
 }
