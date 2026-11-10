@@ -315,15 +315,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # lyric-access's smoke program depends on lyric-ui, whose lyric-web and lyric-ws
-      # dependencies declare [maven], so `lyric restore` runs the Maven resolver, whose
-      # class files are newer than the runner's default Java.
-      - name: Set up Java 22
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
-        with:
-          distribution: temurin
-          java-version: '22'
-
       - name: Download the win-x64 archive
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:

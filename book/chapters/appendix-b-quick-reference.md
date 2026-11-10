@@ -1390,7 +1390,7 @@ lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --ta
 lyric restore                          # download all dependencies declared in lyric.toml
                                        # ([maven] entries of workspace/path deps included, transitively)
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
-lyric restore --target native          # skip the Maven resolver (no Java needed for a native-only project)
+lyric restore --target native          # restore only what that target links (no Java for a native-only project)
 lyric restore --update Gen             # accept a new signing key for the restored source generator Gen
                                        # (lyric.lock pins each generator's key id; D266)
 lyric update                           # re-resolve all deps to latest compatible versions
