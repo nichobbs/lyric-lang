@@ -87,7 +87,8 @@ if [[ -z "$ILVERIFY" ]]; then
   ILVERIFY="$(command -v ilverify || true)"
 fi
 if [[ -z "$ILVERIFY" ]]; then
-  dotnet tool install -g dotnet-ilverify >/dev/null 2>&1 || true
+  # dotnet-ilverify 11.0.0 ships no tool settings for SDK 10, so an unpinned install fails (and is swallowed): pin to the SDK's major.
+  dotnet tool install -g dotnet-ilverify --version 10.0.0 >/dev/null 2>&1 || true
   export PATH="$PATH:$HOME/.dotnet/tools"
   ILVERIFY="$(command -v ilverify || true)"
 fi
