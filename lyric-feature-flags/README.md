@@ -157,7 +157,7 @@ tracked timeline for a first-party implementation.
 Short-circuits execution of the matched function when a named flag is disabled.
 Returns `Err("feature disabled: " + flagName)` without invoking the handler.
 The flag value is read from `Flags.Registry`, a process-global, `Map`-backed
-registry (see `Flags.Registry`'s doc comment for the thread-safety caveat) —
+registry (a protected type, safe to use from several threads) —
 register flags into it at application startup with
 `Flags.Registry.registerBoolFlag(name, value)`.
 

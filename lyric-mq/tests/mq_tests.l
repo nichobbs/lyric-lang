@@ -60,7 +60,7 @@ func deadLetter(id: in String): Mq.DeadLetterEntry {
 }
 
 test "InProcessDeadLetterStore keeps the newest maxEntries entries in order (#7279)" {
-  val store: Mq.DeadLetterStore = Mq.InProcessDeadLetterStore(entries = [], maxEntries = 3)
+  val store: Mq.DeadLetterStore = Mq.inProcessDeadLetterStore(3)
   store.append(deadLetter("a"))
   store.append(deadLetter("b"))
   store.append(deadLetter("c"))
@@ -236,8 +236,12 @@ test "connectTo with no queue name is an Err, not a panic (#7239)" {
 }
 
 test "InProcessDeadLetterStore requires a capacity of at least 1 (#7239)" {
-  assertPanics("capacity 0", { -> val _ = InProcessDeadLetterStore(entries = [], maxEntries = 0) })
-  assertEqualInt(Mq.inProcessDeadLetterStore(1).maxEntries, 1, "capacity 1 is valid")
+  assertPanics("capacity 0", { -> val _ = inProcessDeadLetterStore(0) })
+  val one = Mq.inProcessDeadLetterStore(1)
+  val m = Mq.Message(id = "a", body = "", headers = [], deliveryCount = 0)
+  one.append(Mq.DeadLetterEntry(message = m, reason = "r", failedAt = 1i64))
+  one.append(Mq.DeadLetterEntry(message = m, reason = "r", failedAt = 2i64))
+  assertEqualInt(one.count(), 1, "capacity 1 is valid and holds exactly one entry")
 }
 
 test "allHaveIds" {

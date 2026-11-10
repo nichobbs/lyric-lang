@@ -17,11 +17,8 @@
 //! flags here at application startup with `registerBoolFlag` /
 //! `registerStringFlag`.
 //!
-//! WARNING (thread safety): NOT thread-safe.  Concurrent register/check calls
-//! from multiple threads produce undefined behaviour (lost updates, torn
-//! reads).  Wrap access in an external mutex if the process registers flags
-//! concurrently with checking them; making the registry a `protected type` is
-//! tracked in #8950.
+//! Thread safety: the registry is a protected type, so registering and checking
+//! flags from several threads is safe (#8950).
 @runtime_checked
 @io
 package Flags.Registry
@@ -29,20 +26,33 @@ package Flags.Registry
 import Std.Core
 import Std.Collections
 
-ref record FlagRegistryStore {
-  var boolMap: Map[String, Bool]
-  var stringMap: Map[String, String]
+protected type FlagRegistryStore {
+  var boolMap: Map[String, Bool] = newMap()
+  var stringMap: Map[String, String] = newMap()
+  entry boolFlag(name: in String, defaultValue: in Bool): Bool {
+    if boolMap.containsKey(name) {
+      return boolMap[name]
+    }
+    return defaultValue
+  }
+  entry stringFlag(name: in String, defaultValue: in String): String {
+    if stringMap.containsKey(name) {
+      return stringMap[name]
+    }
+    return defaultValue
+  }
+  entry setBool(name: in String, value: in Bool) {
+    boolMap[name] = value
+  }
+  entry setString(name: in String, value: in String) {
+    stringMap[name] = value
+  }
 }
 
-// A module-level `val` initialized directly with a record literal that
-// carries a generic `Map` field crashes the self-hosted MSIL lowering pass
-// (`Msil.Lowering.dictTokensForLowering: Dictionary`2 TypeRef not seeded`);
-// routing the construction through a same-package factory function avoids
-// it, matching the pattern every other module-level store instance in this
-// codebase already uses (e.g. `Cache.inProcess()`,
-// `Cache.Aspects.functionCacheStore`).
+// A module-level `val` initialised through a same-package factory (the
+// pattern every other module-level store in this codebase uses).
 func newRegistryStore(): FlagRegistryStore {
-  return FlagRegistryStore(boolMap = newMap(), stringMap = newMap())
+  return FlagRegistryStore()
 }
 
 val globalRegistry: FlagRegistryStore = newRegistryStore()
@@ -50,19 +60,13 @@ val globalRegistry: FlagRegistryStore = newRegistryStore()
 /// Return the Bool value of a named flag, or `defaultValue` if absent.
 @stable(since = "0.1")
 pub func checkFlag(name: in String, defaultValue: in Bool): Bool {
-  match mapGet(globalRegistry.boolMap, name) {
-    case Some(v) -> return v
-    case None -> return defaultValue
-  }
+  return globalRegistry.boolFlag(name, defaultValue)
 }
 
 /// Return the String value of a named flag, or `defaultValue` if absent.
 @stable(since = "0.1")
 pub func getStringFlag(name: in String, defaultValue: in String): String {
-  match mapGet(globalRegistry.stringMap, name) {
-    case Some(v) -> return v
-    case None -> return defaultValue
-  }
+  return globalRegistry.stringFlag(name, defaultValue)
 }
 
 /// Register (or overwrite) a Bool flag in the process-global registry.
@@ -70,7 +74,7 @@ pub func getStringFlag(name: in String, defaultValue: in String): String {
 pub func registerBoolFlag(name: in String, value: in Bool): Unit
   requires: name.length > 0
 {
-  globalRegistry.boolMap[name] = value
+  globalRegistry.setBool(name, value)
 }
 
 /// Register (or overwrite) a String flag in the process-global registry.
@@ -78,5 +82,5 @@ pub func registerBoolFlag(name: in String, value: in Bool): Unit
 pub func registerStringFlag(name: in String, value: in String): Unit
   requires: name.length > 0
 {
-  globalRegistry.stringMap[name] = value
+  globalRegistry.setString(name, value)
 }
