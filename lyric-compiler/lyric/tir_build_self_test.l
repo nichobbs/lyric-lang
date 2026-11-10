@@ -1654,3 +1654,12 @@ test "an or-pattern that binds nothing builds, one that binds a name is counted"
   val dsOk = verifyPackage(ok.pkg, newList())
   assertEqualInt(dsOk.count, 0, if dsOk.count > 0 { renderVerifyDiag("test", dsOk[0]) } else { "verifies" })
 }
+
+test "a union case whose result type has an unsolved argument builds from its closed field types" {
+  val c = censusOf(
+    "package App\nunion Res[T, E] {\n  case Okk(value: T)\n  case Errr(error: E)\n}\nfunc unwrapOr[T, E](r: Res[T, E], d: T): T { d }\nfunc f(): Int {\n  unwrapOr(Errr(error = 1), 99)\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
