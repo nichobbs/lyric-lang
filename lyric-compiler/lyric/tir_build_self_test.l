@@ -1663,3 +1663,12 @@ test "a union case whose result type has an unsolved argument builds from its cl
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a record passed where an interface it implements is expected is upcast" {
+  val c = censusOf(
+    "package App\ninterface Shape {\n  func area(self: in Shape): Int\n}\nrecord Sq { side: Int }\nimpl Shape for Sq {\n  func area(self: in Sq): Int { self.side * self.side }\n}\nfunc total(s: in Shape): Int { s.area() }\nfunc f(): Int {\n  val q = Sq(side = 3)\n  total(q)\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
