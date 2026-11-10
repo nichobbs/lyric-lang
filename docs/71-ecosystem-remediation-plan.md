@@ -50,9 +50,9 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 
 ## 4. Open questions
 
-- **Q-ECO-001.** One `lyric-ecosystem` monorepo or one repository per backend?
-  Recommendation: a monorepo with independently versioned packages, split later
-  if a backend's release cadence demands it.
+- **Q-ECO-001.** Resolved in D561: one `lyric-ecosystem` monorepo with
+  independently versioned packages, split later if a backend's release cadence
+  demands it.
 - **Q-ECO-002.** Compatibility policy between a library's interface version and
   an external backend (SemVer range on the interface package, conformance suite
   version pinned in the backend's CI).
