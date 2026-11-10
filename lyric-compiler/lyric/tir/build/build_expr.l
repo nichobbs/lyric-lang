@@ -1953,7 +1953,40 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
-    case None -> None
+    case None -> match upcastKind(env, t.ty, ty) {
+      case Some(k) -> Some(value = convertNode(env, t, ty, k))
+      case None -> None
+    }
+  }
+}
+
+/// A value of a declared type used where an interface is expected: the checker accepts
+/// that only for a type that implements it, so the node names the interface.
+func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  val iface = match to {
+    case TNamed(i, _) -> i
+    case _ -> return None
+  }
+  val src = match from {
+    case TNamed(a, _) -> a
+    case _ -> return None
+  }
+  if src.id == iface.id {
+    return None
+  }
+  val tbl = env.ctx.tbl
+  val targetIsInterface = match symbolOfDefId(tbl, iface) {
+    case Some(s) -> match s.kind { case DKInterface(_, _) -> true; case _ -> false }
+    case None -> false
+  }
+  val sourceIsInterface = match symbolOfDefId(tbl, src) {
+    case Some(s) -> match s.kind { case DKInterface(_, _) -> true; case _ -> false }
+    case None -> true
+  }
+  if targetIsInterface and not sourceIsInterface {
+    Some(value = CvUpcast(iface = iface))
+  } else {
+    None
   }
 }
 
