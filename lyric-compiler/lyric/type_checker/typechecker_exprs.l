@@ -17331,7 +17331,13 @@ func recordExplicitTypeArgCall(
   // read by the TIR builder): recording them keeps a call whose result does not mention
   // a type parameter (`isNone[Int](x)`) from losing it.
   match explicitCallTypeArgs(sc, tbl, fn, sig) {
-    case Some(given) -> recordGenericArgsNode(tbl, sc.genericNames, valueGenericParamsOf(tbl, inner, args.count), given, callNode)
+    case Some(given) -> recordGenericArgsNode(
+      tbl,
+      sc.genericNames,
+      valueGenericParamsOf(tbl, inner, args.count),
+      given,
+      callNode
+    )
     case None -> ()
   }
   if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
