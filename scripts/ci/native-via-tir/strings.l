@@ -54,7 +54,7 @@ func same(a: in String, b: in String): Bool {
 }
 
 func countdown(n: in Int): String {
-  var out = ""
+  var result = ""
   var i = n
   while i > 0 {
     val piece = i.toString() + ","
@@ -62,13 +62,13 @@ func countdown(n: in Int): String {
       i = i - 1
       continue
     }
-    out = out + piece
+    result = result + piece
     if i == 1 {
       break
     }
     i = i - 1
   }
-  out
+  result
 }
 
 func main(): Unit {

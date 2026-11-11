@@ -595,3 +595,34 @@ func countOf(hay: in String, needle: in String): Int {
   }
   n
 }
+
+test "the method form of toString on an Int and on a Bool is the same built-in" {
+  val n = local(1, "n", intT(), false)
+  val b = local(2, "b", tyBool(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  ps.add(param(b))
+  val ns = ex(
+    3,
+    strT(),
+    XCall(
+      callee = Intrinsic(op = IoBuiltin(name = "Int.toString")),
+      args = inArgs1(ex(4, intT(), XLocal(local = n.id)))
+    )
+  )
+  val bs = ex(
+    5,
+    strT(),
+    XCall(
+      callee = Intrinsic(op = IoBuiltin(name = "Bool.toString")),
+      args = inArgs1(ex(6, tyBool(), XLocal(local = b.id)))
+    )
+  )
+  val body = plus(7, ns, bs)
+  val names: List[String] = newList()
+  names.add("P.both")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "@lyric_string_from_int("), ir)
+  assertTrue(Str.contains(ir, "@lyric_string_from_bool("), ir)
+  assertTrue(countOf(ir, "call void @lyric_release(") == 2, "both owned temporaries are released: " + ir)
+}

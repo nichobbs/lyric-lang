@@ -116,6 +116,7 @@ lyric-rt/build-tsan/
 lyric-rt/build-tsan-async/
 lyric-rt/build-thread-io/
 lyric-rt/build-address-io/
+lyric-rt/build-asan-tir/
 
 # Ephemeral lyric build/check output
 .lyric-check/

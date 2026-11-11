@@ -932,7 +932,8 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
   Val(ty = sTy, value = r, owned = true)
 }
 
-/// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` and `String.length`.
+/// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` (also spelled `<Type>.toString` for the
+/// method form) and `String.length`.
 /// Any other name is outside this slice.
 func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
   if ins.count != 1 {
@@ -950,7 +951,7 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
     )
     return unitVal()
   }
-  if name == "toString" {
+  if name == "toString" or Str.endsWith(name, ".toString") {
     val a = lowerExpr(c, arg)
     if isStringN(a.ty) {
       return a
