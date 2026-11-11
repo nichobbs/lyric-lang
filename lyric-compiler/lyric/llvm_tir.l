@@ -21,6 +21,7 @@ import Std.Core
 import Std.Collections
 import Std.Encoding as Encoding
 import Std.Environment as Environment
+import Std.String as Str
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.Symbols
@@ -31,6 +32,121 @@ import Lyric.Tir
 /// directly (docs/70 phase 4a, D520).
 pub func viaTirRequested(): Bool {
   Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1"
+}
+
+/// One package's TIR as the code generator receives it: the built package and the
+/// DefPath key of every symbol in it (`SymbolId.id` to key), from which a top-level
+/// function's package, name and arity are read.
+pub record TirUnitInput {
+  pkg: TPackage
+  names: Map[Int, String]
+  census: TirCensus
+}
+
+/// The package, name and parameter count of a top-level function.
+pub record TirFnName {
+  pkg: String
+  name: String
+  arity: Int
+}
+
+/// The parameter count of the text between a function key's parentheses: the
+/// commas at bracket depth zero, plus one, or zero for no parameters.
+func paramCount(params: in String): Int {
+  if params.length == 0 {
+    return 0
+  }
+  var depth = 0
+  var n = 1
+  var i = 0
+  while i < params.length {
+    match Str.charAt(params, i) {
+      case Some(ch) -> {
+        if ch == '[' or ch == '(' {
+          depth = depth + 1
+        } else if ch == ']' or ch == ')' {
+          depth = depth - 1
+        } else if ch == ',' and depth == 0 {
+          n = n + 1
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// Read a top-level function's DefPath key, `Pkg::name(P1,P2)` (docs/70 §4.2); None
+/// for the key of a type, a member or anything else.
+pub func tirTopLevelFn(key: in String): Option[TirFnName] {
+  match Str.indexOf(key, "::") {
+    case None -> None
+    case Some(sep) -> {
+      val rest = Str.substring(key, sep + 2)
+      match Str.indexOf(rest, "(") {
+        case None -> None
+        case Some(open) -> {
+          val head = Str.substring(rest, 0, open)
+          if Str.contains(head, "::") or not Str.endsWith(rest, ")") {
+            return None
+          }
+          val params = Str.substring(rest, open + 1, rest.length - open - 2)
+          Some(value = TirFnName(pkg = Str.substring(key, 0, sep), name = head, arity = paramCount(params)))
+        }
+      }
+    }
+  }
+}
+
+/// What came of lowering a unit's functions from TIR: how many were lowered, and
+/// the reason each of the others stayed on the AST path.
+pub record TirCensus {
+  lowered: List[String]
+  fallbacks: List[String]
+}
+
+pub func newTirCensus(): TirCensus {
+  TirCensus(lowered = newList(), fallbacks = newList())
+}
+
+/// The census as report lines: the totals, then each fallback reason with how many
+/// functions it kept on the AST path, most frequent first.
+pub func tirCensusLines(c: in TirCensus): List[String] {
+  val lines: List[String] = newList()
+  lines.add(
+    "native via-TIR: " + toString(c.lowered.count) + " of " + toString(c.lowered.count + c.fallbacks.count) +
+      " functions lowered from TIR"
+  )
+  val counts: Map[String, Int] = newMap()
+  for f in c.fallbacks {
+    val reason = match Str.indexOf(f, ": ") { case Some(i) -> Str.substring(f, i + 2); case None -> f }
+    val had = match mapGet(counts, reason) { case Some(n) -> n; case None -> 0 }
+    if counts.containsKey(reason) {
+      counts.remove(reason)
+    }
+    counts.add(reason, had + 1)
+  }
+  val taken: Map[String, Bool] = newMap()
+  var round = 0
+  val reasonCount = mapKeys(counts).count
+  while round < reasonCount {
+    var best = ""
+    var bestN = 0
+    for k in mapKeys(counts) {
+      if not taken.containsKey(k) {
+        val n = match mapGet(counts, k) { case Some(v) -> v; case None -> 0 }
+        if n > bestN {
+          best = k
+          bestN = n
+        }
+      }
+    }
+    taken.add(best, true)
+    lines.add("  fallback: " + best + " x " + toString(bestN))
+    round = round + 1
+  }
+  lines
 }
 
 /// What the lowering needs beyond the declaration.
@@ -82,6 +198,7 @@ record LCtx {
   loops: List[LoopLabels]
   problems: List[String]
   retTy: NType
+  globalPrefix: String
 }
 
 func tmp(c: in LCtx): String {
@@ -187,7 +304,7 @@ func zeroOf(t: in NType): NValue {
 func cString(c: in LCtx, text: in String): String {
   val bytes = Encoding.encodeUtf8(text)
   c.ticker.add(0)
-  val gname = ".tcstr." + toString(c.ticker.count)
+  val gname = c.globalPrefix + toString(c.ticker.count)
   c.globals.add(
     NGlobalDef(
       name = gname,
@@ -1116,7 +1233,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
     slots = newMap(),
     loops = newList(),
     problems = newList(),
-    retTy = retTy
+    retTy = retTy,
+    globalPrefix = ".tcstr." + irName + "."
   )
   c.cur.add("entry")
   val params: List[NParam] = newList()

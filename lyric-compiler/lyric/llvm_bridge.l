@@ -59,6 +59,7 @@ import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.LlvmTir as LlvmTir
+import Lyric.Tir.Build as TirBuild
 import Lyric.WasmGlue
 import Lyric.ComponentGlue
 import Lyric.Version as Ver
@@ -1520,6 +1521,7 @@ pub func compileToNativeWithFeatures(
   val optsRecvOut: Map[String, String] = newMap()
   val optsCallArities: Map[String, Int] = newMap()
   val optsCallees: Map[String, String] = newMap()
+  val optsTirOut: List[TirBuild.PackageBuild] = newList()
   val opts = nativeMiddleEndOptions(
     path,
     noSingleFileFiles,
@@ -1532,7 +1534,9 @@ pub func compileToNativeWithFeatures(
     contractsEnabled,
     false,
     newList(),
-    optsCallees
+    optsCallees,
+    LlvmTir.viaTirRequested(),
+    optsTirOut
   )
   val userFileChecked = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -1673,7 +1677,13 @@ pub func compileToNativeWithFeatures(
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
-  units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees))
+  val tirInputs: List[LlvmTir.TirUnitInput] = newList()
+  if optsTirOut.count > 0 {
+    tirInputs.add(
+      LlvmTir.TirUnitInput(pkg = optsTirOut[0].pkg, names = optsTirOut[0].names, census = LlvmTir.newTirCensus())
+    )
+  }
+  units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees, tirInputs))
   appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(
@@ -2459,9 +2469,13 @@ func nativeMiddleEndOptions(
   buildInterface: in Bool = false,
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
   calleesOut: in Map[String, String] = newMap(),
+  wantTir: in Bool = false,
+  tirOut: in List[TirBuild.PackageBuild] = newList(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
+    wantTir = wantTir,
+    tirOut = tirOut,
     tcFatal = true,
     tcReport = false,
     pkgLabel = pkgLabel,
@@ -3373,6 +3387,11 @@ func linkAndEmitNative(
   }
 
   val npkg = codegenNativeBundle(units, effTriple)
+  if units[0].tir.count > 0 {
+    for line in LlvmTir.tirCensusLines(units[0].tir[0].census) {
+      Console.error(line)
+    }
+  }
   if isPlugin and not addPluginEntryPoint(npkg, units[0].pkgName) {
     Console.error(
       "error[N0028]: --shape plugin builds a trusted plugin library from a package with a @plugin record, and package " +
@@ -4900,6 +4919,7 @@ func unitOf(
   arities: in Map[String, Int],
   isDep: in Bool = false,
   callees: in Map[String, String] = newMap(),
+  tir: in List[LlvmTir.TirUnitInput] = newList(),
 ): CodegenUnit {
   // A member body's bare field references as `self.<name>` (#8264), as
   // `unitOfFile` does; a no-op for a file the middle end processed.
@@ -5047,7 +5067,8 @@ func unitOf(
     imports = fileImportPackages(f),
     methodCallArities = arities,
     calleeSites = callees,
-    deadProtecteds = deadProtecteds
+    deadProtecteds = deadProtecteds,
+    tir = tir
   )
 }
 

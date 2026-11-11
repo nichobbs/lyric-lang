@@ -1092,6 +1092,11 @@ lyric build --package-version <ver>   # override the version string embedded in 
 lyric build --verify-ir <file.l>       # after the check, number the nodes and print the typed-IR census:
                                        # I0002 per kind the builder cannot build yet, I0003 per verifier
                                        # rule (docs/70 §6.4); LYRIC_VERIFY_IR=1 does the same
+lyric build --target native --via-tir <file.l>  # lower the functions the typed IR covers from the typed IR
+                                       # (docs/70 phase 4a) and print how many functions were lowered
+                                       # that way, with each fallback to the AST path and its reason;
+                                       # single-file builds, scalar functions for now;
+                                       # LYRIC_NATIVE_VIA_TIR=1 does the same
 lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @build_const("KEY")
                                        # module-level val (docs/60). Repeatable. Substituted before
                                        # type-check as a String literal (no source re-parse). An

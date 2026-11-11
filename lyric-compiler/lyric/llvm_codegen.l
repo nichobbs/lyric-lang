@@ -69,6 +69,8 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
+import Lyric.LlvmTir as LlvmTir
+import Lyric.Tir as Tir
 import Lyric.SelfFields as SelfFields
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +159,10 @@ pub record CodegenUnit {
   // (#6234 part 2): the destructor calls it with the type's first field
   // before releasing the ref-typed fields.
   nativeDtors: Map[String, String] = newMap()
+  /// The unit's functions as TIR (docs/70 phase 4a, D520): empty unless the build asked for
+  /// the TIR path, otherwise one entry.  A function it lowers replaces the AST lowering;
+  /// the others stay on the AST path and are counted in its census.
+  tir: List[LlvmTir.TirUnitInput] = newList()
 }
 
 /// A module-level `val`/`const` binding. A literal initializer is inlined at
@@ -18395,6 +18401,99 @@ func synthCMain(
   )
 }
 
+/// The signature the AST path gave `fn` and the one the TIR lowering gave it agree on.
+func sameSignature(a: in NFunc, b: in NFunc): Bool {
+  if a.params.count != b.params.count or nTypeToIrString(a.retTy) != nTypeToIrString(b.retTy) {
+    return false
+  }
+  var i = 0
+  while i < a.params.count {
+    if nTypeToIrString(a.params[i].ty) != nTypeToIrString(b.params[i].ty) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// `ast`, the AST path's lowering of `fn`, or its lowering from TIR when the unit carries
+/// the TIR path's input and the TIR lowering covers `fn` (docs/70 phase 4a, D520).  The
+/// IR name, linkage and attributes stay the AST path's; every function that stays on the
+/// AST path is counted in the unit's census with the reason.
+func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn: in FunctionDecl, ast: in NFunc): NFunc {
+  if u.tir.count == 0 {
+    return ast
+  }
+  val input = u.tir[0]
+  val census = input.census
+  val arity = fn.params.count
+  var decl: Option[Tir.TFnDecl] = None
+  for f in input.pkg.funcs {
+    match mapGet(input.names, f.sym.id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
+        case None -> ()
+        case Some(n) -> {
+          if n.pkg == u.pkgName and n.name == fn.name and n.arity == arity {
+            decl = Some(value = f)
+          }
+        }
+      }
+    }
+  }
+  val fnNames: Map[Int, String] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
+        case None -> ()
+        case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
+          case Some(sg) -> fnNames.add(id, sg.irName)
+          case None -> ()
+        }
+      }
+    }
+  }
+  match decl {
+    case None -> {
+      census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
+      ast
+    }
+    case Some(d) -> {
+      // The AST path's name for the function stands: the lowering finds it by symbol.
+      if not fnNames.containsKey(d.sym.id) {
+        fnNames.add(d.sym.id, ast.name)
+      }
+      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg), d) {
+        case Err(f) -> {
+          census.fallbacks.add(fn.name + ": " + f.reason)
+          ast
+        }
+        case Ok(l) -> {
+          if not sameSignature(ast, l.fn) {
+            census.fallbacks.add(fn.name + ": the TIR signature differs from the AST lowering's")
+            ast
+          } else {
+            for g in l.globals {
+              ctx.globals.add(g)
+            }
+            census.lowered.add(fn.name)
+            NFunc(
+              name = ast.name,
+              params = l.fn.params,
+              retTy = ast.retTy,
+              isPublic = ast.isPublic,
+              isExtern = ast.isExtern,
+              body = l.fn.body,
+              attributes = ast.attributes
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Lower a bundle of packages into one native module.  `units[0]` must
 /// be the user's main package (its functions are all lowered and its
 /// `func main` becomes the process entry point); the remaining units
@@ -18675,7 +18774,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
         }
       }
       val irName = match mapGet(sigs, key) { case Some(s) -> s.irName; case None -> u.pkgName + "." + fn.name }
-      fns.add(lowerFunction(ctx, u.pkgName, fn, irName))
+      fns.add(tirOrAst(ctx, sigs, u, fn, lowerFunction(ctx, u.pkgName, fn, irName)))
       if ui == 0 and fn.name == "main" and fn.params.count == 0 {
         mainRet = retTypeToNType(fn.ret)
         mainIr = irName
