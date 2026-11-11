@@ -93,8 +93,8 @@ func noteFuncSym(
   }
 }
 
-/// The names of the `var` fields of the record `sid` (a plain field is immutable, language
-/// reference §3.4), read from its declaration.  A symbol that is no record has none.
+/// The names of the `var` fields of the record or non-generic protected type `sid` (a plain field is
+/// immutable, language reference §3.4), read from its declaration.  Any other symbol has none.
 func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
   val names: Map[String, Bool] = newMap()
   for s in tbl.symbols {
@@ -113,6 +113,11 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
         }
       }
       case None -> ()
+    }
+  }
+  for pf in protectedFieldsOf(tbl, sid) {
+    if pf.mutable and not names.containsKey(pf.name) {
+      names.add(pf.name, true)
     }
   }
   names
@@ -286,6 +291,57 @@ func typeEntry(sym: in SymbolId, n: in Int, fields: in List[TFieldSig]): TSymEnt
   TSymEntry(sym = sym, kind = TSkType, typeParamCount = n, sig = None, fields = fields, ty = None, mutable = false)
 }
 
+/// A field of a protected type: its name, declared type and whether it is `var`.
+pub record ProtField {
+  name: String
+  ty: TypeExpr
+  mutable: Bool
+}
+
+/// The fields of the non-generic protected type `sid`, in declaration order.  A generic protected
+/// type and any other symbol have none here.
+pub func protectedFieldsOf(tbl: in SymbolTable, sid: in SymbolId): List[ProtField] {
+  val res: List[ProtField] = newList()
+  for s in tbl.symbols {
+    match s.kind {
+      case DKProtected(i, d) -> {
+        if i.id == sid.id and not isSome(d.generics) and res.count == 0 {
+          for m in d.members {
+            match m {
+              case PMField(pf) -> {
+                match pf {
+                  case PFVar(n, t, _, _, _, _) -> res.add(ProtField(name = n, ty = t, mutable = true))
+                  case PFLet(n, t, _, _, _, _) -> res.add(ProtField(name = n, ty = t, mutable = false))
+                  case PFImmutable(fd) -> res.add(ProtField(name = fd.name, ty = fd.ty, mutable = fd.isMutable))
+                }
+              }
+              case _ -> ()
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+/// The field signatures of the protected type `sid` for its type entry; empty when a field's type
+/// cannot be converted (a use of the field is then reported, not checked against a partial list).
+func protectedFieldSigs(tbl: in SymbolTable, sid: in SymbolId): List[TFieldSig] {
+  val fs: List[TFieldSig] = newList()
+  val ctx = newTyConvCtx(tbl)
+  val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  val diag: List[Diagnostic] = newList()
+  for pf in protectedFieldsOf(tbl, sid) {
+    match tyOfType(ctx, resolveType(tbl, gc, diag, pf.ty)) {
+      case Ok(t) -> fs.add(TFieldSig(name = pf.name, ty = t, mutable = pf.mutable))
+      case Err(_) -> return newList()
+    }
+  }
+  fs
+}
+
 /// The entry of every type the table declares, records with their fields: the
 /// oracle for a `TNamed` in any type and for a field read.  A record whose field
 /// types cannot be converted gets no entry, so a use of it is reported rather than
@@ -352,7 +408,7 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             res.add(typeEntry(sid, names.count, fs))
           }
         } else {
-          res.add(typeEntry(sid, 0, newList()))
+          res.add(typeEntry(sid, 0, protectedFieldSigs(tbl, sid)))
         }
       }
       case None -> ()

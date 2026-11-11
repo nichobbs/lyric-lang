@@ -1587,7 +1587,7 @@ test "a protected type's construction and entry call build as a construction and
   val c = censusOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"
   )
-  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
   var entries = 0
@@ -1937,4 +1937,18 @@ test "a member of a generic type is counted, not built" {
   assertEqualInt(pb.built, 0, "not built")
   assertEqualInt(pb.failed.count, 1, "listed as failed")
   assertTrue(pb.failed[0].name == "Box.get", "qualified by its owner")
+}
+
+test "a protected member reads and assigns a field of its receiver by the bare name" {
+  val pb = packageOf(
+    "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\n"
+  )
+  assertEqualInt(pb.total, 2, "two members")
+  assertEqualInt(
+    pb.built,
+    2,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }

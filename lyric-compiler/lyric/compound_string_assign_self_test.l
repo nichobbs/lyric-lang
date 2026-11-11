@@ -33,8 +33,8 @@ import Std.Collections
 import Std.String
 import Std.Testing
 
-record Box {
-  s: String
+ref record Box {
+  var s: String
 }
 
 func boolAppend(): String {
