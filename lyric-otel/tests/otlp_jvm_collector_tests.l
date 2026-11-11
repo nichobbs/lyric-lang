@@ -18,6 +18,7 @@ package OTel.OtlpJvmCollectorTests
 
 import Std.Core
 import Std.Collections
+import Std.Char
 import Std.Encoding
 import Std.Testing
 import Std.String as Str
