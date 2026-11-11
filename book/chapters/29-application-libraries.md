@@ -105,10 +105,10 @@ func callGreet(name: in String): Result[slice[Byte], Grpc.GrpcStatus] {
 `lyric-otel` records spans and metrics as a plain in-process Lyric record
 (no BCL/JDK dependency, so recording works identically on both targets)
 and exports them over OTLP/HTTP by building the protobuf payload directly
-with `lyric-proto` and POSTing it with a dedicated HTTP client. OTLP export
-is real on `dotnet`; on `jvm`, spans/metrics are still recorded but nothing
-drains them yet — every `configureOtlp*` call returns `Err`. OTLP/gRPC
-transport is not implemented on either target.
+with `lyric-proto` and POSTing it with a dedicated byte-body HTTP client
+(`HttpClient` on `dotnet`, `java.net.http` on `jvm`). Traces and metrics are
+exported over OTLP/HTTP on both targets; there is no OTLP logs exporter and no
+OTLP/gRPC transport.
 
 ```toml
 [dependencies]
@@ -125,7 +125,7 @@ func processOrder(): Unit {
 }
 ```
 
-Wire up the OTLP/HTTP exporter in your `main` (`dotnet` only today):
+Wire up the OTLP/HTTP exporter in your `main`:
 
 ```lyric
 import OTel.Otlp
@@ -370,7 +370,7 @@ This matrix summarises which backends are real on which target; each library's R
 |---|---|---|---|
 | lyric-proto | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
-| lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
+| lyric-otel | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
 | lyric-mq | in-process broker (pure Lyric) | in-process broker (pure Lyric) | D056, D552 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
 | lyric-storage | local filesystem (the only backend) | local filesystem (the only backend) | D056, D552 |

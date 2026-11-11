@@ -61,6 +61,9 @@
 #               suite (typed columns, transactions, error mapping) on
 #               sqlite-jdbc; the PostgreSQL driver is Maven-restored with it
 #               and checked for connect-failure mapping (#8932)
+#   otel        OTLP/HTTP export through the JVM kernel (java.net.http) against
+#               an in-process ServerSocket collector: path, content type,
+#               headers, byte-exact protobuf body, 503 retry, deadline (#8953)
 #   grpc        the client against an in-process grpc-java server (unary,
 #               server streaming, metadata, deadlines, status mapping,
 #               early stream cancel, #8527 / #5409) and the Resilience-backed
@@ -88,7 +91,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db otel)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
