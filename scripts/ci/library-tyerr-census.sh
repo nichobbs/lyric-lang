@@ -172,5 +172,8 @@ rm -f "$sites_file" "$unchecked_file" "$known_file"
 
 # The typed-IR census (docs/70 §6.4, D542) runs here: this is the one job that already
 # has the built `lyric`, and ci.yml has no bytes to spare for a job of its own
-# (scripts/ci/check-workflow-size.sh).  Its exit status is this script's.
-bash "$REPO_ROOT/scripts/ci/tir-census.sh" "$LYRIC"
+# (scripts/ci/check-workflow-size.sh).  Its exit status is this script's: the standard
+# library gate decides it, and --wide adds the compiler, ecosystem and self-test counts
+# without gating them (docs/70 §13 phase 3a).  The self-tests are left out here: each is
+# a build of its own, hundreds of them; run `TIR_CENSUS_AREAS=self-tests` by hand for those.
+TIR_CENSUS_AREAS="compiler ecosystem" bash "$REPO_ROOT/scripts/ci/tir-census.sh" "$LYRIC" --wide
