@@ -1669,7 +1669,7 @@ test "a record passed where an interface it implements is expected is upcast" {
   val c = censusOf(
     "package App\ninterface Shape {\n  func area(self: in Shape): Int\n}\nrecord Sq { side: Int }\nimpl Shape for Sq {\n  func area(self: in Sq): Int { self.side * self.side }\n}\nfunc total(s: in Shape): Int { s.area() }\nfunc f(): Int {\n  val q = Sq(side = 3)\n  total(q)\n}\n"
   )
-  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
@@ -1678,7 +1678,7 @@ test "a call of an interface method declared without a receiver passes the value
   val c = censusOf(
     "package App\ninterface Counter {\n  func next(step: in Int): Int\n}\nrecord Box { n: Int }\nimpl Counter for Box {\n  func next(self: in Box, step: in Int): Int { self.n + step }\n}\nfunc f(c: in Counter): Int { c.next(2) }\n"
   )
-  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
@@ -1884,4 +1884,57 @@ test "a range pattern builds with its literal bounds, negated ones included" {
   assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+func packageOf(src: in String): PackageBuild {
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+}
+
+test "a record method with an explicit receiver is a declaration keyed by its method symbol" {
+  val pb = packageOf(
+    "package App\nrecord Sq {\n  side: Int\n  func area(self: in Sq): Int { self.side * self.side }\n}\n"
+  )
+  assertEqualInt(pb.total, 1, "one body")
+  assertEqualInt(
+    pb.built,
+    1,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  assertEqualInt(pb.pkg.funcs[0].params.count, 1, "the receiver is the only parameter")
+  assertTrue(pb.pkg.funcs[0].params[0].local.name == "self", "named self")
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a protected entry is a declaration with an implicit receiver, its when: clause as the barrier and an entry symbol" {
+  val pb = packageOf(
+    "package App\nprotected type Gate {\n  var open: Bool = false\n  entry pass(k: in Int): Int\n    when: k > 0\n  {\n    return k\n  }\n}\n"
+  )
+  assertEqualInt(
+    pb.built,
+    1,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val f = pb.pkg.funcs[0]
+  assertEqualInt(f.params.count, 2, "the receiver and k")
+  assertTrue(f.params[0].local.name == "self", "the receiver is first")
+  assertTrue(f.barrier.isSome(), "the when: clause is the barrier")
+  var entry = false
+  for en in pb.pkg.symbols {
+    if en.sym.id == f.sym.id {
+      entry = match en.kind { case TSkEntry -> true; case _ -> false }
+    }
+  }
+  assertTrue(entry, "the symbol is an entry")
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a member of a generic type is counted, not built" {
+  val pb = packageOf("package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\n")
+  assertEqualInt(pb.built, 0, "not built")
+  assertEqualInt(pb.failed.count, 1, "listed as failed")
+  assertTrue(pb.failed[0].name == "Box.get", "qualified by its owner")
 }

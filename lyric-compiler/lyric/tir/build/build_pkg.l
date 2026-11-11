@@ -15,6 +15,7 @@ import Lyric.Tir
 /// A function body the builder could not build (an I0002 site): its name, its symbol when
 /// the checker has one, and the reasons.
 pub record FnBuildFailure {
+  /// `f` for a top-level function, `Owner.f` for a member, `impl.f` for an `impl` member.
   name: String
   sym: Option[SymbolId]
   messages: List[String]
@@ -75,6 +76,32 @@ pub func caseSymbolsByParent(tbl: in SymbolTable): Map[Int, List[SymbolId]] {
   res
 }
 
+/// Fold the declarations, uncovered counts and sites of a finished `env` into the package's.
+func absorbEnv(
+  env: in BuildEnv, syms: in Map[Int, TSymEntry], sums: in Map[String, Int], sites: in Map[String, String]
+): Unit {
+  for sk in mapKeys(env.syms) {
+    match mapGet(env.syms, sk) {
+      case Some(en) -> if not syms.containsKey(sk) { syms.add(sk, en) }
+      case None -> ()
+    }
+  }
+  for k in mapKeys(env.uncovered) {
+    val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
+    val had = match mapGet(sums, k) { case Some(n) -> n; case None -> 0 }
+    if sums.containsKey(k) {
+      sums.remove(k)
+    }
+    sums.add(k, had + add)
+  }
+  for k in mapKeys(env.sites) {
+    match mapGet(env.sites, k) {
+      case Some(at) -> if not sites.containsKey(k) { sites.add(k, at) }
+      case None -> ()
+    }
+  }
+}
+
 /// Build every function body of `file` that has one, each with a fresh `BuildEnv`
 /// sharing one synthetic node counter, into a package named `name`.
 pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile, name: in String): PackageBuild {
@@ -103,30 +130,53 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
             }
             case None -> failed.add(FnBuildFailure(name = decl.name, sym = symTableFuncSymOf(tbl, decl), messages = env.errors))
           }
-          for sk in mapKeys(env.syms) {
-            match mapGet(env.syms, sk) {
-              case Some(en) -> if not syms.containsKey(sk) { syms.add(sk, en) }
-              case None -> ()
-            }
-          }
-          for k in mapKeys(env.uncovered) {
-            val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
-            val had = match mapGet(sums, k) { case Some(n) -> n; case None -> 0 }
-            if sums.containsKey(k) {
-              sums.remove(k)
-            }
-            sums.add(k, had + add)
-          }
-          for k in mapKeys(env.sites) {
-            match mapGet(env.sites, k) {
-              case Some(at) -> if not sites.containsKey(k) { sites.add(k, at) }
-              case None -> ()
-            }
-          }
+          absorbEnv(env, syms, sums, sites)
         }
         case None -> ()
       }
       case _ -> ()
+    }
+  }
+  val pkgName = modulePathJoin(file.packageDecl.path.segments)
+  val memberFns: List[TFnDecl] = newList()
+  val entryFns: Map[Int, Bool] = newMap()
+  for site in memberSites(ctx, tbl, file) {
+    total = total + 1
+    val env = newBuildEnvSharing(ctx, counter)
+    match buildMember(env, tbl, pkgName, site) {
+      case Some(fd) -> {
+        built = built + 1
+        funcs.add(fd)
+        memberFns.add(fd)
+        if site.isEntry {
+          entryFns.add(fd.sym.id, true)
+        }
+      }
+      case None -> failed.add(
+        FnBuildFailure(name = site.name, sym = memberSymOf(tbl, pkgName, site), messages = env.errors)
+      )
+    }
+    absorbEnv(env, syms, sums, sites)
+  }
+  for fd in memberFns {
+    if not syms.containsKey(fd.sym.id) {
+      val own = ownFnEntry(fd)
+      if entryFns.containsKey(fd.sym.id) {
+        syms.add(
+          fd.sym.id,
+          TSymEntry(
+            sym = own.sym,
+            kind = TSkEntry,
+            typeParamCount = own.typeParamCount,
+            sig = own.sig,
+            fields = own.fields,
+            ty = own.ty,
+            mutable = own.mutable
+          )
+        )
+      } else {
+        syms.add(fd.sym.id, own)
+      }
     }
   }
   for te in typeEntries(tbl) {
