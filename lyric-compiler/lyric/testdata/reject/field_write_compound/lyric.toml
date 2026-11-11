@@ -1,0 +1,7 @@
+[package]
+name = "reject-field-write-compound"
+version = "0.1.0"
+[project]
+name = "RejectFieldWriteCompound"
+[project.packages]
+"App" = "app"

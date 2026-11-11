@@ -3446,6 +3446,56 @@ func nonIndexableNativeKind(tbl: in SymbolTable, recvRaw: in Type): String {
   }
 }
 
+// The receiver of a field write as the diagnostic spells it: a name, `self` or a field chain.
+func fieldWriteRecvText(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> modulePathJoin(p.segments)
+    case ESelf -> "self"
+    case EParen(inner) -> fieldWriteRecvText(inner)
+    case EMember(r, n) -> fieldWriteRecvText(r) + "." + n
+    case _ -> "<expression>"
+  }
+}
+
+// V0015 (language reference §3.4): a write, plain or compound, to a field not declared `var`, through
+// any receiver: a `val`/`let` local, a field chain, an `in` parameter, a record of another file or
+// package, `self`.  The receiver is typed again with its diagnostics discarded (the target was typed
+// once already, and a write target is a name or a short field chain).  A receiver that is not a
+// record (a protected type, whose `let` fields give T0087 by bare name, a collection, an unresolved
+// type) is not judged here.
+func checkNonVarFieldWrite(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  target: in Expr,
+  recv: in Expr,
+  fname: in String,
+): Unit {
+  val scratch: List[Diagnostic] = newList()
+  val rt = unrefine(inferExpr(sc, tbl, sigs, scratch, recv))
+  match rt {
+    case TyUser(tid, tname, _) -> {
+      for f in fieldsOfRecord(tbl, tid) {
+        if f.name == fname and not f.isMutable {
+          diag.add(
+            errorDiagnostic(
+              "V0015",
+              "cannot reassign immutable field '" + fieldWriteRecvText(recv) + "." + fname + "'; declare it `var " + fname +
+                "` on record '" +
+                tname +
+                "' to allow mutation",
+              target.span
+            )
+          )
+          return
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
 pub func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry] {
   val result: List[FieldEntry] = newList()
   var i = 0
@@ -3480,6 +3530,8 @@ pub func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry]
 pub record FieldEntry {
   name: String
   ty: Type
+  /// `true` for a `var` field, the only kind a write may target (language reference §3.4).
+  isMutable: Bool = false
 }
 
 // The declared type of field `name` among `fields`, or `TyError` if absent.
@@ -3549,7 +3601,13 @@ pub func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs
   val result: List[FieldEntry] = newList()
   var i = 0
   while i < raw.count {
-    result.add(FieldEntry(name = raw[i].name, ty = eraseTyParams(substituteTyParams(raw[i].ty, gnames, targs))))
+    result.add(
+      FieldEntry(
+        name = raw[i].name,
+        ty = eraseTyParams(substituteTyParams(raw[i].ty, gnames, targs)),
+        isMutable = raw[i].isMutable
+      )
+    )
     i = i + 1
   }
   result
@@ -3676,7 +3734,7 @@ func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List
     match rd.members[i] {
       case RMField(fd) -> {
         val t = resolveType(tbl, ctx, dummyDiag, fd.ty)
-        result.add(FieldEntry(name = fd.name, ty = t))
+        result.add(FieldEntry(name = fd.name, ty = t, isMutable = fd.isMutable))
       }
       case _ -> {
       }
@@ -21450,6 +21508,7 @@ func inferExprCore(
             }
           }
         }
+        case EMember(recv, fname) -> checkNonVarFieldWrite(sc, tbl, sigs, diag, target, recv, fname)
         case _ -> {
         }
       }
