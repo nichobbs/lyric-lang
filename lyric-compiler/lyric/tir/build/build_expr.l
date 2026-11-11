@@ -2473,7 +2473,9 @@ func isPlainArg(x: in Expr): Bool {
 /// since either alone can leave a parameter out (`andThenResult(Ok(value = 5), f)` has
 /// `T` only in an argument and `U` and `E` only in the annotated result).  An argument the
 /// checker left untyped fixes nothing.
-func genericArgsFromCall(env: in BuildEnv, sig: in ResolvedSignature, resultTy: in Type, args: in List[CallArg]): List[Type] {
+func genericArgsFromCall(
+  env: in BuildEnv, sig: in ResolvedSignature, resultTy: in Type, args: in List[CallArg]
+): List[Type] {
   val named: List[String] = newList()
   for a in args {
     match a {
