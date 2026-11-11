@@ -717,10 +717,35 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 }
 
 /// A branch of an `if`: an expression, or a block typed as the `if` is.
+/// An expression the checker may have left untyped (a bare `None`, `[]`, or a union case
+/// whose type arguments only the context fixes) takes `ty`, the type its position gives it.
+/// It only matters when the checker recorded no usable type for the node.
+func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
+  if not env.settled.containsKey(x.nodeId) {
+    env.settled.add(x.nodeId, ty)
+  }
+}
+
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if blk.statements.count > 0 {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(tail) -> settleHole(env, tail, ty)
+      case _ -> ()
+    }
+  }
+}
+
 func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, ty: in Ty): Option[TExpr] {
   val built = match b {
-    case EOBExpr(x) -> buildExpr(env, x)
-    case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    case EOBExpr(x) -> {
+      settleHole(env, x, ty)
+      buildExpr(env, x)
+    }
+    case EOBBlock(blk) -> {
+      settleBlockTail(env, blk, ty)
+      buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    }
   }
   match built {
     case Some(t) -> coerceBranch(env, t, ty)
@@ -1982,12 +2007,7 @@ func buildLambda(
   }
   // The checker leaves a bare `None` or `[]` at a lambda's tail untyped; it takes the
   // lambda's return type, as an argument hole takes its parameter's.
-  if body.statements.count > 0 {
-    match body.statements[body.statements.count - 1].kind {
-      case SExpr(tail) -> if not env.settled.containsKey(tail.nodeId) { env.settled.add(tail.nodeId, ls.ret) }
-      case _ -> ()
-    }
-  }
+  settleBlockTail(env, body, ls.ret)
   val built = buildBlock(env, body, None, freshNodeId(env))
   env.lambdas.removeAt(env.lambdas.count - 1)
   popScope(env)
