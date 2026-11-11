@@ -255,3 +255,20 @@ pub func nValueToIrString(v: in NValue): String {
     case None -> panic("nValueToIrString: operand carries no type; use nValueTypedString: " + nValueOperandString(v))
   }
 }
+
+/// Every heap object starts with the ARC header `{ i32 rc, i32 weak, i8* dtor }`, mirroring the C
+/// `LyricObjectHeader`.
+pub func addArcHeader(fields: in List[NType]) {
+  fields.add(NI32)
+  fields.add(NI32)
+  fields.add(NPtr(pointee = NI8))
+}
+
+/// `%LyricString*`: the header, then the byte length and capacity (the data follows).
+pub func lyricStringNType(): NType {
+  val fields: List[NType] = newList()
+  addArcHeader(fields)
+  fields.add(NI64)
+  fields.add(NI64)
+  NPtr(pointee = NStruct(name = "LyricString", fields = fields))
+}

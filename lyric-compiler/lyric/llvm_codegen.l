@@ -651,12 +651,6 @@ val arcDtorSlot: Long = 2i64
 
 val arcHeaderSlots: Int = 3
 
-func addArcHeader(fields: in List[NType]) {
-  fields.add(NI32)
-  fields.add(NI32)
-  fields.add(NPtr(pointee = NI8))
-}
-
 /// GEP index of the closure's function-pointer slot (the first field after
 /// the header) and of its first capture.
 val closureFnSlot: Long = 3i64
@@ -667,14 +661,6 @@ val closureCaptureBase: Int = 4
 val unionDiscSlot: Long = 3i64
 
 val unionPayloadSlot: Long = 5i64
-
-pub func lyricStringNType(): NType {
-  val fields: List[NType] = newList()
-  addArcHeader(fields)
-  fields.add(NI64)
-  fields.add(NI64)
-  NPtr(pointee = NStruct(name = "LyricString", fields = fields))
-}
 
 func isStringNType(t: in NType): Bool {
   match t {

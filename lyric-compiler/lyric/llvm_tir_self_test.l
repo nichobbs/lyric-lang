@@ -451,3 +451,131 @@ test "an or-pattern that binds falls back" {
   val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
   assertTrue(Str.startsWith(ir, "FALLBACK: "), ir)
 }
+
+func strT(): Ty {
+  tyString()
+}
+
+func strLit(n: in Int, text: in String): TExpr {
+  ex(n, strT(), XLit(lit = TLString(text = text)))
+}
+
+func plus(n: in Int, a: in TExpr, b: in TExpr): TExpr {
+  ex(n, strT(), XCall(callee = Intrinsic(op = IoAdd), args = inArgs(a, b)))
+}
+
+func letStmt(n: in Int, d: in LocalDecl, init: in TExpr): TStmt {
+  TStmt(id = NodeId(id = n), span = noSourceSpan(), kind = TsVar(decl = d, init = Some(value = init)))
+}
+
+test "a concatenation of a literal and a parameter is returned owned, with nothing to release" {
+  val name = local(1, "name", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(name))
+  val body = plus(3, strLit(2, "Hello, "), ex(4, strT(), XLocal(local = name.id)))
+  val names: List[String] = newList()
+  names.add("P.greet")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "call %LyricString* @lyric_string_concat("), ir)
+  assertTrue(Str.contains(ir, "ret %LyricString*"), ir)
+  assertFalse(Str.contains(ir, "lyric_release"), "the result moves to the caller and the operands are borrowed: " + ir)
+  assertFalse(Str.contains(ir, "lyric_retain"), ir)
+}
+
+test "a string local is owned by its scope and a returned borrow is retained first" {
+  // func f(a: String): String { var t = a + "!"; t }
+  val a = local(1, "a", strT(), false)
+  val t = local(2, "t", strT(), true)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(20, t, plus(3, ex(4, strT(), XLocal(local = a.id)), strLit(5, "!"))))
+  val body = ex(6, strT(), XBlock(stmts = stmts, tail = Some(value = ex(7, strT(), XLocal(local = t.id)))))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "call void @lyric_retain("), "the tail borrows t, so it is retained before t is released: " + ir)
+  assertTrue(Str.contains(ir, "call void @lyric_release("), "the scope releases t: " + ir)
+}
+
+test "an owned temporary passed to println is released after the statement" {
+  // func show(n: Int): Unit { println(toString(n)) }
+  val n = local(1, "n", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  val str = ex(
+    2,
+    strT(),
+    XCall(callee = Intrinsic(op = IoBuiltin(name = "toString")), args = inArgs1(ex(3, intT(), XLocal(local = n.id))))
+  )
+  val say = ex(4, tyUnit(), XCall(callee = Intrinsic(op = IoBuiltin(name = "println")), args = inArgs1(str)))
+  val body = ex(5, tyUnit(), XBlock(stmts = newList(), tail = Some(value = say)))
+  val names: List[String] = newList()
+  names.add("P.show")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, tyUnit(), body)))
+  assertTrue(Str.contains(ir, "@lyric_string_from_int("), ir)
+  assertTrue(Str.contains(ir, "@lyric_console_write_line(i32 1,"), ir)
+  assertTrue(Str.contains(ir, "call void @lyric_release("), "the toString result is released: " + ir)
+  assertTrue(Str.contains(ir, "ret void"), ir)
+}
+
+test "a return inside a branch releases the locals live at that point" {
+  // func g(s: String): String { var t = s + "!"; if t.length > 3 { return t }; "short" }
+  val s0 = local(1, "s", strT(), false)
+  val t = local(2, "t", strT(), true)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(s0))
+  val len = ex(
+    10,
+    intT(),
+    XCall(callee = Intrinsic(op = IoBuiltin(name = "String.length")), args = inArgs1(ex(11, strT(), XLocal(local = t.id))))
+  )
+  val cond = ex(12, tyBool(), XCall(callee = Intrinsic(op = IoGt), args = inArgs(len, intLit(13, 3i64))))
+  val ret = TStmt(
+    id = NodeId(id = 30),
+    span = noSourceSpan(),
+    kind = TsReturn(value = Some(value = ex(14, strT(), XLocal(local = t.id))))
+  )
+  val thenB = ex(15, tyUnit(), XBlock(stmts = list1(ret), tail = None))
+  val ifE = ex(16, tyUnit(), XIf(cond = cond, thenBranch = thenB, elseBranch = None))
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(20, t, plus(3, ex(4, strT(), XLocal(local = s0.id)), strLit(5, "!"))))
+  stmts.add(TStmt(id = NodeId(id = 31), span = noSourceSpan(), kind = TsExpr(expr = ifE)))
+  val body = ex(6, strT(), XBlock(stmts = stmts, tail = Some(value = strLit(7, "short"))))
+  val names: List[String] = newList()
+  names.add("P.g")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "@lyric_string_len("), ir)
+  // t is retained for the return and released with the scope, in the branch and at the end.
+  assertTrue(countOf(ir, "call void @lyric_release(") >= 2, "released on both exits: " + ir)
+}
+
+func inArgs1(a: in TExpr): List[TArg] {
+  val xs: List[TArg] = newList()
+  xs.add(TArgIn(value = a))
+  xs
+}
+
+func list1(s: in TStmt): List[TStmt] {
+  val xs: List[TStmt] = newList()
+  xs.add(s)
+  xs
+}
+
+func countOf(hay: in String, needle: in String): Int {
+  var n = 0
+  var from = 0
+  var go = true
+  while go {
+    match Str.indexOfFrom(hay, needle, from) {
+      case Some(i) -> {
+        n = n + 1
+        from = i + needle.length
+      }
+      case None -> {
+        go = false
+      }
+    }
+  }
+  n
+}
