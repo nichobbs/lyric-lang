@@ -7209,7 +7209,7 @@ test "impl method: unknown name in body rejected with T0020 (#6487)" {
 }
 
 test "record body method: self.field read+write well-typed stays clean (#6487 control)" {
-  val src = "package P\nrecord Box {\n  n: Int\n  func setN(v: in Int): Unit {\n    self.n = v\n  }\n  func getN(): Int {\n    self.n\n  }\n}\n"
+  val src = "package P\nrecord Box {\n  var n: Int\n  func setN(v: in Int): Unit {\n    self.n = v\n  }\n  func getN(): Int {\n    self.n\n  }\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "record method body: well-typed self.n write+read has no diagnostics")
 }
