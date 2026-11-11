@@ -5195,7 +5195,9 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
 // Record the fields of a non-generic record or union-case construction as a
 // signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
-func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type): Unit {
+func recordCtorSigNode(
+  tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type, genericNames: in List[String]
+): Unit {
   if node <= 0 {
     return
   }
@@ -5206,7 +5208,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   val closed = match unrefine(resultTy) {
     // A union case's result may carry an unsolved argument (`Err(error = 1)` is a
     // `Result[?, Int]`); what the construction needs is closed field types, checked below.
-    case TyUser(_, _, a) -> if isCase { true } else if a.count > 0 { typeIsClosed(resultTy) } else { true }
+    case TyUser(_, _, a) -> if isCase { true } else if a.count > 0 { typeIsClosedOver(resultTy, genericNames) } else { true }
     case _ -> false
   }
   if not closed {
@@ -5298,7 +5300,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
     case _ -> return
   }
   for p in params {
-    if not typeIsClosed(p.ty) {
+    if not typeIsClosedOver(p.ty, genericNames) {
       return
     }
   }
@@ -20533,7 +20535,7 @@ func inferExprCore(
             noteBareCalleeSym(tbl, fn, caseSym)
             recordCtorCalleeNode(tbl, e.nodeId, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
-            recordCtorSigNode(tbl, e.nodeId, caseSym, caseTy)
+            recordCtorSigNode(tbl, e.nodeId, caseSym, caseTy, sc.genericNames)
             noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, args, argTypes, caseTy, e.span)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
@@ -20545,7 +20547,7 @@ func inferExprCore(
               noteBareCalleeSym(tbl, fn, ctorSym)
               recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
-              recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
+              recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy, sc.genericNames)
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
               recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
@@ -22333,7 +22335,7 @@ func inferCaseCtorExpected(
     inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, span, true),
     expected
   )
-  recordCtorSigNode(tbl, callNode, caseSym, caseTy)
+  recordCtorSigNode(tbl, callNode, caseSym, caseTy, sc.genericNames)
   noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, cargs, cargTypes, caseTy, span)
   recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
   caseTy
@@ -22713,7 +22715,7 @@ func inferExprExpectedCore(
             val cargTypes = inferGenericRecordCtorArgsExpected(sc, tbl, sigs, diag, fn, ctorSym, cargs, expected)
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
             recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
-            recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
+            recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy, sc.genericNames)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
             ctorTy
