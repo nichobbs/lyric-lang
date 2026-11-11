@@ -3462,7 +3462,7 @@ func fieldWriteRecvText(e: in Expr): String {
 // package, `self`.  The receiver is typed again with its diagnostics discarded (the target was typed
 // once already, and a write target is a name or a short field chain).  A receiver that is not a
 // record (a protected type, whose `let` fields give T0087 by bare name, a collection, an unresolved
-// type) is not judged here.
+// type) is not judged here.  A `foreign record` is exempt: its writes are T0180's.
 func checkNonVarFieldWrite(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -3474,6 +3474,11 @@ func checkNonVarFieldWrite(
 ): Unit {
   val scratch: List[Diagnostic] = newList()
   val rt = unrefine(inferExpr(sc, tbl, sigs, scratch, recv))
+  // A foreign record is a C struct with no identity: its fields are written in place through a
+  // writable place, which T0180 judges (`checkForeignFieldWrite`), not through a per-field `var`.
+  if isForeignRecordType(tbl, rt) {
+    return
+  }
   match rt {
     case TyUser(tid, tname, _) -> {
       for f in fieldsOfRecord(tbl, tid) {

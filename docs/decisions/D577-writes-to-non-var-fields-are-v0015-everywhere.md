@@ -20,6 +20,7 @@ mode checker's message (`cannot reassign immutable field 'b.n'; declare it `var 
   form in `typechecker_exprs.l`. The receiver is typed again with its diagnostics discarded, and the field is looked up among the
   record's fields (`FieldEntry.isMutable`, new), so a receiver that is a `val`/`let` local, an `in` parameter, a field chain, `self`
   or a record of another package (restored ones too: their contract metadata keeps `var`) is judged the same way.
+- A `foreign record` (a C-layout struct of a kernel file, D188) is exempt: it has no identity, its fields are written in place through a writable place, and T0180 judges that (`checkForeignFieldWrite`). Bindgen output declares no `var` on its fields, and `lyric-gpu` writes them (`entry.buffer = ...`), so the per-field rule would have broken every generated binding.
 - Construction and `.copy(...)` are not writes. A protected type keeps its own rules (a bare `let` field written in a member is
   T0087; a protected value's fields are reached by bare name only inside it). A `ref record` handle's `var` fields may be written
   through an `in` handle, and a `var` field of a plain record through an `in` parameter stays V0038 (D303).
