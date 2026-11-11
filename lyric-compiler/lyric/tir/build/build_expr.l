@@ -1270,80 +1270,20 @@ pub record BuildCensus {
 /// Build every function body of `file` that has one, each with a fresh
 /// `BuildEnv`, and total the outcome.
 pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): BuildCensus {
-  val funcs: List[TFnDecl] = newList()
-  val syms: Map[Int, TSymEntry] = newMap()
-  var total = 0
-  var built = 0
+  val pb = buildPackage(ctx, tbl, file, "")
   val firstErrors: List[String] = newList()
-  val sums: Map[String, Int] = newMap()
-  val sites: Map[String, String] = newMap()
-  val counter: List[Int] = newList()
-  counter.add(firstSynthNodeId())
-  for it in file.items {
-    match it.kind {
-      case IFunc(decl) -> match decl.body {
-        case Some(_) -> {
-          total = total + 1
-          val env = newBuildEnvSharing(ctx, counter)
-          match buildFnDecl(env, decl, tbl) {
-            case Some(fd) -> {
-              built = built + 1
-              funcs.add(fd)
-              if not syms.containsKey(fd.sym.id) {
-                syms.add(fd.sym.id, ownFnEntry(fd))
-              }
-            }
-            case None -> {
-              if env.errors.count > 0 {
-                firstErrors.add(decl.name + ": " + env.errors[0])
-              }
-            }
-          }
-          for sk in mapKeys(env.syms) {
-            match mapGet(env.syms, sk) {
-              case Some(en) -> if not syms.containsKey(sk) { syms.add(sk, en) }
-              case None -> ()
-            }
-          }
-          for k in mapKeys(env.uncovered) {
-            val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
-            val had = match mapGet(sums, k) { case Some(n) -> n; case None -> 0 }
-            if sums.containsKey(k) {
-              sums.remove(k)
-            }
-            sums.add(k, had + add)
-          }
-          for k in mapKeys(env.sites) {
-            match mapGet(env.sites, k) {
-              case Some(at) -> if not sites.containsKey(k) { sites.add(k, at) }
-              case None -> ()
-            }
-          }
-        }
-        case None -> ()
-      }
-      case _ -> ()
-    }
-  }
-  for te in typeEntries(tbl) {
-    if not syms.containsKey(te.sym.id) {
-      syms.add(te.sym.id, te)
-    }
-  }
-  val entries: List[TSymEntry] = newList()
-  for k in mapKeys(syms) {
-    match mapGet(syms, k) {
-      case Some(en) -> entries.add(en)
-      case None -> ()
+  for f in pb.failed {
+    if f.messages.count > 0 {
+      firstErrors.add(f.name + ": " + f.messages[0])
     }
   }
   BuildCensus(
-    total = total,
-    built = built,
-    uncovered = sums,
-    sites = sites,
+    total = pb.total,
+    built = pb.built,
+    uncovered = pb.uncovered,
+    sites = pb.sites,
     firstErrors = firstErrors,
-    pkg = TPackage(name = "", symbols = entries, funcs = funcs)
+    pkg = pb.pkg
   )
 }
 
