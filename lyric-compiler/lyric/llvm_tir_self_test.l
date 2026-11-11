@@ -243,3 +243,128 @@ test "a generic function and a function with no IR name fall back" {
   val unnamed = render(lowerTirFunction(envOf(newList()), fnDecl(100, ps, intT(), body)))
   assertTrue(Str.startsWith(unnamed, "FALLBACK: no IR name"), unnamed)
 }
+
+func pat(n: in Int, ty: in Ty, kind: in TPatKind): TPat {
+  TPat(id = NodeId(id = n), ty = ty, span = noSourceSpan(), kind = kind)
+}
+
+func arm(p: in TPat, guard: in Option[TExpr], body: in TExpr): TArm {
+  TArm(pat = p, guard = guard, body = body)
+}
+
+func intLit(n: in Int, v: in Long): TExpr {
+  ex(n, intT(), XLit(lit = TLInt(value = v)))
+}
+
+test "a match on Int lowers literals, ranges, guards and bindings to a phi" {
+  val x = local(1, "x", intT(), false)
+  val bound = local(2, "n", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(x))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(10, intT(), TpLit(lit = TLInt(value = 1i64))), None, intLit(11, 10i64)))
+  arms.add(
+    arm(
+      pat(12, intT(), TpRange(lo = TLInt(value = 2i64), hi = TLInt(value = 5i64), inclusive = true)),
+      None,
+      intLit(13, 20i64)
+    )
+  )
+  val big = ex(
+    14,
+    tyBool(),
+    XCall(
+      callee = Intrinsic(op = IoGt),
+      args = inArgs(ex(15, intT(), XLocal(local = bound.id)), intLit(16, 100i64))
+    )
+  )
+  arms.add(
+    arm(
+      pat(17, intT(), TpBind(decl = bound, inner = None)),
+      Some(value = big),
+      ex(18, intT(), XLocal(local = bound.id))
+    )
+  )
+  arms.add(arm(pat(19, intT(), TpWild), None, intLit(20, 0i64)))
+  val m = ex(21, intT(), XMatch(scrutinee = ex(22, intT(), XLocal(local = x.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.m")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "icmp eq i32"), ir)
+  assertTrue(Str.contains(ir, "icmp sge i32"), ir)
+  assertTrue(Str.contains(ir, "icmp sle i32"), ir)
+  assertTrue(Str.contains(ir, "phi i32"), ir)
+  assertTrue(Str.contains(ir, "match.end"), ir)
+  assertTrue(Str.contains(ir, "[ undef, %dead"), "the panic block is a phi predecessor: " + ir)
+}
+
+test "a match not proved exhaustive falls back" {
+  val x = local(1, "x", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(x))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(10, intT(), TpLit(lit = TLInt(value = 1i64))), None, intLit(11, 10i64)))
+  val m = ex(21, intT(), XMatch(scrutinee = ex(22, intT(), XLocal(local = x.id)), arms = arms, exhaustive = false))
+  val names: List[String] = newList()
+  names.add("P.m")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.startsWith(ir, "FALLBACK: "), ir)
+}
+
+test "a for over an inclusive range steps after testing the bound" {
+  val n = local(1, "n", intT(), false)
+  val i = local(2, "i", intT(), false)
+  val acc = local(3, "acc", intT(), true)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  val add = ex(
+    30,
+    tyUnit(),
+    XAssign(
+      place = TPlace(ty = intT(), kind = PlLocal(local = acc.id)),
+      op = AkAdd,
+      value = ex(31, intT(), XLocal(local = i.id))
+    )
+  )
+  val loopBody = ex(32, tyUnit(), XBlock(stmts = newList(), tail = Some(value = add)))
+  val range = ex(33, intT(), XRange(lo = intLit(34, 0i64), hi = ex(35, intT(), XLocal(local = n.id)), inclusive = true))
+  val stmts: List[TStmt] = newList()
+  stmts.add(
+    TStmt(id = NodeId(id = 40), span = noSourceSpan(), kind = TsVar(decl = acc, init = Some(value = intLit(36, 0i64))))
+  )
+  stmts.add(
+    TStmt(
+      id = NodeId(id = 41),
+      span = noSourceSpan(),
+      kind = TsFor(label = None, pat = pat(37, intT(), TpBind(decl = i, inner = None)), iter = range, body = loopBody)
+    )
+  )
+  val body = ex(38, intT(), XBlock(stmts = stmts, tail = Some(value = ex(39, intT(), XLocal(local = acc.id)))))
+  val names: List[String] = newList()
+  names.add("P.sum")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), body)))
+  assertTrue(Str.contains(ir, "for.cond"), ir)
+  assertTrue(Str.contains(ir, "for.inc"), ir)
+  assertTrue(Str.contains(ir, "icmp sle i32"), ir)
+  assertTrue(Str.contains(ir, "ret i32"), ir)
+}
+
+test "a UInt literal above the signed maximum renders as its two's-complement value" {
+  val u = TPrim(TPUInt)
+  val lit = ex(1, u, XLit(lit = TLInt(value = 4294967295i64)))
+  val names: List[String] = newList()
+  names.add("P.u")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, newList(), u, lit)))
+  assertTrue(Str.contains(ir, "ret i32 -1"), ir)
+}
+
+test "a Bool widens by zero extension" {
+  val b = local(1, "b", tyBool(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(b))
+  val wide = ex(2, intT(), XConvert(kind = CvWiden(to = TPInt), inner = ex(1, tyBool(), XLocal(local = b.id))))
+  val names: List[String] = newList()
+  names.add("P.w")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), wide)))
+  assertTrue(Str.contains(ir, "zext i1"), ir)
+}

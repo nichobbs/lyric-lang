@@ -411,6 +411,7 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     }
     case XShort(op, l, r) -> lowerShort(c, op, l, r)
     case XAssign(place, op, value) -> lowerAssign(c, place, op, value)
+    case XMatch(scrut, arms, exhaustive) -> lowerMatch(c, e, scrut, arms, exhaustive)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
   }
 }
@@ -449,6 +450,16 @@ func exprKindName(k: in TExprKind): String {
   }
 }
 
+/// An unsigned literal above the signed maximum of its width (a `UInt` of
+/// 4294967295) as the two's-complement value LLVM stores.
+func wrapLit(v: in Long, nt: in NType): Long {
+  match nt {
+    case NI32 -> if v > 2147483647i64 { v - 4294967296i64 } else { v }
+    case NI8 -> if v > 127i64 { v - 256i64 } else { v }
+    case _ -> v
+  }
+}
+
 func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
   match lit {
     case TLUnit -> unitVal()
@@ -460,7 +471,7 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
       case Some(nt) -> if isFloatTy(e.ty) {
         Val(ty = nt, value = NLitFloat(v = v.toDouble(), ty = nt))
       } else {
-        Val(ty = nt, value = NLitInt(v = v, ty = nt))
+        Val(ty = nt, value = NLitInt(v = wrapLit(v, nt), ty = nt))
       }
     }
     case TLFloat(v) -> match tyToN(e.ty) {
@@ -601,7 +612,7 @@ func lowerWiden(c: in LCtx, fromTy: in Ty, v: in Val, to: in NType): Val {
       if tb == fb {
         Val(ty = to, value = v.value)
       } else if tb > fb {
-        if isUnsignedTy(fromTy) {
+        if isUnsignedTy(fromTy) or fb == 1 {
           c.insns.add(NZExt(dest = d, fromTy = v.ty, value = v.value, toTy = to))
         } else {
           c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = to))
@@ -703,6 +714,254 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   }
 }
 
+func litValue(l: in TLit): Option[Long] {
+  match l {
+    case TLInt(v) -> Some(value = v)
+    case TLChar(cp) -> Some(value = cp.toLong())
+    case TLBool(b) -> Some(value = if b { 1i64 } else { 0i64 })
+    case _ -> None
+  }
+}
+
+func trueV(): Val {
+  Val(ty = NI1, value = NLitInt(v = 1i64, ty = NI1))
+}
+
+func andV(c: in LCtx, a: in Val, b: in Val): Val {
+  val d = tmp(c)
+  c.insns.add(NAnd(dest = d, ty = NI1, a = a.value, b = b.value))
+  Val(ty = NI1, value = NLocal(name = d))
+}
+
+func orV(c: in LCtx, a: in Val, b: in Val): Val {
+  val d = tmp(c)
+  c.insns.add(NOr(dest = d, ty = NI1, a = a.value, b = b.value))
+  Val(ty = NI1, value = NLocal(name = d))
+}
+
+/// Whether `pat` binds a local anywhere inside it.
+func patBinds(pat: in TPat): Bool {
+  match pat.kind {
+    case TpBind(_, _) -> true
+    case TpOr(alts) -> {
+      for a in alts {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+/// The `i1` that says whether `scrut` matches `pat`; only scalar patterns.
+func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
+  match pat.kind {
+    case TpWild -> trueV()
+    case TpBind(_, inner) -> match inner { case None -> trueV(); case Some(p) -> patTest(c, p, scrut, sty) }
+    case TpLit(l) -> match litValue(l) {
+      case Some(v) -> {
+        val d = tmp(c)
+        c.insns.add(
+          NICmp(dest = d, pred = IEq, ty = scrut.ty, a = scrut.value, b = NLitInt(v = wrapLit(v, scrut.ty), ty = scrut.ty))
+        )
+        Val(ty = NI1, value = NLocal(name = d))
+      }
+      case None -> unsupported(c, "a non-integer literal pattern")
+    }
+    case TpRange(lo, hi, inclusive) -> match litValue(lo) {
+      case None -> unsupported(c, "a non-integer range pattern")
+      case Some(lv) -> match litValue(hi) {
+        case None -> unsupported(c, "a non-integer range pattern")
+        case Some(hv) -> {
+          val uns = isUnsignedTy(sty)
+          val geLo = tmp(c)
+          c.insns.add(
+            NICmp(
+              dest = geLo,
+              pred = if uns { IUge } else { ISge },
+              ty = scrut.ty,
+              a = scrut.value,
+              b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+            )
+          )
+          val cmpHi = tmp(c)
+          val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
+          c.insns.add(
+            NICmp(
+              dest = cmpHi,
+              pred = hiPred,
+              ty = scrut.ty,
+              a = scrut.value,
+              b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+            )
+          )
+          andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+        }
+      }
+    }
+    case TpOr(alts) -> {
+      var acc = patTest(c, alts[0], scrut, sty)
+      var i = 1
+      while i < alts.count {
+        acc = orV(c, acc, patTest(c, alts[i], scrut, sty))
+        i = i + 1
+      }
+      acc
+    }
+    case _ -> unsupported(c, "a pattern of this kind")
+  }
+}
+
+/// Store the scrutinee into the locals `pat` binds.
+func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
+  match pat.kind {
+    case TpBind(decl, inner) -> {
+      match declareSlot(c, decl) {
+        case Some(slot) -> c.insns.add(NStore(ty = slot.ty, value = scrut.value, ptr = NLocal(name = slot.ptr)))
+        case None -> ()
+      }
+      match inner {
+        case Some(p) -> patBind(c, p, scrut)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], exhaustive: in Bool): Val {
+  if not exhaustive {
+    return unsupported(c, "a match the builder did not prove exhaustive")
+  }
+  if arms.count == 0 {
+    return unsupported(c, "a match with no arms")
+  }
+  val scrut = lowerExpr(c, scrutE)
+  match scrut.ty {
+    case NVoid -> return unsupported(c, "a match on a non-scalar")
+    case _ -> ()
+  }
+  match tyToN(scrutE.ty) {
+    case None -> return unsupported(c, "a match on " + renderTy(scrutE.ty))
+    case Some(_) -> ()
+  }
+  val resN = tyToN(e.ty)
+  val endL = newLabel(c, "match.end")
+  val incoming: List[NPhiIncoming] = newList()
+  var i = 0
+  while i < arms.count {
+    val arm = arms[i]
+    if patBinds(arm.pat) {
+      match arm.pat.kind {
+        case TpOr(_) -> c.problems.add("an or-pattern that binds")
+        case _ -> ()
+      }
+    }
+    val test = patTest(c, arm.pat, scrut, scrutE.ty)
+    val bindL = newLabel(c, "arm.bind")
+    val nextL = newLabel(c, "arm.next")
+    c.insns.add(NCondBr(cond = test.value, thenLabel = bindL, elseLabel = nextL))
+    startBlock(c, bindL)
+    patBind(c, arm.pat, scrut)
+    val bodyL = newLabel(c, "arm.body")
+    match arm.guard {
+      case Some(g) -> {
+        val gv = lowerExpr(c, g)
+        c.insns.add(NCondBr(cond = gv.value, thenLabel = bodyL, elseLabel = nextL))
+      }
+      case None -> c.insns.add(NBr(label = bodyL))
+    }
+    startBlock(c, bodyL)
+    val bv = lowerExpr(c, arm.body)
+    incoming.add(NPhiIncoming(value = bv.value, label = curBlock(c)))
+    c.insns.add(NBr(label = endL))
+    startBlock(c, nextL)
+    i = i + 1
+  }
+  emitPanic(c, "non-exhaustive match", e.span.startPos.line)
+  match resN {
+    case Some(nt) -> incoming.add(NPhiIncoming(value = NUndef(ty = nt), label = curBlock(c)))
+    case None -> ()
+  }
+  c.insns.add(NBr(label = endL))
+  startBlock(c, endL)
+  match resN {
+    case None -> unsupported(c, "a match of type " + renderTy(e.ty))
+    case Some(nt) -> match nt {
+      case NVoid -> unitVal()
+      case _ -> {
+        val d = tmp(c)
+        c.insns.add(NPhi(dest = d, ty = nt, incoming = incoming))
+        Val(ty = nt, value = NLocal(name = d))
+      }
+    }
+  }
+}
+
+func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr, body: in TExpr): Unit {
+  match iter.kind {
+    case XRange(lo, hi, inclusive) -> {
+      val lov = lowerExpr(c, lo)
+      val hiv = lowerExpr(c, hi)
+      match tyToN(lo.ty) {
+        case None -> {
+          c.problems.add("a for over " + renderTy(lo.ty))
+          return
+        }
+        case Some(nt) -> {
+          if bitsOf(nt) == 0 {
+            c.problems.add("a for over " + renderTy(lo.ty))
+            return
+          }
+          val uns = isUnsignedTy(lo.ty)
+          val slotName = "for" + toString(c.ticker.count + 1) + ".i"
+          c.ticker.add(0)
+          c.allocas.add(NAlloca(dest = slotName, ty = nt))
+          c.insns.add(NStore(ty = nt, value = lov.value, ptr = NLocal(name = slotName)))
+          val condL = newLabel(c, "for.cond")
+          val bodyL = newLabel(c, "for.body")
+          val stepL = newLabel(c, "for.step")
+          val endL = newLabel(c, "for.end")
+          c.insns.add(NBr(label = condL))
+          startBlock(c, condL)
+          val cur = tmp(c)
+          c.insns.add(NLoad(dest = cur, ty = nt, ptr = NLocal(name = slotName)))
+          val pred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
+          val ok = tmp(c)
+          c.insns.add(NICmp(dest = ok, pred = pred, ty = nt, a = NLocal(name = cur), b = hiv.value))
+          c.insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = bodyL, elseLabel = endL))
+          startBlock(c, bodyL)
+          patBind(c, pat, Val(ty = nt, value = NLocal(name = cur)))
+          c.loops.add(LoopLabels(label = label, breakL = endL, contL = stepL))
+          val _ = lowerExpr(c, body)
+          c.loops.removeAt(c.loops.count - 1)
+          c.insns.add(NBr(label = stepL))
+          startBlock(c, stepL)
+          val at = tmp(c)
+          c.insns.add(NLoad(dest = at, ty = nt, ptr = NLocal(name = slotName)))
+          if inclusive {
+            val last = tmp(c)
+            c.insns.add(NICmp(dest = last, pred = IEq, ty = nt, a = NLocal(name = at), b = hiv.value))
+            val incL = newLabel(c, "for.inc")
+            c.insns.add(NCondBr(cond = NLocal(name = last), thenLabel = endL, elseLabel = incL))
+            startBlock(c, incL)
+          }
+          val next = tmp(c)
+          c.insns.add(NAdd(dest = next, ty = nt, a = NLocal(name = at), b = NLitInt(v = 1i64, ty = nt)))
+          c.insns.add(NStore(ty = nt, value = NLocal(name = next), ptr = NLocal(name = slotName)))
+          c.insns.add(NBr(label = condL))
+          startBlock(c, endL)
+        }
+      }
+    }
+    case _ -> {
+      c.problems.add("a for over " + renderTy(iter.ty))
+    }
+  }
+}
+
 func lowerStmt(c: in LCtx, s: in TStmt): Unit {
   match s.kind {
     case TsExpr(x) -> {
@@ -774,6 +1033,7 @@ func lowerStmt(c: in LCtx, s: in TStmt): Unit {
       c.insns.add(NBr(label = bodyL))
       startBlock(c, endL)
     }
+    case TsFor(label, pat, iter, body) -> lowerFor(c, label, pat, iter, body)
     case TsBreak(label) -> jumpLoop(c, label, true)
     case TsContinue(label) -> jumpLoop(c, label, false)
     case _ -> {
