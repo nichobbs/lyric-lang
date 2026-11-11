@@ -1805,3 +1805,11 @@ test "a conversion method on a range-subtype or distinct value unwraps it" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a call of a stubbable interface's method resolves despite the stub's synthesized impl" {
+  val c = censusOf(
+    "package App\n@stubbable\npub interface Feed {\n  func priceOf(symbol: in String): Int\n}\nfunc total(feed: in Feed): Int { feed.priceOf(\"a\") }\n"
+  )
+  assertTrue(c.built >= 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+}

@@ -5641,7 +5641,7 @@ func recordMethodCalleeNode(
       match target {
         case Some(_) -> ()
         case None -> {
-          target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span)
+          target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span, owner)
         }
       }
       match target {
