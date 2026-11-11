@@ -73,7 +73,7 @@ absorb_log() {
   lines="$(grep -c '^TIR build census' "$log" || true)"
   a_tried[$area]=$(( ${a_tried[$area]:-0} + 1 ))
   if [[ "$lines" -eq 0 ]]; then
-    if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name} "; fi
+    if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit $rc) "; fi
     return 0
   fi
   judged=$((judged + 1))
@@ -156,12 +156,33 @@ is_native_only() {
   return 1
 }
 
-# The compiler: one project manifest, every package of the self-hosted compiler.
+# TIR_CENSUS_AREAS picks the wide areas (default all three); TIR_CENSUS_LINKED=1 also
+# judges the self-tests that import compiler packages, by running them under `lyric test`
+# (about 25 s each, so CI leaves it off and such a test is counted as unchecked).
 log="$OUT/wide.txt"
-rc=0
-timeout 1800 "$LYRIC" build --verify-ir --manifest lyric-compiler/lyric/lyric.toml --target dotnet -o "$OUT/compiler.dll" >"$log" 2>&1 || rc=$?
-absorb_log compiler lyric-compiler/lyric/lyric.toml "$log" "$rc"
+AREAS=" ${TIR_CENSUS_AREAS:-compiler ecosystem self-tests} "
 
+# The compiler: the per-package emit stage 1 uses (bootstrap.sh stage1_cli_bundle) over a
+# driver that imports Lyric.Cli, so every package of the self-hosted compiler and its
+# standard-library import closure is checked.  The compiler has no buildable manifest
+# (its packages are emitted one by one), so a plain --manifest build cannot judge it.
+if [[ "$AREAS" == *" compiler "* ]]; then
+mkdir -p "$OUT/compiler-driver" "$OUT/compiler-out"
+cat > "$OUT/compiler-driver/driver.l" <<'DRIVER'
+package Lyric.CliBundle
+import Lyric.Cli
+import Std.Time
+import Std.Math
+import Std.Testing.Mocking
+func main(): Unit { }
+DRIVER
+rc=0
+LYRIC_VERIFY_IR=1 timeout 3000 "$LYRIC" --internal-perpackage-build "$OUT/compiler-driver/driver.l" "$OUT/compiler-out" --target dotnet >"$log" 2>&1 || rc=$?
+sed -i "s|$REPO_ROOT/||g" "$log"
+absorb_log compiler "Lyric.Cli closure" "$log" "$rc"
+fi
+
+if [[ "$AREAS" == *" ecosystem "* ]]; then
 # The ecosystem libraries, dotnet only (the JVM build reports the same checker census).
 for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
   [[ -f "$manifest" ]] || continue
@@ -172,13 +193,22 @@ for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.
   timeout 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet >"$log" 2>&1 || rc=$?
   absorb_log ecosystem "$manifest" "$log" "$rc"
 done
+fi
 
+if [[ "$AREAS" == *" self-tests "* ]]; then
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
   rc=0
   timeout 600 "$LYRIC" build --verify-ir "$f" -o "$OUT/st.dll" >"$log" 2>&1 || rc=$?
+  if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-0}" == 1 ]]; then
+    # A program that imports compiler packages builds only through `lyric test`, which
+    # links them as restored dependencies; the census line is the same.  The tests run too.
+    rc=0
+    LYRIC_VERIFY_IR=1 timeout 600 "$LYRIC" test --target dotnet "$f" >"$log" 2>&1 || rc=$?
+  fi
   absorb_log self-tests "$f" "$log" "$rc"
 done < <(find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort)
+fi
 
 echo
 echo "Wide TIR census (counts only, not gated):"
@@ -190,6 +220,10 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     [[ "${k%%|*}" == "$area" ]] || continue
     echo "    I0002 kind ${k#*|}: ${a_kinds[$k]}${a_samples[$k]:+ (e.g. ${a_samples[$k]})}"
   done | sort -t: -k2 -n -r | head -15
-  if [[ -n "${a_unchecked[$area]:-}" ]]; then echo "    unchecked: ${a_unchecked[$area]}"; fi
+  if [[ -n "${a_unchecked[$area]:-}" ]]; then
+    echo "    unchecked builds: $(wc -w <<<"${a_unchecked[$area]}")"
+    # shellcheck disable=SC2086
+    printf '      %s\n' ${a_unchecked[$area]} | head -10
+  fi
 done
 exit $gate_rc
