@@ -1796,3 +1796,12 @@ test "a generic call's type arguments are read back from its arguments and its r
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a conversion method on a range-subtype or distinct value unwraps it" {
+  val c = censusOf(
+    "package App\ntype Age = Int range 0 ..= 150\ntype Id = Long\nfunc f(a: Age): Int { a.toInt() }\nfunc g(i: Id): Long { i.toLong() }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
