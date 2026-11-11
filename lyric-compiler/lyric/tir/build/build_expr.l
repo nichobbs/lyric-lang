@@ -2468,6 +2468,65 @@ func isPlainArg(x: in Expr): Bool {
   }
 }
 
+/// The type arguments of a generic call the checker recorded no instantiation for: read
+/// back from the argument types it recorded and from the call's result type together,
+/// since either alone can leave a parameter out (`andThenResult(Ok(value = 5), f)` has
+/// `T` only in an argument and `U` and `E` only in the annotated result).  An argument the
+/// checker left untyped fixes nothing.
+func genericArgsFromCall(env: in BuildEnv, sig: in ResolvedSignature, resultTy: in Type, args: in List[CallArg]): List[Type] {
+  val named: List[String] = newList()
+  for a in args {
+    match a {
+      case CANamed(n, _, _) -> named.add(n)
+      case CAPositional(_) -> ()
+    }
+  }
+  val free: List[Int] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    if not named.contains(sig.params[pi].name) {
+      free.add(pi)
+    }
+    pi = pi + 1
+  }
+  val ps: List[Type] = newList()
+  val ts: List[Type] = newList()
+  var pos = 0
+  for a in args {
+    var slot = -1
+    var arg: Option[Expr] = None
+    match a {
+      case CAPositional(x) -> {
+        if pos < free.count {
+          slot = free[pos]
+        }
+        pos = pos + 1
+        arg = Some(value = x)
+      }
+      case CANamed(n, x, _) -> {
+        var j = 0
+        while j < sig.params.count {
+          if sig.params[j].name == n {
+            slot = j
+          }
+          j = j + 1
+        }
+        arg = Some(value = x)
+      }
+    }
+    match arg {
+      case Some(x) -> if slot >= 0 {
+        ps.add(sig.params[slot].ty)
+        ts.add(match mapGet(env.ctx.tbl.exprTypes, x.nodeId) { case Some(t) -> t; case None -> tyErrorSilent() })
+      }
+      case None -> ()
+    }
+  }
+  ps.add(sig.returnTy)
+  ts.add(resultTy)
+  inferGenericArgsDeep(sig.generics, ps, ts)
+}
+
 /// A call to a declared non-generic function.  Named arguments take their parameter's
 /// slot first and the positional ones fill the free slots in order, as the checker pairs
 /// them.  The arguments run in parameter order in TIR, so a call whose source order
@@ -2486,7 +2545,7 @@ func buildDirectCall(
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
       case None -> match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
-        case Some(rt) -> genericArgsFromResult(sig, rt)
+        case Some(rt) -> genericArgsFromCall(env, sig, rt, args)
         case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
       }
     }
