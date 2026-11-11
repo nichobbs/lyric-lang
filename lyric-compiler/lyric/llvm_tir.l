@@ -180,11 +180,19 @@ record LoopLabels {
   label: Option[String]
   breakL: String
   contL: String
+  /// How many reference scopes and temporary scopes were open when the loop began: a
+  /// `break` or `continue` releases what was opened since.
+  scopeDepth: Int
+  tempDepth: Int
 }
 
+/// A value and, for a reference, who owns it: `owned` is a count this code holds and must
+/// release or hand on (a call result, a retained value); a borrowed reference (a read of a
+/// local, a static literal) is held by someone else.
 record Val {
   ty: NType
   value: NValue
+  owned: Bool = false
 }
 
 record LCtx {
@@ -199,6 +207,11 @@ record LCtx {
   problems: List[String]
   retTy: NType
   globalPrefix: String
+  /// The reference locals live in each open lexical scope, released when it closes.
+  refScopes: List[List[Slot]]
+  /// The owned references passed on as borrowed operands in each open statement, released
+  /// when it ends.
+  temps: List[List[Val]]
 }
 
 func tmp(c: in LCtx): String {
@@ -233,6 +246,162 @@ func unsupported(c: in LCtx, why: in String): Val {
   Val(ty = NI32, value = NUndef(ty = NI32))
 }
 
+func isStringN(t: in NType): Bool {
+  match t {
+    case NPtr(pointee) -> match pointee { case NStruct(name, _) -> name == "LyricString"; case _ -> false }
+    case _ -> false
+  }
+}
+
+/// The types whose values are reference counted.
+func isRefN(t: in NType): Bool {
+  isStringN(t)
+}
+
+func i8ptr(): NType {
+  NPtr(pointee = NI8)
+}
+
+func callRtVoid(c: in LCtx, fn: in String, args: in List[NArg]): Unit {
+  c.insns.add(NCallVoid(fn = NGlobal(name = fn), args = args))
+}
+
+func callRt(c: in LCtx, fn: in String, retTy: in NType, args: in List[NArg]): NValue {
+  val d = tmp(c)
+  c.insns.add(NCall(dest = d, retTy = retTy, fn = NGlobal(name = fn), args = args))
+  NLocal(name = d)
+}
+
+func arg1(ty: in NType, v: in NValue): List[NArg] {
+  val xs: List[NArg] = newList()
+  xs.add(NArg(ty = ty, value = v))
+  xs
+}
+
+func arg2(t1: in NType, v1: in NValue, t2: in NType, v2: in NValue): List[NArg] {
+  val xs: List[NArg] = newList()
+  xs.add(NArg(ty = t1, value = v1))
+  xs.add(NArg(ty = t2, value = v2))
+  xs
+}
+
+func asI8(c: in LCtx, ty: in NType, v: in NValue): NValue {
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = ty, value = v, toTy = i8ptr()))
+  NLocal(name = d)
+}
+
+func retainRef(c: in LCtx, ty: in NType, v: in NValue): Unit {
+  callRtVoid(c, "lyric_retain", arg1(i8ptr(), asI8(c, ty, v)))
+}
+
+func releaseRef(c: in LCtx, ty: in NType, v: in NValue): Unit {
+  callRtVoid(c, "lyric_release", arg1(i8ptr(), asI8(c, ty, v)))
+}
+
+/// A reference this code owns: a borrowed one is retained, an owned one is taken as it is.
+/// A value that is not a reference is returned unchanged.
+func own(c: in LCtx, v: in Val): Val {
+  if not isRefN(v.ty) or v.owned {
+    return v
+  }
+  retainRef(c, v.ty, v.value)
+  Val(ty = v.ty, value = v.value, owned = true)
+}
+
+/// Release a reference nothing took.
+func discard(c: in LCtx, v: in Val): Unit {
+  if v.owned and isRefN(v.ty) {
+    releaseRef(c, v.ty, v.value)
+  }
+}
+
+func pushTemps(c: in LCtx): Unit {
+  c.temps.add(newList())
+}
+
+/// Close the innermost statement: release the owned operands it passed on.
+func popTemps(c: in LCtx): Unit {
+  val top = c.temps[c.temps.count - 1]
+  var i = top.count - 1
+  while i >= 0 {
+    releaseRef(c, top[i].ty, top[i].value)
+    i = i - 1
+  }
+  c.temps.removeAt(c.temps.count - 1)
+}
+
+/// Use `v` as a borrowed operand: an owned reference is released when the statement ends.
+func borrow(c: in LCtx, v: in Val): Val {
+  if v.owned and isRefN(v.ty) {
+    c.temps[c.temps.count - 1].add(v)
+    return Val(ty = v.ty, value = v.value)
+  }
+  v
+}
+
+func pushRefScope(c: in LCtx): Unit {
+  c.refScopes.add(newList())
+}
+
+func releaseSlot(c: in LCtx, slot: in Slot): Unit {
+  val d = tmp(c)
+  c.insns.add(NLoad(dest = d, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
+  releaseRef(c, slot.ty, NLocal(name = d))
+}
+
+func popRefScope(c: in LCtx): Unit {
+  val top = c.refScopes[c.refScopes.count - 1]
+  var i = top.count - 1
+  while i >= 0 {
+    releaseSlot(c, top[i])
+    i = i - 1
+  }
+  c.refScopes.removeAt(c.refScopes.count - 1)
+}
+
+/// Release, without closing them, every temporary and local opened since the given depths:
+/// what a `return`, `break` or `continue` leaves behind.
+func releaseDownTo(c: in LCtx, scopeDepth: in Int, tempDepth: in Int): Unit {
+  var t = c.temps.count - 1
+  while t >= tempDepth {
+    val ts = c.temps[t]
+    var k = ts.count - 1
+    while k >= 0 {
+      releaseRef(c, ts[k].ty, ts[k].value)
+      k = k - 1
+    }
+    t = t - 1
+  }
+  var s = c.refScopes.count - 1
+  while s >= scopeDepth {
+    val ss = c.refScopes[s]
+    var k = ss.count - 1
+    while k >= 0 {
+      releaseSlot(c, ss[k])
+      k = k - 1
+    }
+    s = s - 1
+  }
+}
+
+/// Note that the local `slot` is released when the innermost scope closes.
+func trackRef(c: in LCtx, slot: in Slot): Unit {
+  if isRefN(slot.ty) {
+    c.refScopes[c.refScopes.count - 1].add(slot)
+  }
+}
+
+/// `x` lowered as a branch of an `if` or a `match` arm: its temporaries close with it, and a
+/// reference result is owned so it outlives them.
+func branchValue(c: in LCtx, x: in TExpr, wantRef: in Bool): Val {
+  pushTemps(c)
+  val v = lowerExpr(c, x)
+  val r = if wantRef { own(c, v) } else { discard(c, v); v }
+  popTemps(c)
+  r
+}
+
 func primN(k: in TPrimKind): NType {
   match k {
     case TPBool -> NI1
@@ -245,7 +414,7 @@ func primN(k: in TPrimKind): NType {
     case TPFloat -> NFloat
     case TPDouble -> NDouble
     case TPChar -> NI32
-    case TPString -> NVoid
+    case TPString -> lyricStringNType()
     case TPUnit -> NVoid
   }
 }
@@ -253,7 +422,7 @@ func primN(k: in TPrimKind): NType {
 /// The LLVM type of a scalar `Ty`; None for anything this slice does not lower.
 func tyToN(t: in Ty): Option[NType] {
   match t {
-    case TPrim(k) -> match k { case TPString -> None; case _ -> Some(value = primN(k)) }
+    case TPrim(k) -> Some(value = primN(k))
     case TRefined(u, _, _, _) -> tyToN(u)
     case TNever -> Some(value = NVoid)
     case _ -> None
@@ -297,6 +466,7 @@ func zeroOf(t: in NType): NValue {
   match t {
     case NDouble -> NLitFloat(v = 0.0, ty = NDouble)
     case NFloat -> NLitFloat(v = 0.0, ty = NFloat)
+    case NPtr(_) -> NLitNull(ty = t)
     case _ -> NLitInt(v = 0i64, ty = t)
   }
 }
@@ -518,13 +688,15 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XConvert(kind, inner) -> lowerConvert(c, e, kind, inner)
     case XIf(cond, t, el) -> lowerIf(c, e, cond, t, el)
     case XBlock(stmts, tail) -> {
+      pushRefScope(c)
       for s in stmts {
         lowerStmt(c, s)
       }
-      match tail {
-        case Some(x) -> lowerExpr(c, x)
-        case None -> unitVal()
-      }
+      pushTemps(c)
+      val v = match tail { case Some(x) -> own(c, lowerExpr(c, x)); case None -> unitVal() }
+      popTemps(c)
+      popRefScope(c)
+      v
     }
     case XShort(op, l, r) -> lowerShort(c, op, l, r)
     case XAssign(place, op, value) -> lowerAssign(c, place, op, value)
@@ -577,12 +749,49 @@ func wrapLit(v: in Long, nt: in NType): Long {
   }
 }
 
+/// A static `LyricString` (its count is the immortal sentinel, so retaining or releasing it is
+/// a no-op); a borrowed value.
+func stringLiteral(c: in LCtx, text: in String): Val {
+  val bytes = Encoding.encodeUtf8(text)
+  val n = bytes.length
+  c.ticker.add(0)
+  val gname = c.globalPrefix + "s" + toString(c.ticker.count)
+  val data = "[" + toString(n + 1) + " x i8]"
+  c.globals.add(
+    NGlobalDef(
+      name = gname,
+      linkage = "private unnamed_addr constant",
+      tyStr = "{ i32, i32, i8*, i64, i64, " + data + " }",
+      initStr = "{ i32 2147483647, i32 0, i8* null, i64 " + toString(n) + ", i64 " + toString(n + 1) + ", " + data +
+        " c\"" +
+        escapeIrBytes(bytes) +
+        "\\00\" }",
+      align = 8
+    )
+  )
+  val litFields: List[NType] = newList()
+  addArcHeader(litFields)
+  litFields.add(NI64)
+  litFields.add(NI64)
+  litFields.add(NArray(elem = NI8, size = n + 1))
+  val d = tmp(c)
+  c.insns.add(
+    NBitcast(
+      dest = d,
+      fromTy = NPtr(pointee = NLitStruct(fields = litFields)),
+      value = NGlobal(name = gname),
+      toTy = lyricStringNType()
+    )
+  )
+  Val(ty = lyricStringNType(), value = NLocal(name = d))
+}
+
 func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
   match lit {
     case TLUnit -> unitVal()
     case TLBool(b) -> Val(ty = NI1, value = NLitInt(v = if b { 1i64 } else { 0i64 }, ty = NI1))
     case TLChar(cp) -> Val(ty = NI32, value = NLitInt(v = cp.toLong(), ty = NI32))
-    case TLString(_) -> unsupported(c, "a string literal")
+    case TLString(text) -> stringLiteral(c, text)
     case TLInt(v) -> match tyToN(e.ty) {
       case None -> unsupported(c, "an integer literal of type " + renderTy(e.ty))
       case Some(nt) -> if isFloatTy(e.ty) {
@@ -611,15 +820,22 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           }
         }
       }
+      match op {
+        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins)
+        case _ -> ()
+      }
       if ins.count == 2 {
-        val a = lowerExpr(c, ins[0])
-        val b = lowerExpr(c, ins[1])
+        val a = borrow(c, lowerExpr(c, ins[0]))
+        val b = borrow(c, lowerExpr(c, ins[1]))
+        if isStringN(a.ty) {
+          return lowerStringBinary(c, op, a, b)
+        }
         match tyToN(ins[0].ty) {
           case Some(nt) -> lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else if ins.count == 1 {
-        val a = lowerExpr(c, ins[0])
+        val a = borrow(c, lowerExpr(c, ins[0]))
         match tyToN(ins[0].ty) {
           case Some(nt) -> lowerUnary(c, op, ins[0].ty, nt, a.value)
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
@@ -639,7 +855,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           for a in args {
             match a {
               case TArgIn(v) -> {
-                val av = lowerExpr(c, v)
+                val av = borrow(c, lowerExpr(c, v))
                 match av.ty {
                   case NVoid -> c.problems.add("a Unit argument")
                   case _ -> nargs.add(NArg(ty = av.ty, value = av.value))
@@ -660,7 +876,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               case _ -> {
                 val d = tmp(c)
                 c.insns.add(NCall(dest = d, retTy = rt, fn = NGlobal(name = irName), args = nargs))
-                Val(ty = rt, value = NLocal(name = d))
+                Val(ty = rt, value = NLocal(name = d), owned = isRefN(rt))
               }
             }
           }
@@ -669,6 +885,124 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
     }
     case _ -> unsupported(c, "a call through " + calleeKind(callee))
   }
+}
+
+/// `toString` of a scalar: the runtime's formatter, a fresh owned string.
+func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
+  val sTy = lyricStringNType()
+  val uns = isUnsignedTy(ty)
+  val isChar = match ty { case TPrim(k) -> match k { case TPChar -> true; case _ -> false }; case _ -> false }
+  val r = match v.ty {
+    case NI32 -> {
+      if isChar {
+        callRt(c, "lyric_string_from_char", sTy, arg1(NI32, v.value))
+      } else {
+        val wide = tmp(c)
+        if uns {
+          c.insns.add(NZExt(dest = wide, fromTy = NI32, value = v.value, toTy = NI64))
+        } else {
+          c.insns.add(NSExt(dest = wide, fromTy = NI32, value = v.value, toTy = NI64))
+        }
+        callRt(c, "lyric_string_from_int", sTy, arg1(NI64, NLocal(name = wide)))
+      }
+    }
+    case NI64 -> callRt(
+      c,
+      if uns { "lyric_string_from_uint" } else { "lyric_string_from_int" },
+      sTy,
+      arg1(NI64, v.value)
+    )
+    case NI8 -> {
+      val wide = tmp(c)
+      c.insns.add(NZExt(dest = wide, fromTy = NI8, value = v.value, toTy = NI64))
+      callRt(c, "lyric_string_from_int", sTy, arg1(NI64, NLocal(name = wide)))
+    }
+    case NI1 -> {
+      val wide = tmp(c)
+      c.insns.add(NZExt(dest = wide, fromTy = NI1, value = v.value, toTy = NI32))
+      callRt(c, "lyric_string_from_bool", sTy, arg1(NI32, NLocal(name = wide)))
+    }
+    case NDouble -> callRt(c, "lyric_string_from_float", sTy, arg1(NDouble, v.value))
+    case NFloat -> callRt(c, "lyric_string_from_float32", sTy, arg1(NFloat, v.value))
+    case _ -> {
+      c.problems.add("toString of " + renderTy(ty))
+      NUndef(ty = sTy)
+    }
+  }
+  Val(ty = sTy, value = r, owned = true)
+}
+
+/// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` (also spelled `<Type>.toString` for the
+/// method form) and `String.length`.
+/// Any other name is outside this slice.
+func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
+  if ins.count != 1 {
+    return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
+  }
+  val arg = ins[0]
+  if name == "println" or name == "print" {
+    val a = borrow(c, lowerExpr(c, arg))
+    val text = if isStringN(a.ty) { a } else { borrow(c, scalarToString(c, arg.ty, a)) }
+    val sTy = lyricStringNType()
+    callRtVoid(
+      c,
+      if name == "println" { "lyric_console_write_line" } else { "lyric_console_write" },
+      arg2(NI32, NLitInt(v = 1i64, ty = NI32), sTy, text.value)
+    )
+    return unitVal()
+  }
+  if name == "toString" or Str.endsWith(name, ".toString") {
+    val a = lowerExpr(c, arg)
+    if isStringN(a.ty) {
+      return a
+    }
+    return scalarToString(c, arg.ty, a)
+  }
+  if name == "String.length" {
+    val a = borrow(c, lowerExpr(c, arg))
+    val n = callRt(c, "lyric_string_len", NI64, arg1(lyricStringNType(), a.value))
+    val d = tmp(c)
+    c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
+    return Val(ty = NI32, value = NLocal(name = d))
+  }
+  unsupported(c, "builtin " + name)
+}
+
+/// `+`, `==`, `!=` and the orderings on two borrowed strings.
+func lowerStringBinary(c: in LCtx, op: in IntrinsicOp, a: in Val, b: in Val): Val {
+  val sTy = lyricStringNType()
+  match op {
+    case IoAdd -> Val(
+      ty = sTy,
+      value = callRt(c, "lyric_string_concat", sTy, arg2(sTy, a.value, sTy, b.value)),
+      owned = true
+    )
+    case IoEq -> stringEq(c, a, b, false)
+    case IoNeq -> stringEq(c, a, b, true)
+    case IoLt -> stringCmp(c, ISlt, a, b)
+    case IoLte -> stringCmp(c, ISle, a, b)
+    case IoGt -> stringCmp(c, ISgt, a, b)
+    case IoGte -> stringCmp(c, ISge, a, b)
+    case _ -> unsupported(c, "a string operator")
+  }
+}
+
+func stringEq(c: in LCtx, a: in Val, b: in Val, negate: in Bool): Val {
+  val sTy = lyricStringNType()
+  val r = callRt(c, "lyric_string_eq", NI32, arg2(sTy, a.value, sTy, b.value))
+  val d = tmp(c)
+  c.insns.add(
+    NICmp(dest = d, pred = if negate { IEq } else { INe }, ty = NI32, a = r, b = NLitInt(v = 0i64, ty = NI32))
+  )
+  Val(ty = NI1, value = NLocal(name = d))
+}
+
+func stringCmp(c: in LCtx, pred: in ICmpPred, a: in Val, b: in Val): Val {
+  val sTy = lyricStringNType()
+  val r = callRt(c, "lyric_string_cmp", NI32, arg2(sTy, a.value, sTy, b.value))
+  val d = tmp(c)
+  c.insns.add(NICmp(dest = d, pred = pred, ty = NI32, a = r, b = NLitInt(v = 0i64, ty = NI32)))
+  Val(ty = NI1, value = NLocal(name = d))
 }
 
 func calleeKind(k: in Callee): String {
@@ -751,17 +1085,20 @@ func toFloat(c: in LCtx, fromTy: in Ty, v: in Val, to: in NType, d: in String): 
 }
 
 func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option[TExpr]): Val {
+  pushTemps(c)
   val cv = lowerExpr(c, cond)
+  popTemps(c)
+  val wantRef = match tyToN(e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
   val thenL = newLabel(c, "if.then")
   val elseL = newLabel(c, "if.else")
   val endL = newLabel(c, "if.end")
   c.insns.add(NCondBr(cond = cv.value, thenLabel = thenL, elseLabel = elseL))
   startBlock(c, thenL)
-  val tv = lowerExpr(c, t)
+  val tv = branchValue(c, t, wantRef)
   val thenEnd = curBlock(c)
   c.insns.add(NBr(label = endL))
   startBlock(c, elseL)
-  val ev = match el { case Some(x) -> lowerExpr(c, x); case None -> unitVal() }
+  val ev = match el { case Some(x) -> branchValue(c, x, wantRef); case None -> unitVal() }
   val elseEnd = curBlock(c)
   c.insns.add(NBr(label = endL))
   startBlock(c, endL)
@@ -775,7 +1112,7 @@ func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option
         inc.add(NPhiIncoming(value = tv.value, label = thenEnd))
         inc.add(NPhiIncoming(value = ev.value, label = elseEnd))
         c.insns.add(NPhi(dest = d, ty = nt, incoming = inc))
-        Val(ty = nt, value = NLocal(name = d))
+        Val(ty = nt, value = NLocal(name = d), owned = isRefN(nt))
       }
     }
   }
@@ -797,7 +1134,9 @@ func lowerShort(c: in LCtx, op: in ShortOp, l: in TExpr, r: in TExpr): Val {
     c.insns.add(NCondBr(cond = lv.value, thenLabel = endL, elseLabel = rhsL))
   }
   startBlock(c, rhsL)
+  pushTemps(c)
   val rv = lowerExpr(c, r)
+  popTemps(c)
   val rhsEnd = curBlock(c)
   c.insns.add(NBr(label = endL))
   startBlock(c, endL)
@@ -809,11 +1148,34 @@ func lowerShort(c: in LCtx, op: in ShortOp, l: in TExpr, r: in TExpr): Val {
   Val(ty = NI1, value = NLocal(name = d))
 }
 
+/// `x = e` and `x += e` on a reference local: the new value is owned, the previous one released.
+/// Only a tracked local reaches here: the checker rejects an assignment to an `in` parameter,
+/// whose slot holds a borrow this code must not release.
+func assignRef(c: in LCtx, slot: in Slot, op: in AssignKind, value: in TExpr): Val {
+  val prev = tmp(c)
+  c.insns.add(NLoad(dest = prev, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
+  val rhs = lowerExpr(c, value)
+  val nv = match op {
+    case AkSet -> own(c, rhs)
+    case AkAdd -> {
+      val r = borrow(c, rhs)
+      lowerStringBinary(c, IoAdd, Val(ty = slot.ty, value = NLocal(name = prev)), r)
+    }
+    case _ -> unsupported(c, "a compound assignment on a reference")
+  }
+  c.insns.add(NStore(ty = slot.ty, value = nv.value, ptr = NLocal(name = slot.ptr)))
+  releaseRef(c, slot.ty, NLocal(name = prev))
+  unitVal()
+}
+
 func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExpr): Val {
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "an assignment to a local with no slot")
       case Some(slot) -> {
+        if isRefN(slot.ty) {
+          return assignRef(c, slot, op, value)
+        }
         val rhs = lowerExpr(c, value)
         match assignOp(op) {
           case None -> c.insns.add(NStore(ty = slot.ty, value = rhs.value, ptr = NLocal(name = slot.ptr)))
@@ -960,6 +1322,10 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
     case NVoid -> return unsupported(c, "a match on a non-scalar")
     case _ -> ()
   }
+  if isRefN(scrut.ty) {
+    return unsupported(c, "a match on a reference value")
+  }
+  val wantRef = match tyToN(e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
   match tyToN(scrutE.ty) {
     case None -> return unsupported(c, "a match on " + renderTy(scrutE.ty))
     case Some(_) -> ()
@@ -985,13 +1351,15 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
     val bodyL = newLabel(c, "arm.body")
     match arm.guard {
       case Some(g) -> {
+        pushTemps(c)
         val gv = lowerExpr(c, g)
+        popTemps(c)
         c.insns.add(NCondBr(cond = gv.value, thenLabel = bodyL, elseLabel = nextL))
       }
       case None -> c.insns.add(NBr(label = bodyL))
     }
     startBlock(c, bodyL)
-    val bv = lowerExpr(c, arm.body)
+    val bv = branchValue(c, arm.body, wantRef)
     incoming.add(NPhiIncoming(value = bv.value, label = curBlock(c)))
     c.insns.add(NBr(label = endL))
     startBlock(c, nextL)
@@ -1011,7 +1379,7 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
       case _ -> {
         val d = tmp(c)
         c.insns.add(NPhi(dest = d, ty = nt, incoming = incoming))
-        Val(ty = nt, value = NLocal(name = d))
+        Val(ty = nt, value = NLocal(name = d), owned = isRefN(nt))
       }
     }
   }
@@ -1051,8 +1419,10 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
           c.insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = bodyL, elseLabel = endL))
           startBlock(c, bodyL)
           patBind(c, pat, Val(ty = nt, value = NLocal(name = cur)))
-          c.loops.add(LoopLabels(label = label, breakL = endL, contL = stepL))
-          val _ = lowerExpr(c, body)
+          c.loops.add(
+            LoopLabels(label = label, breakL = endL, contL = stepL, scopeDepth = c.refScopes.count, tempDepth = c.temps.count)
+          )
+          discard(c, lowerExpr(c, body))
           c.loops.removeAt(c.loops.count - 1)
           c.insns.add(NBr(label = stepL))
           startBlock(c, stepL)
@@ -1080,21 +1450,27 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
 }
 
 func lowerStmt(c: in LCtx, s: in TStmt): Unit {
+  pushTemps(c)
+  lowerStmtInner(c, s)
+  popTemps(c)
+}
+
+func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
   match s.kind {
-    case TsExpr(x) -> {
-      val _ = lowerExpr(c, x)
-    }
+    case TsExpr(x) -> discard(c, lowerExpr(c, x))
     case TsVar(decl, init) -> match declareSlot(c, decl) {
       case None -> ()
       case Some(slot) -> {
-        val v = match init { case Some(x) -> lowerExpr(c, x); case None -> Val(ty = slot.ty, value = zeroOf(slot.ty)) }
+        val v = match init {
+          case Some(x) -> own(c, lowerExpr(c, x))
+          case None -> Val(ty = slot.ty, value = zeroOf(slot.ty))
+        }
         c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
+        trackRef(c, slot)
       }
     }
     case TsLet(pat, init) -> match pat.kind {
-      case TpWild -> {
-        val _ = lowerExpr(c, init)
-      }
+      case TpWild -> discard(c, lowerExpr(c, init))
       case TpBind(decl, inner) -> match inner {
         case Some(_) -> {
           c.problems.add("a binding with a sub-pattern")
@@ -1102,8 +1478,9 @@ func lowerStmt(c: in LCtx, s: in TStmt): Unit {
         case None -> match declareSlot(c, decl) {
           case None -> ()
           case Some(slot) -> {
-            val v = lowerExpr(c, init)
+            val v = own(c, lowerExpr(c, init))
             c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
+            trackRef(c, slot)
           }
         }
       }
@@ -1116,11 +1493,22 @@ func lowerStmt(c: in LCtx, s: in TStmt): Unit {
         case Some(x) -> {
           val v = lowerExpr(c, x)
           match c.retTy {
-            case NVoid -> c.insns.add(NRetVoid)
-            case rt -> c.insns.add(NRet(ty = rt, value = v.value))
+            case NVoid -> {
+              discard(c, v)
+              releaseDownTo(c, 0, 0)
+              c.insns.add(NRetVoid)
+            }
+            case rt -> {
+              val ov = own(c, v)
+              releaseDownTo(c, 0, 0)
+              c.insns.add(NRet(ty = rt, value = ov.value))
+            }
           }
         }
-        case None -> c.insns.add(NRetVoid)
+        case None -> {
+          releaseDownTo(c, 0, 0)
+          c.insns.add(NRetVoid)
+        }
       }
       startBlock(c, newLabel(c, "dead"))
     }
@@ -1130,11 +1518,15 @@ func lowerStmt(c: in LCtx, s: in TStmt): Unit {
       val endL = newLabel(c, "while.end")
       c.insns.add(NBr(label = condL))
       startBlock(c, condL)
+      pushTemps(c)
       val cv = lowerExpr(c, cond)
+      popTemps(c)
       c.insns.add(NCondBr(cond = cv.value, thenLabel = bodyL, elseLabel = endL))
       startBlock(c, bodyL)
-      c.loops.add(LoopLabels(label = label, breakL = endL, contL = condL))
-      val _ = lowerExpr(c, body)
+      c.loops.add(
+        LoopLabels(label = label, breakL = endL, contL = condL, scopeDepth = c.refScopes.count, tempDepth = c.temps.count)
+      )
+      discard(c, lowerExpr(c, body))
       c.loops.removeAt(c.loops.count - 1)
       c.insns.add(NBr(label = condL))
       startBlock(c, endL)
@@ -1144,8 +1536,10 @@ func lowerStmt(c: in LCtx, s: in TStmt): Unit {
       val endL = newLabel(c, "loop.end")
       c.insns.add(NBr(label = bodyL))
       startBlock(c, bodyL)
-      c.loops.add(LoopLabels(label = label, breakL = endL, contL = bodyL))
-      val _ = lowerExpr(c, body)
+      c.loops.add(
+        LoopLabels(label = label, breakL = endL, contL = bodyL, scopeDepth = c.refScopes.count, tempDepth = c.temps.count)
+      )
+      discard(c, lowerExpr(c, body))
       c.loops.removeAt(c.loops.count - 1)
       c.insns.add(NBr(label = bodyL))
       startBlock(c, endL)
@@ -1188,6 +1582,7 @@ func jumpLoop(c: in LCtx, label: in Option[String], isBreak: in Bool): Unit {
       case Some(want) -> match lp.label { case Some(have) -> have == want; case None -> false }
     }
     if hit {
+      releaseDownTo(c, lp.scopeDepth, lp.tempDepth)
       c.insns.add(NBr(label = if isBreak { lp.breakL } else { lp.contL }))
       startBlock(c, newLabel(c, "dead"))
       return
@@ -1234,7 +1629,9 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
     loops = newList(),
     problems = newList(),
     retTy = retTy,
-    globalPrefix = ".tcstr." + irName + "."
+    globalPrefix = ".tcstr." + irName + ".",
+    refScopes = newList(),
+    temps = newList()
   )
   c.cur.add("entry")
   val params: List[NParam] = newList()
@@ -1259,7 +1656,12 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
       case None -> ()
     }
   }
-  val result = lowerExpr(c, body)
+  pushRefScope(c)
+  pushTemps(c)
+  val result0 = lowerExpr(c, body)
+  val result = match retTy { case NVoid -> { discard(c, result0); result0 }; case _ -> own(c, result0) }
+  popTemps(c)
+  popRefScope(c)
   match retTy {
     case NVoid -> c.insns.add(NRetVoid)
     case _ -> c.insns.add(NRet(ty = retTy, value = result.value))
