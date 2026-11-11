@@ -628,6 +628,29 @@ func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   }
 }
 
+/// The sub-patterns of a case pattern, one per payload field. The checker accepts fewer
+/// sub-patterns than the case has fields and every backend binds the leading fields and
+/// ignores the rest, so the missing trailing ones are wildcards.
+func padCasePats(env: in BuildEnv, p: in Pattern, sym: in SymbolId, ts: in List[TPat]): List[TPat] {
+  val sg = match mapGet(env.syms, sym.id) {
+    case Some(entry) -> match entry.sig { case Some(x) -> x; case None -> return ts }
+    case None -> return ts
+  }
+  if ts.count >= sg.params.count {
+    return ts
+  }
+  val padded: List[TPat] = newList()
+  for t in ts {
+    padded.add(t)
+  }
+  var i = ts.count
+  while i < sg.params.count {
+    padded.add(TPat(id = freshNodeId(env), ty = sg.params[i].ty, span = p.span, kind = TpWild))
+    i = i + 1
+  }
+  padded
+}
+
 /// Build a pattern, declaring the locals it binds in the innermost scope.
 func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
   val ty = match patTy(env.ctx, p.nodeId) {
@@ -681,17 +704,10 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
     }
     case PConstructor(_, args) -> match patSym(env.ctx, p.nodeId) {
       case Some(sym) -> match buildPats(env, args) {
-        case Some(ts) -> Some(
-          value = withCaseSym(
-            env,
-            sym,
-            mkPat(
-              p,
-              ty,
-              TpCtor(sym = sym, args = ts)
-            )
-          )
-        )
+        case Some(ts) -> {
+          noteCaseSym(env, sym)
+          Some(value = mkPat(p, ty, TpCtor(sym = sym, args = padCasePats(env, p, sym, ts))))
+        }
         case None -> None
       }
       case None -> uncoveredPat(
@@ -1882,6 +1898,38 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
   }
 }
 
+/// A host result the checker types as a Lyric type without checking it (D359): an array as
+/// a slice, a possibly null string as `String?`, a host enum as `Int`, the host's 32-bit and
+/// 64-bit floating point types as `Float` and `Double`, a host task as the built-in `Task[T]`.
+/// The call then has the host type and a `CvFromHost` conversion to the checker's type.
+pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
+  match host {
+    case TExtern(h) -> {
+      val n = h.name
+      match callTy {
+        case TSlice(_) -> n == "an array, pointer or by-reference type"
+        case TArray(_, _) -> n == "an array, pointer or by-reference type"
+        case TNullable(inner) -> match inner {
+          case TPrim(TPString) -> n == "System.String" or n == "java.lang.String"
+          case _ -> false
+        }
+        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float"
+        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double"
+        case TPrim(TPInt) -> n != "an array, pointer or by-reference type" and n != "System.String" and
+          n != "java.lang.String"
+        case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
+          (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
+          (
+            n == "System.Threading.Tasks.Task" or n == "java.util.concurrent.CompletableFuture" or
+              n == "java.util.concurrent.Future"
+          )
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// An overload that fits the argument types: its parameters and how well.
 record OverloadFit {
   params: List[Ty]
@@ -2043,6 +2091,29 @@ func buildExternCall(
     params = params,
     ret = ret
   )
+  // A host string can be null: the checker types the call `String?`, the host's result is the String.
+  val nullableString = match ty {
+    case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
+    case _ -> false
+  }
+  if nullableString {
+    val call = TExpr(
+      id = freshNodeId(env),
+      ty = ret,
+      span = e.span,
+      kind = XCall(callee = Extern(member = member), args = targsOut)
+    )
+    return Some(value = mkExpr(e, ty, XConvert(kind = CvLiftNullable, inner = call)))
+  }
+  if hostResultIsCallType(ret, ty) {
+    val call = TExpr(
+      id = freshNodeId(env),
+      ty = ret,
+      span = e.span,
+      kind = XCall(callee = Extern(member = member), args = targsOut)
+    )
+    return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = call)))
+  }
   Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
 }
 
@@ -2811,10 +2882,13 @@ func buildDirectCall(
     }
     callSig = sig.copy(params = ps)
   }
-  match buildCallArgs(env, e, callSig, args) {
+  val pre: List[TStmt] = newList()
+  match buildCallArgs(env, e, callSig, args, pre) {
     case Some(targs) -> {
       noteFuncSym(env, sym, sig, None, None, TSkFunc)
-      Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+      Some(
+        value = withPrelude(env, e, pre, mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = targs)))
+      )
     }
     case None -> None
   }
@@ -2876,9 +2950,23 @@ func buildMethodCall(
   }
   val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
   val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
-  val rest = match buildCallArgs(env, e, site.sig, args) { case Some(a) -> a; case None -> return None }
+  val pre: List[TStmt] = newList()
+  val rest = match buildCallArgs(env, e, site.sig, args, pre) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
-  all.add(TArgIn(value = recv))
+  // The receiver is evaluated before any argument: when arguments were hoisted ahead of
+  // the call, a receiver that is not a literal or a name is hoisted ahead of them.
+  var recvArg = recv
+  val stmts: List[TStmt] = newList()
+  if pre.count > 0 and not isPlainArg(recvExpr) {
+    val d = declareLocal(env, "__recv" + toString(env.nextLocal[0] + 1), recv.ty, false)
+    val bindPat = TPat(id = freshNodeId(env), ty = recv.ty, span = recv.span, kind = TpBind(decl = d, inner = None))
+    stmts.add(TStmt(id = freshNodeId(env), span = recv.span, kind = TsLet(pat = bindPat, init = recv)))
+    recvArg = TExpr(id = freshNodeId(env), ty = recv.ty, span = recv.span, kind = XLocal(local = d.id))
+  }
+  for st in pre {
+    stmts.add(st)
+  }
+  all.add(TArgIn(value = recvArg))
   for a in rest {
     all.add(a)
   }
@@ -2898,7 +2986,7 @@ func buildMethodCall(
     },
     if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
   )
-  Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
+  Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }
 
 /// A record or union-case construction: the fields in declaration order, placed and
@@ -2911,7 +2999,8 @@ func buildConstructCall(
   sig: in ResolvedSignature,
   args: in List[CallArg],
 ): Option[TExpr] {
-  match buildCallArgs(env, e, sig, args) {
+  val pre: List[TStmt] = newList()
+  match buildCallArgs(env, e, sig, args, pre) {
     case Some(targs) -> {
       val fields: List[TExpr] = newList()
       for a in targs {
@@ -2927,7 +3016,7 @@ func buildConstructCall(
       if not genericRecord {
         noteCtorSym(env, sym, sig)
       }
-      Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
+      Some(value = withPrelude(env, e, pre, mkExpr(e, ty, XConstruct(sym = sym, fields = fields))))
     }
     case None -> None
   }
@@ -2965,9 +3054,25 @@ func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Opti
   }
 }
 
+/// An argument bound to a temporary, with its position in the source.
+record OrderedStmt {
+  order: Int
+  stmt: TStmt
+}
+
+/// `call` run after the statements `pre` that bind its reordered arguments in source order.
+func withPrelude(env: in BuildEnv, e: in Expr, pre: in List[TStmt], call: in TExpr): TExpr {
+  if pre.count == 0 {
+    return call
+  }
+  TExpr(id = freshNodeId(env), ty = call.ty, span = e.span, kind = XBlock(stmts = pre, tail = Some(value = call)))
+}
+
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
-func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg]): Option[List[TArg]] {
+func buildCallArgs(
+  env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg], pre: in List[TStmt]
+): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
   var pi = 0
@@ -3025,16 +3130,7 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
     }
     k = k + 1
   }
-  if reordered {
-    for sl in slots {
-      match sl {
-        case Some(x) -> if not isPlainArg(x) {
-          return uncoveredArgs(env, e, "a call whose named arguments reorder effects")
-        }
-        case None -> ()
-      }
-    }
-  }
+  val hoisted: List[OrderedStmt] = newList()
   val targs: List[TArg] = newList()
   var ok = true
   var i = 0
@@ -3065,7 +3161,24 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
               ok = false
             }
             case Some(t) -> match coerceArg(env, t, pty) {
-              case Some(c) -> targs.add(TArgIn(value = c))
+              case Some(c) -> {
+                // Arguments are evaluated in the order written. When names reorder them, an
+                // argument that is not a literal or a name is bound to a temporary first, in
+                // source order, and the call takes the temporary.
+                if reordered and not isPlainArg(x) {
+                  val d = declareLocal(env, "__arg" + toString(env.nextLocal[0] + 1), c.ty, false)
+                  val bindPat = TPat(id = freshNodeId(env), ty = c.ty, span = c.span, kind = TpBind(decl = d, inner = None))
+                  hoisted.add(
+                    OrderedStmt(
+                      order = srcIdx[i],
+                      stmt = TStmt(id = freshNodeId(env), span = c.span, kind = TsLet(pat = bindPat, init = c))
+                    )
+                  )
+                  targs.add(TArgIn(value = TExpr(id = freshNodeId(env), ty = c.ty, span = c.span, kind = XLocal(local = d.id))))
+                } else {
+                  targs.add(TArgIn(value = c))
+                }
+              }
               case None -> {
                 ok = false
               }
@@ -3095,6 +3208,20 @@ func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args
         " yet"
     )
     return None
+  }
+  var emitted = 0
+  while emitted < hoisted.count {
+    var best = -1
+    var j = 0
+    while j < hoisted.count {
+      if hoisted[j].order >= 0 and (best < 0 or hoisted[j].order < hoisted[best].order) {
+        best = j
+      }
+      j = j + 1
+    }
+    pre.add(hoisted[best].stmt)
+    hoisted[best] = OrderedStmt(order = -1, stmt = hoisted[best].stmt)
+    emitted = emitted + 1
   }
   Some(value = targs)
 }

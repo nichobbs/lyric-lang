@@ -1876,8 +1876,9 @@ func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage, tbl: in Symb
     Console.error("  I0003 rule: " + r + " x " + toString(n))
     var shown = 0
     for d in diags {
-      if d.rule == r and shown < 2 {
-        Console.error("    e.g. " + TirVerify.renderVerifyDiag("builder", d))
+      if d.rule == r and shown < 6 {
+        val fnKey = match defPathKeyOf(tbl.interner, d.fnSym) { case Some(k) -> k; case None -> "?" }
+        Console.error("    e.g. " + TirVerify.renderVerifyDiag("builder", d) + " [" + fnKey + "]")
         shown = shown + 1
       }
     }
