@@ -58,6 +58,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.LlvmTir as LlvmTir
 import Lyric.WasmGlue
 import Lyric.ComponentGlue
 import Lyric.Version as Ver
@@ -1251,6 +1252,13 @@ func mvInitCallExpr(vn: in String, sp: in Span): Expr {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Public entry point.
+/// Whether this build lowers functions from TIR where it can (docs/70 phase
+/// 4a, D520); every function the TIR lowering does not cover stays on the AST
+/// path and is counted.
+pub func nativeViaTirRequested(): Bool {
+  LlvmTir.viaTirRequested()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 /// Compile `source` to a native executable at `outputPath`.
 ///
