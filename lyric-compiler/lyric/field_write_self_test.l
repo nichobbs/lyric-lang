@@ -61,18 +61,18 @@ func valRefLocal(): Int {
 }
 
 test "a var field of a ref record is written through a val binding and an in parameter" {
-  assertEqual(valRefLocal(), 3, "val local")
-  assertEqual(bumpRef(Counter(n = 1, label = "x")), 2, "in parameter")
-  assertEqual(bumpCompound(Counter(n = 1, label = "x")), 6, "compound on an in parameter")
+  assertEqualInt(valRefLocal(), 3, "val local")
+  assertEqualInt(bumpRef(Counter(n = 1, label = "x")), 2, "in parameter")
+  assertEqualInt(bumpCompound(Counter(n = 1, label = "x")), 6, "compound on an in parameter")
 }
 
 test "a var field is written through a field chain whose last field is var" {
-  assertEqual(throughChain(Holder(inner = Counter(n = 1, label = "x"), tag = "t")), 7, "chain")
+  assertEqualInt(throughChain(Holder(inner = Counter(n = 1, label = "x"), tag = "t")), 7, "chain")
 }
 
 test "a var field of a value record is written through a var local and an inout parameter" {
-  assertEqual(varLocal(), 4, "var local")
+  assertEqualInt(varLocal(), 4, "var local")
   var cur = Cursor(pos = 0, size = 3)
-  assertEqual(advance(cur), 2, "inout")
-  assertEqual(cur.pos, 2, "the caller sees it")
+  assertEqualInt(advance(cur), 2, "inout")
+  assertEqualInt(cur.pos, 2, "the caller sees it")
 }
