@@ -353,6 +353,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/lexer_self_test.l \
 	lyric-compiler/lyric/list_value_compare_self_test.l \
 	lyric-compiler/lyric/llvm_ir_self_test.l \
+	lyric-compiler/lyric/llvm_tir_self_test.l \
 	lyric-compiler/lyric/loop_eh_collection_self_test.l \
 	lyric-compiler/lyric/loop_invariant_self_test.l \
 	lyric-compiler/lyric/manifest_self_test.l \
@@ -478,6 +479,7 @@ test-native-rt: ## Run the lyric-rt C unit tests
 
 test-native: native-rt ## Run the native backend self-tests (needs clang and ./bin/lyric)
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_ir_self_test.l
+	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_tir_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_codegen_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_byvalue_record_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_inline_union_self_test.l

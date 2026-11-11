@@ -51,6 +51,7 @@ make -C lyric-rt clean && make -C lyric-rt test CC=gcc
 make -C lyric-rt test-asan CC=gcc
 for t in \
   lyric-compiler/lyric/llvm_ir_self_test.l \
+  lyric-compiler/lyric/llvm_tir_self_test.l \
   lyric-compiler/lyric/llvm_codegen_self_test.l \
   lyric-compiler/lyric/llvm_heap_self_test.l \
   lyric-compiler/lyric/llvm_byvalue_record_self_test.l \
