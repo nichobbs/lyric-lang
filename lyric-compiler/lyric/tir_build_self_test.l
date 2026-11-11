@@ -1835,6 +1835,7 @@ test "an assignment to a var field of a ref record verifies; a plain field stays
     }
   }
   assertTrue(seen, "the record's fields are in the package")
+}
 
 test "equality of two values of a declared type is one intrinsic over both operands" {
   val c = censusOf(
