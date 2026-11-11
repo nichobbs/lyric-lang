@@ -68,6 +68,10 @@ pub union IntrinsicOp {
   /// A built-in function by its name in the built-in table (`println`,
   /// `toString`, ...), whose signature is declared there.
   case IoBuiltin(name: String)
+  /// `T.tryFrom(x)` on a distinct or range type `T`: the argument (the
+  /// underlying type) checked into `T`, as `Result[T, String]`; `T` is the first
+  /// type argument of the node's type.
+  case IoTryFrom
 }
 
 pub union Callee {
@@ -96,6 +100,8 @@ pub union IndexKind {
   case IkString
   case IkList
   case IkMap
+  /// The built-in `buffer[T]`: an element read or write, bounds-checked.
+  case IkBuffer
   /// A record's `index` method.
   case IkMethod(sym: SymbolId)
   case IkHost(member: HostMemberRef)
