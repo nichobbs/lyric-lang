@@ -110,6 +110,18 @@ If you want full encapsulation with invariants, use `opaque type` instead — Ch
 
 **Records are immutable.** Once constructed, a record's fields cannot be reassigned. There is no `customer.isActive = false`. Use `.copy()` or use an `opaque type` with controlled mutation through functions.
 
+The one exception is a field you declare `var`, and then only on the record that declares it. Writing any other field, whoever holds the record (a `val` or `var` local, a parameter, `self`, the result of a field chain such as `order.customer.name = "x"`, or a record from another package), is error V0015, "cannot reassign immutable field". The message names the record and the fix: declare the field `var` there, and declare the record `ref record` if callers should share the one mutable object.
+
+```lyric
+record Cell { n: Int }
+ref record Counter { var n: Int }
+
+func f(c: in Counter, cell: in Cell) {
+  c.n = c.n + 1     // fine: n is var, and a ref record is a shared handle
+  cell.n = 2        // V0015: Cell.n is not var
+}
+```
+
 **The `@valueType` annotation** is a hint to the compiler that this record should be lowered to a .NET `readonly struct` rather than a `record class`. This is appropriate for small, frequently-allocated records — coordinates, sizes, colours — where avoiding heap allocation matters:
 
 ```lyric
