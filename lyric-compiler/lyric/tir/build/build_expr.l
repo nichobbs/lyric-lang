@@ -46,6 +46,12 @@ pub record BuildEnv {
   settled: Map[Int, Ty] = newMap()
   /// Where each uncovered kind was first met, as `line:column`.
   sites: Map[String, String] = newMap()
+  /// The symbol of the member being built (empty or one entry): a method, an `impl` member or
+  /// a protected entry has no top-level function symbol for `symTableFuncSymOf` to find.
+  symOverride: List[SymbolId] = newList()
+  /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
+  /// leading parameter.
+  recvTy: List[Ty] = newList()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -523,7 +529,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case ELambda(ps, b) -> buildLambda(env, e, ty, ps, b)
     case EAssign(t, op, v) -> buildAssign(env, e, t, op, v)
     case ERange(_) -> uncoveredExpr(env, e, "a range")
-    case ESelf -> uncoveredExpr(env, e, "self")
+    case ESelf -> match lookupLocal(env, "self") {
+      case Some(d) -> Some(value = mkExpr(e, ty, XLocal(local = d.id)))
+      case None -> uncoveredExpr(env, e, "self")
+    }
     case ETry(_) -> uncoveredExpr(env, e, "a try expression")
     case ETypeApp(_, _) -> uncoveredExpr(env, e, "a type application")
     case EForall(_, _, _, _) -> uncoveredExpr(env, e, "a quantifier")
@@ -1185,12 +1194,13 @@ record FnCore {
   pre: List[TExpr]
   post: List[TExpr]
   body: TExpr
+  barrier: Option[TExpr] = None
 }
 
 func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool): Option[FnCore] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
-  val sym = symTableFuncSymOf(tbl, fn)
+  val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
   match fn.generics {
     case Some(_) -> {
       match sym {
@@ -1218,6 +1228,10 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   val diag: List[Diagnostic] = newList()
   var ok = true
   val params: List[TParamDecl] = newList()
+  if env.recvTy.count > 0 {
+    val selfLocal = declareLocal(env, "self", env.recvTy[0], false)
+    params.add(TParamDecl(local = selfLocal, mode = TMIn, dflt = None))
+  }
   for p in fn.params {
     var dflt: Option[TExpr] = None
     match p.dflt {
@@ -1257,11 +1271,20 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   }
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
+  var barrier: Option[TExpr] = None
   if ok {
     for c in fn.contracts {
       match c {
         case CCRequires(x, _) -> match buildExpr(env, x) { case Some(t) -> pre.add(t); case None -> { ok = false } }
         case CCEnsures(x, _) -> match buildExpr(env, x) { case Some(t) -> post.add(t); case None -> { ok = false } }
+        case CCWhen(x, _) -> match buildExpr(env, x) {
+          case Some(t) -> {
+            barrier = Some(value = t)
+          }
+          case None -> {
+            ok = false
+          }
+        }
         case _ -> ()
       }
     }
@@ -1298,7 +1321,8 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
         ret = ret,
         pre = pre,
         post = post,
-        body = b
+        body = b,
+        barrier = barrier
       )
     )
     case None -> None
@@ -1337,7 +1361,8 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           preconds = c.pre,
           postconds = c.post,
           body = Some(value = c.body),
-          span = fn.span
+          span = fn.span,
+          barrier = c.barrier
         )
       )
     }
