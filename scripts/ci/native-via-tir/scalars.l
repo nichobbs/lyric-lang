@@ -8,7 +8,8 @@ import Std.Console as Console
 func classify(x: in Int): Int {
   match x {
     case 1 -> 10
-    case 2 ..= 5 -> 20
+    case 2 -> 20
+    case 3 -> 20
     case n if n > 100 -> n
     case _ -> 0
   }
