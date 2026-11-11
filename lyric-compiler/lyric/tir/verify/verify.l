@@ -749,6 +749,14 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         }
       }
     }
+    case XCopy(base, updates) -> {
+      visitExpr(c, base)
+      expectTy(c, e.id, e.ty, base.ty, "copy-type", "record copy")
+      for u in updates {
+        visitExpr(c, u.value)
+      }
+      checkCopy(c, e, base, updates)
+    }
     case XIndex(recv, idx, _) -> {
       visitExpr(c, recv)
       visitExpr(c, idx)
@@ -931,6 +939,47 @@ func visitLambda(c: in Ctx, e: in TExpr, params: in List[LocalDecl], caps: in Li
       branchTy(c, e.id, body, r, "closure body")
     }
     case _ -> report(c, e.id, "lambda-type", "closure has type " + renderTy(e.ty) + ", which is not a function type")
+  }
+}
+
+func checkCopy(c: in Ctx, e: in TExpr, base: in TExpr, updates: in List[TFieldUpdate]): Unit {
+  val owner = match base.ty {
+    case TNamed(o, _) -> o
+    case _ -> {
+      report(
+        c,
+        e.id,
+        "copy-type",
+        "a record copy of a value of type " + renderTy(base.ty) + ", which is not a declared type"
+      )
+      return
+    }
+  }
+  val entry = match lookupSym(c, owner) { case Some(en) -> en; case None -> return }
+  val subs: List[Subst] = newList()
+  match base.ty {
+    case TNamed(o, args) -> subs.add(Subst(owner = o, args = args))
+    case _ -> ()
+  }
+  for u in updates {
+    if u.field.index < 0 or u.field.index >= entry.fields.count or entry.fields[u.field.index].name != u.field.name {
+      report(
+        c,
+        e.id,
+        "field-exists",
+        "copy updates field " + u.field.name + ", which is not field " + toString(u.field.index) + " of #" +
+          toString(owner.id)
+      )
+    } else {
+      expectTy(
+        c,
+        e.id,
+        u.value.ty,
+        substTy(entry.fields[u.field.index].ty, subs, None),
+        "copy-field-type",
+        "field " + u.field.name
+      )
+    }
   }
 }
 

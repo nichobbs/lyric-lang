@@ -717,10 +717,35 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 }
 
 /// A branch of an `if`: an expression, or a block typed as the `if` is.
+/// An expression the checker may have left untyped (a bare `None`, `[]`, or a union case
+/// whose type arguments only the context fixes) takes `ty`, the type its position gives it.
+/// It only matters when the checker recorded no usable type for the node.
+func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
+  if not env.settled.containsKey(x.nodeId) {
+    env.settled.add(x.nodeId, ty)
+  }
+}
+
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if blk.statements.count > 0 {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(tail) -> settleHole(env, tail, ty)
+      case _ -> ()
+    }
+  }
+}
+
 func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, ty: in Ty): Option[TExpr] {
   val built = match b {
-    case EOBExpr(x) -> buildExpr(env, x)
-    case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    case EOBExpr(x) -> {
+      settleHole(env, x, ty)
+      buildExpr(env, x)
+    }
+    case EOBBlock(blk) -> {
+      settleBlockTail(env, blk, ty)
+      buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    }
   }
   match built {
     case Some(t) -> coerceBranch(env, t, ty)
@@ -867,17 +892,21 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SThrow(_) -> uncoveredStmt(env, s, "a throw")
     case STry(body, catches, fin) -> {
-      // A catch that binds the exception has no type to give the binding yet.
-      for c in catches {
-        if isSome(c.bindName) {
-          return uncoveredStmt(env, s, "a try statement with a catch binding")
-        }
-      }
       val tb = match loopBody(env, body) { case Some(x) -> x; case None -> return None }
       val tcs: List[TCatch] = newList()
       for c in catches {
-        match loopBody(env, c.body) {
-          case Some(cb) -> tcs.add(TCatch(binding = None, exceptionType = c.typeName, body = cb))
+        pushScope(env)
+        var binding: Option[LocalDecl] = None
+        match c.bindName {
+          case Some(n) -> {
+            binding = Some(value = declareLocal(env, n, TException, false))
+          }
+          case None -> ()
+        }
+        val built = loopBody(env, c.body)
+        popScope(env)
+        match built {
+          case Some(cb) -> tcs.add(TCatch(binding = binding, exceptionType = c.typeName, body = cb))
           case None -> return None
         }
       }
@@ -1448,11 +1477,63 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
+  match buildRecordCopy(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match buildDistinctFactory(env, e, ty, fn, args) {
     case Some(r) -> return r
     case None -> ()
   }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `r.copy(f = x, ...)` on a record, which the checker validates as a copy site and
+/// records no callee for: the receiver built once, then each named field converted to
+/// its type at the receiver's instantiation.  None when the call is not a record copy;
+/// Some(None) after a part could not be built (counted or reported there).
+func buildRecordCopy(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val recv = match fn.kind { case EMember(r, m) -> if m == "copy" { r } else { return None }; case _ -> return None }
+  if not env.ctx.tbl.recordCopySites.containsKey(recordCopySiteKey(e.span)) {
+    return None
+  }
+  val cty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  val rid = match cty { case TyUser(id, _, _) -> id; case _ -> return None }
+  val targs = match cty { case TyUser(_, _, a) -> a; case _ -> return None }
+  val fields = fieldsOfRecordInstantiated(env.ctx.tbl, rid, targs)
+  val base = match buildExpr(env, recv) { case Some(t) -> t; case None -> return Some(value = None) }
+  val updates: List[TFieldUpdate] = newList()
+  for a in args {
+    match a {
+      case CAPositional(_) -> return Some(value = uncoveredExpr(env, e, "a record copy with a positional argument"))
+      case CANamed(name, value, _) -> {
+        var idx = -1
+        var i = 0
+        while i < fields.count {
+          if fields[i].name == name {
+            idx = i
+          }
+          i = i + 1
+        }
+        if idx < 0 {
+          return Some(value = uncoveredExpr(env, e, "a record copy naming no field"))
+        }
+        val fty = match tyOfType(env.ctx, fields[idx].ty) {
+          case Ok(t) -> t
+          case Err(msg) -> {
+            env.errors.add(msg)
+            return Some(value = None)
+          }
+        }
+        val bv = match settleArg(env, value, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        val cv = match coerceArg(env, bv, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        updates.add(TFieldUpdate(field = FieldRef(owner = rid, name = name, index = idx), value = cv))
+      }
+    }
+  }
+  Some(value = Some(value = mkExpr(e, ty, XCopy(base = base, updates = updates))))
 }
 
 /// `T.from(x)` and `T.tryFrom(x)` on a non-generic distinct type `T` (language reference
@@ -1793,7 +1874,10 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
     case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
-    case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
+    case TyException -> if name == "message" { return Some(value = "Exception.message") }
+    case TyUser(id, hd, _) -> if name == "length" and symbolIdEq(id, builtinBufferTypeId()) {
+      return Some(value = "buffer.length")
+    } else if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
       val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
         case Some(ts) -> ts.originPackage.startsWith("Std.")
         case None -> false
@@ -1921,6 +2005,9 @@ func buildLambda(
     decls.add(declareLocal(env, params[i].name, ls.params[i].ty, false))
     i = i + 1
   }
+  // The checker leaves a bare `None` or `[]` at a lambda's tail untyped; it takes the
+  // lambda's return type, as an argument hole takes its parameter's.
+  settleBlockTail(env, body, ls.ret)
   val built = buildBlock(env, body, None, freshNodeId(env))
   env.lambdas.removeAt(env.lambdas.count - 1)
   popScope(env)
@@ -2084,9 +2171,32 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
 }
 
+/// Whether `t` is a block with no tail value whose last statement always leaves it.
+func blockNeverCompletes(t: in TExpr): Bool {
+  match t.kind {
+    case XBlock(stmts, None) -> {
+      if stmts.count == 0 {
+        return false
+      }
+      match stmts[stmts.count - 1].kind {
+        case TsReturn(_) -> true
+        case TsThrow(_) -> true
+        case TsScope(_, body) -> blockNeverCompletes(body)
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
 /// its own, or not at all (counted).  A branch that never completes fits any type.
 func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  // A block with no tail whose last statement always leaves it (`return`, `throw`, or a
+  // `scope` that ends in one) never completes, so it fits any type.
+  if blockNeverCompletes(t) {
+    return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+  }
   // A block is typed as the whole, but its tail keeps its own type, which is
   // the value that needs converting.
   match t.kind {

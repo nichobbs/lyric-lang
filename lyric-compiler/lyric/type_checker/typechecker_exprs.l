@@ -2159,6 +2159,7 @@ func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option
 }
 
 // The underlying type of the non-generic distinct type `t`.
+// The TIR builder (`Lyric.Tir.Build`) reads this: keep it `pub`.
 pub func distinctUnderlyingOf(tbl: in SymbolTable, t: in Type): Option[Type] {
   val tid = match t { case TyUser(id, _, _) -> id; case _ -> return None }
   var i = 0
@@ -3542,7 +3543,7 @@ pub func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[Strin
 // the lenient wildcard — so an under-instantiated receiver degrades to the
 // pre-instantiation behaviour instead of tripping false T0030-style
 // diagnostics on a raw `TyParam`.
-func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
+pub func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
   val raw = fieldsOfRecord(tbl, tid)
   val gnames = recordGenericNamesOf(tbl, tid)
   val result: List[FieldEntry] = newList()
@@ -17316,6 +17317,7 @@ func recordExplicitTypeArgCall(
   fn: in Expr,
   args: in List[CallArg],
   argTypes: in List[Type],
+  callNode: in Int,
 ): Unit {
   val hazard = callArgsHaveHoistHazard(args)
   val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return }
@@ -17325,6 +17327,19 @@ func recordExplicitTypeArgCall(
   }
   val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) { case Some(s) -> s; case None -> return }
   recordMethodCallArity(tbl, inner, args.count, sig.params.count, false)
+  // The type arguments the call gives are the call's instantiation (`genericArgsByNode`,
+  // read by the TIR builder): recording them keeps a call whose result does not mention
+  // a type parameter (`isNone[Int](x)`) from losing it.
+  match explicitCallTypeArgs(sc, tbl, fn, sig) {
+    case Some(given) -> recordGenericArgsNode(
+      tbl,
+      sc.genericNames,
+      valueGenericParamsOf(tbl, inner, args.count),
+      given,
+      callNode
+    )
+    case None -> ()
+  }
   if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
     return
   }
@@ -20371,7 +20386,7 @@ func inferExprCore(
       clearEffectCallSite(tbl, e.span)
       match directSig {
         case Some(_) -> ()
-        case None -> recordExplicitTypeArgCall(sc, tbl, sigs, e.span, fn, args, argTypes)
+        case None -> recordExplicitTypeArgCall(sc, tbl, sigs, e.span, fn, args, argTypes, e.nodeId)
       }
       match directSig {
         case Some(sig) -> {
