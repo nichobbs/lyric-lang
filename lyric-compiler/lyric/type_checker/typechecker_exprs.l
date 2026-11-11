@@ -20886,7 +20886,12 @@ func inferExprCore(
         case ESelf -> {
           if sc.selfChecked {
             match mapGet(sc.selfFields, name) {
-              case Some(t) -> return t
+              case Some(t) -> {
+                // The receiver is not inferred on this path, so its node is recorded here:
+                // the typed IR reads `self`'s type from the per-node table (docs/70 §6.3).
+                recordExprType(tbl, recv, sc.selfType)
+                return t
+              }
               case None -> {
                 diag.add(errorDiagnostic("T0020", "unknown name 'self." + name + "'", e.span))
                 return tyErrorFor(diag)
