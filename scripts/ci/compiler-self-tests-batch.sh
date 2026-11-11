@@ -498,6 +498,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/public-api-diff-e2e.sh
   ran="$ran public-api-diff-e2e"
 fi
+# D552 item 4: `[package] stability` parsing and the `lyric publish` refusal
+# of `incomplete` packages (F0051, F0052).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/publish-stability-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/publish-stability-e2e.sh
+  ran="$ran publish-stability-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

@@ -1,5 +1,7 @@
 # lyric-web
 
+**Stability:** `experimental`
+
 HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships real method/path routing with path parameters, static file serving, a middleware pipeline (CORS built in), OpenAPI 3.1 type vocabulary for spec generation, and aspect templates for authentication and rate limiting.
 
 > **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against both targets. On `dotnet`, built on `Std.HttpServer` — the pure-Lyric sans-IO `Std.HttpEngine` over the `Std.TcpHost` `TcpListener`/`SslStream` transport that replaced `System.Net.HttpListener` (TLS via `Web.serveTls`, #5884/#5885); the transport accepts and reads connections concurrently on background tasks, and lyric-web's dispatch loop hands each parsed request to its own thread-pool task (#7997), so a slow or streaming handler never stalls other requests. On `jvm`, `Web.Kernel.Runtime` binds `io.undertow` directly (Undertow's own multi-threaded XNIO I/O/worker pool handles concurrent requests natively); the full test suite compiles and passes on `--target jvm` (#7578) — see [JVM target](#jvm-target) below.

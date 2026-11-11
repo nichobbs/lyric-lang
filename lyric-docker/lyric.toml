@@ -12,6 +12,7 @@
 [package]
 name        = "Lyric.Docker"
 version     = "0.1.0"
+stability = "experimental"
 description = "Type-safe Docker API client with Unix socket and named pipe support."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

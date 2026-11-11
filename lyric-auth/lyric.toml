@@ -15,6 +15,7 @@
 [package]
 name        = "Lyric.Auth"
 version     = "0.1.0"
+stability = "stable"
 description = "Transport-agnostic JWT, claim, and API-key verification."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

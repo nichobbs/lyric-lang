@@ -1413,6 +1413,7 @@ lyric remove Foo                       # remove a [dependencies] entry, then res
 lyric remove Pkg --nuget               # remove a [nuget] entry instead
 lyric remove Foo --no-restore          # remove from manifest without restoring
 lyric publish                          # publish package to the configured registry
+                                       # (refused, F0052, when [package] stability = "incomplete")
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)
 lyric publish --skip-duplicate         # silently succeed if this version already exists on the registry
@@ -1701,6 +1702,8 @@ profile/shape codes); see those docs for their own F-series ranges.
 | `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
 | `F0046` | A direct call to an `async func` inside a `try`/`catch`/`finally` of another `async func`, on `--target dotnet`: the call awaits in place, and a suspend point inside a protected region cannot be lowered. Await the call explicitly before or after the `try` block (#7838). |
 | `F0047` | An untyped module-level `val` whose initializer's type (e.g. a call or numeric conversion) disagrees with the type the rest of the package was compiled against, on `--target dotnet`. Add an explicit annotation, `val x: Long = ...`. |
+| `F0051` | `[package] stability` in a `lyric.toml` is not a string, or is not one of `"stable"`, `"experimental"`, `"incomplete"`. The message names the bad value and the accepted ones (D552). |
+| `F0052` | `lyric publish` of a package whose manifest says `stability = "incomplete"`: a headline backend is not implemented, so the package is not published. Raised before any DLL lookup or network access (D552). |
 | `F0050` | `--features` names a feature the governing manifest's `[features]` table does not declare (a manifest with no `[features]` table declares none), from `lyric build`, `run`, `test` or `prove`, in project mode and for a single file. Without the check a misspelt name selects nothing and the build silently lacks the feature; the message names the undeclared features and lists the declared ones (#8362). |
 | `F0049` | `--features` on a single source file no manifest applies to (no `--manifest`, and no `lyric.toml` with a `[package]` section in its directory or any parent), from `lyric build`, `run`, `test` or `prove`. Features are declared in a manifest's `[features]` table, so there is nothing to select; declare them in a `lyric.toml` or pass `--manifest` (D182). |
 

@@ -1,5 +1,7 @@
 # lyric-storage
 
+**Stability:** `incomplete`
+
 Object and file storage with pluggable backend support.
 
 ## Platform parity

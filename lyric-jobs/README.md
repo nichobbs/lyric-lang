@@ -1,5 +1,7 @@
 # lyric-jobs
 
+**Stability:** `incomplete`
+
 Background job scheduling behind a `JobScheduler` interface, with an in-process reference backend.
 
 ## Platform parity

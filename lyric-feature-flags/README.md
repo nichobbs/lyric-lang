@@ -1,5 +1,7 @@
 # lyric-feature-flags
 
+**Stability:** `stable`
+
 Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 
 ## Platform parity

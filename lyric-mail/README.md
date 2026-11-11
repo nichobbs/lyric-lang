@@ -1,5 +1,7 @@
 # lyric-mail
 
+**Stability:** `stable`
+
 Email sending with pluggable provider backends: SMTP, Amazon SES, and
 SendGrid, behind one `MailSender` interface.
 

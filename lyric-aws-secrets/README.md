@@ -1,5 +1,7 @@
 # lyric-aws-secrets
 
+**Stability:** `incomplete`
+
 AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.com/nichobbs/lyric-lang). Fetches secrets at application startup and injects them into config blocks, with TTL-based caching and local development support.
 
 > **Status**: `local`, `jvm`, and `aws` are all production-ready for

@@ -19,6 +19,7 @@
 [package]
 name        = "Lyric.Proto"
 version     = "0.1.0"
+stability = "stable"
 description = "Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

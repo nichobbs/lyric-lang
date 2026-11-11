@@ -1,5 +1,7 @@
 # lyric-lambda
 
+**Stability:** `experimental`
+
 AWS Lambda runtime adapter for [Lyric](https://github.com/nichobbs/lyric-lang). Typed handlers for the major event sources (SQS, SNS, S3, EventBridge, DynamoDB, Kinesis) and Lambda authorizers. There is no HTTP (API Gateway / ALB) entry point and no response streaming; see "Withdrawn surface".
 
 > **Status**: @experimental — the `aws`/`local`/`jvm` runtime loop

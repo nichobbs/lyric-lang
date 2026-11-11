@@ -59,6 +59,7 @@
 [package]
 name        = "Lyric.AwsSecrets"
 version     = "0.1.0"
+stability = "incomplete"
 description = "AWS Secrets Manager and Parameter Store config-block integration for Lyric services."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

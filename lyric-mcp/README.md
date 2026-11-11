@@ -1,5 +1,7 @@
 # lyric-mcp
 
+**Stability:** `experimental`
+
 Model Context Protocol (MCP) client and server for Lyric, built on
 the stdlib's `Std.JsonRpc` and `Std.JsonRpc.Stdio` (D204). Implements protocol revision
 `2026-07-28` (primary), accepting `2025-06-18` during version negotiation

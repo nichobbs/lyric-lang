@@ -1,5 +1,7 @@
 # lyric-ui
 
+**Stability:** `experimental`
+
 A model-view-update UI library for Lyric: one application model for desktop
 and web (`docs/65-ui-library-sketch.md`, D137).
 

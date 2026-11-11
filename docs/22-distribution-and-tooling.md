@@ -457,3 +457,7 @@ For users:
   release-asset set need a home for `.pdb` / `.debug` / `.map` files, and
   `SHASUMS256.txt` (§5.2) needs to cover them. Tracked as Q-BP-006 in doc
   63; the layout consequence lands here.
+
+## Package stability and `lyric publish` (D552)
+
+A `lyric.toml` may declare `[package] stability = "stable" | "experimental" | "incomplete"`. `lyric publish` refuses an `incomplete` package with `F0052` before it packs anything or contacts a registry; an unrecognised value is `F0051` at manifest parse time. Each ecosystem library mirrors the field in a `**Stability:**` line at the top of its README, and `scripts/ci/check-library-stability.sh` fails CI when the two disagree. The level for every ecosystem library is in the chapter 29 availability matrix.

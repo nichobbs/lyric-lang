@@ -1,5 +1,7 @@
 # lyric-validation
 
+**Stability:** `stable`
+
 Declarative input validation that produces user-facing error messages.
 
 ## Packages

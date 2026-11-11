@@ -1,5 +1,7 @@
 # lyric-aws-xray
 
+**Stability:** `experimental`
+
 AWS X-Ray integration for [Lyric](https://github.com/nichobbs/lyric-lang). Provides distributed tracing via X-Ray subsegments and a B-mode aspect template for automatic call instrumentation.
 
 > **Status**: @experimental — `aws` and `jvm` bind directly to the real AWS X-Ray SDKs (`AWSXRayRecorder.Core` / `aws-xray-recorder-sdk-core`) via `extern type` + auto-FFI, verified against those real SDK assemblies (no daemon or AWS credentials required — see "Verification" below), but the end-to-end pipeline has not been exercised against a live X-Ray segment service in CI, and the `Tracing` aspect template does not yet work on `jvm` (see "Platform parity").

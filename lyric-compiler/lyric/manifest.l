@@ -65,6 +65,23 @@ pub func ManifestError.message(e: in ManifestError): String {
   }
 }
 
+/// How complete a published package is (D552 item 4).  `Incomplete` marks a
+/// package whose headline backend is not implemented; `lyric publish` refuses it.
+pub union Stability {
+  case Stable
+  case Experimental
+  case Incomplete
+}
+
+/// The manifest spelling of a `Stability`: "stable", "experimental" or "incomplete".
+pub func stabilityName(s: in Stability): String {
+  match s {
+    case Stable -> "stable"
+    case Experimental -> "experimental"
+    case Incomplete -> "incomplete"
+  }
+}
+
 pub record PackageSection {
   name: String
   version: String
@@ -75,6 +92,8 @@ pub record PackageSection {
   /// Package kind — `Some("source-generator")` for generator packages,
   /// `None` for normal library or application packages.
   kind: Option[String]
+  /// `[package] stability`; `None` when the manifest does not declare it.
+  stability: Option[Stability]
 }
 
 pub record PackageEntry {
@@ -999,6 +1018,40 @@ func collectSectionPairs(entries: in List[Entry], section: in String): List[Pack
   pairs
 }
 
+func resolveStability(entries: in List[Entry]): Result[Option[Stability], ManifestError] {
+  match findString(entries, "package", "stability") {
+    case None -> if hasKey(entries, "package", "stability") {
+      Err(
+        error = InvalidField(
+          section = "package",
+          field = "stability",
+          message = "F0051: expected a string, one of \"stable\", \"experimental\" or \"incomplete\""
+        )
+      )
+    } else {
+      Ok(value = None)
+    }
+    case Some(v) -> {
+      if v == "stable" {
+        Ok(value = Some(value = Stable))
+      } else if v == "experimental" {
+        Ok(value = Some(value = Experimental))
+      } else if v == "incomplete" {
+        Ok(value = Some(value = Incomplete))
+      } else {
+        Err(
+          error = InvalidField(
+            section = "package",
+            field = "stability",
+            message = "F0051: \"" + v +
+              "\" is not a stability level; expected \"stable\", \"experimental\" or \"incomplete\""
+          )
+        )
+      }
+    }
+  }
+}
+
 func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestError] {
   match requireString(entries, "package", "name") {
     case Err(e) -> Err(error = e)
@@ -1010,17 +1063,21 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
         val license = unwrapOr(findString(entries, "package", "license"), "")
         val repository = findString(entries, "package", "repository")
         val kind = findString(entries, "package", "kind")
-        Ok(
-          value = PackageSection(
-            name = name,
-            version = version,
-            description = description,
-            authors = authors,
-            license = license,
-            repository = repository,
-            kind = kind
+        match resolveStability(entries) {
+          case Err(e) -> Err(error = e)
+          case Ok(stability) -> Ok(
+            value = PackageSection(
+              name = name,
+              version = version,
+              description = description,
+              authors = authors,
+              license = license,
+              repository = repository,
+              kind = kind,
+              stability = stability
+            )
           )
-        )
+        }
       }
     }
   }

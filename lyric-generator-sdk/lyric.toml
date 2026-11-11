@@ -10,6 +10,7 @@
 [package]
 name        = "Lyric.GeneratorSdk"
 version     = "2.0.0"
+stability = "stable"
 description = "The SourceGenerator plugin point for Lyric custom source generators."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

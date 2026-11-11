@@ -153,8 +153,9 @@ named in each item are still open.
   #8371), array/buffer passed to `spawn` copied inside the task (#8391).
   Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers
   (docs/57 §3); lyric-db now has a real JDBC backend (#8932).  lyric-mail
-  SMTP is real now (#7462); lyric-search is implemented but unusable against a
-  live server until its response-body defect is fixed (see its README).  `F8`: `@externTarget`
+  SMTP is real now (#7462); lyric-search is implemented over HTTP and exercised
+  against a fake engine on both targets (the `HttpResponse.bodyText` defect it
+  once recorded does not reproduce, #8940; not yet driven against a real cluster).  `F8`: `@externTarget`
   catches only `java/lang/Exception`, not `Error` (accepted limitation, see
   docs/18 Q-J009).  `F1`: `self_test_b128.l` hardcodes `/tmp/lyric-jvm-b128`.
 - **Native (`native-backend` 11).**  `N0007` family: method call on a captured `List` in a lambda (#8330),

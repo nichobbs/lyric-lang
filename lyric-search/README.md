@@ -1,5 +1,7 @@
 # lyric-search
 
+**Stability:** `experimental`
+
 Search engine integration with pluggable backends (Elasticsearch, Meilisearch).
 
 ## Platform parity
@@ -24,99 +26,59 @@ documented below; the earlier version of this function hardcoded an empty
 URL and could never have connected to anything, even once the underlying
 kernel worked — that is fixed here too.
 
-### Built on `Std.Http`, not `Std.Rest` — three compiler defects found and characterized
+### Built on `Std.Http`, not `Std.Rest`
 
-The natural choice for an HTTP client library was `Std.Rest.RestClient`
-(base URL + auth + JSON verbs). It doesn't work: `RestClient.get`/`post`/
-`put`/`patch`/`delete` throw `System.MissingMethodException` at runtime,
-because they're implemented in terms of `Std.Http`'s free async functions
-(`sendAsync`/`getAsync`/`postAsync`), which are the exact cross-package
-free-async-function defect `lyric-lambda/src/dispatch.l`'s header
-documents in detail (reproduced there with a 10-line, zero-Lambda-code
-repro). So `Search` is built directly on `Std.Http` instead — but doing
-that surfaced two more, previously-undocumented defects in the same
-family, each independently reproduced with a small (~15-line) standalone
-program carrying zero `Search` code:
+`Search` talks to the engine with `Std.Http` directly (an `HttpConfig` holding
+a base URL and an optional auth header) rather than `Std.Rest.RestClient`.
+`sendCatching` wraps `client.sendWithCancel` in a `try`/`catch Bug` and a
+per-request deadline, so a transport failure or an elapsed deadline becomes a
+typed `SearchError` (`ConnectionFailed`-derived, `statusCode = 0`), and a
+non-2xx response keeps its HTTP status in `SearchError.statusCode`.
 
-1. **`HttpClient.send(req)` fails the same way `Std.Rest` does, but only
-   from inside an `async func`.** It's an *interface* method (dynamic
-   dispatch), not a free function, yet it throws the identical
-   `"unsupported method 'send'..."` error when called from any package
-   other than `Std.Http` — but *only* when the calling function is itself
-   `async`. Calling it from a **plain (non-`async`) function**, wrapped in
-   `try { await client.send(req) } catch Bug as bug { ... }`, reliably
-   catches it as an ordinary `Bug`. (The reverse combination — `await`
-   inside `try` inside an `async func` — is separately rejected at compile
-   time by `V0012`, so this isn't optional: it's the only shape that
-   builds *and* catches the failure.) **Worked around** — see
-   `sendCatching` / `sendRequest` / `sendRequestRaw` in `search.l`.
-2. **Any `async func` that itself `await`s an interface-dispatched call
-   throws `System.InvalidProgramException` (bad IL), independent of
-   `Std.Http`.** This one reproduces with `Search`'s own `SearchClient`
-   interface — an `async func search(client, query) { return await
-   client.search(query) }` crashes; the identical `client.search(query)`
-   call from a plain function does not. **Worked around** for this
-   package's own convenience wrappers (`Search.index`/`search`/
-   `searchSimple`/`delete`/`suggest` are plain funcs, not `async func`,
-   even though each is a one-line forward to the interface) — but a
-   caller who writes their *own* `async func` around a raw
-   `client.search(...)` call, bypassing these helpers, can still hit it.
-3. **`HttpResponse.bodyText(response)` throws a raw
-   `System.MissingMethodException` (not a Lyric `Bug`) under the same
-   cross-package condition as defect 1 — and `try`/`catch Bug` does
-   *not* catch it**, in an `async func` or otherwise. **Not worked
-   around**: no catchable failure mode was found, and `HttpResponse`'s
-   internals are opaque to this package, so there's no lower-level escape
-   hatch either. Reading a response body from outside `Std.Http` is not
-   currently possible. This means `readJsonBody` (used by every operation
-   that needs the response payload — `index`, `search`, `suggest`, ...) is
-   a **hard, uncaught crash** the moment a request actually reaches a live
-   server that returns a body. Every path this package's own tests
-   exercise fails earlier, at `send` (connection refused / DNS failure,
-   caught by defect 1's workaround), so this crash is real but untested by
-   CI — it is the one remaining live-connectivity blocker, and it is a
-   `lyric-compiler`/`lyric-stdlib` defect, not a `lyric-search` one.
+**Earlier versions of this README recorded three compiler defects** (a
+cross-package `HttpClient.send` failing inside an `async func`, an `async
+func` that awaits an interface call throwing `InvalidProgramException`, and
+`HttpResponse.bodyText` throwing an uncatchable `MissingMethodException` from
+outside `Std.Http`), and a phantom JVM `Std.Http` kernel (docs/59 H5). **None of
+them reproduces on `main`** (#6358 for the first three, docs/59 wave 4 for
+H5): `tests/search_live_tests.l` calls every operation across packages against
+a fake engine served by `Std.HttpServer` and reads each response body back with
+`HttpResponse.bodyText`, on `--target dotnet` and `--target jvm`, for both
+backends (#8940). The convenience wrappers (`Search.index`/`search`/
+`searchSimple`/`delete`/`suggest`) remain plain functions that await the
+interface call; that is harmless, not a workaround.
 
-None of the three can be fixed from this directory. See `search.l`'s
-`HttpConfig` doc comment for the full writeup with exact error text.
-
-**Practical effect:** `connect`/`connectElasticsearch`/`connectMeilisearch`
-(which only need a response *status*, not body, for their health probe)
-and any operation whose target is unreachable (closed port, wrong host,
-DNS failure) return a clean, typed `SearchError` — this is what the test
-suite verifies. An operation that reaches a live, responding server and
-needs to read its response body (which is all of them, on success) will
-crash. Until compiler defect 3 is fixed, this library cannot be used
-against a real, reachable Elasticsearch or Meilisearch instance.
-
-**Elasticsearch and Meilisearch have not been driven against a live
-cluster in this repository's CI** (no server is reachable in the sandbox
-this was implemented in; see defect 3 above for why that would crash
-today even if one were). What CI *does* verify:
+### What the tests verify
 
 * Every request-body-construction and response-parsing function
   (`esBuildSearchBody`, `esParseSearchResponse`, `esFilterClause`,
-  `msBuildSearchBody`, `msParseSearchResponse`, `msFilterExpr`, ... — private to
-  package `Search`; the tests are a `@test_module` of that package, D245) against
-  canned, hand-written JSON matching each engine's real documented response
-  shape — see `tests/search_tests.l`.
-* The `HttpError` → `SearchError` mapping (`toSearchError`), including that
-  a real HTTP status code (`BadStatus`) is threaded through to
-  `SearchError.statusCode`, which used to be hardcoded to `0` for every
-  failure.
-* `pathEscape`, including multi-byte UTF-8 percent-encoding.
-* A real HTTP call against a closed TCP port (`http://127.0.0.1:1`),
-  proving `connect`/`search`/`suggest`/`delete` reach genuine transport
-  code (defect 1's workaround) and surface a real `ConnectionFailed`-derived
-  error, not a placeholder string.
-* A gated integration test (`tests/search_tests.l`, "integration: live
-  round trip...") that performs a full connect → createIndex → index →
-  search → delete → deleteIndex round trip when
-  `LYRIC_SEARCH_ELASTICSEARCH_URL` (or `LYRIC_SEARCH_MEILISEARCH_URL` under
-  the `meilisearch` feature) is set, and otherwise asserts the clean-skip
-  path. Point it at a real cluster locally — this will currently crash on
-  defect 3 above once `index`/`search` reach a real response body, which is
-  exactly what makes the blocker concrete rather than theoretical:
+  `msBuildSearchBody`, `msParseSearchResponse`, `msFilterExpr`, ... - private to
+  package `Search`; the tests are a `@test_module` of that package, D245)
+  against canned JSON in each engine's documented response shape
+  (`tests/search_tests.l`).
+* The `HttpError` to `SearchError` mapping (`toSearchError`), including the real
+  HTTP status in `SearchError.statusCode`, `pathEscape` (multi-byte UTF-8
+  percent-encoding), and the refusal of empty or dot-segment index names and
+  document ids.
+* A closed TCP port (`http://127.0.0.1:1`) produces a real transport failure
+  from `connect`/`search`/`suggest`/`delete`, and a silent in-process backend
+  exercises the request deadline on the JVM.
+* **A fake engine on a real listener** (`tests/search_live_tests.l`,
+  `Std.HttpServer` on the loopback interface; a `Task.Run` worker on dotnet, a
+  `spawn` in a `scope` on the JVM). The fake answers only when the request is
+  the one the real engine would accept: method, path, the auth header
+  (`Authorization: ApiKey ...` for Elasticsearch, `Bearer ...` for
+  Meilisearch), and the fields the operation must put in the body. Covered per
+  backend: `connect` (and a 401 rejection of the health probe), `createIndex`,
+  `index`, `indexBatch`, `search` (hits, total, highlights, an empty result),
+  `suggest`, `exists` (200 and 404), `delete` and `deleteIndex`, and a 500 and a
+  404 reaching the caller as `SearchError` with the operation code and status.
+  Meilisearch indexing also polls `GET /tasks/{uid}` until it succeeds.
+* A gated integration test (`tests/search_tests.l`, "integration: live round
+  trip...") performs connect, createIndex, index, search, delete and
+  deleteIndex against a real cluster when `LYRIC_SEARCH_ELASTICSEARCH_URL` (or
+  `LYRIC_SEARCH_MEILISEARCH_URL` under the `meilisearch` feature) is set, and
+  otherwise asserts the clean-skip path:
   ```sh
   docker run -d -p 9200:9200 -e "discovery.type=single-node" \
     -e "xpack.security.enabled=false" docker.elastic.co/elasticsearch/elasticsearch:8.14.0
@@ -124,41 +86,23 @@ today even if one were). What CI *does* verify:
     ./bin/lyric test --manifest lyric-search/lyric.toml
   ```
 
-**Also discovered, also pre-existing and out of scope here:** the previous
-kernel's `serializeDoc` hit a separate, already-latent self-hosted MSIL
-codegen bug — `for k in <Map[String, String]>` throws
-`InvalidCastException: ... Dictionary ... to ... List`. This rewrite's
-`esFieldsToJsonObject` / `msDocToJsonObject` iterate
-`Std.Collections.mapEntries(fields)` (a `List[MapEntry[K, V]]`) instead of
-the map directly, which appears to route around that bug — `List`
-iteration is not implicated in the report, and `esFieldsToJsonObject`'s own
-unit test exercises it successfully. This has not been independently
-re-confirmed against the original minimal repro.
+**Not verified:** neither backend has been driven against a real Elasticsearch
+or Meilisearch cluster in CI. The fake engine pins our requests and our parsing
+of documented response shapes, not the engines' behaviour, which is why the
+package is `experimental`.
 
-### JVM: not currently functional (separate, lower-layer gap)
-
-`Std.Http`'s JVM kernel (`lyric.stdlib.jvm.HttpClientHost`) does not exist
-— `docs/59-compiler-stdlib-deep-review.md` finding **H5** documents five
-`_kernel_jvm` files, including `_kernel/http_host.l`'s JVM twin, that bind
-to phantom `lyric.stdlib.jvm.*` classes. This is a `lyric-stdlib` gap, not
-a `lyric-search` one, and out of this repository slice's ownership to fix.
-Once H5 is fixed in `lyric-stdlib`, `Search` should start working on
-`--target jvm` with **no changes needed in this directory** — the same
-"no change needed" property the old README claimed for #5324, now
-actually true because the dependency is a real stdlib layer instead of a
-`lyric-search`-local kernel (modulo the three defects above, which are
-target-independent — they were all reproduced on `--target dotnet` and are
-not specific to the JVM phantom-kernel gap).
+The CI suites run `--target dotnet` with each backend feature and `--target
+jvm` with the default (`elasticsearch`) feature; a JVM run with `--features
+meilisearch` passes locally but is not in CI yet.
 
 | Feature flag    | Backend                                          | Status                                                                 |
 |-----------------|---------------------------------------------------|-------------------------------------------------------------------------|
-| `elasticsearch` | Elasticsearch's HTTP + JSON REST API (`_doc`, `_search`, `_bulk`, ...) | Request building, response parsing, and error mapping are implemented and tested. Connect / closed-port / unreachable-host failures return a clean `SearchError`. A request that reaches a live, responding server crashes reading the body (defect 3 above) |
+| `elasticsearch` | Elasticsearch's HTTP + JSON REST API (`_doc`, `_search`, `_bulk`, ...) | Real on both targets, exercised against a fake engine; not yet against a real cluster |
 | `meilisearch`   | Meilisearch's HTTP + JSON REST API (`documents`, `search`, `tasks`, ...) | Same status as `elasticsearch` |
-| `--target dotnet` | either of the above | As described above; `Std.Http`'s .NET kernel is real |
-| `--target jvm`    | either of the above | `Std.Http`'s JVM kernel is phantom (docs/59 H5) — every call fails, not a `lyric-search` gap |
+| `--target dotnet` | either of the above | `Std.Http`'s .NET kernel |
+| `--target jvm`    | either of the above | `Std.Http`'s JVM kernel (`java.net.http`) |
 
-See `docs/57-stdlib-ecosystem-library-review.md` §3 and
-`tests/search_tests.l` for the tests referenced above.
+See `docs/57-stdlib-ecosystem-library-review.md` §3 and the `tests/` files above.
 
 ## Packages
 
@@ -229,11 +173,10 @@ pub interface SearchClient {
 }
 ```
 
-Prefer the `Search.*` convenience functions (`index`, `search`,
-`searchSimple`, `delete`, `suggest`) or calling these interface methods
-directly from a non-`async` context. Wrapping a raw
-`client.<method>(...)` call in your own `async func` can hit compiler
-defect 2 above.
+Call the `Search.*` convenience functions (`index`, `search`, `searchSimple`,
+`delete`, `suggest`) or the interface methods directly. Awaiting a raw
+`client.<method>(...)` from your own `async func` works too
+(`searchViaAsync` in `tests/search_live_tests.l` pins it).
 
 ### Input validation
 

@@ -1,5 +1,7 @@
 # lyric-forms
 
+**Stability:** `experimental`
+
 Pure, UI-independent building blocks for editing domain values through forms
 (`docs/65-ui-library-sketch.md` §11, D137).
 

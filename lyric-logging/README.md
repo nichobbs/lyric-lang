@@ -1,5 +1,7 @@
 # lyric-logging
 
+**Stability:** `stable`
+
 Structured, named, runtime-configurable logging for [Lyric](https://github.com/nichobbs/lyric-lang), with aspect templates for automatic call instrumentation.
 
 > **Status**: Library source is complete. The aspect weaver (`CallLogging`, `SlowCallAlert`, `ErrorResultLogging`) and `config { }` blocks are shipped compiler features (D047, D-progress-292). The suite runs on both `--target dotnet` and `--target jvm` in CI (the JVM run is part of `scripts/ci/jvm-ecosystem-suites.sh`).
