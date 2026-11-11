@@ -66,9 +66,17 @@
     <!-- Explicit ILCompiler pin: the SDK-bundled known version (10.0.7)
          carries GHSA-p3jp-9v83-76w9 (NU1903, an error under
          TreatWarningsAsErrors). An explicit reference overrides the SDK's
-         implicit one; NuGet audit stays on. Move with the SDK pin in
-         bootstrap/global.json and the runtime pack below (#8929). -->
-    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="10.0.14" />
+         implicit one; NuGet audit stays on.
+         The version MUST equal the ILCompiler the pinned SDK ships with:
+         an SDK's Native AOT publish targets only produce the
+         PrivateSdkAssemblies item group for their own ILCompiler, so a
+         mismatch fails with "The PrivateSdkAssemblies ItemGroup is required"
+         (#8988: SDK 10.0.404 against 10.0.14; SDK 10.0.107 fails the same
+         way). bootstrap/global.json therefore pins the SDK exactly
+         (rollForward "disable"), because setup-dotnet used to float the
+         feature band and moved CI to a new SDK without any repo change.
+         Move the SDK and this version together (10.0.404 <-> 10.0.15). -->
+    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="10.0.15" />
   </ItemGroup>
 
   <!-- Bundle lyric-resolver.jar into the packed NuGet global tool, landing

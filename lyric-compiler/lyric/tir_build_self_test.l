@@ -1672,3 +1672,127 @@ test "a record passed where an interface it implements is expected is upcast" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a call of an interface method declared without a receiver passes the value as the receiver" {
+  val c = censusOf(
+    "package App\ninterface Counter {\n  func next(step: in Int): Int\n}\nrecord Box { n: Int }\nimpl Counter for Box {\n  func next(self: in Box, step: in Int): Int { self.n + step }\n}\nfunc f(c: in Counter): Int { c.next(2) }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a distinct type's from builds as a wrap of the argument converted to the underlying type" {
+  val c = censusOf("package App\ntype Id = Int\nfunc f(): Id { Id.from(5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a range subtype's from builds as a range check of the argument" {
+  val c = censusOf("package App\ntype Age = Int range 0 ..= 150\nfunc f(): Age { Age.from(5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an index on a buffer builds as a buffer index" {
+  val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call of an impl member on a record passes the value as the receiver" {
+  val c = censusOf(
+    "package App\ninterface Named { func name(): String }\nrecord P { n: String }\nimpl Named for P { func name(): String { self.n } }\nfunc f(p: P): String { p.name() }\n"
+  )
+  assertTrue(c.built >= 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a record copy builds as a copy of the receiver with the named fields replaced" {
+  val c = censusOf("package App\nrecord P { x: Int, y: Int }\nfunc f(p: P): P { p.copy(x = 5) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a copy of a generic record converts each field at the receiver's instantiation" {
+  val c = censusOf("package App\nrecord Box[T] { v: T, n: Int }\nfunc f(b: Box[Long]): Box[Long] { b.copy(v = 7) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a catch that binds the exception declares the binding as an exception-typed local" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var t = 0\n  try {\n    t = n\n  } catch Exception as e {\n    t = 1\n  }\n  t\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a bare case at a lambda's tail takes the lambda's return type" {
+  val c = censusOf(
+    "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc run[T](f: () -> Opt[T]): Opt[T] { f() }\nfunc g(): Opt[Int] { run[Int]({ -> Nada }) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a function body ending in a scope that returns builds without a tail value" {
+  val c = censusOf("package App\nfunc f(n: Int): Int {\n  scope {\n    val a = n + 1\n    return a\n  }\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a catch-bound exception's message is a built-in property read" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): String {\n  var m = \"\"\n  try {\n    m = \"ok\"\n  } catch Exception as e {\n    m = e.message\n  }\n  m\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call under explicit type arguments records them as the call's instantiation" {
+  val c = censusOf(
+    "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc isNada[T](v: in Opt[T]): Bool { true }\nfunc f(x: in Opt[Int]): Bool { isNada[Int](x) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a nullary union case at a match arm's tail takes the match's type" {
+  val c = censusOf(
+    "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc pick[T](x: in Opt[T], other: in Opt[T]): Opt[T] {\n  match x {\n    case Nada -> Nada\n    case _ -> other\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a union field bound in a generic function keeps the function's rigid type parameter" {
+  val c = censusOf(
+    "package App\nunion Res[T, E] { case Good(v: T)\n case Bad(e: E) }\nfunc andThen[T, U, E](r: in Res[T, E], f: in (T) -> Res[U, E]): Res[U, E] {\n  match r {\n    case Good(v) -> f(v)\n    case Bad(e) -> Bad(e = e)\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a generic call's type arguments are read back from its arguments and its result together" {
+  val c = censusOf(
+    "package App\nunion Res[T, E] { case Good(v: T)\n case Bad(e: E) }\nfunc andThen[T, U, E](r: in Res[T, E], f: in (T) -> Res[U, E]): Res[U, E] {\n  match r {\n    case Good(v) -> f(v)\n    case Bad(e) -> Bad(e = e)\n  }\n}\nfunc t(): Res[Int, Int] {\n  val a: Res[Int, Int] = andThen(Good(v = 5), { x: Int -> Bad(e = 42) })\n  a\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

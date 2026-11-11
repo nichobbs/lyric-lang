@@ -68,6 +68,10 @@ pub union IntrinsicOp {
   /// A built-in function by its name in the built-in table (`println`,
   /// `toString`, ...), whose signature is declared there.
   case IoBuiltin(name: String)
+  /// `T.tryFrom(x)` on a distinct or range type `T`: the argument (the
+  /// underlying type) checked into `T`, as `Result[T, String]`; `T` is the first
+  /// type argument of the node's type.
+  case IoTryFrom
 }
 
 pub union Callee {
@@ -96,6 +100,8 @@ pub union IndexKind {
   case IkString
   case IkList
   case IkMap
+  /// The built-in `buffer[T]`: an element read or write, bounds-checked.
+  case IkBuffer
   /// A record's `index` method.
   case IkMethod(sym: SymbolId)
   case IkHost(member: HostMemberRef)
@@ -221,6 +227,12 @@ pub record TCatch {
   body: TExpr
 }
 
+/// A field a record copy replaces, with its new value.
+pub record TFieldUpdate {
+  field: FieldRef
+  value: TExpr
+}
+
 pub record TExpr {
   id: NodeId
   ty: Ty
@@ -237,6 +249,9 @@ pub union TExprKind {
   /// defaults filled in.
   case XConstruct(sym: SymbolId, fields: List[TExpr])
   case XField(recv: TExpr, field: FieldRef)
+  /// A record `.copy(...)`: the value of `base` with the listed fields replaced, of the
+  /// same type.  `base` is evaluated once, before the updates, which run in source order.
+  case XCopy(base: TExpr, updates: List[TFieldUpdate])
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])

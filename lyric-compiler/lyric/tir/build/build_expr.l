@@ -717,10 +717,35 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 }
 
 /// A branch of an `if`: an expression, or a block typed as the `if` is.
+/// An expression the checker may have left untyped (a bare `None`, `[]`, or a union case
+/// whose type arguments only the context fixes) takes `ty`, the type its position gives it.
+/// It only matters when the checker recorded no usable type for the node.
+func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
+  if not env.settled.containsKey(x.nodeId) {
+    env.settled.add(x.nodeId, ty)
+  }
+}
+
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if blk.statements.count > 0 {
+    match blk.statements[blk.statements.count - 1].kind {
+      case SExpr(tail) -> settleHole(env, tail, ty)
+      case _ -> ()
+    }
+  }
+}
+
 func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, ty: in Ty): Option[TExpr] {
   val built = match b {
-    case EOBExpr(x) -> buildExpr(env, x)
-    case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    case EOBExpr(x) -> {
+      settleHole(env, x, ty)
+      buildExpr(env, x)
+    }
+    case EOBBlock(blk) -> {
+      settleBlockTail(env, blk, ty)
+      buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+    }
   }
   match built {
     case Some(t) -> coerceBranch(env, t, ty)
@@ -867,17 +892,21 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SThrow(_) -> uncoveredStmt(env, s, "a throw")
     case STry(body, catches, fin) -> {
-      // A catch that binds the exception has no type to give the binding yet.
-      for c in catches {
-        if isSome(c.bindName) {
-          return uncoveredStmt(env, s, "a try statement with a catch binding")
-        }
-      }
       val tb = match loopBody(env, body) { case Some(x) -> x; case None -> return None }
       val tcs: List[TCatch] = newList()
       for c in catches {
-        match loopBody(env, c.body) {
-          case Some(cb) -> tcs.add(TCatch(binding = None, exceptionType = c.typeName, body = cb))
+        pushScope(env)
+        var binding: Option[LocalDecl] = None
+        match c.bindName {
+          case Some(n) -> {
+            binding = Some(value = declareLocal(env, n, TException, false))
+          }
+          case None -> ()
+        }
+        val built = loopBody(env, c.body)
+        popScope(env)
+        match built {
+          case Some(cb) -> tcs.add(TCatch(binding = binding, exceptionType = c.typeName, body = cb))
           case None -> return None
         }
       }
@@ -1448,7 +1477,144 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
+  match buildRecordCopy(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
+  match buildDistinctFactory(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `r.copy(f = x, ...)` on a record, which the checker validates as a copy site and
+/// records no callee for: the receiver built once, then each named field converted to
+/// its type at the receiver's instantiation.  None when the call is not a record copy;
+/// Some(None) after a part could not be built (counted or reported there).
+func buildRecordCopy(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val recv = match fn.kind { case EMember(r, m) -> if m == "copy" { r } else { return None }; case _ -> return None }
+  if not env.ctx.tbl.recordCopySites.containsKey(recordCopySiteKey(e.span)) {
+    return None
+  }
+  val cty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  val rid = match cty { case TyUser(id, _, _) -> id; case _ -> return None }
+  val targs = match cty { case TyUser(_, _, a) -> a; case _ -> return None }
+  val fields = fieldsOfRecordInstantiated(env.ctx.tbl, rid, targs)
+  val base = match buildExpr(env, recv) { case Some(t) -> t; case None -> return Some(value = None) }
+  val updates: List[TFieldUpdate] = newList()
+  for a in args {
+    match a {
+      case CAPositional(_) -> return Some(value = uncoveredExpr(env, e, "a record copy with a positional argument"))
+      case CANamed(name, value, _) -> {
+        var idx = -1
+        var i = 0
+        while i < fields.count {
+          if fields[i].name == name {
+            idx = i
+          }
+          i = i + 1
+        }
+        if idx < 0 {
+          return Some(value = uncoveredExpr(env, e, "a record copy naming no field"))
+        }
+        val fty = match tyOfType(env.ctx, fields[idx].ty) {
+          case Ok(t) -> t
+          case Err(msg) -> {
+            env.errors.add(msg)
+            return Some(value = None)
+          }
+        }
+        val bv = match settleArg(env, value, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        val cv = match coerceArg(env, bv, fty) { case Some(t) -> t; case None -> return Some(value = None) }
+        updates.add(TFieldUpdate(field = FieldRef(owner = rid, name = name, index = idx), value = cv))
+      }
+    }
+  }
+  Some(value = Some(value = mkExpr(e, ty, XCopy(base = base, updates = updates))))
+}
+
+/// `T.from(x)` and `T.tryFrom(x)` on a non-generic distinct type `T` (language reference
+/// 2.3), which the checker types without recording a callee.  The call's own type names
+/// `T` (`from`) or `Result[T, String]` (`tryFrom`).  The argument is converted to `T`'s
+/// underlying type; `from` is then a `CvWrapDistinct` node and `tryFrom` an `IoTryFrom`
+/// intrinsic.  None when the call is not such a factory (the caller counts it); a
+/// factory the builder cannot finish is reported inside and yields Some(None).
+func buildDistinctFactory(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val mname = match fn.kind {
+    case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
+      match recv.kind {
+        case EPath(path) -> if path.segments.count == 1 { m } else { return None }
+        case _ -> return None
+      }
+    } else {
+      return None
+    }
+    case _ -> return None
+  }
+  val target = if mname == "from" {
+    ty
+  } else {
+    match ty {
+      case TNamed(_, rargs) -> if rargs.count == 2 { rargs[0] } else { return None }
+      case _ -> return None
+    }
+  }
+  val tbl = env.ctx.tbl
+  var distinctId: Option[SymbolId] = None
+  val uty = match target {
+    case TRefined(u, _, _, _) -> u
+    case TNamed(did, targs) -> {
+      if targs.count != 0 {
+        return None
+      }
+      val under = match symbolOfDefId(tbl, did) {
+        case Some(sym) -> match sym.kind {
+          case DKDistinctType(_, _) -> match distinctUnderlyingOf(tbl, TyUser(id = did, name = sym.name, args = newList())) {
+            case Some(u) -> u
+            case None -> return None
+          }
+          case _ -> return None
+        }
+        case None -> return None
+      }
+      distinctId = Some(value = did)
+      match tyOfType(env.ctx, under) {
+        case Ok(t) -> t
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return Some(value = None)
+        }
+      }
+    }
+    case _ -> return None
+  }
+  val xs = match positionalArgs(args) {
+    case Some(v) -> v
+    case None -> return Some(value = uncoveredExpr(env, e, "a distinct factory with a named argument"))
+  }
+  if xs.count != 1 {
+    return None
+  }
+  val built = match buildExpr(env, xs[0]) { case Some(t) -> t; case None -> return Some(value = None) }
+  val arg = match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
+  if mname == "from" {
+    return Some(
+      value = match distinctId {
+        case Some(did) -> Some(
+          value = mkExpr(e, ty, XConvert(kind = CvWrapDistinct(sym = did), inner = arg))
+        )
+        case None -> convertValue(env, arg, ty)
+      }
+    )
+  }
+  val one: List[TArg] = newList()
+  one.add(TArgIn(value = arg))
+  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoTryFrom), args = one))))
 }
 
 /// A host element as a `Ty`: the receiver's type argument, a Lyric primitive, or a
@@ -1708,7 +1874,10 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
     case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
-    case TyUser(id, hd, _) -> if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
+    case TyException -> if name == "message" { return Some(value = "Exception.message") }
+    case TyUser(id, hd, _) -> if name == "length" and symbolIdEq(id, builtinBufferTypeId()) {
+      return Some(value = "buffer.length")
+    } else if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
       val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
         case Some(ts) -> ts.originPackage.startsWith("Std.")
         case None -> false
@@ -1731,6 +1900,9 @@ func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[TirT
     case TArray(_, _) -> return Some(value = IkArray)
     case TSlice(_) -> return Some(value = IkSlice)
     case TPrim(TPString) -> return Some(value = IkString)
+    case TNamed(s, targs) -> if targs.count == 1 and symbolIdEq(s, builtinBufferTypeId()) {
+      return Some(value = IkBuffer)
+    }
     case _ -> ()
   }
   match mapGet(env.ctx.tbl.exprTypes, recvExpr.nodeId) {
@@ -1833,6 +2005,9 @@ func buildLambda(
     decls.add(declareLocal(env, params[i].name, ls.params[i].ty, false))
     i = i + 1
   }
+  // The checker leaves a bare `None` or `[]` at a lambda's tail untyped; it takes the
+  // lambda's return type, as an argument hole takes its parameter's.
+  settleBlockTail(env, body, ls.ret)
   val built = buildBlock(env, body, None, freshNodeId(env))
   env.lambdas.removeAt(env.lambdas.count - 1)
   popScope(env)
@@ -1963,14 +2138,8 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 /// A value of a declared type used where an interface is expected: the checker accepts
 /// that only for a type that implements it, so the node names the interface.
 func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
-  val iface = match to {
-    case TNamed(i, _) -> i
-    case _ -> return None
-  }
-  val src = match from {
-    case TNamed(a, _) -> a
-    case _ -> return None
-  }
+  val iface = match to { case TNamed(i, _) -> i; case _ -> return None }
+  val src = match from { case TNamed(a, _) -> a; case _ -> return None }
   if src.id == iface.id {
     return None
   }
@@ -2002,9 +2171,32 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
 }
 
+/// Whether `t` is a block with no tail value whose last statement always leaves it.
+func blockNeverCompletes(t: in TExpr): Bool {
+  match t.kind {
+    case XBlock(stmts, None) -> {
+      if stmts.count == 0 {
+        return false
+      }
+      match stmts[stmts.count - 1].kind {
+        case TsReturn(_) -> true
+        case TsThrow(_) -> true
+        case TsScope(_, body) -> blockNeverCompletes(body)
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
 /// its own, or not at all (counted).  A branch that never completes fits any type.
 func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  // A block with no tail whose last statement always leaves it (`return`, `throw`, or a
+  // `scope` that ends in one) never completes, so it fits any type.
+  if blockNeverCompletes(t) {
+    return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+  }
   // A block is typed as the whole, but its tail keeps its own type, which is
   // the value that needs converting.
   match t.kind {
@@ -2276,6 +2468,67 @@ func isPlainArg(x: in Expr): Bool {
   }
 }
 
+/// The type arguments of a generic call the checker recorded no instantiation for: read
+/// back from the argument types it recorded and from the call's result type together,
+/// since either alone can leave a parameter out (`andThenResult(Ok(value = 5), f)` has
+/// `T` only in an argument and `U` and `E` only in the annotated result).  An argument the
+/// checker left untyped fixes nothing.
+func genericArgsFromCall(
+  env: in BuildEnv, sig: in ResolvedSignature, resultTy: in Type, args: in List[CallArg]
+): List[Type] {
+  val named: List[String] = newList()
+  for a in args {
+    match a {
+      case CANamed(n, _, _) -> named.add(n)
+      case CAPositional(_) -> ()
+    }
+  }
+  val free: List[Int] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    if not named.contains(sig.params[pi].name) {
+      free.add(pi)
+    }
+    pi = pi + 1
+  }
+  val ps: List[Type] = newList()
+  val ts: List[Type] = newList()
+  var pos = 0
+  for a in args {
+    var slot = -1
+    var arg: Option[Expr] = None
+    match a {
+      case CAPositional(x) -> {
+        if pos < free.count {
+          slot = free[pos]
+        }
+        pos = pos + 1
+        arg = Some(value = x)
+      }
+      case CANamed(n, x, _) -> {
+        var j = 0
+        while j < sig.params.count {
+          if sig.params[j].name == n {
+            slot = j
+          }
+          j = j + 1
+        }
+        arg = Some(value = x)
+      }
+    }
+    match arg {
+      case Some(x) -> if slot >= 0 {
+        ps.add(sig.params[slot].ty)
+        ts.add(match mapGet(env.ctx.tbl.exprTypes, x.nodeId) { case Some(t) -> t; case None -> tyErrorSilent() })
+      }
+      case None -> ()
+    }
+  }
+  ps.add(sig.returnTy)
+  ts.add(resultTy)
+  inferGenericArgsDeep(sig.generics, ps, ts)
+}
+
 /// A call to a declared non-generic function.  Named arguments take their parameter's
 /// slot first and the positional ones fill the free slots in order, as the checker pairs
 /// them.  The arguments run in parameter order in TIR, so a call whose source order
@@ -2294,7 +2547,7 @@ func buildDirectCall(
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
       case None -> match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
-        case Some(rt) -> genericArgsFromResult(sig, rt)
+        case Some(rt) -> genericArgsFromCall(env, sig, rt, args)
         case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
       }
     }
@@ -2354,15 +2607,22 @@ func buildMethodCall(
     case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
   var isEntry = false
+  var isImplMember = false
   match site.sig.recvMode {
     case Some(PMIn) -> ()
     case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
     // An entry or `func` of a protected type declares no receiver: the protected value is
     // the receiver, passed `in` (a reference whose lock the backend takes).
+    // An interface method is declared without a receiver too: the value it is called
+    // on is the receiver, dispatched on its interface.
     case None -> if recvIsProtected(env, site.recvTy) {
       isEntry = true
+    } else if isSome(site.iface) {
+      ()
     } else {
-      return uncoveredExpr(env, e, "a method call with no declared receiver")
+      // A member of an `impl Iface for T` block declares no receiver either: `self` is
+      // implicit, so the value it is called on is the receiver, passed `in`.
+      isImplMember = true
     }
   }
   val declared = match tyOfType(env.ctx, site.recvTy) {
@@ -2389,7 +2649,11 @@ func buildMethodCall(
     sym,
     site.sig,
     Some(value = site.recvTy),
-    if isEntry { Some(value = PMIn) } else { site.sig.recvMode },
+    if isEntry or isImplMember or (isSome(site.iface) and not isSome(site.sig.recvMode)) {
+      Some(value = PMIn)
+    } else {
+      site.sig.recvMode
+    },
     if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
   )
   Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
