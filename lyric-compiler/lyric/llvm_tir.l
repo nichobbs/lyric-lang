@@ -444,6 +444,8 @@ func exprKindName(k: in TExprKind): String {
     case XForall(_, _, _) -> "XForall"
     case XExists(_, _, _) -> "XExists"
     case XAssign(_, _, _) -> "XAssign"
+    case XCopy(_, _) -> "XCopy"
+    case _ -> "an expression kind added after this lowering was written"
   }
 }
 
@@ -796,6 +798,7 @@ func stmtKindName(k: in TStmtKind): String {
     case TsWhile(_, _, _) -> "TsWhile"
     case TsLoop(_, _) -> "TsLoop"
     case TsInvariant(_) -> "TsInvariant"
+    case _ -> "a statement kind added after this lowering was written"
   }
 }
 
