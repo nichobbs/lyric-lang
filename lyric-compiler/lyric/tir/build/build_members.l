@@ -186,3 +186,46 @@ pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site
   env.symOverride.add(sym)
   buildFnDecl(env, site.fn, tbl)
 }
+
+/// The field `name` of the non-generic protected type `ty`, as the position the type entry gives it.
+pub func protectedFieldRef(tbl: in SymbolTable, ty: in Ty, name: in String): Option[FieldRef] {
+  match ty {
+    case TNamed(sym, _) -> {
+      var i = 0
+      for f in protectedFieldsOf(tbl, sym) {
+        if f.name == name {
+          return Some(value = FieldRef(owner = sym, name = name, index = i))
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// A protected member's bare field name: the field of the receiver `self`.
+pub record BareField {
+  recv: TExpr
+  field: FieldRef
+}
+
+pub func bareSelfField(env: in BuildEnv, at: in Expr, name: in String): Option[BareField] {
+  match lookupLocal(env, "self") {
+    case Some(d) -> match protectedFieldRef(env.ctx.tbl, d.ty, name) {
+      case Some(f) -> Some(
+        value = BareField(
+          recv = TExpr(
+            id = freshNodeId(env),
+            ty = d.ty,
+            span = at.span,
+            kind = XLocal(local = d.id)
+          ),
+          field = f
+        )
+      )
+      case None -> None
+    }
+    case None -> None
+  }
+}

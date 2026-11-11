@@ -349,7 +349,17 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
         Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
       }
     }
-    case None -> uncoveredExpr(env, e, "a name that is not a local")
+    case None -> {
+      // A protected member names a field of its receiver without `self.`.
+      val bare = match e.kind {
+        case EPath(p) -> if p.segments.count == 1 { bareSelfField(env, e, p.segments[0]) } else { None }
+        case _ -> None
+      }
+      match bare {
+        case Some(bf) -> Some(value = mkExpr(e, ty, XField(recv = bf.recv, field = bf.field)))
+        case None -> uncoveredExpr(env, e, "a name that is not a local")
+      }
+    }
   }
 }
 
@@ -1972,7 +1982,7 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
         }
         i = i + 1
       }
-      None
+      protectedFieldRef(env.ctx.tbl, ty, name)
     }
     case _ -> None
   }
@@ -2179,6 +2189,12 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       if p.segments.count == 1 {
         match lookupLocal(env, p.segments[0]) {
           case Some(d) -> return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          case None -> ()
+        }
+      }
+      if p.segments.count == 1 {
+        match bareSelfField(env, target, p.segments[0]) {
+          case Some(bf) -> return Some(value = TPlace(ty = pty, kind = PlField(recv = bf.recv, field = bf.field)))
           case None -> ()
         }
       }
