@@ -42,7 +42,9 @@ if [ "$curlh2" != "2:200" ]; then
 fi
 echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$summary"
 
-if ! bash scripts/ci/dotnet-h2-scheduler-smoke.sh "$base" "$log" >> "$summary"; then
+# tee, not a bare redirect: the scheduler smoke reports a failed check as an
+# ::error:: line on stdout, which must reach the job log and not only the step summary.
+if ! bash scripts/ci/dotnet-h2-scheduler-smoke.sh "$base" "$log" | tee -a "$summary"; then
   cat "$log" || true
   exit 1
 fi
