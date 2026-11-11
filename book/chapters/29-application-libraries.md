@@ -377,7 +377,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-search | implemented over HTTP (#5408); not usable against a live server until the cross-package `HttpResponse.bodyText` defect is fixed (docs/71 phase 1), see its README | same code; the README also records a missing JVM `Std.Http` kernel, contradicting the JVM CI suite, to be reconciled (docs/71) | D056 |
 | lyric-i18n | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | D-progress-627 |
-| lyric-jobs | `InProcessJobScheduler` and `inprocess` real; `hangfire`/`quartz` `NOT_IMPLEMENTED` | `InProcessJobScheduler`, `inprocess` and Quartz real, suite in CI | D-progress-633 |
+| lyric-jobs | `InProcessJobScheduler` real; Hangfire and Quartz.NET removed from the API (D552) | `InProcessJobScheduler` real, suite in CI; Quartz binding removed (D552) | D-progress-633, D552 |
 | lyric-ws | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
 | lyric-session | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
 | lyric-auth | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
