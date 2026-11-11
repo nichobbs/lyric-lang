@@ -10,7 +10,7 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
 |---|---|
 | Stable on both targets | proto, validation, i18n, health, testing, generator-sdk, unicode, unicode-dict; auth except `ValidateKey` on JVM |
 | Real, labelled `@experimental` | web, ws, mcp, grpc, forms, lambda, aws-xray, resilience, session, feature-flags, ui |
-| Headline backend missing | mq (only `inmemory`, dotnet), storage (S3, Azure; removed from the public API, see progress 2026-11-10-storage-remove-s3-azure), db (no JVM), jobs (Hangfire, Quartz.NET on dotnet), otel (OTLP JVM, logs, gRPC), lambda (HTTP, streaming), aws-secrets (native `config`) |
+| Headline backend missing | mq (only `inmemory`, dotnet), storage (S3, Azure; removed from the public API, see progress 2026-11-10-storage-remove-s3-azure), db (no JVM), jobs (Hangfire, Quartz.NET on dotnet), otel (OTLP JVM, logs, gRPC; JVM transport implemented and logs/gRPC removed in #8953), lambda (HTTP, streaming), aws-secrets (native `config`) |
 | Broken in one configuration | session and jobs in-process stores on JVM (#5451, #5456); auth `ValidateKey` and aws-xray `Tracing` on JVM (B-prime weaver); cache thread safety (#7457); search against a live server (`HttpResponse.bodyText`; does not reproduce on `main`, see section 2) |
 | Docs out of step | logging README (weaver "planned"), book matrix rows (proto, logging, search, five libraries missing), `cache_aspects.l` header |
 | Out of scope | graphics, window, GPU, text, draw, game, access, native lyric-ui (D548) |
@@ -39,6 +39,10 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
      mq, storage, jobs, db, otel, lambda (HTTP, `Lambda.Stream`), aws-secrets.
      Progress: lambda (HTTP entry point, `Lambda.Stream`) and aws-secrets (native
      annotation path, `NotImplemented`) done on `claude/eco-lambda-secrets`.
+     _Progress:_ jobs done. Hangfire, Quartz.NET, the JVM Quartz binding,
+     `NativeJobScheduler` and `Jobs.connect*` are removed; `InProcessJobScheduler`
+     is the reference backend (the Quartz kernel never ran application
+     handlers and CI never selected it).
   3. Conformance suites in `lyric-testing` for `MessageQueue`, `StorageBucket`,
      `JobScheduler`, `CacheStore`, `SessionStore`, `SearchClient`, `FlagStore`.
   4. Real in-tree reference backends where missing: lyric-db JVM (JDBC with

@@ -43,8 +43,7 @@
 #   search      the request-deadline branch against a silent in-process
 #               backend (`@cfg(target = "jvm")` test, #8571)
 #   jobs        InProcessJobScheduler (a `List[JobSpec]` queue field read back
-#               through the erased ArrayList) and the Retryable aspect, plus
-#               the Quartz-backed kernel; Quartz is Maven-restored first
+#               through the erased ArrayList) and the Retryable aspect
 #   session     InProcessSessionStore (`Map[String, Record]` values) and the
 #               Lettuce-backed kernel; Lettuce is Maven-restored first
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
@@ -61,6 +60,9 @@
 #               suite (typed columns, transactions, error mapping) on
 #               sqlite-jdbc; the PostgreSQL driver is Maven-restored with it
 #               and checked for connect-failure mapping (#8932)
+#   otel        OTLP/HTTP export through the JVM kernel (java.net.http) against
+#               an in-process ServerSocket collector: path, content type,
+#               headers, byte-exact protobuf body, 503 retry, deadline (#8953)
 #   grpc        the client against an in-process grpc-java server (unary,
 #               server streaming, metadata, deadlines, status mapping,
 #               early stream cancel, #8527 / #5409) and the Resilience-backed
@@ -88,13 +90,13 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db otel)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java), `jobs` (Quartz),
+  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
   # `session` (Lettuce), `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
@@ -102,7 +104,7 @@ run_suite() {
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|jobs|session|aws-xray|ws|db)
+    web|mail|grpc|session|aws-xray|ws|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac
@@ -120,10 +122,6 @@ run_suite() {
   local features="jvm"
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"
-  fi
-  # `jobs`'s in-process scheduler is its own feature, beside the Quartz kernel.
-  if [ "$lib" = "jobs" ]; then
-    features="jvm,inprocess"
   fi
   # `db`'s two drivers are features beside the kernel; both are compiled in,
   # as under the `dotnet` defaults.

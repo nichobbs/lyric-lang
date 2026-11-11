@@ -1067,10 +1067,13 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   and liveness/readiness probe helpers (D-progress-225 / D056).
 - `lyric-logging/` — `lyric-logging` library: structured logging
   adapters (`Lyric.Logging`) backed by `Std.Log` (D-progress-222 / D054).
-- `lyric-otel/` — `lyric-otel` library: OpenTelemetry trace and metric
-  exporters (D-progress-221 / D055); OTLP exporter (`OTel.Otlp` package) added
-  in D069 — exports traces/metrics/logs to any OTLP collector via gRPC or
-  HTTP/protobuf transport using the OTel .NET SDK pipeline.
+- `lyric-otel/` — `lyric-otel` library: OpenTelemetry span and metric
+  recording (D-progress-221 / D055) plus an OTLP/HTTP protobuf exporter
+  (`OTel.Otlp`, pure-Lyric codec over `lyric-proto`, D069), real on both
+  targets (`HttpClient` on dotnet, `java.net.http` on jvm; the JVM transport is
+  tested against an in-process collector in `jvm-ecosystem-suites.sh`).
+  Traces and metrics only: there is no OTLP logs exporter and no OTLP/gRPC
+  transport (D552 item 2).
 - `lyric-proto/` — `lyric-proto` library: pure-Lyric Protocol Buffer (proto3)
   wire-format encoder and decoder (D067).  Kernel helpers: ProtoBuffer
   (MemoryStream accumulator) + IEEE 754 bit extraction (BitConverter).  Used
@@ -1098,10 +1101,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `MessageQueue`/`QueueConsumer`/`DeadLetterStore` interfaces; `Idempotent`
   and `DeadLetter` aspect templates.
 - `lyric-jobs/` — `lyric-jobs` library: background job scheduling
-  (`Lyric.Jobs`). Hangfire and Quartz.NET backends — **`InProcessJobScheduler`
-  is real on both targets; Hangfire/Quartz.NET are `NOT_IMPLEMENTED` on
-  `dotnet`, but genuinely implemented via Quartz Scheduler on `jvm`, see
-  `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
+  (`Lyric.Jobs`). **`InProcessJobScheduler` is the one backend and is real
+  on both targets; the Hangfire, Quartz.NET and JVM Quartz backends
+  (`Jobs.connect*`, `NativeJobScheduler`) were removed from the API (D552),
+  see `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
   SMTP via `System.Net.Mail` on `dotnet` and Jakarta Mail on `jvm`

@@ -11,8 +11,9 @@
 #
 # Span/metric recording (OTel.*) is pure Lyric and platform-neutral.
 # OTLP/HTTP export (OTel.Otlp) POSTs protobuf built by OTel.Otlp.Codec
-# (on top of lyric-proto) via a dedicated HttpClient/ByteArrayContent
-# kernel — no OTel .NET/Java SDK dependency (issue #5410).
+# (on top of lyric-proto) via a dedicated byte-body HTTP kernel per target
+# (HttpClient/ByteArrayContent on dotnet, java.net.http on jvm) — no OTel
+# .NET/Java SDK dependency (issue #5410).
 #
 # See docs/27-aspect-libraries.md and docs/26-aspects.md §18.
 
@@ -28,9 +29,7 @@ license     = "Apache-2.0"
 default = ["dotnet"]
 # Enable the .NET OTLP/HTTP transport kernel.
 dotnet = []
-# JVM feature flag kept for API-shape parity; every JVM code path it
-# gates (`_kernel/jvm/otlp_kernel.l`) always returns Err("not
-# implemented") — see README.md "Platform support".
+# Enable the JVM OTLP/HTTP transport kernel (`java.net.http.HttpClient`).
 jvm    = []
 
 [project]
@@ -45,7 +44,7 @@ output_assembly = "Lyric.OTel.dll"
 "OTel.Otlp.Codec"         = "src/otlp_codec.l"
 # .NET extern boundary for OTLP/HTTP transport (feature-gated).
 "OTel.Kernel.Net.Otlp"    = "src/_kernel/net/otlp_kernel.l"
-# JVM extern boundary for OTLP/HTTP transport (feature-gated; always Err).
+# JVM extern boundary for OTLP/HTTP transport (feature-gated).
 "OTel.Kernel.Jvm.Otlp"    = "src/_kernel/jvm/otlp_kernel.l"
 # Span/metric recording API + pub aspect templates.
 "OTel"                    = "src/otel.l"
@@ -57,6 +56,8 @@ output_assembly = "Lyric.OTel.dll"
 "OTel.SpanTests"           = "tests/otel_span_tests.l"
 "OTel.OtlpCodecTests"      = "tests/otlp_codec_tests.l"
 "OTel.OtlpTransportTests"  = "tests/otlp_transport_tests.l"
+"OTel.OtlpNetKernelTests"  = "tests/otlp_net_kernel_tests.l"
+"OTel.OtlpJvmCollectorTests" = "tests/otlp_jvm_collector_tests.l"
 
 [dependencies]
 "Lyric.Proto" = { workspace = true }

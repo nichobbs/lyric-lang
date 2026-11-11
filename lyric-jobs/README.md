@@ -2,94 +2,43 @@
 
 **Stability:** `incomplete`
 
-Background job scheduling with pluggable backends (Hangfire, Quartz.NET, Quartz).
+Background job scheduling behind a `JobScheduler` interface, with an in-process reference backend.
 
 ## Platform parity
 
-**`InProcessJobScheduler` is production-ready on both targets** (pure
-Lyric, no kernel dependency; `Jobs.inProcess()`). The JVM suite
-(`lyric test --target jvm --no-default-features --features jvm,inprocess`,
-with the Quartz Maven dependencies restored first) passes in full and runs in
-CI through `scripts/ci/jvm-ecosystem-suites.sh`. The two
-targets diverge in an unusual direction — `jvm` actually has *more* real
-backend coverage than `dotnet` today, for `NativeJobScheduler` (obtained via
-`Jobs.connect()` / `Jobs.connectHangfire()` / `Jobs.connectQuartz()`):
-
-| Platform feature | Backend feature      | Status                                                                 |
-|-------------------|----------------------|-------------------------------------------------------------------------|
-| `dotnet` (default) | `InProcessJobScheduler`      | Available                                                                |
-| `dotnet` (default) | `inprocess`            | Available — real, functional `ConcurrentDictionary`-backed `NativeJobScheduler` (Phase 3 of #733) |
-| `dotnet`           | `hangfire`, `quartz`   | `NOT_IMPLEMENTED` — `connect()` returns an error (`src/_kernel/net/jobs_kernel.l`, tracked as a Phase 3 follow-up of #733) |
-| `jvm`              | `InProcessJobScheduler`      | Available — pure Lyric, tested on the JVM in CI |
-| `jvm`              | `inprocess`            | Available — real, functional `ConcurrentHashMap`-backed `NativeJobScheduler` |
-| `jvm`              | `hangfire`, `quartz`   | Real Quartz Scheduler binding (both features map to Quartz — Hangfire has no JVM port) — genuine, tested implementation, not a stub. See "Quartz on JVM" below for exactly what "real" means here. |
-
-`dotnet`/`jvm` (platform) and `inprocess`/`hangfire`/`quartz` (backend) are
-two independent, each-mutually-exclusive feature axes — see `lyric.toml`'s
-`[features]` comment. Selecting none of `inprocess`/`hangfire`/`quartz` is a
-**build-time error** (an unresolved kernel symbol), not a runtime
-"not configured" failure: `NativeJobScheduler`/`connect()` genuinely require
-picking a backend.
-
-### Quartz on JVM
-
-`src/_kernel/jvm/jobs_kernel.l` binds real `org.quartz-scheduler:quartz` /
-`quartz-jobs` types via JVM auto-FFI (`extern type`) — no F# shim, no
-`extern package` (that mechanism is a confirmed no-op, epic #5324; this
-kernel used to declare one and every function in it was dead code until this
-rewrite). `Jobs.connectQuartz()` starts a real
-`org.quartz.impl.StdSchedulerFactory`-built `Scheduler` (RAMJobStore,
-in-memory); `enqueue`/`schedule` submit real `JobDetail`+`Trigger` pairs that
-a genuine Quartz thread pool executes; `cancel` calls the real
-`Scheduler.deleteJob`; `status`/`results` poll real Quartz state
-(`Scheduler.checkExists`) rather than fabricating a result. Verified against
-a real, running Quartz scheduler in `tests/jobs_tests.l`'s
-`"NativeJobScheduler (quartz feature): real end-to-end schedule, run, poll,
-cancel, and error paths"` test — run it with:
+**`InProcessJobScheduler` is production-ready on both targets** (pure Lyric,
+no kernel dependency; `Jobs.inProcess()`). The `dotnet` and `jvm` features
+only select the platform kernel that supplies the clock, sleep and job-ID
+primitives; they are mutually exclusive, so select the one matching
+`--target`:
 
 ```sh
-lyric test --manifest lyric-jobs/lyric.toml --target jvm --no-default-features --features jvm,quartz
+lyric test --manifest lyric-jobs/lyric.toml                       # dotnet
+lyric test --manifest lyric-jobs/lyric.toml --target jvm --no-default-features --features jvm
 ```
 
-Two things this kernel genuinely **cannot** do, both pre-existing, disclosed
-limits rather than shortcuts taken for this task:
+The JVM suite runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`.
 
-1. **No arbitrary job-handler dispatch.** `NativeJobScheduler.enqueue`/
-   `schedule` never accepted a `JobHandler` on *either* target — only
-   `InProcessJobScheduler.runNext`/`runAll` do. So there is no application
-   code for Quartz to call back into even in principle. Quartz's real thread
-   pool instead runs `org.quartz.jobs.NativeJob` (a built-in Job
-   implementation shipped by `quartz-jobs`) against a fixed, always-succeeding
-   no-op command, purely to exercise genuine Quartz job-store/thread-pool
-   machinery end-to-end; `results()`'s `output`/`error` fields are therefore
-   always empty. Implementing `org.quartz.Job` from a Lyric record so a real
-   handler could run inside Quartz's own thread requires the JVM analogue of
-   `impl <ExternInterface> for Record` (docs/51) — shipped for MSIL (D105)
-   but not yet for JVM.
-2. **`schedule()` (cron) never reports a terminal status.** A recurring
-   Quartz trigger doesn't have a single "done" state (matching
-   `Jobs.Kernel.Net`, which doesn't implement `schedule` for the native path
-   at all) — `status()` stays `"Pending"` between fires.
+## Migration from earlier releases
 
-While verifying this kernel, three general JVM backend gaps were found (see
-docs/03-decision-log.md for the full writeup): a `var …: Bool = false`
-record field immediately before a `Long` field, or several defaulted fields
-before a trailing reference field, miscompile a record constructor
-(`VerifyError: Bad type on operand stack`) — worked around here by field
-reordering and explicit construction (not fixed at the compiler level;
-filed as #5457). Calling a method through an *interface*-typed `extern
-type` (rather than a class) mis-emitted `invokevirtual` against an
-interface owner and failed class-load verification, because the JVM
-class-file reader intentionally skipped interface class files entirely —
-this one **was fixed at the compiler level** (landed via `lyric-session`'s
-Lettuce Redis kernel work, D-progress-631, integrated into this same PR;
-this kernel's own binding to Quartz's public `org.quartz.impl.StdScheduler`
-facade class rather than the `Scheduler` interface it implements predates
-that fix and was left as-is — both now work). `List[T].removeAt` (used by
-`InProcessJobScheduler.cancel`, unrelated to this kernel) had no JDK
-`ArrayList.remove(int)` translation at all, which **was** fixed directly in
-`lyric-compiler/jvm/codegen/04_calls.l` since it blocked compiling `Jobs` for
-JVM altogether.
+Hangfire, Quartz.NET and the JVM Quartz binding were removed from the public
+API (D552, docs/71). The `dotnet` backends only ever returned
+`NOT_IMPLEMENTED`; the JVM binding scheduled real Quartz jobs but could only
+run a fixed no-op native command, never an application handler. Removed:
+
+| Removed | Replacement |
+|---|---|
+| `Jobs.connect()`, `Jobs.connectHangfire()`, `Jobs.connectQuartz()` | `Jobs.inProcess()` |
+| `NativeJobScheduler` | `InProcessJobScheduler`, or your own `JobScheduler` implementation |
+| `Jobs.cronExprToQuartz` | none; it existed only to feed the Quartz kernel |
+| feature `inprocess` | none; delete it from `--features` (the in-process scheduler needs no feature) |
+| feature `hangfire` | none; the flag no longer exists and `--features hangfire` is rejected |
+| feature `quartz` | none; the flag no longer exists and `--features quartz` is rejected |
+| `[nuget]` entries `Hangfire.Core`, `Hangfire.SqlServer`, `Quartz`; `[maven]` entries `org.quartz-scheduler:quartz`, `quartz-jobs` | none; the package restores nothing |
+| env var `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` | no longer read |
+
+Durable backends (Hangfire, Quartz) belong in separate packages that implement
+`JobScheduler` (D552 item 3); they are not part of this library.
 
 ## Packages
 
@@ -134,11 +83,9 @@ pub interface JobScheduler {
 }
 ```
 
-Two implementations are provided: `InProcessJobScheduler` (in-memory,
-single-process, obtained via `Jobs.inProcess()`) and `NativeJobScheduler`
-(backend-backed, obtained via `Jobs.connect()` / `Jobs.connectHangfire()` /
-`Jobs.connectQuartz()` — see "Backends" below for which are real on which
-target).
+One implementation is provided: `InProcessJobScheduler` (in-memory,
+single-process, obtained via `Jobs.inProcess()`). Implement the interface to
+add a durable backend in a separate package.
 
 ## Backends
 
@@ -165,39 +112,6 @@ a `JobHandler` you provide). Best for development and testing.
   to the same retry budget as a genuine `Err`, even if the handler itself
   returned `Ok`. A handler that never returns still hangs `runNext` — there
   is no cancellation of in-flight work.
-
-### `inprocess` feature (`NativeJobScheduler`)
-
-A second, independent in-memory implementation — real on both targets
-(`ConcurrentDictionary` on `dotnet`, `ConcurrentHashMap` on `jvm`) — reachable
-through the same `JobScheduler` interface as the Hangfire/Quartz backends via
-`Jobs.connect()`. Unlike `InProcessJobScheduler`, it has no handler-dispatch
-API either (see "Quartz on JVM" above) — it exists to exercise the
-`NativeJobScheduler` code path (kernel dispatch, JSON results encoding) in
-tests without a real broker.
-
-### Hangfire (`hangfire` feature)
-
-`Jobs.connectHangfire()` connects to Hangfire on `dotnet`, and to a real
-Quartz Scheduler (as a functional substitute — Hangfire has no JVM port) on
-`jvm`. **On `dotnet`, this currently returns `Err("... not yet
-implemented")`** — the real .NET Hangfire binding is tracked as a Phase 3
-follow-up of #733. On `jvm` it's a real binding — see "Quartz on JVM" above
-for exactly what "real" covers. There is no connection-string parameter (the
-underlying kernel `connect` never accepted one on either target); the
-connection string is read from an environment variable instead:
-
-| Env var | Default | Meaning |
-|---|---|---|---|
-| `LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING` | (required on `dotnet`) | SQL Server or Redis connection string. On `jvm` a non-empty value is ignored with a `Std.Log.warn` (Quartz uses RAMJobStore regardless), rather than silently downgrading persistence. |
-
-### Quartz (`quartz` feature)
-
-`Jobs.connectQuartz(datasourceUrl)` connects to Quartz.NET on `dotnet`
-(requires an ADO.NET-compatible data source for persistence) or to real
-Quartz Scheduler on `jvm`. **On `dotnet`, this currently returns
-`Err("... not yet implemented")`**, same tracking as Hangfire above. On
-`jvm` it's a real binding (in-memory `RAMJobStore`, not persistent).
 
 ## Cron expressions
 
@@ -242,39 +156,9 @@ internally and returns `Err` for an invalid expression instead of forwarding
 it. `scheduleCron`/`scheduleCronWith` take an already-validated `CronExpr`
 directly, for callers that parsed (and want to reuse or inspect) it upfront.
 
-**Quartz dialect conversion.** Real Quartz Scheduler (the `jvm` binding
-behind both the `hangfire` and `quartz` features, see "Quartz on JVM" above)
-parses a 6/7-field expression, not the 5-field Unix dialect above:
-`cronExprToQuartz(cron)` renders it as `"<0> <minute> <hour> <dom> <month>
-<dow>"` — a leading literal `"0"` seconds field — with Quartz's `?`
-day-of-month/day-of-week disambiguation rule applied (Quartz requires
-exactly one of the two to be `?`; whichever Unix field is `*` becomes `?`,
-and if both are `*` day-of-week becomes `?`) and Unix's `0-7`
-(Sunday=`0`/`7`) day-of-week numbering renumbered to Quartz's `1-7`
-(Sunday=`1`). A restricted day-of-week field is never renumbered
-digit-by-digit in place (that mishandles a step's own digits and a range
-spanning both Unix Sunday spellings, e.g. `0-7`); instead it is expanded to
-the explicit set of Unix day values it covers, each value is mapped to its
-Quartz day, and the result is rendered as a deduplicated, ascending Quartz
-list (`*/2` becomes `1,3,5,7`, not `*/3`) — or as `*` when the set covers
-every day of the week (`0-7`, `0-6`, and `1-7` all become `*`). `Err` when
-*both* day-of-month and day-of-week are restricted
-(not representable as a single Quartz expression — Quartz has no OR
-semantics between the two the way Unix cron does). `Jobs`'s own JVM dispatch
-path applies this conversion automatically before calling into
-`Jobs.Kernel.Jvm.schedule`, so `NativeJobScheduler.schedule`'s real Quartz
-`CronScheduleBuilder` always receives a dialect-correct string; on `dotnet`
-the plain 5-field string is forwarded as-is (moot today — the `inprocess`
-backend ignores cron content, and `hangfire`/`quartz` fail at `connect()`
-before ever reaching a cron string, both tracked as Phase 3 follow-ups of
-#733).
-
 ## API reference
 
 ```lyric
-Jobs.connect()                                          // Result[NativeJobScheduler, String]
-Jobs.connectHangfire()                                   // Result[NativeJobScheduler, String] (`hangfire` feature)
-Jobs.connectQuartz()                                     // Result[NativeJobScheduler, String] (`quartz` feature)
 Jobs.inProcess()                                         // InProcessJobScheduler
 Jobs.enqueue(scheduler, name, payload)                   // Result[String, String] (job ID)
 Jobs.enqueueWith(scheduler, name, payload, maxAttempts, timeoutMs)  // Result[String, String]
@@ -289,7 +173,6 @@ Jobs.runAll(scheduler, handler)                          // slice[JobResult] (In
 Jobs.attemptCount(scheduler, jobId)                      // Int (InProcessJobScheduler only)
 Jobs.parseCron(s)                                        // Result[CronExpr, String]
 Jobs.cronExprToString(cron)                              // String (canonical 5-field form)
-Jobs.cronExprToQuartz(cron)                              // Result[String, String] (Quartz's 6/7-field dialect)
 ```
 
 ## Aspect templates (`Jobs.Aspects`)
