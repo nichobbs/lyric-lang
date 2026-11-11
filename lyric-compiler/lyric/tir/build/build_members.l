@@ -10,6 +10,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
+import Lyric.Resolve
 import Lyric.TypeChecker
 import Lyric.Tir
 
@@ -132,7 +133,7 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                 MemberSite(
                   name = "impl." + fn.name,
                   fn = fn,
-                  ownerName = "",
+                  ownerName = implDefPath(pkg, decl).segments[0],
                   recv = recv,
                   isEntry = false,
                   isGenericOwnerSite = isGenericOwnerSite
