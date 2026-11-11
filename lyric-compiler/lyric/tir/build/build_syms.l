@@ -104,12 +104,12 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
       case _ -> None
     }
     match decl {
-      case Some(rd) -> for m in rd.members {
-        match m {
-          case RMField(fd) -> if fd.isMutable and not names.containsKey(fd.name) {
-            names.add(fd.name, true)
+      case Some(rd) -> {
+        for m in rd.members {
+          match m {
+            case RMField(fd) -> if fd.isMutable and not names.containsKey(fd.name) { names.add(fd.name, true) }
+            case _ -> ()
           }
-          case _ -> ()
         }
       }
       case None -> ()
