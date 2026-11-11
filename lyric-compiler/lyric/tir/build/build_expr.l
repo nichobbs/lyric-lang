@@ -191,6 +191,36 @@ func litOf(l: in Literal): TLit {
   }
 }
 
+/// A range pattern's bound: a literal, possibly parenthesised or negated (`-5 ..= -1`).
+func rangeBoundLit(e: in Expr): Option[TLit] {
+  match e.kind {
+    case ELiteral(l) -> Some(value = litOf(l))
+    case EParen(inner) -> rangeBoundLit(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind {
+        case ELiteral(l) -> match l {
+          case LInt(v, _, _) -> Some(
+            value = TLInt(
+              value = 0i64 -
+                v
+            )
+          )
+          case LFloat(v, _, _) -> Some(
+            value = TLFloat(
+              value = 0.0 -
+                v
+            )
+          )
+          case _ -> None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 func intrinsicOfBinop(op: in BinOp): Option[IntrinsicOp] {
   match op {
     case BAdd -> Some(value = IoAdd)
@@ -635,7 +665,31 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       case None -> uncoveredPat(env, p, "a record pattern the checker did not resolve")
     }
-    case PRange(_, _, _, _) -> uncoveredPat(env, p, "a range pattern")
+    case PRange(lo, inclusive, hi, _) -> match rangeBoundLit(lo) {
+      case Some(l) -> match rangeBoundLit(hi) {
+        case Some(h) -> Some(
+          value = mkPat(
+            p,
+            ty,
+            TpRange(
+              lo = l,
+              hi = h,
+              inclusive = inclusive
+            )
+          )
+        )
+        case None -> uncoveredPat(
+          env,
+          p,
+          "a range pattern bound that is not a literal"
+        )
+      }
+      case None -> uncoveredPat(
+        env,
+        p,
+        "a range pattern bound that is not a literal"
+      )
+    }
     case POr(alts) -> {
       // Every alternative binds the same locals, and a local is declared once, so only
       // alternatives that bind nothing (literals, constants, nullary cases) are built.

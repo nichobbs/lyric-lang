@@ -1867,3 +1867,12 @@ test "buildPackage keys each declaration by its symbol, names symbols and keeps 
   }
   assertTrue(checkedUnion, "the union's cases are listed")
 }
+
+test "a range pattern builds with its literal bounds, negated ones included" {
+  val c = censusOf(
+    "package App\nfunc grade(n: Int): Int {\n  match n {\n    case -5 ..= -1 -> 0\n    case 0 ..< 10 -> 1\n    case 10 ..= 99 -> 2\n    case _ -> 3\n  }\n}\nfunc kind(c: Char): Int {\n  match c {\n    case 'a' ..= 'z' -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
