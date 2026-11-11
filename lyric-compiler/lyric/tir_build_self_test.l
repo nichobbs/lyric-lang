@@ -1812,6 +1812,7 @@ test "a call of a stubbable interface's method resolves despite the stub's synth
   )
   assertTrue(c.built >= 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+}
 
 test "an assignment to a var field of a ref record verifies; a plain field stays immutable" {
   val c = censusOf(
