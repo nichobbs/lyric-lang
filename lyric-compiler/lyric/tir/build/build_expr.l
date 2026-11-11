@@ -1481,11 +1481,95 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildUnderlyingConversion(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match buildDistinctFactory(env, e, ty, fn, args) {
     case Some(r) -> return r
     case None -> ()
   }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// A numeric conversion method (`x.toInt()`, `x.toLong()`) on a range-subtype or distinct
+/// value: the checker types the call at the primitive and records no callee. The value is
+/// unwrapped to its underlying type (`CvUnrefine`, `CvUnwrapDistinct`), then widened to
+/// the call's type when that differs. None when the call is not such a conversion;
+/// Some(None) after a part could not be built.
+func buildUnderlyingConversion(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 {
+    return None
+  }
+  val recvE = match fn.kind {
+    case EMember(r, m) -> if m == "toByte" or m == "toInt" or m == "toLong" or m == "toChar" or m == "toDouble" or m == "toFloat" or m == "toNat" {
+      r
+    } else {
+      return None
+    }
+    case _ -> return None
+  }
+  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
+  val isRefined = match rt { case TyRefined(_, _, _, _, _) -> true; case _ -> false }
+  val isDistinct = match rt {
+    case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
+      case Some(sym) -> match sym.kind {
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+  if not isRefined and not isDistinct {
+    return None
+  }
+  val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
+  val unwrapped: TExpr = match recv.ty {
+    case TRefined(u, _, _, _) -> TExpr(
+      id = freshNodeId(env),
+      ty = u,
+      span = recv.span,
+      kind = XConvert(kind = CvUnrefine, inner = recv)
+    )
+    case TNamed(did, targs) -> {
+      if targs.count != 0 {
+        return Some(value = uncoveredExpr(env, e, "a conversion method on a generic distinct value"))
+      }
+      val under = match symbolOfDefId(env.ctx.tbl, did) {
+        case Some(sym) -> match distinctUnderlyingOf(env.ctx.tbl, TyUser(id = did, name = sym.name, args = newList())) {
+          case Some(u) -> u
+          case None -> return Some(value = uncoveredExpr(env, e, "a conversion method on a distinct value with no underlying type"))
+        }
+        case None -> return Some(value = None)
+      }
+      val uty = match tyOfType(env.ctx, under) {
+        case Ok(t) -> t
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return Some(value = None)
+        }
+      }
+      TExpr(
+        id = freshNodeId(env),
+        ty = uty,
+        span = recv.span,
+        kind = XConvert(kind = CvUnwrapDistinct(sym = did), inner = recv)
+      )
+    }
+    case _ -> return None
+  }
+  Some(value = convertValueAs(env, e, unwrapped, ty))
+}
+
+/// `t` as a value of `ty` for the call `e`, or the counted reason it cannot be.
+func convertValueAs(env: in BuildEnv, e: in Expr, t: in TExpr, ty: in Ty): Option[TExpr] {
+  match convertValue(env, t, ty) {
+    case Some(c) -> Some(value = c)
+    case None -> uncoveredExpr(env, e, "a conversion method whose result differs from the underlying type")
+  }
 }
 
 /// `r.copy(f = x, ...)` on a record, which the checker validates as a copy site and

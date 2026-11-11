@@ -1385,7 +1385,9 @@ pub func symTableTypeSymbolId(tbl: in SymbolTable, pkg: in String, name: in Stri
 /// record-body, `impl` or interface method, which no dot-named function stands
 /// for.  `None` when the resolver has no such method, or two files of the
 /// package declare a method of that name at the same offsets.
-pub func symTableMethodDeclId(tbl: in SymbolTable, pkg: in String, name: in String, span: in Span): Option[SymbolId] {
+pub func symTableMethodDeclId(
+  tbl: in SymbolTable, pkg: in String, name: in String, span: in Span, owner: in String
+): Option[SymbolId] {
   if tbl.resolveCtx.count == 0 {
     return None
   }
@@ -1414,7 +1416,32 @@ pub func symTableMethodDeclId(tbl: in SymbolTable, pkg: in String, name: in Stri
   }
   tbl.methodDeclIndexed[0] = done
   match mapGet(tbl.methodDeclBySpan, pkg + "|" + name + "|" + spanKey(span)) {
-    case Some(ids) -> if ids.count == 1 { Some(value = ids[0]) } else { None }
+    case Some(ids) -> if ids.count == 1 {
+      Some(value = ids[0])
+    } else if owner.length > 0 {
+      // Synthesized members (a `@stubbable` interface's stub `impl`) carry the span of the
+      // member they stand for, so two declarations share a key: the one owned by the
+      // receiver's type is the callee.
+      val want = spanKey(span)
+      var found: Option[SymbolId] = None
+      var n = 0
+      for d in decls.decls {
+        match d.kind {
+          case SKMethod -> if d.pkg == pkg and d.name == name and spanKey(d.span) == want and d.path.segments.count > 0 and d.path.segments[0] == owner {
+            found = Some(value = d.id)
+            n = n + 1
+          }
+          case _ -> ()
+        }
+      }
+      if n == 1 {
+        found
+      } else {
+        None
+      }
+    } else {
+      None
+    }
     case None -> None
   }
 }
