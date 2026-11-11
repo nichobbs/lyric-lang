@@ -219,6 +219,35 @@ func shortOfBinop(op: in BinOp): Option[ShortOp] {
   }
 }
 
+/// `a == b` and `a != b` on values that are not primitives: one structural relation (language
+/// reference 2.5, D172, D206), lowered by each backend by the operands' type. The operands have the
+/// same type, the right one converted to the left's when the checker accepted a difference
+/// (`opt == 5`). Any other operator on a declared type has no case.
+func buildDeclaredEquality(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  op: in BinOp,
+  iop: in IntrinsicOp,
+  lt: in TExpr,
+  rt: in TExpr,
+): Option[TExpr] {
+  val isEq = match op { case BEq -> true; case BNeq -> true; case _ -> false }
+  if not isEq {
+    return uncoveredExpr(env, e, "an operator on a declared type")
+  }
+  val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
+  match rhs {
+    case Some(r2) -> {
+      val two: List[TExpr] = newList()
+      two.add(lt)
+      two.add(r2)
+      Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
+    }
+    case None -> uncoveredExpr(env, e, "an equality of operands of different types")
+  }
+}
+
 func isPrimTy(t: in Ty): Bool {
   match t {
     case TPrim(_) -> true
@@ -386,6 +415,16 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     }
     case EBinop(op, lhs, rhs) -> {
       val l = buildExpr(env, lhs)
+      // `x == None`: the checker leaves the bare right operand untyped, and equality
+      // takes its type from the left one.
+      match l {
+        case Some(lt0) -> match op {
+          case BEq -> settleHole(env, rhs, lt0.ty)
+          case BNeq -> settleHole(env, rhs, lt0.ty)
+          case _ -> ()
+        }
+        case None -> ()
+      }
       val r = buildExpr(env, rhs)
       match l {
         case Some(lt) -> match r {
@@ -404,7 +443,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
                 two.add(rt)
                 Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
               } else {
-                uncoveredExpr(env, e, "an operator on a declared type")
+                buildDeclaredEquality(env, e, ty, op, iop, lt, rt)
               }
               case None -> uncoveredExpr(env, e, "a bitwise operator")
             }
