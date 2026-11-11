@@ -6,8 +6,8 @@
 #
 # Builds scripts/ci/native-via-tir/scalars.l twice (plain and --via-tir), runs
 # both, requires identical output, and requires the via-TIR build's census to
-# report the six scalar functions lowered from TIR with `main` the one fallback
-# (any other fallback is a regression of the lowering, printed with its reason).
+# report every function lowered from TIR (a fallback is a regression of the lowering,
+# printed with its reason).
 #
 # Usage: LYRIC_BIN=<lyric> bash scripts/ci/native-via-tir-e2e.sh
 # ---------------------------------------------------------------------------
@@ -30,13 +30,12 @@ cat "$work/census.txt"
 diff -u "$work/ast.out" "$work/tir.out"
 echo "outputs identical"
 
-# `main` calls the console built-ins, which the slice does not lower yet: it is the one fallback.
-grep -q '^native via-TIR: 6 of 7 functions lowered from TIR' "$work/census.txt" || {
-  echo "::error::expected the six scalar functions of scalars.l to be lowered from TIR"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/census.txt" || {
+  echo "::error::expected every function of scalars.l to be lowered from TIR"
   exit 1
 }
-if [ "$(grep -c '^  fallback:' "$work/census.txt")" != "1" ]; then
-  echo "::error::expected exactly one TIR fallback (main)"
+if grep -q '^  fallback:' "$work/census.txt"; then
+  echo "::error::scalars.l has a TIR fallback"
   exit 1
 fi
 # The output the program is specified to print (not only equal to the AST path's).
