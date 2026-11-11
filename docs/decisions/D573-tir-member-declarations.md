@@ -32,8 +32,8 @@ for them and the census never saw them.
 `tir_build_self_test.l` (132 cases): a record method with an explicit receiver, a protected entry with a
 `when:` barrier (two parameters, a barrier, an `TSkEntry` symbol, verified), and a member of a generic
 record listed as failed. `tir-census.sh --wide`, before and after (bodies built / total): stdlib tests
-1082/1165 -> 1130/1240, I0003 0; compiler 11071/12380 -> 11183/12518, I0003 27 (unchanged, not members);
-ecosystem I0003 0. So the members add 75 bodies to the stdlib census (48 built, 27 not) and 138 to the
+1082/1165 -> 1132/1240, I0003 0; compiler 11071/12380 -> 11183/12518, I0003 27 (unchanged, not members);
+ecosystem I0003 0 (those two compiler and ecosystem runs preceded the `@stubbable` stub fix below). So the members add 75 bodies to the stdlib census (50 built, 25 not) and 138 to the
 compiler's (112 built, 26 not). The new unbuilt bodies are mostly protected members reading a field by its
 bare name (`a name that is not a local` 26 -> 40 in the stdlib tests), which needs the field-of-self
 resolution a protected member's body uses; that and the generic-owner members are the next slices.
