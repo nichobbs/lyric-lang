@@ -52,6 +52,16 @@ pub record BuildEnv {
   /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
   /// leading parameter.
   recvTy: List[Ty] = newList()
+  /// The generic type or `impl` the member being built belongs to (empty or one entry).
+  memberOwner: List[MemberOwner] = newList()
+}
+
+/// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
+/// key), the symbol that stands for it in a `TParam`, and its type parameters in order.
+pub record MemberOwner {
+  key: String
+  sym: SymbolId
+  names: List[String]
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -1306,12 +1316,23 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
+  // A member of a generic type or `impl` sees the owner's parameters, keyed by the owner, and
+  // keys its own by `Owner.fn`, as the checker does.
+  var fnKey = fn.name
+  if env.memberOwner.count > 0 {
+    val mo = env.memberOwner[0]
+    fnKey = mo.key + "." + fn.name
+    if mo.names.count > 0 {
+      tyConvBind(env.ctx, mo.key, mo.sym, mo.names)
+      gctxPushOwned(gc, mo.names, mo.key)
+    }
+  }
   match fn.generics {
     case Some(_) -> {
       match sym {
         case Some(sy) -> {
-          tyConvBind(env.ctx, fn.name, sy, names)
-          gctxPushOwned(gc, names, fn.name)
+          tyConvBind(env.ctx, fnKey, sy, names)
+          gctxPushOwned(gc, names, fnKey)
         }
         case None -> {
           noteUncovered(env, "a generic function with no symbol")
@@ -1467,7 +1488,13 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           postconds = c.post,
           body = Some(value = c.body),
           span = fn.span,
-          barrier = c.barrier
+          barrier = c.barrier,
+          ownerSym = if env.memberOwner.count > 0 and env.memberOwner[0].names.count > 0 {
+            Some(value = env.memberOwner[0].sym)
+          } else {
+            None
+          },
+          ownerParamCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
         )
       )
     }

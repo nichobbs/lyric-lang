@@ -2019,11 +2019,47 @@ test "a protected entry is a declaration with an implicit receiver, its when: cl
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "a member of a generic type is counted, not built" {
+func firstFailure(pb: in PackageBuild): String {
+  if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+}
+
+func assertBuildsAndVerifies(pb: in PackageBuild, total: in Int, what: in String): Unit {
+  assertEqualInt(pb.total, total, what + ": bodies")
+  assertEqualInt(pb.built, total, what + ": " + firstFailure(pb))
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, what + ": " + if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a method of a generic record builds with the owner's parameter as its receiver's argument (D578)" {
   val pb = packageOf("package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\n")
-  assertEqualInt(pb.built, 0, "not built")
-  assertEqualInt(pb.failed.count, 1, "listed as failed")
-  assertTrue(pb.failed[0].name == "Box.get", "qualified by its owner")
+  assertBuildsAndVerifies(pb, 1, "Box.get")
+  val f = pb.pkg.funcs[0]
+  assertEqualInt(f.typeParams.count, 0, "the method declares no parameter of its own")
+  assertEqualInt(f.ownerParamCount, 1, "the owner's one parameter is in scope")
+  assertTrue(f.ownerSym.isSome(), "the owner is recorded")
+}
+
+test "a generic record's method may declare parameters of its own beside the owner's (D578)" {
+  val pb = packageOf(
+    "package App\nrecord Box[T] {\n  v: T\n  func pair[U](self: in Box[T], u: in U): (T, U) { (self.v, u) }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "Box.pair")
+  assertEqualInt(pb.pkg.funcs[0].typeParams.count, 1, "its own U")
+  assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 1, "the owner's T")
+}
+
+test "a member of a generic protected type reads and writes a field typed by the owner's parameter (D578)" {
+  val pb = packageOf(
+    "package App\nprotected type Cell[T] {\n  var v: T\n  entry put(x: in T): Unit {\n    v = x\n  }\n  func get(): T {\n    v\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell")
+}
+
+test "a member of a generic impl builds with the impl's parameter in scope (D578)" {
+  val pb = packageOf(
+    "package App\ninterface Has[T] {\n  func first(self: in Self): T\n}\nrecord Wrap[T] {\n  v: T\n}\nimpl[T] Has[T] for Wrap[T] {\n  func first(self: in Wrap[T]): T { self.v }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "impl.first")
 }
 
 test "a protected member reads and assigns a field of its receiver by the bare name" {

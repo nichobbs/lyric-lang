@@ -331,6 +331,10 @@ pub record TFnDecl {
   /// A protected entry's `when:` guard, a `Bool` over the receiver's fields and the entry's
   /// parameters.  The TIR carries no locks: backends lower locking and the wait from this.
   barrier: Option[TExpr] = None
+  /// The generic type or `impl` a member belongs to, when it has type parameters: the member's
+  /// body may name `TParam(ownerSym, i)` for `i < ownerParamCount`, besides its own `typeParams`.
+  ownerSym: Option[SymbolId] = None
+  ownerParamCount: Int = 0
 }
 
 /// A callable's signature, as a call checks against it.

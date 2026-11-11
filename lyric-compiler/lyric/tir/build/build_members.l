@@ -1,8 +1,8 @@
 //! build_members.l - the members of a file as TIR declarations (docs/70 §6.2): the methods of a
 //! record, the members of an `impl` block, the `func`s and entries of a protected type.  Each is a
 //! `TFnDecl` whose first parameter is the receiver `self`, passed `in` (declared, or added by the builder when the source leaves it implicit); an entry carries its
-//! `when:` clause as `barrier` (D553).  A member of a generic type or `impl` is not built yet and
-//! is counted as the uncovered kind "a method of a generic type".
+//! `when:` clause as `barrier` (D553).  A member of a generic type or `impl` is built with its
+//! owner's type parameters in scope, as `TParam(owner, i)` with the owner's symbol (D578).
 package Lyric.Tir.Build
 
 import Std.Core
@@ -22,7 +22,8 @@ pub record MemberSite {
   ownerName: String
   recv: Option[Ty]
   isEntry: Bool
-  isGenericOwnerSite: Bool
+  /// The binder of the owner's type parameters, when it has any.
+  owner: Option[MemberOwner]
 }
 
 /// An entry as the function the builder builds: its `when:` clause stays among the contracts.
@@ -43,16 +44,29 @@ func entryAsFunction(e: in EntryDecl): FunctionDecl {
   )
 }
 
-func isGenericOwner(gps: in Option[GenericParams]): Bool {
-  match gps {
-    case Some(_) -> true
-    case None -> false
+/// The binder of a type declaration's parameters, `None` when it declares none.
+func ownerOf(key: in String, sym: in SymbolId, gps: in Option[GenericParams]): Option[MemberOwner] {
+  val names = extractGenericNames(gps)
+  if names.count == 0 {
+    return None
   }
+  Some(value = MemberOwner(key = key, sym = sym, names = names))
 }
 
-/// The type of a non-generic type declared in this package: the receiver of its members.
-func ownType(tbl: in SymbolTable, pkg: in String, name: in String): Ty {
-  TNamed(sym = symTableTypeSymbolId(tbl, pkg, name), args = newList())
+/// The receiver of a member of a type: the type applied to its own parameters.
+func ownerRecvTy(sym: in SymbolId, owner: in Option[MemberOwner]): Ty {
+  val args: List[Ty] = newList()
+  match owner {
+    case Some(o) -> {
+      var i = 0
+      while i < o.names.count {
+        args.add(TParam(owner = sym, index = i))
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  TNamed(sym = sym, args = args)
 }
 
 /// Every member of `file` with a body, in source order.
@@ -62,7 +76,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
   for it in file.items {
     match it.kind {
       case IRecord(decl) -> {
-        val isGenericOwnerSite = isGenericOwner(decl.generics)
+        val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
+        val owner = ownerOf(decl.name, tsym, decl.generics)
         for m in decl.members {
           match m {
             case RMFunc(fn) -> if isSome(fn.body) {
@@ -71,9 +86,9 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   name = decl.name + "." + fn.name,
                   fn = fn,
                   ownerName = decl.name,
-                  recv = if isGenericOwnerSite { None } else { Some(value = ownType(tbl, pkg, decl.name)) },
+                  recv = Some(value = ownerRecvTy(tsym, owner)),
                   isEntry = false,
-                  isGenericOwnerSite = isGenericOwnerSite
+                  owner = owner
                 )
               )
             }
@@ -82,7 +97,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         }
       }
       case IProtected(decl) -> {
-        val isGenericOwnerSite = isGenericOwner(decl.generics)
+        val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
+        val owner = ownerOf(decl.name, tsym, decl.generics)
         for m in decl.members {
           match m {
             case PMFunc(fn) -> if isSome(fn.body) {
@@ -91,9 +107,9 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   name = decl.name + "." + fn.name,
                   fn = fn,
                   ownerName = decl.name,
-                  recv = if isGenericOwnerSite { None } else { Some(value = ownType(tbl, pkg, decl.name)) },
+                  recv = Some(value = ownerRecvTy(tsym, owner)),
                   isEntry = false,
-                  isGenericOwnerSite = isGenericOwnerSite
+                  owner = owner
                 )
               )
             }
@@ -103,9 +119,9 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   name = decl.name + "." + e.name,
                   fn = entryAsFunction(e),
                   ownerName = decl.name,
-                  recv = if isGenericOwnerSite { None } else { Some(value = ownType(tbl, pkg, decl.name)) },
+                  recv = Some(value = ownerRecvTy(tsym, owner)),
                   isEntry = true,
-                  isGenericOwnerSite = isGenericOwnerSite
+                  owner = owner
                 )
               )
             }
@@ -114,17 +130,23 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         }
       }
       case IImpl(decl) -> {
-        val isGenericOwnerSite = isGenericOwner(decl.generics)
+        val implSym = symTableInternDefPath(tbl, implDefPath(pkg, decl))
+        val owner = ownerOf(implOwnerKey(decl), implSym, decl.generics)
         var recv: Option[Ty] = None
-        if not isGenericOwnerSite {
-          val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
-          val diag: List[Diagnostic] = newList()
-          match tyOfType(ctx, resolveType(tbl, gc, diag, decl.target)) {
-            case Ok(t) -> {
-              recv = Some(value = t)
-            }
-            case Err(_) -> ()
+        val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+        match owner {
+          case Some(o) -> {
+            tyConvBind(ctx, o.key, o.sym, o.names)
+            gctxPushOwned(gc, o.names, o.key)
           }
+          case None -> ()
+        }
+        val diag: List[Diagnostic] = newList()
+        match tyOfType(ctx, resolveType(tbl, gc, diag, decl.target)) {
+          case Ok(t) -> {
+            recv = Some(value = t)
+          }
+          case Err(_) -> ()
         }
         for m in decl.members {
           match m {
@@ -136,7 +158,7 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   ownerName = implDefPath(pkg, decl).segments[0],
                   recv = recv,
                   isEntry = false,
-                  isGenericOwnerSite = isGenericOwnerSite
+                  owner = owner
                 )
               )
             }
@@ -157,11 +179,6 @@ pub func memberSymOf(tbl: in SymbolTable, pkg: in String, site: in MemberSite): 
 
 /// Build one member in a fresh env sharing `counter`.  `None` carries the reasons in `env.errors`.
 pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[TFnDecl] {
-  if site.isGenericOwnerSite {
-    noteUncovered(env, "a method of a generic type")
-    env.errors.add("I0002: the builder does not build a method of a generic type: " + site.name)
-    return None
-  }
   // A method declares its receiver as an explicit first parameter named `self`; a protected
   // type's members and some `impl` members leave it implicit, and the builder declares it.
   val declaresSelf = site.fn.params.count > 0 and site.fn.params[0].name == "self"
@@ -184,6 +201,10 @@ pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site
     }
   }
   env.symOverride.add(sym)
+  match site.owner {
+    case Some(o) -> env.memberOwner.add(o)
+    case None -> ()
+  }
   buildFnDecl(env, site.fn, tbl)
 }
 
