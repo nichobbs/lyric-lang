@@ -42,9 +42,16 @@ PLAYWRIGHT_VERSION="1.64.1"
   fi
   # Images that ship Chromium set PLAYWRIGHT_BROWSERS_PATH; elsewhere fetch it.
   if [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
-    # `--with-deps` runs apt-get, which other steps of the job run concurrently.
-    printf 'DPkg::Lock::Timeout "900";\n' | sudo tee /etc/apt/apt.conf.d/99lyric-ci-lock-timeout >/dev/null
-    npx playwright install --with-deps chromium
+    # The browser comes from Playwright's own CDN.  Its system libraries and
+    # fonts are installed only if Chromium cannot launch without them, through
+    # install-tool.sh (alternate apt mirrors), not `--with-deps` (one mirror).
+    npx playwright install chromium
+    if ! node --input-type=module -e "import { chromium } from 'playwright'; const b = await chromium.launch(); await b.close()" 2>/dev/null; then
+      deps="$(npx playwright install-deps --dry-run chromium 2>/dev/null | grep -o 'apt-get install[^"]*' | head -n 1 | sed 's/.*--no-install-recommends //')"
+      [ -n "$deps" ] || { echo "::error::Chromium cannot launch and Playwright listed no system packages" >&2; exit 1; }
+      # shellcheck disable=SC2086
+      bash "$REPO_ROOT/scripts/ci/install-tool.sh" apt $deps
+    fi
   fi
 )
 

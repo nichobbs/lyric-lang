@@ -41,7 +41,7 @@ sudo_cmd=""
 if [ "$(id -u)" != "0" ]; then sudo_cmd="sudo"; fi
 if ! pkg-config --exists webkit2gtk-4.1 || ! command -v xvfb-run >/dev/null || ! command -v cmake >/dev/null; then
   # Serialized: other steps of the same job may run apt-get concurrently.
-  flock /tmp/lyric-ci-apt.lock -c "$sudo_cmd apt-get -o DPkg::Lock::Timeout=900 update -qq && $sudo_cmd apt-get -o DPkg::Lock::Timeout=900 install -y -qq libwebkit2gtk-4.1-dev xvfb xauth cmake g++ pkg-config" >/dev/null
+  flock /tmp/lyric-ci-apt.lock bash scripts/ci/install-tool.sh apt libwebkit2gtk-4.1-dev xvfb xauth cmake g++ pkg-config >/dev/null
 fi
 if [ ! -e /usr/local/lib/libwebview.so ]; then
   flock /tmp/lyric-ci-webview.lock -c "[ -e /usr/local/lib/libwebview.so ] || bash scripts/ci/install-webview.sh"

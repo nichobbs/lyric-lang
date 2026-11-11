@@ -178,7 +178,7 @@ jobs:
 
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
         if: steps.changes.outputs.has_code_changes == 'true'
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
+        run: bash scripts/ci/install-tool.sh z3
 
       - name: Cache NuGet packages
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -841,7 +841,7 @@ jobs:
           distribution: temurin
           java-version: '22'
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
+        run: bash scripts/ci/install-tool.sh z3
       - name: Cache NuGet packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -884,7 +884,7 @@ jobs:
           java: 'true'
           build-config: ${{ env.BUILD_CONFIG }}
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
+        run: bash scripts/ci/install-tool.sh z3
       - name: Compiler self-tests (native lyric test, shard ${{ matrix.shard }})
         run: bash scripts/ci/compiler-self-tests-batch.sh --shard "${{ matrix.shard }}"
 
@@ -915,7 +915,7 @@ jobs:
           java: 'true'
           build-config: ${{ env.BUILD_CONFIG }}
       - name: Install Z3 (verifier_self_test's protected-entry range goal needs a real solver)
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update && sudo apt-get install -y z3
+        run: bash scripts/ci/install-tool.sh z3
 
       # Parallel step execution — `background: true` / `wait-all: true`
       # ---------------------------------------------------------------
@@ -3744,7 +3744,7 @@ jobs:
 
       # clang and zlib1g-dev are required by the ILCompiler linker pass on Linux.
       - name: Install native-AOT linker prerequisites
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+        run: bash scripts/ci/install-tool.sh aot-prereqs
 
       # Build a minimal hello-world Lyric program to a native binary, then run
       # it and assert the output.  This exercises the full pipeline:
@@ -8265,7 +8265,7 @@ jobs:
       # PATH before linking -- without it the release e2e step fails at that
       # preflight check instead of building.
       - name: Install clang for Native AOT e2e
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list* && sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev binutils
+        run: bash scripts/ci/install-tool.sh aot-prereqs
 
       - name: CLI project-aware-defaults e2e smoke test
         working-directory: ${{ github.workspace }}

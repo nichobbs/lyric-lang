@@ -27,7 +27,7 @@ for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lv
   if [ -f "$candidate" ]; then icd="$candidate"; break; fi
 done
 if [ -z "$icd" ]; then
-  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq && sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq mesa-vulkan-drivers
+  bash scripts/ci/install-tool.sh apt mesa-vulkan-drivers
   for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
     if [ -f "$candidate" ]; then icd="$candidate"; break; fi
   done

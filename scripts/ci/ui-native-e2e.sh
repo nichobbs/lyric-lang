@@ -175,8 +175,7 @@ print("the live window reacted to a click (%d) and to typing (%d)" % (changed, c
 PY
 echo "=== the customers example over AT-SPI (D-Bus session, Xvfb) ==="
 if ! command -v dbus-run-session >/dev/null || ! command -v gdbus >/dev/null || [ ! -x /usr/libexec/at-spi-bus-launcher ]; then
-  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
-  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq at-spi2-core dbus libglib2.0-bin python3-gi gir1.2-atspi-2.0
+  bash scripts/ci/install-tool.sh apt at-spi2-core dbus libglib2.0-bin python3-gi gir1.2-atspi-2.0
 fi
 atspi_py=""
 for candidate in /usr/bin/python3 /usr/bin/python3.12 /usr/bin/python3.13 /usr/bin/python3.11 python3; do
@@ -186,7 +185,7 @@ for candidate in /usr/bin/python3 /usr/bin/python3.12 /usr/bin/python3.13 /usr/b
   fi
 done
 [ -n "$atspi_py" ] || {
-  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-gi gir1.2-atspi-2.0
+  bash scripts/ci/install-tool.sh apt python3-gi gir1.2-atspi-2.0
   atspi_py=/usr/bin/python3
 }
 
