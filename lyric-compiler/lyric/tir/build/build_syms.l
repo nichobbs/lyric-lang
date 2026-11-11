@@ -93,8 +93,8 @@ func noteFuncSym(
   }
 }
 
-/// The names of the `var` fields of the record `sid` (a plain field is immutable, language
-/// reference §3.4), read from its declaration.  A symbol that is no record has none.
+/// The names of the `var` fields of the record or non-generic protected type `sid` (a plain field is
+/// immutable, language reference §3.4), read from its declaration.  Any other symbol has none.
 func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
   val names: Map[String, Bool] = newMap()
   for s in tbl.symbols {
@@ -113,6 +113,11 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
         }
       }
       case None -> ()
+    }
+  }
+  for pf in protectedFieldsOf(tbl, sid) {
+    if pf.mutable and not names.containsKey(pf.name) {
+      names.add(pf.name, true)
     }
   }
   names
