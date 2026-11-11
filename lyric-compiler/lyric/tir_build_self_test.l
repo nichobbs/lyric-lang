@@ -1837,6 +1837,15 @@ test "an assignment to a var field of a ref record verifies; a plain field stays
   assertTrue(seen, "the record's fields are in the package")
 }
 
+test "equality of two values of a declared type is one intrinsic over both operands" {
+  val c = censusOf(
+    "package App\nunion Opt[T] { case Nope\n case Has(v: T) }\nenum Color { case Red\n case Green }\nrecord P { x: Int }\nunion U { case A\n case B(n: Int) }\ntype Id = Long\nfunc eqEnum(a: in Color, b: in Color): Bool { a == b }\nfunc eqRec(a: in P, b: in P): Bool { a != b }\nfunc eqUnion(a: in U, b: in U): Bool { a == b }\nfunc eqOpt(a: in Opt[Int], b: in Opt[Int]): Bool { a == b }\nfunc eqId(a: in Id, b: in Id): Bool { a == b }\nfunc isNone(a: in Opt[Int]): Bool { a == Nope }\n"
+  )
+  assertEqualInt(c.built, 6, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "buildPackage keys each declaration by its symbol, names symbols and keeps case order" {
   val file = renumberNodeIds(parse("package App\nunion Shape { case Circle(r: Int)\n case Square(s: Int)\n case Dot }\nfunc area(s: in Shape): Int {\n  match s {\n    case Circle(r) -> r\n    case Square(w) -> w\n    case Dot -> 0\n  }\n}\n").file).file
   val cr = check(file)
