@@ -212,10 +212,17 @@ test "a widening is an explicit sext" {
 }
 
 test "a function outside the slice falls back with the reason" {
-  val lit = ex(1, tyString(), XLit(lit = TLString(text = "hi")))
+  val elems: List[Ty] = newList()
+  elems.add(intT())
+  elems.add(intT())
+  val pair = TTuple(elems = elems)
+  val parts: List[TExpr] = newList()
+  parts.add(intLit(2, 1i64))
+  parts.add(intLit(3, 2i64))
+  val tup = ex(1, pair, XTuple(elems = parts))
   val names: List[String] = newList()
   names.add("P.s")
-  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, newList(), tyString(), lit)))
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, newList(), pair, tup)))
   assertTrue(Str.startsWith(ir, "FALLBACK: "), ir)
 }
 
@@ -494,7 +501,10 @@ test "a string local is owned by its scope and a returned borrow is retained fir
   val names: List[String] = newList()
   names.add("P.f")
   val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
-  assertTrue(Str.contains(ir, "call void @lyric_retain("), "the tail borrows t, so it is retained before t is released: " + ir)
+  assertTrue(
+    Str.contains(ir, "call void @lyric_retain("),
+    "the tail borrows t, so it is retained before t is released: " + ir
+  )
   assertTrue(Str.contains(ir, "call void @lyric_release("), "the scope releases t: " + ir)
 }
 
@@ -506,7 +516,10 @@ test "an owned temporary passed to println is released after the statement" {
   val str = ex(
     2,
     strT(),
-    XCall(callee = Intrinsic(op = IoBuiltin(name = "toString")), args = inArgs1(ex(3, intT(), XLocal(local = n.id))))
+    XCall(
+      callee = Intrinsic(op = IoBuiltin(name = "toString")),
+      args = inArgs1(ex(3, intT(), XLocal(local = n.id)))
+    )
   )
   val say = ex(4, tyUnit(), XCall(callee = Intrinsic(op = IoBuiltin(name = "println")), args = inArgs1(str)))
   val body = ex(5, tyUnit(), XBlock(stmts = newList(), tail = Some(value = say)))
@@ -528,7 +541,10 @@ test "a return inside a branch releases the locals live at that point" {
   val len = ex(
     10,
     intT(),
-    XCall(callee = Intrinsic(op = IoBuiltin(name = "String.length")), args = inArgs1(ex(11, strT(), XLocal(local = t.id))))
+    XCall(
+      callee = Intrinsic(op = IoBuiltin(name = "String.length")),
+      args = inArgs1(ex(11, strT(), XLocal(local = t.id)))
+    )
   )
   val cond = ex(12, tyBool(), XCall(callee = Intrinsic(op = IoGt), args = inArgs(len, intLit(13, 3i64))))
   val ret = TStmt(
