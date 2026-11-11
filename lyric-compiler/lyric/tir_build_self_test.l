@@ -9,6 +9,7 @@ package Lyric.TirBuildSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
@@ -1834,4 +1835,35 @@ test "an assignment to a var field of a ref record verifies; a plain field stays
     }
   }
   assertTrue(seen, "the record's fields are in the package")
+}
+
+test "buildPackage keys each declaration by its symbol, names symbols and keeps case order" {
+  val file = renumberNodeIds(parse("package App\nunion Shape { case Circle(r: Int)\n case Square(s: Int)\n case Dot }\nfunc area(s: in Shape): Int {\n  match s {\n    case Circle(r) -> r\n    case Square(w) -> w\n    case Dot -> 0\n  }\n}\n").file).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(pb.total, 1, "one body")
+  assertEqualInt(
+    pb.built,
+    1,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  assertEqualInt(pb.failed.count, 0, "no failure")
+  assertTrue(pb.pkg.name == "App", "the package name")
+  assertEqualInt(pb.pkg.funcs.count, 1, "one declaration")
+  assertTrue(pb.names.containsKey(pb.pkg.funcs[0].sym.id), "the function has a DefPath key")
+  var checkedUnion = false
+  for k in mapKeys(pb.cases) {
+    match mapGet(pb.cases, k) {
+      case Some(l) -> {
+        assertEqualInt(l.count, 3, "three cases")
+        val first = match mapGet(pb.names, l[0].id) { case Some(n) -> n; case None -> "" }
+        val last = match mapGet(pb.names, l[2].id) { case Some(n) -> n; case None -> "" }
+        assertTrue(Str.contains(first, "Circle"), "the first case is Circle: " + first)
+        assertTrue(Str.contains(last, "Dot"), "the last case is Dot: " + last)
+        checkedUnion = true
+      }
+      case None -> ()
+    }
+  }
+  assertTrue(checkedUnion, "the union's cases are listed")
 }
