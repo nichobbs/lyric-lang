@@ -17,6 +17,11 @@ a construction. A plain field stays immutable; a symbol that is no record has no
 
 ## Measured
 
-`tir_build_self_test.l` covers a `ref record` whose `var` field is assigned (it builds and verifies) and
-checks both fields' mutability. The wide census over the compiler and the ecosystem libraries is in the
-progress entry.
+`tir_build_self_test.l` covers a `ref record` whose `var` field is assigned: it builds, verifies, and the
+`var` field is mutable while a plain field stays immutable. `tir-census.sh --wide` before and after (the
+compiler's `Lyric.Cli` closure and the 38 ecosystem manifests): I0003 255 -> 27 in the compiler and
+89 -> 0 in the ecosystem libraries; the 27 left are `call-result-type` (extern results) and
+`pattern-arity`, not this rule. The ecosystem total of bodies differs between the two runs (3964 and 3337)
+because two manifests that were unchecked before were judged and a dependent library is no longer
+counted again; I0002 is unchanged by this decision. The standard-library gate is unchanged (1082 of 1165,
+I0003 0).
