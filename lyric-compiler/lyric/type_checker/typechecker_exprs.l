@@ -5196,7 +5196,11 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
 // signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
 func recordCtorSigNode(
-  tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type, genericNames: in List[String]
+  tbl: in SymbolTable,
+  node: in Int,
+  sym: in Symbol,
+  resultTy: in Type,
+  genericNames: in List[String],
 ): Unit {
   if node <= 0 {
     return
@@ -5208,7 +5212,13 @@ func recordCtorSigNode(
   val closed = match unrefine(resultTy) {
     // A union case's result may carry an unsolved argument (`Err(error = 1)` is a
     // `Result[?, Int]`); what the construction needs is closed field types, checked below.
-    case TyUser(_, _, a) -> if isCase { true } else if a.count > 0 { typeIsClosedOver(resultTy, genericNames) } else { true }
+    case TyUser(_, _, a) -> if isCase {
+      true
+    } else if a.count > 0 {
+      typeIsClosedOver(resultTy, genericNames)
+    } else {
+      true
+    }
     case _ -> false
   }
   if not closed {
