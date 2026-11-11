@@ -1778,3 +1778,12 @@ test "a nullary union case at a match arm's tail takes the match's type" {
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a union field bound in a generic function keeps the function's rigid type parameter" {
+  val c = censusOf(
+    "package App\nunion Res[T, E] { case Good(v: T)\n case Bad(e: E) }\nfunc andThen[T, U, E](r: in Res[T, E], f: in (T) -> Res[U, E]): Res[U, E] {\n  match r {\n    case Good(v) -> f(v)\n    case Bad(e) -> Bad(e = e)\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

@@ -12723,25 +12723,32 @@ func checkConstRefPattern(
 // false "not numeric" / type-mismatch — the type checker does not track the
 // `where V: Add`-style bounds that make such uses valid.
 func eraseTyParams(t: in Type): Type {
+  eraseTyParamsExcept(t, newList())
+}
+
+// `t` with every type parameter not in `keep` replaced by the lenient generic error type.  A
+// pattern binding keeps the enclosing generic function's own parameters (`keep`): they are
+// rigid and in scope, so a variable bound at one has that type, not an error.
+func eraseTyParamsExcept(t: in Type, keep: in List[String]): Type {
   match t {
-    case TyParam(_, _) -> tyErrorGeneric()
+    case TyParam(n, _) -> if keep.contains(n) { t } else { tyErrorGeneric() }
     case TyUser(id, name, targs) -> {
       val na: List[Type] = newList()
       var i = 0
       while i < targs.count {
-        na.add(eraseTyParams(targs[i]))
+        na.add(eraseTyParamsExcept(targs[i], keep))
         i = i + 1
       }
       TyUser(id = id, name = name, args = na)
     }
-    case TySlice(e) -> TySlice(element = eraseTyParams(e))
-    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyParams(e), sizeVar = sv)
-    case TyNullable(inner) -> TyNullable(inner = eraseTyParams(inner))
+    case TySlice(e) -> TySlice(element = eraseTyParamsExcept(e, keep))
+    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyParamsExcept(e, keep), sizeVar = sv)
+    case TyNullable(inner) -> TyNullable(inner = eraseTyParamsExcept(inner, keep))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
       while i < elems.count {
-        ne.add(eraseTyParams(elems[i]))
+        ne.add(eraseTyParamsExcept(elems[i], keep))
         i = i + 1
       }
       TyTuple(elems = ne)
@@ -12750,10 +12757,10 @@ func eraseTyParams(t: in Type): Type {
       val np: List[Type] = newList()
       var i = 0
       while i < ps.count {
-        np.add(eraseTyParams(ps[i]))
+        np.add(eraseTyParamsExcept(ps[i], keep))
         i = i + 1
       }
-      TyFunction(params = np, ret = eraseTyParams(ret), isAsync = isA)
+      TyFunction(params = np, ret = eraseTyParamsExcept(ret, keep), isAsync = isA)
     }
     case _ -> t
   }
@@ -12831,7 +12838,7 @@ func bindPatternTyped(
           }
         } else {
           recordPatBinding(tbl, pat)
-          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParams(ty), isMutable = false))
+          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParamsExcept(ty, sc.genericNames), isMutable = false))
         }
       }
       match inner {
