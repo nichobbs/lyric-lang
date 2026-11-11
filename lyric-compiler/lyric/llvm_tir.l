@@ -155,6 +155,18 @@ pub record TirLowerEnv {
   fnNames: Map[Int, String]
   /// The package label a panic reports as its file, as the AST path does.
   panicFile: String
+  /// The by-value records, keyed by `SymbolId.id`.  The code generator owns record layout
+  /// (docs/70 phase 4a): it hands over the type and the field types it chose, and this
+  /// lowering never decides between the heap and the by-value form.
+  recs: Map[Int, TirRecLayout] = newMap()
+}
+
+/// A by-value record's layout as the code generator chose it: its LLVM struct type and
+/// the type of each field in declaration order (`NVoid` for a Unit field, whose
+/// placeholder byte the struct holds but nothing reads).
+pub record TirRecLayout {
+  ty: NType
+  fieldTys: List[NType]
 }
 
 /// Why a function stayed on the AST path.
@@ -420,11 +432,19 @@ func primN(k: in TPrimKind): NType {
 }
 
 /// The LLVM type of a scalar `Ty`; None for anything this slice does not lower.
-func tyToN(t: in Ty): Option[NType] {
+func tyToN(recs: in Map[Int, TirRecLayout], t: in Ty): Option[NType] {
   match t {
     case TPrim(k) -> Some(value = primN(k))
-    case TRefined(u, _, _, _) -> tyToN(u)
+    case TRefined(u, _, _, _) -> tyToN(recs, u)
     case TNever -> Some(value = NVoid)
+    case TNamed(sym, args) -> if args.count == 0 {
+      match mapGet(recs, sym.id) {
+        case Some(r) -> Some(value = r.ty)
+        case None -> None
+      }
+    } else {
+      None
+    }
     case _ -> None
   }
 }
@@ -649,7 +669,7 @@ func assignOp(k: in AssignKind): Option[IntrinsicOp] {
 }
 
 func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
-  match tyToN(d.ty) {
+  match tyToN(c.env.recs, d.ty) {
     case None -> {
       c.problems.add("a local of type " + renderTy(d.ty))
       None
@@ -701,7 +721,107 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XShort(op, l, r) -> lowerShort(c, op, l, r)
     case XAssign(place, op, value) -> lowerAssign(c, place, op, value)
     case XMatch(scrut, arms, exhaustive) -> lowerMatch(c, e, scrut, arms, exhaustive)
+    case XConstruct(sym, fields) -> lowerConstruct(c, sym, fields)
+    case XField(recv, field) -> lowerField(c, recv, field)
+    case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
+  }
+}
+
+func isStructN(t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// The by-value layout of the record `sym`; a record the code generator did not register
+/// by value (a heap record, a union case, a generic) stays on the AST path.
+func recLayout(c: in LCtx, sym: in SymbolId): Option[TirRecLayout] {
+  match mapGet(c.env.recs, sym.id) {
+    case Some(r) -> Some(value = r)
+    case None -> {
+      c.problems.add("a record or union case (symbol #" + toString(sym.id) + ") that is not a by-value record")
+      None
+    }
+  }
+}
+
+/// `insertvalue` of `v` at declaration index `i`: a Unit field has only its placeholder
+/// byte, so nothing is stored.
+func insertField(c: in LCtx, lay: in TirRecLayout, agg: in NValue, i: in Int, v: in Val): NValue {
+  match lay.fieldTys[i] {
+    case NVoid -> agg
+    case ft -> {
+      val d = tmp(c)
+      c.insns.add(NInsertValue(dest = d, aggTy = lay.ty, agg = agg, elemTy = ft, elem = v.value, index = i))
+      NLocal(name = d)
+    }
+  }
+}
+
+/// A by-value record: an `insertvalue` chain from `undef`, no allocation and no ARC.
+/// The fields are evaluated in declaration order.
+func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
+  match recLayout(c, sym) {
+    case None -> unitVal()
+    case Some(lay) -> {
+      if fields.count != lay.fieldTys.count {
+        return unsupported(c, "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields")
+      }
+      var cur: NValue = NUndef(ty = lay.ty)
+      var i = 0
+      while i < fields.count {
+        val v = borrow(c, lowerExpr(c, fields[i]))
+        cur = insertField(c, lay, cur, i, v)
+        i = i + 1
+      }
+      Val(ty = lay.ty, value = cur)
+    }
+  }
+}
+
+/// A field read: `extractvalue` out of the aggregate.  A Unit field reads as Unit.
+func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
+  match recLayout(c, field.owner) {
+    case None -> unitVal()
+    case Some(lay) -> {
+      val r = borrow(c, lowerExpr(c, recv))
+      if field.index < 0 or field.index >= lay.fieldTys.count {
+        return unsupported(c, "field " + field.name + " outside its record's layout")
+      }
+      match lay.fieldTys[field.index] {
+        case NVoid -> unitVal()
+        case ft -> {
+          val d = tmp(c)
+          c.insns.add(NExtractValue(dest = d, aggTy = lay.ty, agg = r.value, index = field.index))
+          Val(ty = ft, value = NLocal(name = d))
+        }
+      }
+    }
+  }
+}
+
+/// `r.copy(f = v, ...)`: the base is evaluated once, then each update is inserted in
+/// source order.
+func lowerCopy(c: in LCtx, e: in TExpr, base: in TExpr, updates: in List[TFieldUpdate]): Val {
+  val owner = match e.ty {
+    case TNamed(sym, _) -> sym
+    case _ -> return unsupported(c, "a copy of " + renderTy(e.ty))
+  }
+  match recLayout(c, owner) {
+    case None -> unitVal()
+    case Some(lay) -> {
+      var cur = borrow(c, lowerExpr(c, base)).value
+      for u in updates {
+        val v = borrow(c, lowerExpr(c, u.value))
+        if u.field.index < 0 or u.field.index >= lay.fieldTys.count {
+          return unsupported(c, "field " + u.field.name + " outside its record's layout")
+        }
+        cur = insertField(c, lay, cur, u.field.index, v)
+      }
+      Val(ty = lay.ty, value = cur)
+    }
   }
 }
 
@@ -792,7 +912,7 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
     case TLBool(b) -> Val(ty = NI1, value = NLitInt(v = if b { 1i64 } else { 0i64 }, ty = NI1))
     case TLChar(cp) -> Val(ty = NI32, value = NLitInt(v = cp.toLong(), ty = NI32))
     case TLString(text) -> stringLiteral(c, text)
-    case TLInt(v) -> match tyToN(e.ty) {
+    case TLInt(v) -> match tyToN(c.env.recs, e.ty) {
       case None -> unsupported(c, "an integer literal of type " + renderTy(e.ty))
       case Some(nt) -> if isFloatTy(e.ty) {
         Val(ty = nt, value = NLitFloat(v = v.toDouble(), ty = nt))
@@ -800,7 +920,7 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
         Val(ty = nt, value = NLitInt(v = wrapLit(v, nt), ty = nt))
       }
     }
-    case TLFloat(v) -> match tyToN(e.ty) {
+    case TLFloat(v) -> match tyToN(c.env.recs, e.ty) {
       case None -> unsupported(c, "a float literal of type " + renderTy(e.ty))
       case Some(nt) -> Val(ty = nt, value = NLitFloat(v = v, ty = nt))
     }
@@ -830,14 +950,22 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         if isStringN(a.ty) {
           return lowerStringBinary(c, op, a, b)
         }
-        match tyToN(ins[0].ty) {
-          case Some(nt) -> lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
+        match tyToN(c.env.recs, ins[0].ty) {
+          case Some(nt) -> if isStructN(nt) {
+            unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else {
+            lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
+          }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else if ins.count == 1 {
         val a = borrow(c, lowerExpr(c, ins[0]))
-        match tyToN(ins[0].ty) {
-          case Some(nt) -> lowerUnary(c, op, ins[0].ty, nt, a.value)
+        match tyToN(c.env.recs, ins[0].ty) {
+          case Some(nt) -> if isStructN(nt) {
+            unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else {
+            lowerUnary(c, op, ins[0].ty, nt, a.value)
+          }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else {
@@ -866,7 +994,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
-          match tyToN(e.ty) {
+          match tyToN(c.env.recs, e.ty) {
             case None -> unsupported(c, "a call returning " + renderTy(e.ty))
             case Some(rt) -> match rt {
               case NVoid -> {
@@ -1020,14 +1148,14 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
     case CvUnrefine -> lowerExpr(c, inner)
     case CvFromNever -> {
       val _ = lowerExpr(c, inner)
-      match tyToN(e.ty) {
+      match tyToN(c.env.recs, e.ty) {
         case Some(nt) -> Val(ty = nt, value = NUndef(ty = nt))
         case None -> unsupported(c, "a conversion from Never to " + renderTy(e.ty))
       }
     }
     case CvWiden(_) -> {
       val v = lowerExpr(c, inner)
-      match tyToN(e.ty) {
+      match tyToN(c.env.recs, e.ty) {
         case None -> unsupported(c, "a widening to " + renderTy(e.ty))
         case Some(to) -> lowerWiden(c, inner.ty, v, to)
       }
@@ -1088,7 +1216,7 @@ func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option
   pushTemps(c)
   val cv = lowerExpr(c, cond)
   popTemps(c)
-  val wantRef = match tyToN(e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
+  val wantRef = match tyToN(c.env.recs, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
   val thenL = newLabel(c, "if.then")
   val elseL = newLabel(c, "if.else")
   val endL = newLabel(c, "if.end")
@@ -1102,7 +1230,7 @@ func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option
   val elseEnd = curBlock(c)
   c.insns.add(NBr(label = endL))
   startBlock(c, endL)
-  match tyToN(e.ty) {
+  match tyToN(c.env.recs, e.ty) {
     case None -> unsupported(c, "an if of type " + renderTy(e.ty))
     case Some(nt) -> match nt {
       case NVoid -> unitVal()
@@ -1325,12 +1453,12 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
   if isRefN(scrut.ty) {
     return unsupported(c, "a match on a reference value")
   }
-  val wantRef = match tyToN(e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
-  match tyToN(scrutE.ty) {
+  val wantRef = match tyToN(c.env.recs, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
+  match tyToN(c.env.recs, scrutE.ty) {
     case None -> return unsupported(c, "a match on " + renderTy(scrutE.ty))
     case Some(_) -> ()
   }
-  val resN = tyToN(e.ty)
+  val resN = tyToN(c.env.recs, e.ty)
   val endL = newLabel(c, "match.end")
   val incoming: List[NPhiIncoming] = newList()
   var i = 0
@@ -1390,7 +1518,7 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
     case XRange(lo, hi, inclusive) -> {
       val lov = lowerExpr(c, lo)
       val hiv = lowerExpr(c, hi)
-      match tyToN(lo.ty) {
+      match tyToN(c.env.recs, lo.ty) {
         case None -> {
           c.problems.add("a for over " + renderTy(lo.ty))
           return
@@ -1614,7 +1742,7 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
     case None -> return fallback(fn.sym, "no IR name for symbol #" + toString(fn.sym.id))
   }
   val body = match fn.body { case Some(b) -> b; case None -> return fallback(fn.sym, "no body") }
-  val retTy = match tyToN(fn.ret) {
+  val retTy = match tyToN(env.recs, fn.ret) {
     case Some(t) -> t
     case None -> return fallback(fn.sym, "return type " + renderTy(fn.ret))
   }
@@ -1641,7 +1769,7 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
       case TMIn -> ()
       case _ -> return fallback(fn.sym, "an out or inout parameter")
     }
-    val pt = match tyToN(p.local.ty) {
+    val pt = match tyToN(env.recs, p.local.ty) {
       case Some(t) -> t
       case None -> return fallback(fn.sym, "parameter type " + renderTy(p.local.ty))
     }

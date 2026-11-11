@@ -661,3 +661,103 @@ test "an if whose reference result has a branch that returns joins both with a s
   assertTrue(Str.contains(ir, "phi %LyricString*"), ir)
   assertTrue(Str.contains(ir, "undef,"), "the returning branch contributes an undef edge: " + ir)
 }
+
+func pointEnv(names: in List[String]): TirLowerEnv {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < names.count {
+    m.add(100 + i, names[i])
+    i = i + 1
+  }
+  val recs: Map[Int, TirRecLayout] = newMap()
+  val fts: List[NType] = newList()
+  fts.add(NI32)
+  fts.add(NI32)
+  val fieldTys: List[NType] = newList()
+  fieldTys.add(NI32)
+  fieldTys.add(NI32)
+  recs.add(7, TirRecLayout(ty = NStruct(name = "P.Point", fields = fts), fieldTys = fieldTys))
+  TirLowerEnv(fnNames = m, panicFile = "P", recs = recs)
+}
+
+func pointT(): Ty {
+  TNamed(sym = sym(7), args = newList())
+}
+
+func fieldRef(name: in String, index: in Int): FieldRef {
+  FieldRef(owner = sym(7), name = name, index = index)
+}
+
+test "a by-value record is built with insertvalue and read with extractvalue" {
+  // func f(a: Int, b: Int): Int { val p = Point(a, b); p.y }
+  val a = local(1, "a", intT(), false)
+  val b = local(2, "b", intT(), false)
+  val p = local(3, "p", pointT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  ps.add(param(b))
+  val fields: List[TExpr] = newList()
+  fields.add(ex(4, intT(), XLocal(local = a.id)))
+  fields.add(ex(5, intT(), XLocal(local = b.id)))
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(20, p, ex(6, pointT(), XConstruct(sym = sym(7), fields = fields))))
+  val tail = ex(8, intT(), XField(recv = ex(9, pointT(), XLocal(local = p.id)), field = fieldRef("y", 1)))
+  val body = ex(10, intT(), XBlock(stmts = stmts, tail = Some(value = tail)))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(pointEnv(names), fnDecl(100, ps, intT(), body)))
+  assertTrue(Str.contains(ir, "insertvalue %P.Point undef, i32"), ir)
+  assertTrue(Str.contains(ir, ", 1"), "the second field is inserted at index 1: " + ir)
+  assertTrue(Str.contains(ir, "extractvalue %P.Point"), ir)
+  assertFalse(Str.contains(ir, "lyric_alloc"), "a by-value record allocates nothing: " + ir)
+  assertFalse(Str.contains(ir, "lyric_release"), "and needs no ARC: " + ir)
+}
+
+test "a copy inserts the updated fields into the base" {
+  // func f(p: Point): Point { p.copy(x = 9) }
+  val p = local(1, "p", pointT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(p))
+  val ups: List[TFieldUpdate] = newList()
+  ups.add(TFieldUpdate(field = fieldRef("x", 0), value = intLit(3, 9i64)))
+  val body = ex(4, pointT(), XCopy(base = ex(2, pointT(), XLocal(local = p.id)), updates = ups))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(pointEnv(names), fnDecl(100, ps, pointT(), body)))
+  assertTrue(Str.contains(ir, "%P.Point @P.f(%P.Point %a1)"), ir)
+  assertTrue(Str.contains(ir, "insertvalue %P.Point"), ir)
+  assertTrue(Str.contains(ir, "ret %P.Point"), ir)
+}
+
+test "a record the code generator did not register by value falls back" {
+  // func f(): Point { Point(1, 2) } with an environment that has no layout
+  val fields: List[TExpr] = newList()
+  fields.add(intLit(2, 1i64))
+  fields.add(intLit(3, 2i64))
+  val body = ex(4, pointT(), XConstruct(sym = sym(7), fields = fields))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, newList(), pointT(), body)))
+  assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
+}
+
+test "an operator on a by-value record falls back" {
+  // func f(a: Point, b: Point): Bool { a == b }
+  val a = local(1, "a", pointT(), false)
+  val b = local(2, "b", pointT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  ps.add(param(b))
+  val body = ex(
+    3,
+    tyBool(),
+    XCall(
+      callee = Intrinsic(op = IoEq),
+      args = inArgs(ex(4, pointT(), XLocal(local = a.id)), ex(5, pointT(), XLocal(local = b.id)))
+    )
+  )
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(pointEnv(names), fnDecl(100, ps, tyBool(), body)))
+  assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
+}
