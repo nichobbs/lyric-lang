@@ -1,6 +1,6 @@
 # D520 - The native backend lowers TIR: `Lyric.LlvmTir`, per-function fallback (docs/70 phase 4a)
 
-**Status:** accepted; slice 1 (scalar functions) shipped.
+**Status:** accepted; slice 1 (scalar functions, #8995) and slice 2 (scalar `match`, `for` over ranges) shipped.
 
 ## Context
 
@@ -42,3 +42,10 @@ and still holds generics and un-elaborated contracts.
   (`udiv`, `urem`, `icmp ult`). The AST path derives these from `.toULong()`
   hints; the TIR path needs none.
 - No TIR data-model change is required by this slice.
+
+## Slice 2
+
+- `match` on a scalar scrutinee (`Bool`, `Byte`, `Int`, `UInt`, `Long`, `ULong`, `Nat`, `Char`): literal, range, binding (with `@` sub-pattern), wildcard and or-patterns without bindings, guards, and a runtime panic after the last arm. A match the builder did not prove exhaustive falls back. The result is a phi whose predecessors include the dead block after the panic (the LLVM verifier rejects a phi without an entry for every predecessor).
+- `for` over an `XRange` of integers; an inclusive range tests the bound before stepping so `MAX` does not wrap into an endless loop.
+- Unary negation does not check overflow, the same as the AST path, so it is not a difference to close before the default switch.
+- A `Bool` widens by zero extension; an unsigned literal above the signed maximum of its width is stored as its two's-complement value.
