@@ -1787,3 +1787,12 @@ test "a union field bound in a generic function keeps the function's rigid type 
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a generic call's type arguments are read back from its arguments and its result together" {
+  val c = censusOf(
+    "package App\nunion Res[T, E] { case Good(v: T)\n case Bad(e: E) }\nfunc andThen[T, U, E](r: in Res[T, E], f: in (T) -> Res[U, E]): Res[U, E] {\n  match r {\n    case Good(v) -> f(v)\n    case Bad(e) -> Bad(e = e)\n  }\n}\nfunc t(): Res[Int, Int] {\n  val a: Res[Int, Int] = andThen(Good(v = 5), { x: Int -> Bad(e = 42) })\n  a\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}

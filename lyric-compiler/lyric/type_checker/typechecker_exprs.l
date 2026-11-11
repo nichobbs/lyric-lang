@@ -12166,7 +12166,7 @@ func findGenericInPairs(name: in String, paramTys: in List[Type], argTys: in Lis
 // (`None` for an `Option[T]` parameter) does not hide what a later argument
 // fixes (#7844): `f(None, 5)` with `f[T](a: Option[T], b: T)` binds `T` to
 // `Int`, not to the hole.
-func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
+pub func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
   val result: List[Type] = newList()
   var g = 0
   while g < names.count {
