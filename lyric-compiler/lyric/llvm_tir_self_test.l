@@ -626,3 +626,38 @@ test "the method form of toString on an Int and on a Bool is the same built-in" 
   assertTrue(Str.contains(ir, "@lyric_string_from_bool("), ir)
   assertTrue(countOf(ir, "call void @lyric_release(") == 2, "both owned temporaries are released: " + ir)
 }
+
+test "a reference local with no initializer starts null and is released with its scope" {
+  // func f(): Int { var s: String; 0 }
+  val sv = local(1, "s", strT(), true)
+  val stmts: List[TStmt] = newList()
+  stmts.add(TStmt(id = NodeId(id = 20), span = noSourceSpan(), kind = TsVar(decl = sv, init = None)))
+  val body = ex(2, intT(), XBlock(stmts = stmts, tail = Some(value = intLit(3, 0i64))))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, newList(), intT(), body)))
+  assertTrue(Str.contains(ir, "store %LyricString* null"), "the slot starts null: " + ir)
+  assertTrue(Str.contains(ir, "call void @lyric_release("), "and is released when its scope closes: " + ir)
+}
+
+test "an if whose reference result has a branch that returns joins both with a string phi" {
+  // func g(c: Bool, s: String): String { if c { return "x" } else { s } }
+  val cnd = local(1, "c", tyBool(), false)
+  val s0 = local(2, "s", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(cnd))
+  ps.add(param(s0))
+  val ret = TStmt(id = NodeId(id = 30), span = noSourceSpan(), kind = TsReturn(value = Some(value = strLit(4, "x"))))
+  val thenB = ex(5, strT(), XBlock(stmts = list1(ret), tail = None))
+  val elseB = ex(6, strT(), XBlock(stmts = newList(), tail = Some(value = ex(7, strT(), XLocal(local = s0.id)))))
+  val ifE = ex(
+    8,
+    strT(),
+    XIf(cond = ex(9, tyBool(), XLocal(local = cnd.id)), thenBranch = thenB, elseBranch = Some(value = elseB))
+  )
+  val names: List[String] = newList()
+  names.add("P.g")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), ifE)))
+  assertTrue(Str.contains(ir, "phi %LyricString*"), ir)
+  assertTrue(Str.contains(ir, "undef,"), "the returning branch contributes an undef edge: " + ir)
+}

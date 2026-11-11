@@ -835,7 +835,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else if ins.count == 1 {
-        val a = lowerExpr(c, ins[0])
+        val a = borrow(c, lowerExpr(c, ins[0]))
         match tyToN(ins[0].ty) {
           case Some(nt) -> lowerUnary(c, op, ins[0].ty, nt, a.value)
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
@@ -1148,7 +1148,9 @@ func lowerShort(c: in LCtx, op: in ShortOp, l: in TExpr, r: in TExpr): Val {
   Val(ty = NI1, value = NLocal(name = d))
 }
 
-/// `x = e` and `x += e` on a reference local: the new value is owned, the prev one released.
+/// `x = e` and `x += e` on a reference local: the new value is owned, the previous one released.
+/// Only a tracked local reaches here: the checker rejects an assignment to an `in` parameter,
+/// whose slot holds a borrow this code must not release.
 func assignRef(c: in LCtx, slot: in Slot, op: in AssignKind, value: in TExpr): Val {
   val prev = tmp(c)
   c.insns.add(NLoad(dest = prev, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
