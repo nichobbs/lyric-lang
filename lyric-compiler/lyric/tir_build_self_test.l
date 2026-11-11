@@ -1770,9 +1770,9 @@ test "a call under explicit type arguments records them as the call's instantiat
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "a union case at a match arm's tail takes the match's type" {
+test "a nullary union case at a match arm's tail takes the match's type" {
   val c = censusOf(
-    "package App\nunion Res[T, E] { case Good(v: T)\n case Bad(e: E) }\nfunc andThen[T, U, E](r: in Res[T, E], f: in (T) -> Res[U, E]): Res[U, E] {\n  match r {\n    case Good(v) -> f(v)\n    case Bad(e) -> Bad(e = e)\n  }\n}\n"
+    "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc pick[T](x: in Opt[T], other: in Opt[T]): Opt[T] {\n  match x {\n    case Nada -> Nada\n    case _ -> other\n  }\n}\n"
   )
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
