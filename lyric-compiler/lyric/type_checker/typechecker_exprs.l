@@ -5195,7 +5195,13 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
 // Record the fields of a non-generic record or union-case construction as a
 // signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
-func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type): Unit {
+func recordCtorSigNode(
+  tbl: in SymbolTable,
+  node: in Int,
+  sym: in Symbol,
+  resultTy: in Type,
+  genericNames: in List[String],
+): Unit {
   if node <= 0 {
     return
   }
@@ -5206,7 +5212,13 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   val closed = match unrefine(resultTy) {
     // A union case's result may carry an unsolved argument (`Err(error = 1)` is a
     // `Result[?, Int]`); what the construction needs is closed field types, checked below.
-    case TyUser(_, _, a) -> if isCase { true } else if a.count > 0 { typeIsClosed(resultTy) } else { true }
+    case TyUser(_, _, a) -> if isCase {
+      true
+    } else if a.count > 0 {
+      typeIsClosedOver(resultTy, genericNames)
+    } else {
+      true
+    }
     case _ -> false
   }
   if not closed {
@@ -5298,7 +5310,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
     case _ -> return
   }
   for p in params {
-    if not typeIsClosed(p.ty) {
+    if not typeIsClosedOver(p.ty, genericNames) {
       return
     }
   }
@@ -12723,25 +12735,32 @@ func checkConstRefPattern(
 // false "not numeric" / type-mismatch — the type checker does not track the
 // `where V: Add`-style bounds that make such uses valid.
 func eraseTyParams(t: in Type): Type {
+  eraseTyParamsExcept(t, newList())
+}
+
+// `t` with every type parameter not in `keep` replaced by the lenient generic error type.  A
+// pattern binding keeps the enclosing generic function's own parameters (`keep`): they are
+// rigid and in scope, so a variable bound at one has that type, not an error.
+func eraseTyParamsExcept(t: in Type, keep: in List[String]): Type {
   match t {
-    case TyParam(_, _) -> tyErrorGeneric()
+    case TyParam(n, _) -> if keep.contains(n) { t } else { tyErrorGeneric() }
     case TyUser(id, name, targs) -> {
       val na: List[Type] = newList()
       var i = 0
       while i < targs.count {
-        na.add(eraseTyParams(targs[i]))
+        na.add(eraseTyParamsExcept(targs[i], keep))
         i = i + 1
       }
       TyUser(id = id, name = name, args = na)
     }
-    case TySlice(e) -> TySlice(element = eraseTyParams(e))
-    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyParams(e), sizeVar = sv)
-    case TyNullable(inner) -> TyNullable(inner = eraseTyParams(inner))
+    case TySlice(e) -> TySlice(element = eraseTyParamsExcept(e, keep))
+    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyParamsExcept(e, keep), sizeVar = sv)
+    case TyNullable(inner) -> TyNullable(inner = eraseTyParamsExcept(inner, keep))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
       while i < elems.count {
-        ne.add(eraseTyParams(elems[i]))
+        ne.add(eraseTyParamsExcept(elems[i], keep))
         i = i + 1
       }
       TyTuple(elems = ne)
@@ -12750,10 +12769,10 @@ func eraseTyParams(t: in Type): Type {
       val np: List[Type] = newList()
       var i = 0
       while i < ps.count {
-        np.add(eraseTyParams(ps[i]))
+        np.add(eraseTyParamsExcept(ps[i], keep))
         i = i + 1
       }
-      TyFunction(params = np, ret = eraseTyParams(ret), isAsync = isA)
+      TyFunction(params = np, ret = eraseTyParamsExcept(ret, keep), isAsync = isA)
     }
     case _ -> t
   }
@@ -12831,7 +12850,7 @@ func bindPatternTyped(
           }
         } else {
           recordPatBinding(tbl, pat)
-          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParams(ty), isMutable = false))
+          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParamsExcept(ty, sc.genericNames), isMutable = false))
         }
       }
       match inner {
@@ -20526,7 +20545,7 @@ func inferExprCore(
             noteBareCalleeSym(tbl, fn, caseSym)
             recordCtorCalleeNode(tbl, e.nodeId, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
-            recordCtorSigNode(tbl, e.nodeId, caseSym, caseTy)
+            recordCtorSigNode(tbl, e.nodeId, caseSym, caseTy, sc.genericNames)
             noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, args, argTypes, caseTy, e.span)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
@@ -20538,7 +20557,7 @@ func inferExprCore(
               noteBareCalleeSym(tbl, fn, ctorSym)
               recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
-              recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
+              recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy, sc.genericNames)
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
               recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
@@ -22326,7 +22345,7 @@ func inferCaseCtorExpected(
     inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, span, true),
     expected
   )
-  recordCtorSigNode(tbl, callNode, caseSym, caseTy)
+  recordCtorSigNode(tbl, callNode, caseSym, caseTy, sc.genericNames)
   noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, cargs, cargTypes, caseTy, span)
   recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
   caseTy
@@ -22706,7 +22725,7 @@ func inferExprExpectedCore(
             val cargTypes = inferGenericRecordCtorArgsExpected(sc, tbl, sigs, diag, fn, ctorSym, cargs, expected)
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
             recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
-            recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
+            recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy, sc.genericNames)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
             ctorTy
