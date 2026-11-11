@@ -1434,7 +1434,11 @@ pub func symTableMethodDeclId(
           case _ -> ()
         }
       }
-      if n == 1 { found } else { None }
+      if n == 1 {
+        found
+      } else {
+        None
+      }
     } else {
       None
     }

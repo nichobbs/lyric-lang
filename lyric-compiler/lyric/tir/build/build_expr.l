@@ -1497,7 +1497,9 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
 /// unwrapped to its underlying type (`CvUnrefine`, `CvUnwrapDistinct`), then widened to
 /// the call's type when that differs. None when the call is not such a conversion;
 /// Some(None) after a part could not be built.
-func buildUnderlyingConversion(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[Option[TExpr]] {
+func buildUnderlyingConversion(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
   if args.count != 0 {
     return None
   }
@@ -1509,14 +1511,8 @@ func buildUnderlyingConversion(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in E
     }
     case _ -> return None
   }
-  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) {
-    case Some(t) -> t
-    case None -> return None
-  }
-  val isRefined = match rt {
-    case TyRefined(_, _, _, _, _) -> true
-    case _ -> false
-  }
+  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
+  val isRefined = match rt { case TyRefined(_, _, _, _, _) -> true; case _ -> false }
   val isDistinct = match rt {
     case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
       case Some(sym) -> match sym.kind {
@@ -1532,7 +1528,12 @@ func buildUnderlyingConversion(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in E
   }
   val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
   val unwrapped: TExpr = match recv.ty {
-    case TRefined(u, _, _, _) -> TExpr(id = freshNodeId(env), ty = u, span = recv.span, kind = XConvert(kind = CvUnrefine, inner = recv))
+    case TRefined(u, _, _, _) -> TExpr(
+      id = freshNodeId(env),
+      ty = u,
+      span = recv.span,
+      kind = XConvert(kind = CvUnrefine, inner = recv)
+    )
     case TNamed(did, targs) -> {
       if targs.count != 0 {
         return Some(value = uncoveredExpr(env, e, "a conversion method on a generic distinct value"))
@@ -1551,7 +1552,12 @@ func buildUnderlyingConversion(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in E
           return Some(value = None)
         }
       }
-      TExpr(id = freshNodeId(env), ty = uty, span = recv.span, kind = XConvert(kind = CvUnwrapDistinct(sym = did), inner = recv))
+      TExpr(
+        id = freshNodeId(env),
+        ty = uty,
+        span = recv.span,
+        kind = XConvert(kind = CvUnwrapDistinct(sym = did), inner = recv)
+      )
     }
     case _ -> return None
   }
