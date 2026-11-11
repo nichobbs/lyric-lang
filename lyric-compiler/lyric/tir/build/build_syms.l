@@ -93,6 +93,31 @@ func noteFuncSym(
   }
 }
 
+/// The names of the `var` fields of the record `sid` (a plain field is immutable, language
+/// reference §3.4), read from its declaration.  A symbol that is no record has none.
+func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  for s in tbl.symbols {
+    val decl: Option[RecordDecl] = match s.kind {
+      case DKRecord(i, d) -> if i.id == sid.id { Some(value = d) } else { None }
+      case DKExposedRec(i, d) -> if i.id == sid.id { Some(value = d) } else { None }
+      case _ -> None
+    }
+    match decl {
+      case Some(rd) -> for m in rd.members {
+        match m {
+          case RMField(fd) -> if fd.isMutable and not names.containsKey(fd.name) {
+            names.add(fd.name, true)
+          }
+          case _ -> ()
+        }
+      }
+      case None -> ()
+    }
+  }
+  names
+}
+
 /// Record the record or case `sym` a non-generic construction builds: its
 /// fields are the constructor signature's parameters.
 func noteCtorSym(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature): Unit {
@@ -101,9 +126,10 @@ func noteCtorSym(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature):
   }
   val ctx = newTyConvCtx(env.ctx.tbl)
   val fs: List[TFieldSig] = newList()
+  val vars = varFieldNames(env.ctx.tbl, sym)
   for p in sig.params {
     match tyOfType(ctx, p.ty) {
-      case Ok(t) -> fs.add(TFieldSig(name = p.name, ty = t, mutable = false))
+      case Ok(t) -> fs.add(TFieldSig(name = p.name, ty = t, mutable = vars.containsKey(p.name)))
       case Err(_) -> return
     }
   }
@@ -312,10 +338,11 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             tyConvBind(ctx, s.name, sid, names)
           }
           val fs: List[TFieldSig] = newList()
+          val vars = varFieldNames(tbl, sid)
           var ok = true
           for f in fieldsOfRecord(tbl, sid) {
             match tyOfType(ctx, f.ty) {
-              case Ok(t) -> fs.add(TFieldSig(name = f.name, ty = t, mutable = false))
+              case Ok(t) -> fs.add(TFieldSig(name = f.name, ty = t, mutable = vars.containsKey(f.name)))
               case Err(_) -> {
                 ok = false
               }
