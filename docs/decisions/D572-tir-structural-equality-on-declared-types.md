@@ -24,4 +24,4 @@ only operator on a declared type that reaches the builder.
 
 ## Measured
 
-The kind had 183 sites in the compiler area (D571). The `tir_build` self-test passes (128); the wide census is re-measured by CI-independent runs, not in this change.
+The kind had 183 sites in the compiler area (D571). The `tir_build` self-test passes (129). The wide census was not re-measured for this change, so no before and after count is recorded.
