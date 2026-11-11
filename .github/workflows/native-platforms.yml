@@ -295,8 +295,8 @@ jobs:
       - name: Install the native AOT and test toolchain
         run: |
           set -euo pipefail
-          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq clang zlib1g-dev gcc libssl-dev
+          bash scripts/ci/install-tool.sh aot-prereqs
+          bash scripts/ci/install-tool.sh apt gcc libssl-dev
           clang --version
 
       - name: Publish self-contained AOT binary (linux-arm64)
@@ -332,8 +332,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
-          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq cmake ninja-build pkgconf mesa-vulkan-drivers \
+          bash scripts/ci/install-tool.sh apt cmake ninja-build pkgconf mesa-vulkan-drivers \
             libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei \
             libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev libxrender-dev libxtst-dev \
             xvfb x11-apps imagemagick xdotool
@@ -396,7 +395,7 @@ jobs:
           clang --version
           echo "int main(void){return 0;}" > "$RUNNER_TEMP/tsan_preflight.c"
           if ! clang -fsanitize=thread "$RUNNER_TEMP/tsan_preflight.c" -o "$RUNNER_TEMP/tsan_preflight"; then
-            sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+            bash scripts/ci/install-tool.sh apt "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
             clang -fsanitize=thread "$RUNNER_TEMP/tsan_preflight.c" -o "$RUNNER_TEMP/tsan_preflight"
           fi
           echo "vm.mmap_rnd_bits=$(cat /proc/sys/vm/mmap_rnd_bits)"
