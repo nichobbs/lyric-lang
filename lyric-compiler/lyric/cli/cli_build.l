@@ -1395,6 +1395,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var sawReleaseFlag: Bool = false
   var shapeArg: String = ""
   var sawAotFlag: Bool = false
+  var sawViaTir: Bool = false
   var sawStandaloneFlag: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
@@ -1474,6 +1475,13 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     } else if arg == "--standalone" {
       sawStandaloneFlag = true
+      i += 1
+    } else if arg == "--via-tir" {
+      // docs/70 phase 4a (D520): the native backend lowers the functions TIR covers from
+      // TIR and reports every function that stays on the AST path; the backend reads the
+      // same switch from LYRIC_NATIVE_VIA_TIR.
+      sawViaTir = true
+      Environment.setVar("LYRIC_NATIVE_VIA_TIR", "1")
       i += 1
     } else if arg == "--verify-ir" {
       // docs/70 §6.4: number the nodes and report the TIR census (I0002, I0003) after
@@ -1625,6 +1633,15 @@ func cmdBuild(argv: in slice[String]): Int {
       }
     }
     shapeFromArg = parsedShape
+  }
+  if sawViaTir {
+    match target {
+      case Emitter.Native -> ()
+      case _ -> {
+        printErr("build: --via-tir applies to --target native")
+        return 1
+      }
+    }
   }
   match shapeFlagConflictError(shapeArg, sawAotFlag, sawStandaloneFlag) {
     case Some(msg) -> {

@@ -368,3 +368,86 @@ test "a Bool widens by zero extension" {
   val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), wide)))
   assertTrue(Str.contains(ir, "zext i1"), ir)
 }
+
+test "a top-level function key gives its package, name and parameter count" {
+  match tirTopLevelFn("Pkg.Sub::add(Int,Int)") {
+    case Some(n) -> {
+      assertEqual(n.pkg, "Pkg.Sub", "package")
+      assertEqual(n.name, "add", "name")
+      assertEqualInt(n.arity, 2, "arity")
+    }
+    case None -> assertTrue(false, "a function key")
+  }
+  match tirTopLevelFn("P::none()") {
+    case Some(n) -> assertEqualInt(n.arity, 0, "no parameters")
+    case None -> assertTrue(false, "a nullary function key")
+  }
+  match tirTopLevelFn("P::f(Map[String,Int],Int)") {
+    case Some(n) -> assertEqualInt(n.arity, 2, "a comma inside brackets is not a separator")
+    case None -> assertTrue(false, "a generic parameter key")
+  }
+  assertTrue(isNone(tirTopLevelFn("P::Type")), "a type is not a function")
+  assertTrue(isNone(tirTopLevelFn("P::Type::method(Int)")), "a method is not a top-level function")
+}
+
+test "the census counts lowered functions and groups fallbacks by reason" {
+  val c = newTirCensus()
+  c.lowered.add("a")
+  c.lowered.add("b")
+  c.fallbacks.add("c: expression XLambda")
+  c.fallbacks.add("d: expression XLambda")
+  c.fallbacks.add("e: a string literal")
+  val lines = tirCensusLines(c)
+  assertEqual(lines[0], "native via-TIR: 2 of 5 functions lowered from TIR", "totals")
+  assertEqual(lines[1], "  fallback: expression XLambda x 2", "most frequent first")
+  assertEqual(lines[2], "  fallback: a string literal x 1", "then the rest")
+}
+
+test "continue in a for over an exclusive range jumps to the step" {
+  val n = local(1, "n", intT(), false)
+  val i = local(2, "i", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  val cont = TStmt(id = NodeId(id = 50), span = noSourceSpan(), kind = TsContinue(label = None))
+  val stmts0: List[TStmt] = newList()
+  stmts0.add(cont)
+  val loopBody = ex(32, tyUnit(), XBlock(stmts = stmts0, tail = None))
+  val range = ex(
+    33,
+    intT(),
+    XRange(lo = intLit(34, 0i64), hi = ex(35, intT(), XLocal(local = n.id)), inclusive = false)
+  )
+  val stmts: List[TStmt] = newList()
+  stmts.add(
+    TStmt(
+      id = NodeId(id = 41),
+      span = noSourceSpan(),
+      kind = TsFor(label = None, pat = pat(37, intT(), TpBind(decl = i, inner = None)), iter = range, body = loopBody)
+    )
+  )
+  val body = ex(38, intT(), XBlock(stmts = stmts, tail = Some(value = intLit(39, 0i64))))
+  val names: List[String] = newList()
+  names.add("P.skip")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), body)))
+  assertTrue(Str.contains(ir, "icmp slt i32"), "an exclusive bound: " + ir)
+  assertTrue(Str.contains(ir, "br label %for.step"), "continue targets the step block: " + ir)
+  assertFalse(Str.contains(ir, "for.inc"), "an exclusive range has no inclusive guard: " + ir)
+}
+
+test "an or-pattern that binds falls back" {
+  val x = local(1, "x", intT(), false)
+  val b = local(2, "b", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(x))
+  val alts: List[TPat] = newList()
+  alts.add(pat(10, intT(), TpBind(decl = b, inner = None)))
+  alts.add(pat(11, intT(), TpLit(lit = TLInt(value = 1i64))))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(12, intT(), TpOr(alts = alts)), None, intLit(13, 1i64)))
+  arms.add(arm(pat(14, intT(), TpWild), None, intLit(15, 0i64)))
+  val m = ex(21, intT(), XMatch(scrutinee = ex(22, intT(), XLocal(local = x.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.o")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.startsWith(ir, "FALLBACK: "), ir)
+}

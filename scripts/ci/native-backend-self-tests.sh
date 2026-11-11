@@ -211,6 +211,8 @@ done
 # dotnet plugin processes, protocol sessions, a trusted in-process plugin,
 # lyric-ui plugin widgets); the same set runs on macOS and Linux arm64.
 bash scripts/ci/native-plugin-e2e.sh "$lyric_bin"
+# docs/70 phase 4a (D520): `--via-tir` lowers the functions TIR covers from TIR and prints the fallback census.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-e2e.sh
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).

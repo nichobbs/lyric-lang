@@ -121,6 +121,11 @@ pub record ForeignValueRecord {
 }
 
 pub record MiddleEndOptions {
+  /// Build the checked file as TIR (docs/70 phase 4a): the file is numbered, the checker
+  /// records its per-node tables, and the built package is appended to `tirOut` when the
+  /// check has no errors.
+  wantTir: Bool = false
+  tirOut: List[TirBuild.PackageBuild] = newList()
   tcFatal: Bool
   tcReport: Bool
   pkgLabel: String
@@ -2268,7 +2273,7 @@ pub func pipeCheckFront(
   // checker records a type per expression, and report the I0002 census after
   // the check.  Off by default: no extra copy of the tree.
   val verifyIr = tirVerifyIrEnabled()
-  val file0 = if verifyIr { Resolve.renumberNodeIds(file00).file } else { file00 }
+  val file0 = if verifyIr or opts.wantTir { Resolve.renumberNodeIds(file00).file } else { file00 }
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val tcRes = checkWithImportedPackagesForTargetIter(
     file0,
@@ -2280,6 +2285,9 @@ pub func pipeCheckFront(
   )
   if verifyIr and errorCount(tcRes.diagnostics) == 0 {
     pipeReportTirCensus(opts.pkgLabel, file0, tcRes)
+  }
+  if opts.wantTir and errorCount(tcRes.diagnostics) == 0 {
+    opts.tirOut.add(TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, opts.pkgLabel))
   }
   if opts.tcFatal {
     if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
