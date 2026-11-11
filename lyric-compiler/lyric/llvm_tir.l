@@ -767,7 +767,10 @@ func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
     case None -> unitVal()
     case Some(lay) -> {
       if fields.count != lay.fieldTys.count {
-        return unsupported(c, "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields")
+        return unsupported(
+          c,
+          "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields"
+        )
       }
       var cur: NValue = NUndef(ty = lay.ty)
       var i = 0
@@ -805,10 +808,7 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
 /// `r.copy(f = v, ...)`: the base is evaluated once, then each update is inserted in
 /// source order.
 func lowerCopy(c: in LCtx, e: in TExpr, base: in TExpr, updates: in List[TFieldUpdate]): Val {
-  val owner = match e.ty {
-    case TNamed(sym, _) -> sym
-    case _ -> return unsupported(c, "a copy of " + renderTy(e.ty))
-  }
+  val owner = match e.ty { case TNamed(sym, _) -> sym; case _ -> return unsupported(c, "a copy of " + renderTy(e.ty)) }
   match recLayout(c, owner) {
     case None -> unitVal()
     case Some(lay) -> {

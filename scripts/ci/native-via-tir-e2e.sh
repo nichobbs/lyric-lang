@@ -62,4 +62,19 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/s_tir.ll" lyric-rt/b
 "$work/s_asan" > "$work/s_asan.out"
 diff -u "$work/s_tir.out" "$work/s_asan.out"
 echo "strings under AddressSanitizer: clean"
+
+# By-value records (docs/70 phase 4a): construction, field reads, nested records and `.copy`
+# lowered from TIR, the same comparison.  No ARC is involved, so there is no sanitizer stage.
+recsrc=scripts/ci/native-via-tir/records.l
+"$lyric_bin" build --target native "$recsrc" -o "$work/r_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$recsrc" -o "$work/r_tir" 2> "$work/r_census.txt" >/dev/null
+cat "$work/r_census.txt"
+"$work/r_ast" > "$work/r_ast.out"
+"$work/r_tir" > "$work/r_tir.out"
+diff -u "$work/r_ast.out" "$work/r_tir.out"
+printf '7\n13\n4\n3\n15\n3\n' | diff -u - "$work/r_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/r_census.txt" || {
+  echo "::error::expected every function of records.l to be lowered from TIR"
+  exit 1
+}
 echo "native-via-tir-e2e: ok"

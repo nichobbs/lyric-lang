@@ -63,3 +63,10 @@ and still holds generics and un-elaborated contracts.
 - Parameters are `in` borrows (ARC rule 5) and are never released by the callee; a returned reference is owned by the caller (rule 6).
 - `scripts/ci/native-via-tir-e2e.sh` builds `native-via-tir/strings.l` both ways and requires equal output, and recompiles the TIR build's IR under AddressSanitizer against an ASan-built runtime: a leak, a double release or a use after release fails the run.
 - Still on the AST path: matching on a reference value, `inout`/`out` references, and everything with a heap layout (records, unions, lists, closures).
+
+## Slice 5: by-value records
+
+- `XConstruct`, `XField` and `XCopy` lower for the records the code generator registers by value (docs/67 §4.2: no `var` field, every field by-value): construction is an `insertvalue` chain from `undef`, a field read is `extractvalue`, `.copy` inserts the updated fields into the base. There is no allocation and no ARC, so no ownership rule applies. A Unit field has only its placeholder byte; nothing is stored or read.
+- Layout stays the code generator's. `TirLowerEnv.recs` maps a record's `SymbolId` to a `TirRecLayout` (the LLVM struct type and the field types it chose), built in `tirOrAst` from the DefPath keys (`Pkg::Name`) and `ctx.recordDefs`. `LlvmTir` never decides between the heap and the by-value form: a symbol with no entry (a heap record, a union case, a generic) falls back. `tyToN` takes the map so a record can be a parameter, result, local or field type.
+- Operators on a record (`==`, unary) fall back: structural equality is a derive, not an intrinsic.
+- Still on the AST path: heap records and unions (the ARC and destructor slice), patterns on records, tuples, lists, closures.
