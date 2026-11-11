@@ -1813,3 +1813,25 @@ test "a call of a stubbable interface's method resolves despite the stub's synth
   assertTrue(c.built >= 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
 }
+
+test "an assignment to a var field of a ref record verifies; a plain field stays immutable" {
+  val c = censusOf(
+    "package App\nref record Counter {\n  var n: Int\n  label: String\n}\nfunc bump(c: in Counter): Unit {\n  c.n = c.n + 1\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var seen = false
+  for en in c.pkg.symbols {
+    for f in en.fields {
+      if f.name == "n" {
+        seen = true
+        assertTrue(f.mutable, "the var field n is mutable")
+      }
+      if f.name == "label" {
+        assertTrue(not f.mutable, "the plain field label is immutable")
+      }
+    }
+  }
+  assertTrue(seen, "the record's fields are in the package")
+}
