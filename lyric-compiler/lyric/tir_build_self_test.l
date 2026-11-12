@@ -1080,6 +1080,24 @@ test "the real MSIL metadata gives a static overload and static constructors" {
   }
 }
 
+test "an integer argument to a host Double parameter is widened at the boundary (D600)" {
+  val head = "package App\nextern type Math = \"System.Math\"\n"
+  val st = buildFirstFnMsil(head + "func f(a: Int): Double {\n  Math.Sqrt(a)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPDouble)), "over Double")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a Long argument to a host Double parameter is widened at the boundary (D600)" {
+  val head = "package App\nextern type Math = \"System.Math\"\n"
+  val st = buildFirstFnMsil(head + "func f(a: Long): Double {\n  Math.Sqrt(a)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+}
+
 // ─── Generic calls (docs/70 §6.3, D394) ──────────────────────────────────────
 func directTypeArgs(b: in Option[TExpr]): Option[List[Ty]] {
   match b {
