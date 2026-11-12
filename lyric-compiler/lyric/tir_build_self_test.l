@@ -1982,6 +1982,15 @@ test "a try that ends a block yields its body's or its catch's value through a l
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "ordering and arithmetic on a bounded type parameter, a distinct type and a range type build" {
+  val c = censusOf(
+    "package App\ntype Score = Int derives Add, Sub, Compare\ntype Cents = Long range 0 ..= 100000 derives Add, Compare\nfunc bigger[T](a: in T, b: in T): Bool\n  where T: Compare\n{\n  a > b\n}\nfunc plus(a: Score, b: Score): Score { a + b }\nfunc less(a: Score, b: Score): Bool { a < b }\nfunc total(a: Cents, b: Cents): Cents { a + b }\nfunc order(a: Cents, b: Cents): Bool { a <= b }\n"
+  )
+  assertEqualInt(c.built, 5, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
