@@ -2137,3 +2137,17 @@ test "a call of a generic protected type's func instantiates the owner's paramet
   )
   assertBuildsAndVerifies(pb, 2, "Cell.get and f")
 }
+
+test "a generic function calling a method of a generic record passes its own parameter (D580)" {
+  val pb = packageOf(
+    "package App\nrecord Cell[T] {\n  v: T\n  func get(self: in Cell[T]): T { self.v }\n}\nfunc shown[T](c: in Cell[T]): T {\n  c.get()\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.get and shown")
+}
+
+test "a method calling a sibling method through self passes the owner's parameter (D580)" {
+  val pb = packageOf(
+    "package App\nrecord Cell[T] {\n  v: T\n  func get(self: in Cell[T]): T { self.v }\n  func twice(self: in Cell[T]): T {\n    self.get()\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.get and twice")
+}

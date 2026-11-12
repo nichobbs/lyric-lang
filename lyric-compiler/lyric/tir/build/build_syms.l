@@ -73,6 +73,20 @@ func noteFuncSym(
   recvMode: in Option[ParamMode],
   kind: in TSymKind,
 ): Unit {
+  noteFuncSymN(env, sym, sig, recv, recvMode, kind, sig.generics.count)
+}
+
+/// `noteFuncSym` for a callee whose type-parameter space is larger than its signature's
+/// `generics`: a method of a generic type counts the owner's parameters too (D579).
+func noteFuncSymN(
+  env: in BuildEnv,
+  sym: in SymbolId,
+  sig: in ResolvedSignature,
+  recv: in Option[Type],
+  recvMode: in Option[ParamMode],
+  kind: in TSymKind,
+  typeParamCount: in Int,
+): Unit {
   if env.syms.containsKey(sym.id) {
     return
   }
@@ -82,8 +96,8 @@ func noteFuncSym(
       TSymEntry(
         sym = sym,
         kind = kind,
-        typeParamCount = sig.generics.count,
-        sig = Some(value = ts),
+        typeParamCount = typeParamCount,
+        sig = Some(value = ts.copy(typeParamCount = typeParamCount)),
         fields = newList(),
         ty = None,
         mutable = false
