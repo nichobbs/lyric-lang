@@ -783,6 +783,8 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XShort(op, l, r) -> lowerShort(c, op, l, r)
     case XAssign(place, op, value) -> lowerAssign(c, place, op, value)
     case XMatch(scrut, arms, exhaustive) -> lowerMatch(c, e, scrut, arms, exhaustive)
+    case XInterp(parts) -> lowerInterp(c, parts)
+    case XIndex(recv, idx, how) -> lowerIndex(c, recv, idx, how)
     case XConstruct(sym, fields) -> lowerConstruct(c, sym, fields)
     case XField(recv, field) -> lowerField(c, recv, field)
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
@@ -983,6 +985,50 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
         }
       }
     }
+  }
+}
+
+/// A string interpolation: every part is already a `String`, so it is a left fold of
+/// concatenations.  Each intermediate is a fresh owned string that the next concatenation
+/// consumes as a borrowed operand, so it is released as soon as that concatenation has run; the
+/// final string is owned by the caller.
+func lowerInterp(c: in LCtx, parts: in List[TExpr]): Val {
+  if parts.count == 0 {
+    return stringLiteral(c, "")
+  }
+  var acc = borrow(c, lowerExpr(c, parts[0]))
+  if not isStringN(acc.ty) {
+    return unsupported(c, "an interpolation part that is not a string")
+  }
+  var i = 1
+  while i < parts.count {
+    val next = borrow(c, lowerExpr(c, parts[i]))
+    if not isStringN(next.ty) {
+      return unsupported(c, "an interpolation part that is not a string")
+    }
+    val joined = lowerStringBinary(c, IoAdd, acc, next)
+    if acc.owned {
+      releaseRef(c, acc.ty, acc.value)
+    }
+    acc = joined
+    i = i + 1
+  }
+  acc
+}
+
+/// `s[i]` on a string: the runtime decodes the scalar value starting at byte offset `i`.
+/// Other indexing (lists, maps, arrays, slices) stays on the AST path.
+func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind): Val {
+  match how {
+    case IkString -> {
+      val r = borrow(c, lowerExpr(c, recv))
+      val i = borrow(c, lowerExpr(c, idx))
+      val wide = tmp(c)
+      c.insns.add(NSExt(dest = wide, fromTy = i.ty, value = i.value, toTy = NI64))
+      val ch = callRt(c, "lyric_string_char_at", NI32, arg2(lyricStringNType(), r.value, NI64, NLocal(name = wide)))
+      Val(ty = NI32, value = ch)
+    }
+    case _ -> unsupported(c, "indexing a value that is not a string")
   }
 }
 
@@ -1839,15 +1885,29 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
   match pat.kind {
     case TpWild -> trueV()
     case TpBind(_, inner) -> match inner { case None -> trueV(); case Some(p) -> patTest(c, p, scrut, sty) }
-    case TpLit(l) -> match litValue(l) {
-      case Some(v) -> {
-        val d = tmp(c)
-        c.insns.add(
-          NICmp(dest = d, pred = IEq, ty = scrut.ty, a = scrut.value, b = NLitInt(v = wrapLit(v, scrut.ty), ty = scrut.ty))
-        )
-        Val(ty = NI1, value = NLocal(name = d))
+    case TpLit(l) -> match l {
+      case TLString(text) -> if isStringN(scrut.ty) {
+        stringEq(c, scrut, stringLiteral(c, text), false)
+      } else {
+        unsupported(c, "a string pattern on " + renderTy(sty))
       }
-      case None -> unsupported(c, "a non-integer literal pattern")
+      case TLFloat(f) -> if isFloatTy(sty) {
+        val d = tmp(c)
+        c.insns.add(NFCmp(dest = d, pred = FOeq, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = f, ty = scrut.ty)))
+        Val(ty = NI1, value = NLocal(name = d))
+      } else {
+        unsupported(c, "a float pattern on " + renderTy(sty))
+      }
+      case _ -> match litValue(l) {
+        case Some(v) -> {
+          val d = tmp(c)
+          c.insns.add(
+            NICmp(dest = d, pred = IEq, ty = scrut.ty, a = scrut.value, b = NLitInt(v = wrapLit(v, scrut.ty), ty = scrut.ty))
+          )
+          Val(ty = NI1, value = NLocal(name = d))
+        }
+        case None -> unsupported(c, "a literal pattern of this kind")
+      }
     }
     case TpRange(lo, hi, inclusive) -> match litValue(lo) {
       case None -> unsupported(c, "a non-integer range pattern")
@@ -1897,10 +1957,7 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
 func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
   match pat.kind {
     case TpBind(decl, inner) -> {
-      match declareSlot(c, decl) {
-        case Some(slot) -> c.insns.add(NStore(ty = slot.ty, value = scrut.value, ptr = NLocal(name = slot.ptr)))
-        case None -> ()
-      }
+      bindBorrowed(c, decl, scrut)
       match inner {
         case Some(p) -> patBind(c, p, scrut)
         case None -> ()
@@ -1926,9 +1983,9 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
     case Some(ul) -> Some(value = openUnion(c, ul, scrut0))
     case None -> None
   }
-  val scrut = scrut0
+  val scrut = if isStringN(scrut0.ty) { borrow(c, scrut0) } else { scrut0 }
   val isUnion = match us { case Some(_) -> true; case None -> false }
-  if isRefN(scrut.ty) and not isUnion {
+  if isRefN(scrut.ty) and not isUnion and not isStringN(scrut.ty) {
     return unsupported(c, "a match on a reference value")
   }
   val wantRef = match tyToN(c.env, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
