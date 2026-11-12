@@ -174,6 +174,29 @@ pub record TirLowerEnv {
   /// again with the layout added.
   tuples: Map[String, TirRecLayout] = newMap()
   needTuples: List[TirTupleNeed] = newList()
+  /// The closure types the code generator has registered, keyed by `renderTy` of the function
+  /// type, and the ones a lowering found missing (see `tuples`).
+  funcs: Map[String, NType] = newMap()
+  needFuncs: List[TirFuncNeed] = newList()
+}
+
+/// A function type the lowering needs a closure type for: its key in `TirLowerEnv.funcs` and
+/// the parameter and result types the code generator registers it from.
+pub record TirFuncNeed {
+  key: String
+  paramTys: List[NType]
+  retTy: NType
+}
+
+/// A closure environment the lowering built: the struct a closure object is allocated as (the
+/// ARC header, the function pointer, then the captures), the capture types and the destructor
+/// that releases the reference captures (empty when there are none).  The code generator emits
+/// the type and the destructor.
+pub record TirClosureDef {
+  implName: String
+  implFields: List[NType]
+  capTys: List[NType]
+  dtor: String
 }
 
 /// A tuple type the lowering needs a layout for: its key in `TirLowerEnv.tuples` and the
@@ -229,6 +252,8 @@ pub record TirFallback {
   reason: String
   /// Tuple layouts the failed lowering found missing; registering them and lowering again can succeed.
   needTuples: List[TirTupleNeed] = newList()
+  /// The same for closure types.
+  needFuncs: List[TirFuncNeed] = newList()
 }
 
 pub record TirLowered {
@@ -237,6 +262,9 @@ pub record TirLowered {
   /// Runtime declarations the body calls (`lyric_panic_msg`); the caller adds
   /// those the package lacks.
   externs: List[NFunc]
+  /// The functions the body's lambdas lower to, and the closure environments they capture into.
+  extraFns: List[NFunc] = newList()
+  closures: List[TirClosureDef] = newList()
 }
 
 record Slot {
@@ -280,6 +308,11 @@ record LCtx {
   /// The owned references passed on as borrowed operands in each open statement, released
   /// when it ends.
   temps: List[List[Val]]
+  /// The enclosing function's IR name, the lambda bodies lowered so far (shared with the
+  /// lambdas nested in them) and the closure environments they need.
+  fnName: String
+  extraFns: List[NFunc]
+  closures: List[TirClosureDef]
 }
 
 func tmp(c: in LCtx): String {
@@ -527,7 +560,44 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
       None
     }
     case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
+    case TFunc(_, _, _) -> funcType(env, t)
     case _ -> None
+  }
+}
+
+/// The closure type of a function type: every parameter is an `in` parameter of a concrete
+/// type and the function is not async.  A closure type the code generator has not registered
+/// is recorded in `env.needFuncs` (once) and reads as unsupported for this attempt.
+func funcType(env: in TirLowerEnv, t: in Ty): Option[NType] {
+  val ps = match t { case TFunc(ps, _, asy) -> if asy { return None } else { ps }; case _ -> return None }
+  val ret = match t { case TFunc(_, r, _) -> r; case _ -> return None }
+  val ptys: List[NType] = newList()
+  for p in ps {
+    match p.mode {
+      case TMIn -> ()
+      case _ -> return None
+    }
+    match tyToN(env, p.ty) {
+      case Some(nt) -> match nt { case NVoid -> return None; case _ -> ptys.add(nt) }
+      case None -> return None
+    }
+  }
+  val rt = match tyToN(env, ret) { case Some(r) -> r; case None -> return None }
+  val key = renderTy(t)
+  match mapGet(env.funcs, key) {
+    case Some(nt) -> Some(value = nt)
+    case None -> {
+      var seen = false
+      for n in env.needFuncs {
+        if n.key == key {
+          seen = true
+        }
+      }
+      if not seen {
+        env.needFuncs.add(TirFuncNeed(key = key, paramTys = ptys, retTy = rt))
+      }
+      None
+    }
   }
 }
 
@@ -838,6 +908,7 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XField(recv, field) -> lowerField(c, recv, field)
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
     case XTuple(elems) -> lowerTuple(c, e, elems)
+    case XLambda(params, captures, body) -> lowerLambda(c, e, params, captures, body)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
   }
 }
@@ -1599,8 +1670,271 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       }
     }
+    case Indirect(fnValue) -> lowerIndirect(c, e, fnValue, args)
     case _ -> unsupported(c, "a call through " + calleeKind(callee))
   }
+}
+
+/// A call through a function value: the code pointer sits in the closure object's fourth
+/// slot and takes the closure itself (as `i8*`) before the arguments, which are borrowed.  A
+/// reference result is owned by the caller.
+func lowerIndirect(c: in LCtx, e: in TExpr, fnValue: in TExpr, args: in List[TArg]): Val {
+  val sigTys: List[NType] = newList()
+  var okSig = true
+  match fnValue.ty {
+    case TFunc(ps, _, _) -> {
+      for p in ps {
+        match tyToN(c.env, p.ty) {
+          case Some(nt) -> sigTys.add(nt)
+          case None -> {
+            okSig = false
+          }
+        }
+      }
+    }
+    case _ -> {
+      okSig = false
+    }
+  }
+  val rt = match tyToN(c.env, e.ty) {
+    case Some(r) -> r
+    case None -> return unsupported(c, "a call returning " + renderTy(e.ty))
+  }
+  if not okSig {
+    return unsupported(c, "a call through " + renderTy(fnValue.ty))
+  }
+  val clos = borrow(c, lowerExpr(c, fnValue))
+  val structTy = match clos.ty {
+    case NPtr(p) -> p
+    case _ -> return unsupported(c, "a call through a value that is no closure")
+  }
+  val callArgs: List[NArg] = newList()
+  val envCast = tmp(c)
+  c.insns.add(NBitcast(dest = envCast, fromTy = clos.ty, value = clos.value, toTy = i8ptr()))
+  callArgs.add(NArg(ty = i8ptr(), value = NLocal(name = envCast)))
+  var i = 0
+  for a in args {
+    match a {
+      case TArgIn(v) -> {
+        val av = borrow(c, lowerExpr(c, v))
+        if i >= sigTys.count or nTypeToIrString(av.ty) != nTypeToIrString(sigTys[i]) {
+          return unsupported(c, "an argument that does not match the function type")
+        }
+        callArgs.add(NArg(ty = av.ty, value = av.value))
+      }
+      case _ -> {
+        c.problems.add("an out or inout argument of a function value")
+      }
+    }
+    i = i + 1
+  }
+  val slot = tmp(c)
+  val gi: List[NArg] = newList()
+  gi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  c.insns.add(NGEP(dest = slot, ty = structTy, ptr = clos.value, indices = gi))
+  val raw = tmp(c)
+  c.insns.add(NLoad(dest = raw, ty = i8ptr(), ptr = NLocal(name = slot)))
+  val fparams: List[NType] = newList()
+  fparams.add(i8ptr())
+  for t in sigTys {
+    fparams.add(t)
+  }
+  val typed = tmp(c)
+  c.insns.add(
+    NBitcast(dest = typed, fromTy = i8ptr(), value = NLocal(name = raw), toTy = NFnPtr(params = fparams, ret = rt))
+  )
+  match rt {
+    case NVoid -> {
+      c.insns.add(NCallVoid(fn = NLocal(name = typed), args = callArgs))
+      unitVal()
+    }
+    case _ -> {
+      val d = tmp(c)
+      c.insns.add(NCall(dest = d, retTy = rt, fn = NLocal(name = typed), args = callArgs))
+      Val(ty = rt, value = NLocal(name = d), owned = isRefN(rt))
+    }
+  }
+}
+
+/// Lower `body` as the body of the function being built in `c` and assemble the function: the
+/// entry block, the allocas, the parameter stores, then the instructions.  The result is owned
+/// and returned after every scope is released.
+func assembleFn(c: in LCtx, name: in String, params: in List[NParam], stores: in List[NInsn], body: in TExpr): NFunc {
+  pushRefScope(c)
+  pushTemps(c)
+  val result0 = lowerExpr(c, body)
+  val result = match c.retTy { case NVoid -> { discard(c, result0); result0 }; case _ -> own(c, result0) }
+  popTemps(c)
+  popRefScope(c)
+  match c.retTy {
+    case NVoid -> c.insns.add(NRetVoid)
+    case _ -> c.insns.add(NRet(ty = c.retTy, value = result.value))
+  }
+  val all: List[NInsn] = newList()
+  all.add(NLabel(name = "entry"))
+  for a in c.allocas {
+    all.add(a)
+  }
+  for s in stores {
+    all.add(s)
+  }
+  for i in c.insns {
+    all.add(i)
+  }
+  NFunc(
+    name = name,
+    params = params,
+    retTy = c.retTy,
+    isPublic = false,
+    isExtern = false,
+    body = all,
+    attributes = newList()
+  )
+}
+
+/// A lambda: a closure object holding the function pointer and the captured values (by
+/// value; a reference is retained, and released by the object's destructor).  The body is a
+/// function of its own, lowered like any other with the captures read from the environment.
+func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: in List[Capture], body: in TExpr): Val {
+  val closTy = match tyToN(c.env, e.ty) {
+    case Some(t) -> t
+    case None -> return unsupported(c, "a lambda of type " + renderTy(e.ty))
+  }
+  val retTy = match e.ty {
+    case TFunc(_, r, _) -> match tyToN(c.env, r) {
+      case Some(t) -> t
+      case None -> return unsupported(c, "a lambda of type " + renderTy(e.ty))
+    }
+    case _ -> return unsupported(c, "a lambda of type " + renderTy(e.ty))
+  }
+  val capTys: List[NType] = newList()
+  val capSlots: List[Slot] = newList()
+  for cap in captures {
+    match cap.mode {
+      case CmByValue -> ()
+      case CmByRef -> return unsupported(c, "a lambda that mutates a captured variable")
+    }
+    match mapGet(c.slots, cap.local.id) {
+      case Some(sl) -> {
+        capTys.add(sl.ty)
+        capSlots.add(sl)
+      }
+      case None -> return unsupported(c, "a capture with no slot")
+    }
+  }
+  c.ticker.add(0)
+  val n = c.ticker.count
+  val implName = "__closureimpl.tir." + c.fnName + "." + toString(n)
+  val bodyName = "__lyric.lambda.tir." + c.fnName + "." + toString(n)
+  val implFields: List[NType] = newList()
+  addArcHeader(implFields)
+  implFields.add(i8ptr())
+  for t in capTys {
+    implFields.add(t)
+  }
+  val structTy = NStruct(name = implName, fields = implFields)
+  val implTy = NPtr(pointee = structTy)
+  var anyRef = false
+  for t in capTys {
+    if isRefN(t) {
+      anyRef = true
+    }
+  }
+  val dtor = if anyRef { implName + ".dtor" } else { "" }
+  c.closures.add(TirClosureDef(implName = implName, implFields = implFields, capTys = capTys, dtor = dtor))
+  val ch = LCtx(
+    env = c.env,
+    insns = newList(),
+    allocas = newList(),
+    globals = c.globals,
+    ticker = newList(),
+    cur = newList(),
+    slots = newMap(),
+    loops = newList(),
+    problems = c.problems,
+    retTy = retTy,
+    globalPrefix = ".tcstr." + bodyName + ".",
+    refScopes = newList(),
+    temps = newList(),
+    fnName = bodyName,
+    extraFns = c.extraFns,
+    closures = c.closures
+  )
+  ch.cur.add("entry")
+  val bparams: List[NParam] = newList()
+  bparams.add(NParam(name = "env", ty = i8ptr()))
+  val stores: List[NInsn] = newList()
+  val ecast = "self.env"
+  stores.add(NBitcast(dest = ecast, fromTy = i8ptr(), value = NLocal(name = "env"), toTy = implTy))
+  var ci = 0
+  while ci < captures.count {
+    val gp = "cap" + toString(ci)
+    val gi: List[NArg] = newList()
+    gi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    gi.add(NArg(ty = NI32, value = NLitInt(v = (4 + ci).toLong(), ty = NI32)))
+    stores.add(NGEP(dest = gp, ty = structTy, ptr = NLocal(name = ecast), indices = gi))
+    val lv = "capv" + toString(ci)
+    stores.add(NLoad(dest = lv, ty = capTys[ci], ptr = NLocal(name = gp)))
+    val sname = "s" + toString(captures[ci].local.id) + ".cap"
+    ch.allocas.add(NAlloca(dest = sname, ty = capTys[ci]))
+    stores.add(NStore(ty = capTys[ci], value = NLocal(name = lv), ptr = NLocal(name = sname)))
+    ch.slots.add(captures[ci].local.id, Slot(ptr = sname, ty = capTys[ci]))
+    ci = ci + 1
+  }
+  val ptys: List[NType] = newList()
+  for p in params {
+    val pt = match tyToN(c.env, p.ty) {
+      case Some(t) -> t
+      case None -> return unsupported(c, "a lambda parameter of type " + renderTy(p.ty))
+    }
+    match pt {
+      case NVoid -> return unsupported(c, "a Unit lambda parameter")
+      case _ -> ()
+    }
+    ptys.add(pt)
+    val pname = "a" + toString(p.id.id)
+    bparams.add(NParam(name = pname, ty = pt))
+    match declareSlot(ch, p) {
+      case Some(sl) -> stores.add(NStore(ty = pt, value = NLocal(name = pname), ptr = NLocal(name = sl.ptr)))
+      case None -> ()
+    }
+  }
+  c.extraFns.add(assembleFn(ch, bodyName, bparams, stores, body))
+  val obj = allocObject(c, implTy, structTy, dtor)
+  val fps: List[NType] = newList()
+  fps.add(i8ptr())
+  for t in ptys {
+    fps.add(t)
+  }
+  val fcast = tmp(c)
+  c.insns.add(
+    NBitcast(dest = fcast, fromTy = NFnPtr(params = fps, ret = retTy), value = NGlobal(name = bodyName), toTy = i8ptr())
+  )
+  val fslot = tmp(c)
+  val fi: List[NArg] = newList()
+  fi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  fi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  c.insns.add(NGEP(dest = fslot, ty = structTy, ptr = obj, indices = fi))
+  c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = fcast), ptr = NLocal(name = fslot)))
+  var si = 0
+  while si < captures.count {
+    val cv = tmp(c)
+    c.insns.add(NLoad(dest = cv, ty = capTys[si], ptr = NLocal(name = capSlots[si].ptr)))
+    if isRefN(capTys[si]) {
+      retainRef(c, capTys[si], NLocal(name = cv))
+    }
+    val cs = tmp(c)
+    val ci2: List[NArg] = newList()
+    ci2.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    ci2.add(NArg(ty = NI32, value = NLitInt(v = (4 + si).toLong(), ty = NI32)))
+    c.insns.add(NGEP(dest = cs, ty = structTy, ptr = obj, indices = ci2))
+    c.insns.add(NStore(ty = capTys[si], value = NLocal(name = cv), ptr = NLocal(name = cs)))
+    si = si + 1
+  }
+  val closOut = tmp(c)
+  c.insns.add(NBitcast(dest = closOut, fromTy = implTy, value = obj, toTy = closTy))
+  Val(ty = closTy, value = NLocal(name = closOut), owned = true)
 }
 
 /// `toString` of a scalar: the runtime's formatter, a fresh owned string.
@@ -2441,7 +2775,14 @@ func fallback(sym: in SymbolId, why: in String): Result[TirLowered, TirFallback]
 pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowered, TirFallback] {
   match lowerTirFunctionInner(env, fn) {
     case Ok(l) -> Ok(value = l)
-    case Err(f) -> Err(error = TirFallback(sym = f.sym, reason = f.reason, needTuples = env.needTuples))
+    case Err(f) -> Err(
+      error = TirFallback(
+        sym = f.sym,
+        reason = f.reason,
+        needTuples = env.needTuples,
+        needFuncs = env.needFuncs
+      )
+    )
   }
 }
 
@@ -2477,7 +2818,10 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
     retTy = retTy,
     globalPrefix = ".tcstr." + irName + ".",
     refScopes = newList(),
-    temps = newList()
+    temps = newList(),
+    fnName = irName,
+    extraFns = newList(),
+    closures = newList()
   )
   c.cur.add("entry")
   val params: List[NParam] = newList()
@@ -2502,29 +2846,9 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
       case None -> ()
     }
   }
-  pushRefScope(c)
-  pushTemps(c)
-  val result0 = lowerExpr(c, body)
-  val result = match retTy { case NVoid -> { discard(c, result0); result0 }; case _ -> own(c, result0) }
-  popTemps(c)
-  popRefScope(c)
-  match retTy {
-    case NVoid -> c.insns.add(NRetVoid)
-    case _ -> c.insns.add(NRet(ty = retTy, value = result.value))
-  }
+  val lowered = assembleFn(c, irName, params, stores, body)
   if c.problems.count > 0 {
     return fallback(fn.sym, c.problems[0])
-  }
-  val all: List[NInsn] = newList()
-  all.add(NLabel(name = "entry"))
-  for a in c.allocas {
-    all.add(a)
-  }
-  for s in stores {
-    all.add(s)
-  }
-  for i in c.insns {
-    all.add(i)
   }
   val externs: List[NFunc] = newList()
   if c.globals.count > 0 {
@@ -2546,17 +2870,11 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   }
   Ok(
     value = TirLowered(
-      fn = NFunc(
-        name = irName,
-        params = params,
-        retTy = retTy,
-        isPublic = false,
-        isExtern = false,
-        body = all,
-        attributes = newList()
-      ),
+      fn = lowered,
       globals = c.globals,
-      externs = externs
+      externs = externs,
+      extraFns = c.extraFns,
+      closures = c.closures
     )
   )
 }
