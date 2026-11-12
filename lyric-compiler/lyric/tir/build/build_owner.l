@@ -38,7 +38,9 @@ func receiverTypeArgs(t: in Type): List[Type] {
 }
 
 /// The method call `e` instantiated: `site.sig` unchanged for a member with no generics.
-pub func instantiateMethod(env: in BuildEnv, e: in Expr, site: in MethodCallSite, args: in List[CallArg]): Option[MethodInst] {
+pub func instantiateMethod(
+  env: in BuildEnv, e: in Expr, site: in MethodCallSite, args: in List[CallArg]
+): Option[MethodInst] {
   val sig = site.sig
   if sig.generics.count == 0 {
     return Some(value = MethodInst(sig = sig, tyArgs = newList()))
@@ -47,10 +49,7 @@ pub func instantiateMethod(env: in BuildEnv, e: in Expr, site: in MethodCallSite
   var checkerArgs: List[Type] = newList()
   var recorded = false
   match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
-    case Some(ts) -> if ts.count == sig.generics.count {
-      checkerArgs = ts
-      recorded = true
-    }
+    case Some(ts) -> if ts.count == sig.generics.count { checkerArgs = ts; recorded = true }
     case None -> ()
   }
   if not recorded {
