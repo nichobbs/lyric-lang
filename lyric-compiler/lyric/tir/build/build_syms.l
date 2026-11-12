@@ -384,6 +384,46 @@ func protectedFieldSigs(tbl: in SymbolTable, sid: in SymbolId): List[TFieldSig] 
   fs
 }
 
+/// The fields of the opaque type `sid` declared in this package, in declaration order: its
+/// representation is readable only here.  An imported opaque type has none.
+pub func ownOpaqueFields(tbl: in SymbolTable, sid: in SymbolId): List[FieldDecl] {
+  val res: List[FieldDecl] = newList()
+  for s in tbl.symbols {
+    match s.kind {
+      case DKOpaque(i, d) -> if i.id == sid.id and not s.isImported and res.count == 0 {
+        for m in d.members {
+          match m {
+            case OMField(fd) -> res.add(fd)
+            case OMInvariant(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+/// The type entry of the opaque type `sid` declared in this package: its parameters and fields.
+func opaqueEntry(tbl: in SymbolTable, sid: in SymbolId, s: in Symbol, d: in OpaqueTypeDecl): Option[TSymEntry] {
+  val names = extractGenericNames(d.generics)
+  val ctx = newTyConvCtx(tbl)
+  if names.count > 0 {
+    tyConvBind(ctx, d.name, sid, names)
+  }
+  val gc = newGenericContext()
+  gctxPushOwned(gc, names, d.name)
+  val fs: List[TFieldSig] = newList()
+  for fd in ownOpaqueFields(tbl, sid) {
+    val diag: List[Diagnostic] = newList()
+    match tyOfType(ctx, resolveType(tbl, gc, diag, fd.ty)) {
+      case Ok(t) -> fs.add(TFieldSig(name = fd.name, ty = t, mutable = fd.isMutable))
+      case Err(_) -> return None
+    }
+  }
+  Some(value = typeEntry(sid, names.count, fs))
+}
+
 /// The entry of every type the table declares, records with their fields: the
 /// oracle for a `TNamed` in any type and for a field read.  A record whose field
 /// types cannot be converted gets no entry, so a use of it is reported rather than
@@ -450,7 +490,17 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             res.add(typeEntry(sid, names.count, fs))
           }
         } else {
-          res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
+          match s.kind {
+            case DKOpaque(_, d) -> if not s.isImported {
+              match opaqueEntry(tbl, sid, s, d) {
+                case Some(en) -> res.add(en)
+                case None -> ()
+              }
+            } else {
+              res.add(typeEntry(sid, 0, newList()))
+            }
+            case _ -> res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
+          }
         }
       }
       case None -> ()

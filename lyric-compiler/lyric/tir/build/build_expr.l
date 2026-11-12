@@ -1989,11 +1989,13 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
     if tyEq(p, argTys[i]) {
       score = score + 2
     } else {
-      match hostWidenKind(argTys[i], p) {
+      // The language's own widening beats an integer taken as a floating point type, as the
+      // CLR's better-conversion rule prefers `M(Long)` to `M(Double)` for an `Int`.
+      match widenKind(argTys[i], p) {
         case Some(_) -> {
           score = score + 1
         }
-        case None -> return None
+        case None -> match hostWidenKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
       }
     }
     ps.add(p)
@@ -2175,6 +2177,13 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
           return Some(value = FieldRef(owner = sym, name = name, index = i))
         }
         i = i + 1
+      }
+      var k = 0
+      for fd in ownOpaqueFields(env.ctx.tbl, sym) {
+        if fd.name == name {
+          return Some(value = FieldRef(owner = sym, name = name, index = k))
+        }
+        k = k + 1
       }
       protectedFieldRef(env.ctx.tbl, ty, name)
     }
