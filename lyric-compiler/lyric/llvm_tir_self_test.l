@@ -1221,3 +1221,46 @@ test "indexing a string reads the scalar value at a byte offset; other indexing 
   val ir2 = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), bad)))
   assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
 }
+
+func colorT(): Ty {
+  TNamed(sym = sym(20), args = newList())
+}
+
+func enumEnv(names: in List[String]): TirLowerEnv {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < names.count {
+    m.add(100 + i, names[i])
+    i = i + 1
+  }
+  val enums: Map[Int, Bool] = newMap()
+  enums.add(20, true)
+  val cases: Map[Int, Int] = newMap()
+  cases.add(21, 0)
+  cases.add(22, 1)
+  cases.add(23, 2)
+  TirLowerEnv(fnNames = m, panicFile = "P", enums = enums, enumCases = cases)
+}
+
+test "an enum case is its ordinal and a case pattern compares the ordinal" {
+  // func f(c: Color): Int { match c { Red -> 1; Green -> 2; Blue -> 3 } }  and  func g(): Color { Green }
+  val c = local(1, "c", colorT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(c))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(2, colorT(), TpCtor(sym = sym(21), args = newList())), None, intLit(3, 1i64)))
+  arms.add(arm(pat(4, colorT(), TpCtor(sym = sym(22), args = newList())), None, intLit(5, 2i64)))
+  arms.add(arm(pat(6, colorT(), TpCtor(sym = sym(23), args = newList())), None, intLit(7, 3i64)))
+  val m = ex(8, intT(), XMatch(scrutinee = ex(9, colorT(), XLocal(local = c.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(enumEnv(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "i32 @P.f(i32 %a1)"), "an enum is an i32: " + ir)
+  assertTrue(Str.contains(ir, "icmp eq i32 %t"), ir)
+  assertTrue(Str.contains(ir, ", 2"), "the Blue ordinal is 2: " + ir)
+  val g = ex(10, colorT(), XConstruct(sym = sym(22), fields = newList()))
+  val names2: List[String] = newList()
+  names2.add("P.g")
+  val ir2 = render(lowerTirFunction(enumEnv(names2), fnDecl(100, newList(), colorT(), g)))
+  assertTrue(Str.contains(ir2, "ret i32 1"), "Green is ordinal 1: " + ir2)
+}
