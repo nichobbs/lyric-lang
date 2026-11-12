@@ -1,0 +1,7 @@
+[package]
+name = "reject-field-write-val-local"
+version = "0.1.0"
+[project]
+name = "RejectFieldWriteValLocal"
+[project.packages]
+"App" = "app"

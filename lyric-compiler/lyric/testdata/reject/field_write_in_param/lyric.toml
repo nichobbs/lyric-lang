@@ -1,0 +1,7 @@
+[package]
+name = "reject-field-write-in-param"
+version = "0.1.0"
+[project]
+name = "RejectFieldWriteInParam"
+[project.packages]
+"App" = "app"

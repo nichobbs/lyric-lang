@@ -644,6 +644,7 @@ pub func checkStatement(
             )
           }
         }
+        case EMember(recv, fname) -> checkNonVarFieldWrite(sc, tbl, sigs, diag, target, recv, fname)
         case _ -> {
         }
       }

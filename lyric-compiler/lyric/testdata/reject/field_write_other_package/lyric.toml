@@ -1,0 +1,8 @@
+[package]
+name = "reject-field-write-other-package"
+version = "0.1.0"
+[project]
+name = "RejectFieldWriteOtherPackage"
+[project.packages]
+"Zed" = "z"
+"App" = "app"
