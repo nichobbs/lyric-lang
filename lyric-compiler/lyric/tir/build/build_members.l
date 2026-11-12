@@ -246,7 +246,8 @@ pub func protectedFieldRef(tbl: in SymbolTable, ty: in Ty, name: in String): Opt
   }
 }
 
-/// A protected member's bare field name: the field of the receiver `self`.
+/// A member's bare field name (a protected type's, a record's through an `impl`, an opaque
+/// type's): the field of the receiver `self`.
 pub record BareField {
   recv: TExpr
   field: FieldRef
@@ -254,7 +255,7 @@ pub record BareField {
 
 pub func bareSelfField(env: in BuildEnv, at: in Expr, name: in String): Option[BareField] {
   match lookupLocal(env, "self") {
-    case Some(d) -> match protectedFieldRef(env.ctx.tbl, d.ty, name) {
+    case Some(d) -> match fieldRefOf(env, d.ty, name) {
       case Some(f) -> Some(
         value = BareField(
           recv = TExpr(
