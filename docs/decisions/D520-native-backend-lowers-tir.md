@@ -95,3 +95,8 @@ and still holds generics and un-elaborated contracts.
 - `s[i]` on a string (`IkString`) calls `lyric_string_char_at` with the index widened to 64 bits. Indexing a list, map, array or slice stays on the AST path.
 - A pattern binding of a reference scrutinee is a borrow (`bindBorrowed`) for every scrutinee kind, not only unions.
 - Fallback census of a probe program (before this slice): `XInterp`, a match on a reference, a non-integer literal pattern, `XIndex`, enums, nested case patterns (the builder does not prove them exhaustive), `List` (an extern type; its calls are generic), tuples, function types and `Option` (generic, phase 3c).
+
+## Slice 9: enums
+
+- An enum value is its `i32` ordinal (the code generator's `enumDefs` representation). `TirLowerEnv.enums` lists the enum types and `TirLowerEnv.enumCases` maps each case symbol (DefPath key `Pkg::Enum::Case`) to its ordinal; the code generator builds both once per unit from `enumDefs`. A case value is a literal ordinal, a case pattern compares the scrutinee with it, and `==` on enums is the existing `i32` comparison.
+- Still on the AST path: enums with payloads (they are unions), generic enums.

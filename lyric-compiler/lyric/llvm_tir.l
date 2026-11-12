@@ -163,6 +163,10 @@ pub record TirLowerEnv {
   /// by the case's symbol.
   unions: Map[Int, TirUnionLayout] = newMap()
   cases: Map[Int, TirCaseRef] = newMap()
+  /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
+  /// case's symbol).  An enum value is its `i32` ordinal.
+  enums: Map[Int, Bool] = newMap()
+  enumCases: Map[Int, Int] = newMap()
 }
 
 /// A union case's payload: the struct its fields are stored through and each field's type
@@ -491,18 +495,23 @@ func primN(k: in TPrimKind): NType {
 
 /// The LLVM type of a scalar `Ty`; None for anything this slice does not lower.
 func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
-  tyToNIn(env.recs, env.unions, t)
+  tyToNIn(env.recs, env.unions, env.enums, t)
 }
 
-func tyToNIn(recs: in Map[Int, TirRecLayout], unions: in Map[Int, TirUnionLayout], t: in Ty): Option[NType] {
+func tyToNIn(
+  recs: in Map[Int, TirRecLayout], unions: in Map[Int, TirUnionLayout], enums: in Map[Int, Bool], t: in Ty
+): Option[NType] {
   match t {
     case TPrim(k) -> Some(value = primN(k))
-    case TRefined(u, _, _, _) -> tyToNIn(recs, unions, u)
+    case TRefined(u, _, _, _) -> tyToNIn(recs, unions, enums, u)
     case TNever -> Some(value = NVoid)
     case TNamed(sym, args) -> if args.count == 0 {
       match mapGet(recs, sym.id) {
         case Some(r) -> Some(value = r.ty)
-        case None -> match mapGet(unions, sym.id) { case Some(u) -> Some(value = u.ty); case None -> None }
+        case None -> match mapGet(unions, sym.id) {
+          case Some(u) -> Some(value = u.ty)
+          case None -> if enums.containsKey(sym.id) { Some(value = NI32) } else { None }
+        }
       }
     } else {
       None
@@ -919,6 +928,10 @@ func storeHeapField(c: in LCtx, lay: in TirRecLayout, obj: in NValue, i: in Int,
 /// a field expression leaks nothing, and returned owned.  The fields are evaluated in
 /// declaration order.
 func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
+  match mapGet(c.env.enumCases, sym.id) {
+    case Some(ordinal) -> return Val(ty = NI32, value = NLitInt(v = ordinal.toLong(), ty = NI32))
+    case None -> ()
+  }
   match mapGet(c.env.cases, sym.id) {
     case Some(cr) -> return lowerCase(c, cr, fields)
     case None -> ()
@@ -1939,6 +1952,14 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
           andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
         }
       }
+    }
+    case TpCtor(sym, _) -> match mapGet(c.env.enumCases, sym.id) {
+      case Some(ordinal) -> {
+        val d = tmp(c)
+        c.insns.add(NICmp(dest = d, pred = IEq, ty = NI32, a = scrut.value, b = NLitInt(v = ordinal.toLong(), ty = NI32)))
+        Val(ty = NI1, value = NLocal(name = d))
+      }
+      case None -> unsupported(c, "a case pattern on a value that is not an enum")
     }
     case TpOr(alts) -> {
       var acc = patTest(c, alts[0], scrut, sty)

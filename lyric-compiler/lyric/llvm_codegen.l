@@ -18413,6 +18413,8 @@ record TirUnitMaps {
   recs: Map[Int, LlvmTir.TirRecLayout]
   unions: Map[Int, LlvmTir.TirUnionLayout]
   cases: Map[Int, LlvmTir.TirCaseRef]
+  enums: Map[Int, Bool]
+  enumCases: Map[Int, Int]
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18443,6 +18445,8 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
   val recs: Map[Int, LlvmTir.TirRecLayout] = newMap()
   val unions: Map[Int, LlvmTir.TirUnionLayout] = newMap()
   val unionIds: Map[String, Int] = newMap()
+  val enums: Map[Int, Bool] = newMap()
+  val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
   for id in mapKeys(input.names) {
@@ -18478,7 +18482,7 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
                     unions.add(id, tirUnionLayout(ui))
                     unionIds.add(pkg + "." + rest, id)
                   }
-                  case None -> ()
+                  case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") { enums.add(id, true) }
                 }
               }
             } else {
@@ -18504,7 +18508,12 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
             val unionKey = Str.substring(key, 0, sep) + "." + Str.substring(rest, 0, sep2)
             val caseName = Str.substring(rest, sep2 + 2)
             match mapGet(unionIds, unionKey) {
-              case None -> ()
+              case None -> match mapGet(ctx.enumDefs, unionKey + "." + caseName) {
+                case Some(ordinal) -> if ctx.enumDefs.containsKey(unionKey + ".__enum") {
+                  enumCases.add(caseIds[k], ordinal)
+                }
+                case None -> ()
+              }
               case Some(uid) -> match mapGet(ctx.unionDefs, unionKey) {
                 case None -> ()
                 case Some(ui) -> {
@@ -18524,7 +18533,7 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
     }
     k = k + 1
   }
-  TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases)
+  TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases, enums = enums, enumCases = enumCases)
 }
 
 func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
@@ -18559,7 +18568,7 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
-      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs, unions = maps.unions, cases = maps.cases), d) {
+      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs, unions = maps.unions, cases = maps.cases, enums = maps.enums, enumCases = maps.enumCases), d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
           ast
@@ -18853,7 +18862,14 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     val tirMaps = if u.tir.count > 0 {
       tirUnitMaps(ctx, sigs, u.tir[0])
     } else {
-      TirUnitMaps(fnNames = newMap(), recs = newMap(), unions = newMap(), cases = newMap())
+      TirUnitMaps(
+        fnNames = newMap(),
+        recs = newMap(),
+        unions = newMap(),
+        cases = newMap(),
+        enums = newMap(),
+        enumCases = newMap()
+      )
     }
     var fi = 0
     while fi < u.fns.count {

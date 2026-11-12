@@ -137,4 +137,19 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/x_tir.ll" lyric-rt/b
 diff -u "$work/x_tir.out" "$work/x_asan.out"
 echo "text under AddressSanitizer: clean"
 
+
+# Enums (docs/70 phase 4a): an enum is its ordinal and a case pattern compares it.
+esrc=scripts/ci/native-via-tir/enums.l
+"$lyric_bin" build --target native "$esrc" -o "$work/e_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
+cat "$work/e_census.txt"
+"$work/e_ast" > "$work/e_ast.out"
+"$work/e_tir" > "$work/e_tir.out"
+diff -u "$work/e_ast.out" "$work/e_tir.out"
+printf '10\n20\n10\n' | diff -u - "$work/e_tir.out"
+grep -q '^native via-TIR: 3 of 3 functions lowered from TIR' "$work/e_census.txt" || {
+  echo "::error::expected every function of enums.l to be lowered from TIR"
+  exit 1
+}
+
 echo "native-via-tir-e2e: ok"
