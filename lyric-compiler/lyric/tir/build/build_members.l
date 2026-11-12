@@ -22,8 +22,8 @@ pub record MemberSite {
   ownerName: String
   recv: Option[Ty]
   isEntry: Bool
-  /// The binder of the owner's type parameters, when it has any.
-  owner: Option[MemberOwner]
+  /// The binder of the owner's type parameters (none for a type that declares none).
+  owner: MemberOwner
 }
 
 /// An entry as the function the builder builds: its `when:` clause stays among the contracts.
@@ -46,22 +46,17 @@ func entryAsFunction(e: in EntryDecl): FunctionDecl {
 
 /// The binder of a type declaration's parameters (none for a type that declares none): a member's
 /// own parameters are keyed `key.fn` whether or not the owner is generic, as the checker keys them.
-func ownerOf(key: in String, sym: in SymbolId, gps: in Option[GenericParams]): Option[MemberOwner] {
-  Some(value = MemberOwner(key = key, sym = sym, names = extractGenericNames(gps)))
+func ownerOf(key: in String, sym: in SymbolId, gps: in Option[GenericParams]): MemberOwner {
+  MemberOwner(key = key, sym = sym, names = extractGenericNames(gps))
 }
 
 /// The receiver of a member of a type: the type applied to its own parameters.
-func ownerRecvTy(sym: in SymbolId, owner: in Option[MemberOwner]): Ty {
+func ownerRecvTy(sym: in SymbolId, owner: in MemberOwner): Ty {
   val args: List[Ty] = newList()
-  match owner {
-    case Some(o) -> {
-      var i = 0
-      while i < o.names.count {
-        args.add(TParam(owner = sym, index = i))
-        i = i + 1
-      }
-    }
-    case None -> ()
+  var i = 0
+  while i < owner.names.count {
+    args.add(TParam(owner = sym, index = i))
+    i = i + 1
   }
   TNamed(sym = sym, args = args)
 }
@@ -131,12 +126,9 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         val owner = ownerOf(implOwnerKey(decl), implSym, decl.generics)
         var recv: Option[Ty] = None
         val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
-        match owner {
-          case Some(o) -> if o.names.count > 0 {
-            tyConvBind(ctx, o.key, o.sym, o.names)
-            gctxPushOwned(gc, o.names, o.key)
-          }
-          case None -> ()
+        if owner.names.count > 0 {
+          tyConvBind(ctx, owner.key, owner.sym, owner.names)
+          gctxPushOwned(gc, owner.names, owner.key)
         }
         val diag: List[Diagnostic] = newList()
         match tyOfType(ctx, resolveType(tbl, gc, diag, decl.target)) {
@@ -198,10 +190,7 @@ pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site
     }
   }
   env.symOverride.add(sym)
-  match site.owner {
-    case Some(o) -> env.memberOwner.add(o)
-    case None -> ()
-  }
+  env.memberOwner.add(site.owner)
   buildFnDecl(env, site.fn, tbl)
 }
 

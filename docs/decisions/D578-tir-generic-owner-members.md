@@ -28,6 +28,11 @@ bare-field resolution of D576, which refused a generic owner.
 - Calls of a method of a generic type must instantiate the owner's parameters from the receiver's type
   arguments; `TSig.typeParamCount` is the member's own count. That is the call builder's side, not changed here.
 
+- Small carry-overs from earlier reviews ride along, all on the declaration side: `FnBuildFailure.path` carries the
+  DefPath key of a failed body's symbol (D570 left only the display name); `buildPackage` guards the `entryFns`
+  set against a repeated symbol; a test pins that a local named like a protected field is the local (D576). D576
+  says its test file has 133 cases; it had 135 (the record is frozen, so the correction is made here).
+
 ## Measured
 
 `tir_build_self_test.l` (138 cases): a generic record method (verified, no own parameters, one owner
