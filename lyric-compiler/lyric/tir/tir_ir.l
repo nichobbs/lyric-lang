@@ -123,6 +123,10 @@ pub union ConvKind {
   case CvUpcast(iface: SymbolId)
   /// A Lyric value passed as a host type.
   case CvBoxToHost(host: HostTypeRef)
+  /// A host call's result used as the Lyric type the checker gave the call (an array as a
+  /// slice, a possibly null string as `String?`, a host enum as `Int`, a host task as a
+  /// `Task[T]`). The operand has the host type and the node the Lyric type.
+  case CvFromHost
   case CvToSlice
   case CvToList
   /// `T` used as `T?`.

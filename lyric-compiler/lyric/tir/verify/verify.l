@@ -140,6 +140,8 @@ func substLen(len: in ArrayLen, subs: in List[Subst]): ArrayLen {
         if symbolIdEq(s.owner, o) and i >= 0 and i < s.args.count {
           match s.args[i] {
             case TLen(n) -> return ALKnown(n = n)
+            // A length that is itself a value parameter of the enclosing declaration.
+            case TParam(o2, i2) -> return ALParam(owner = o2, index = i2)
             case _ -> {
             }
           }
@@ -766,6 +768,16 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       match kind {
         case CvWiden(to) -> expectTy(c, e.id, e.ty, TPrim(to), "convert-type", "widening result")
         case CvLiftNullable -> expectTy(c, e.id, e.ty, TNullable(inner = inner.ty), "convert-type", "nullable lift")
+        case CvFromHost -> match inner.ty {
+          case TExtern(_) -> ()
+          case _ -> report(
+            c,
+            e.id,
+            "convert-type",
+            "CvFromHost applied to a value of type " + renderTy(inner.ty) +
+              ", which is not a host type"
+          )
+        }
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))
         }

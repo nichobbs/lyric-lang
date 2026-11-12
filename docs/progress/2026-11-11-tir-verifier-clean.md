@@ -1,0 +1,3 @@
+# 2026-11-11 - TIR builder: no I0003 in the stdlib, compiler or ecosystem areas (D578, D575)
+
+docs/70 phase 3a, #8613. Named arguments that reorder evaluation bind temporaries in source order (D575). Extern calls keep the host result type and convert to the checker's type (`CvLiftNullable`, new `CvFromHost`); short case patterns are padded with wildcards; the verifier forwards a generic array length (D578). The wide census reads I0003 0 in the stdlib, compiler and ecosystem areas (compiler was 27) and names the function beside each example. `tir_build_self_test.l` gains cases for reordered arguments, the host-result reconciliation and a value-generic case (132 pass). The gate that makes I0002/I0003 stop the build is not done: I0002 remains in every area.

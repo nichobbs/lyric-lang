@@ -393,13 +393,13 @@ test "a named argument keeps its slot and a positional one takes the free slot" 
   assertEqualInt(firstCallArgs(r.body), 2, "two arguments")
 }
 
-test "named arguments that reorder effects are refused, plain ones are not" {
+test "named arguments that reorder effects build; plain ones need no temporaries" {
   val bad = buildFirstFn(
     "package App\nfunc m(): Int { k(b = f(), a = g()) }\nfunc k(a: Int, b: Int): Int { a }\nfunc f(): Int { 1 }\nfunc g(): Int { 2 }\n"
   )
   assertEqualInt(bad.diagnostics, 0, "checks clean")
-  assertTrue(not bad.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(bad.env.uncovered, "a call whose named arguments reorder effects"), 1, "counted")
+  assertTrue(bad.body.isSome(), "builds")
+  assertEqualInt(mapGetOr0(bad.env.uncovered, "a call whose named arguments reorder effects"), 0, "not refused")
   val ok = buildFirstFn("package App\nfunc m(x: Int): Int { k(b = 1, a = x) }\nfunc k(a: Int, b: Int): Int { a }\n")
   assertTrue(ok.body.isSome(), "plain arguments reorder freely")
 }
@@ -1816,6 +1816,82 @@ test "a use of a name whose binding failed is not counted as an unbuildable name
     "the failed initializer is counted"
   )
   assertFalse(c.uncovered.containsKey("a name that is not a local"), "its later uses are not")
+}
+
+func hoistedStmtCount(b: in TExpr): Int {
+  match b.kind {
+    case XBlock(stmts, tail) -> if stmts.count > 0 {
+      stmts.count
+    } else {
+      match tail {
+        case Some(t) -> hoistedStmtCount(t)
+        case None -> 0
+      }
+    }
+    case _ -> 0
+  }
+}
+
+test "named arguments that reorder effects are bound to temporaries in source order" {
+  val c = censusOf(
+    "package App\nfunc two(a: Int, b: Int): Int { a - b }\nfunc n(): Int { 3 }\nfunc m(): Int { 4 }\nfunc f(): Int { two(b = n(), a = m()) }\nfunc g(x: Int): Int { two(b = x, a = 1) }\n"
+  )
+  assertEqualInt(c.built, 5, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var most = 0
+  for fd in c.pkg.funcs {
+    match fd.body {
+      case Some(b) -> {
+        val k = hoistedStmtCount(b)
+        if k > most {
+          most = k
+        }
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(most, 2, "f binds both reordered arguments (n() before m()); g binds none")
+}
+
+func hostTy(name: in String): Ty {
+  TExtern(host = HostTypeRef(name = name, args = newList()))
+}
+
+test "a host result the checker types as a Lyric type takes the checker's type" {
+  val arr = "an array, pointer or by-reference type"
+  assertTrue(hostResultIsCallType(hostTy(arr), TSlice(element = TPrim(kind = TPByte))), "an array as a slice")
+  assertTrue(not hostResultIsCallType(hostTy(arr), TPrim(kind = TPInt)), "an array is not an Int")
+  assertTrue(
+    hostResultIsCallType(hostTy("System.String"), TNullable(inner = TPrim(kind = TPString))),
+    "a string as String?"
+  )
+  assertTrue(
+    hostResultIsCallType(hostTy("java.lang.String"), TNullable(inner = TPrim(kind = TPString))),
+    "a JVM string as String?"
+  )
+  assertTrue(not hostResultIsCallType(hostTy("System.String"), TNullable(inner = TPrim(kind = TPInt))), "not an Int?")
+  assertTrue(hostResultIsCallType(hostTy("System.Single"), TPrim(kind = TPFloat)), "Single as Float")
+  assertTrue(not hostResultIsCallType(hostTy("System.Single"), TPrim(kind = TPDouble)), "Single is not a Double")
+  assertTrue(hostResultIsCallType(hostTy("System.Double"), TPrim(kind = TPDouble)), "Double as Double")
+  assertTrue(not hostResultIsCallType(TPrim(kind = TPInt), TPrim(kind = TPInt)), "a Lyric type is not a host result")
+  assertTrue(
+    hostResultIsCallType(hostTy("System.Globalization.UnicodeCategory"), TPrim(kind = TPInt)),
+    "a host enum as Int"
+  )
+  assertTrue(
+    not hostResultIsCallType(hostTy("System.Threading.Tasks.Task"), TPrim(kind = TPString)),
+    "a task is not a String"
+  )
+}
+
+test "a value-generic case built in a value-generic function verifies" {
+  val c = censusOf(
+    "package App\nunion Shape[N: Nat] {\n  case Poly(pts: array[N, Int])\n  case Empty\n}\nfunc wrapPoly[N: Nat](xs: in array[N, Int]): Shape[N] = Poly(pts = xs)\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "a call of a stubbable interface's method resolves despite the stub's synthesized impl" {
