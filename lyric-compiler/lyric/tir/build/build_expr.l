@@ -265,23 +265,16 @@ func shortOfBinop(op: in BinOp): Option[ShortOp] {
   }
 }
 
-/// `a == b` and `a != b` on values that are not primitives: one structural relation (language
-/// reference 2.5, D172, D206), lowered by each backend by the operands' type. The operands have the
-/// same type, the right one converted to the left's when the checker accepted a difference
-/// (`opt == 5`). Any other operator on a declared type has no case.
-func buildDeclaredEquality(
-  env: in BuildEnv,
-  e: in Expr,
-  ty: in Ty,
-  op: in BinOp,
-  iop: in IntrinsicOp,
-  lt: in TExpr,
-  rt: in TExpr,
+/// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
+/// 2.5, D172, D206), the ordering operators a type derives or a type parameter is bounded by
+/// (`T: Compare`), and the arithmetic of a distinct, range or record type that derives `Add`, `Sub`
+/// and the rest.  One intrinsic over both operands, lowered by each backend by the operands' type
+/// (a distinct value by its underlying value, a range subtype's result range-checked).  The operands
+/// have the same type, the right one converted to the left's when the checker accepted a difference
+/// (`opt == 5`); the result has the type the checker gave the expression.
+func buildDeclaredBinary(
+  env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
-  val isEq = match op { case BEq -> true; case BNeq -> true; case _ -> false }
-  if not isEq {
-    return uncoveredExpr(env, e, "an operator on a declared type")
-  }
   val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
   match rhs {
     case Some(r2) -> {
@@ -290,7 +283,7 @@ func buildDeclaredEquality(
       two.add(r2)
       Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
     }
-    case None -> uncoveredExpr(env, e, "an equality of operands of different types")
+    case None -> uncoveredExpr(env, e, "an operator on operands of different types")
   }
 }
 
@@ -504,7 +497,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
                 two.add(rt)
                 Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
               } else {
-                buildDeclaredEquality(env, e, ty, op, iop, lt, rt)
+                buildDeclaredBinary(env, e, ty, iop, lt, rt)
               }
               case None -> uncoveredExpr(env, e, "a bitwise operator")
             }

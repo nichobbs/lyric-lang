@@ -1,0 +1,3 @@
+# 2026-11-12 - TIR builder: binary operators on declared types (D587)
+
+docs/70 phase 3a, #8613. Only `==` and `!=` built on non-primitive operands (D572); `a > b` with `T: Compare` and the derived ordering and arithmetic of distinct, range and record types were counted as `an operator on a declared type` (27 self-test sites). The builder now emits one intrinsic over both operands for every binary operator, typed as the checker typed the expression; lowering by the operands' type is the backend's, as for equality. `tir_build_self_test.l` adds a case (160 pass). The wide census was not re-measured.
