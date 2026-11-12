@@ -44,13 +44,10 @@ func entryAsFunction(e: in EntryDecl): FunctionDecl {
   )
 }
 
-/// The binder of a type declaration's parameters, `None` when it declares none.
+/// The binder of a type declaration's parameters (none for a type that declares none): a member's
+/// own parameters are keyed `key.fn` whether or not the owner is generic, as the checker keys them.
 func ownerOf(key: in String, sym: in SymbolId, gps: in Option[GenericParams]): Option[MemberOwner] {
-  val names = extractGenericNames(gps)
-  if names.count == 0 {
-    return None
-  }
-  Some(value = MemberOwner(key = key, sym = sym, names = names))
+  Some(value = MemberOwner(key = key, sym = sym, names = extractGenericNames(gps)))
 }
 
 /// The receiver of a member of a type: the type applied to its own parameters.
@@ -135,7 +132,7 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
         var recv: Option[Ty] = None
         val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
         match owner {
-          case Some(o) -> {
+          case Some(o) -> if o.names.count > 0 {
             tyConvBind(ctx, o.key, o.sym, o.names)
             gctxPushOwned(gc, o.names, o.key)
           }

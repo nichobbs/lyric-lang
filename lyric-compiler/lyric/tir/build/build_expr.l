@@ -1477,6 +1477,7 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
         tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
       }
       val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
+      val ownerCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
       Some(
         value = TFnDecl(
           sym = sym,
@@ -1489,12 +1490,8 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           body = Some(value = c.body),
           span = fn.span,
           barrier = c.barrier,
-          ownerSym = if env.memberOwner.count > 0 and env.memberOwner[0].names.count > 0 {
-            Some(value = env.memberOwner[0].sym)
-          } else {
-            None
-          },
-          ownerParamCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
+          ownerSym = if ownerCount > 0 { Some(value = env.memberOwner[0].sym) } else { None },
+          ownerParamCount = ownerCount
         )
       )
     }

@@ -2095,3 +2095,14 @@ test "a failed body names its symbol's DefPath key (D570)" {
   assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
 }
+
+test "a generic method of a non-generic record binds its parameter under Owner.fn (D578)" {
+  val pb = packageOf(
+    "package App\nrecord Tag {\n  n: Int\n  func pick[U](self: in Tag, u: in U): U { u }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "Tag.pick")
+  assertEqualInt(pb.pkg.funcs[0].typeParams.count, 1, "its own U")
+  assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 0, "the owner declares none")
+  assertTrue(not pb.pkg.funcs[0].ownerSym.isSome(), "so no owner is recorded")
+}
+
