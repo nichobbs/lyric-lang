@@ -18411,14 +18411,40 @@ func sameSignature(a: in NFunc, b: in NFunc): Bool {
 record TirUnitMaps {
   fnNames: Map[Int, String]
   recs: Map[Int, LlvmTir.TirRecLayout]
+  unions: Map[Int, LlvmTir.TirUnionLayout]
+  cases: Map[Int, LlvmTir.TirCaseRef]
+}
+
+/// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
+/// discriminant and the payload area sit, and each case's payload struct.
+func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
+  val ty = unionPtrType(ui)
+  val cases: List[LlvmTir.TirCaseLayout] = newList()
+  for ci in ui.cases {
+    cases.add(LlvmTir.TirCaseLayout(payloadTy = casePayloadStructType(ui, ci), fieldTys = ci.fieldTys))
+  }
+  LlvmTir.TirUnionLayout(
+    ty = ty,
+    structTy = if ui.inline { ty } else { match ty { case NPtr(p) -> p; case t -> t } },
+    inline = ui.inline,
+    payloadWords = ui.payloadWords,
+    discIdx = unionDiscIdx(ui).toInt(),
+    payloadIdx = unionPayloadIdx(ui).toInt(),
+    dtor = if not ui.inline and unionHasRefFields(ui) { unionDtorName(ui) } else { "" },
+    cases = cases
+  )
 }
 
 func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput): TirUnitMaps {
   val fnNames: Map[Int, String] = newMap()
-  // A type's DefPath key is `Pkg::Name`: the code generator keeps the layout and the lowering
-  // only reads it.  Heap records come with their destructor; a protected type, a foreign
-  // record and a `@nativeDtor` type stay on the AST path.
+  // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code
+  // generator keeps the layout and the lowering only reads it.  Heap records come with their
+  // destructor; a protected type, a foreign record and a `@nativeDtor` type stay on the AST path.
   val recs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  val unions: Map[Int, LlvmTir.TirUnionLayout] = newMap()
+  val unionIds: Map[String, Int] = newMap()
+  val caseIds: List[Int] = newList()
+  val caseKeys: List[String] = newList()
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
@@ -18431,8 +18457,11 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
           case None -> ()
           case Some(sep) -> {
             val rest = Str.substring(key, sep + 2)
-            if not Str.contains(rest, "::") and not Str.contains(rest, "(") {
-              match mapGet(ctx.recordDefs, Str.substring(key, 0, sep) + "." + rest) {
+            val pkg = Str.substring(key, 0, sep)
+            if Str.contains(rest, "(") {
+              ()
+            } else if not Str.contains(rest, "::") {
+              match mapGet(ctx.recordDefs, pkg + "." + rest) {
                 case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
                   recs.add(
                     id,
@@ -18444,15 +18473,58 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
                     )
                   )
                 }
-                case None -> ()
+                case None -> match mapGet(ctx.unionDefs, pkg + "." + rest) {
+                  case Some(ui) -> {
+                    unions.add(id, tirUnionLayout(ui))
+                    unionIds.add(pkg + "." + rest, id)
+                  }
+                  case None -> ()
+                }
               }
+            } else {
+              caseIds.add(id)
+              caseKeys.add(key)
             }
           }
         }
       }
     }
   }
-  TirUnitMaps(fnNames = fnNames, recs = recs)
+  val cases: Map[Int, LlvmTir.TirCaseRef] = newMap()
+  var k = 0
+  while k < caseIds.count {
+    val key = caseKeys[k]
+    match Str.indexOf(key, "::") {
+      case None -> ()
+      case Some(sep) -> {
+        val rest = Str.substring(key, sep + 2)
+        match Str.indexOf(rest, "::") {
+          case None -> ()
+          case Some(sep2) -> {
+            val unionKey = Str.substring(key, 0, sep) + "." + Str.substring(rest, 0, sep2)
+            val caseName = Str.substring(rest, sep2 + 2)
+            match mapGet(unionIds, unionKey) {
+              case None -> ()
+              case Some(uid) -> match mapGet(ctx.unionDefs, unionKey) {
+                case None -> ()
+                case Some(ui) -> {
+                  var ci = 0
+                  while ci < ui.cases.count {
+                    if ui.cases[ci].name == caseName {
+                      cases.add(caseIds[k], LlvmTir.TirCaseRef(unionId = uid, index = ci))
+                    }
+                    ci = ci + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    k = k + 1
+  }
+  TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases)
 }
 
 func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
@@ -18487,7 +18559,7 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
-      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs), d) {
+      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs, unions = maps.unions, cases = maps.cases), d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
           ast
@@ -18781,7 +18853,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     val tirMaps = if u.tir.count > 0 {
       tirUnitMaps(ctx, sigs, u.tir[0])
     } else {
-      TirUnitMaps(fnNames = newMap(), recs = newMap())
+      TirUnitMaps(fnNames = newMap(), recs = newMap(), unions = newMap(), cases = newMap())
     }
     var fi = 0
     while fi < u.fns.count {

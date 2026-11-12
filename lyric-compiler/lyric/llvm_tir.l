@@ -159,6 +159,37 @@ pub record TirLowerEnv {
   /// (docs/70 phase 4a): it hands over the type and the field types it chose, and this
   /// lowering never decides between the heap and the by-value form.
   recs: Map[Int, TirRecLayout] = newMap()
+  /// The unions, keyed by the union's `SymbolId.id`, and each union case's place in one, keyed
+  /// by the case's symbol.
+  unions: Map[Int, TirUnionLayout] = newMap()
+  cases: Map[Int, TirCaseRef] = newMap()
+}
+
+/// A union case's payload: the struct its fields are stored through and each field's type
+/// (`NVoid` for a Unit field).
+pub record TirCaseLayout {
+  payloadTy: NType
+  fieldTys: List[NType]
+}
+
+/// A union as the code generator laid it out: an inline tagged struct value (`inline`), or the
+/// pointer to a heap object whose header precedes the discriminant.  `discIdx` and `payloadIdx`
+/// are the GEP indices of the discriminant and the payload area in `structTy`.
+pub record TirUnionLayout {
+  ty: NType
+  structTy: NType
+  inline: Bool
+  payloadWords: Int
+  discIdx: Int
+  payloadIdx: Int
+  dtor: String
+  cases: List[TirCaseLayout]
+}
+
+/// Which union a case belongs to, and its discriminant.
+pub record TirCaseRef {
+  unionId: Int
+  index: Int
 }
 
 /// A by-value record's layout as the code generator chose it: its LLVM struct type and
@@ -459,15 +490,19 @@ func primN(k: in TPrimKind): NType {
 }
 
 /// The LLVM type of a scalar `Ty`; None for anything this slice does not lower.
-func tyToN(recs: in Map[Int, TirRecLayout], t: in Ty): Option[NType] {
+func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
+  tyToNIn(env.recs, env.unions, t)
+}
+
+func tyToNIn(recs: in Map[Int, TirRecLayout], unions: in Map[Int, TirUnionLayout], t: in Ty): Option[NType] {
   match t {
     case TPrim(k) -> Some(value = primN(k))
-    case TRefined(u, _, _, _) -> tyToN(recs, u)
+    case TRefined(u, _, _, _) -> tyToNIn(recs, unions, u)
     case TNever -> Some(value = NVoid)
     case TNamed(sym, args) -> if args.count == 0 {
       match mapGet(recs, sym.id) {
         case Some(r) -> Some(value = r.ty)
-        case None -> None
+        case None -> match mapGet(unions, sym.id) { case Some(u) -> Some(value = u.ty); case None -> None }
       }
     } else {
       None
@@ -696,7 +731,7 @@ func assignOp(k: in AssignKind): Option[IntrinsicOp] {
 }
 
 func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
-  match tyToN(c.env.recs, d.ty) {
+  match tyToN(c.env, d.ty) {
     case None -> {
       c.problems.add("a local of type " + renderTy(d.ty))
       None
@@ -824,12 +859,17 @@ func fieldPtr(c: in LCtx, lay: in TirRecLayout, obj: in NValue, i: in Int): NVal
 /// Allocate a heap record: count 1, the destructor (when it has reference fields) and the
 /// weak count the runtime seeds.
 func allocHeap(c: in LCtx, lay: in TirRecLayout): NValue {
-  val st = heapStruct(lay)
+  allocObject(c, lay.ty, heapStruct(lay), lay.dtor)
+}
+
+/// A heap object of struct `st` (pointer type `ty`): count 1, `dtor` in the header when it has
+/// one, and the weak count the runtime seeds.
+func allocObject(c: in LCtx, ty: in NType, st: in NType, dtor: in String): NValue {
   val size = tmp(c)
   c.insns.add(NSizeOf(dest = size, ty = st))
   val raw = callRt(c, "lyric_alloc", i8ptr(), arg1(NI64, NLocal(name = size)))
   val o = tmp(c)
-  c.insns.add(NBitcast(dest = o, fromTy = i8ptr(), value = raw, toTy = lay.ty))
+  c.insns.add(NBitcast(dest = o, fromTy = i8ptr(), value = raw, toTy = ty))
   val obj = NLocal(name = o)
   val rcIdx: List[NArg] = newList()
   rcIdx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -842,19 +882,14 @@ func allocHeap(c: in LCtx, lay: in TirRecLayout): NValue {
   dtIdx.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
   val dt = tmp(c)
   c.insns.add(NGEP(dest = dt, ty = st, ptr = obj, indices = dtIdx))
-  if lay.dtor.length == 0 {
+  if dtor.length == 0 {
     c.insns.add(NStore(ty = i8ptr(), value = NLitNull(ty = i8ptr()), ptr = NLocal(name = dt)))
   } else {
     val params: List[NType] = newList()
     params.add(i8ptr())
     val cast = tmp(c)
     c.insns.add(
-      NBitcast(
-        dest = cast,
-        fromTy = NFnPtr(params = params, ret = NVoid),
-        value = NGlobal(name = lay.dtor),
-        toTy = i8ptr()
-      )
+      NBitcast(dest = cast, fromTy = NFnPtr(params = params, ret = NVoid), value = NGlobal(name = dtor), toTy = i8ptr())
     )
     c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = cast), ptr = NLocal(name = dt)))
   }
@@ -882,6 +917,10 @@ func storeHeapField(c: in LCtx, lay: in TirRecLayout, obj: in NValue, i: in Int,
 /// a field expression leaks nothing, and returned owned.  The fields are evaluated in
 /// declaration order.
 func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
+  match mapGet(c.env.cases, sym.id) {
+    case Some(cr) -> return lowerCase(c, cr, fields)
+    case None -> ()
+  }
   match recLayout(c, sym) {
     case None -> unitVal()
     case Some(lay) -> {
@@ -944,6 +983,253 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
         }
       }
     }
+  }
+}
+
+/// A pointer into a union object: field `idx` of `structTy` (the discriminant or the payload
+/// area).
+func unionSlotPtr(c: in LCtx, ul: in TirUnionLayout, base: in NValue, idx: in Int): NValue {
+  val d = tmp(c)
+  val ix: List[NArg] = newList()
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  ix.add(NArg(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32)))
+  c.insns.add(NGEP(dest = d, ty = ul.structTy, ptr = base, indices = ix))
+  NLocal(name = d)
+}
+
+/// The payload area viewed as the case's payload struct.
+func casePayloadPtr(c: in LCtx, ul: in TirUnionLayout, cl: in TirCaseLayout, base: in NValue): NValue {
+  val area = unionSlotPtr(c, ul, base, ul.payloadIdx)
+  val d = tmp(c)
+  c.insns.add(
+    NBitcast(
+      dest = d,
+      fromTy = NPtr(pointee = NArray(elem = NI64, size = ul.payloadWords)),
+      value = area,
+      toTy = NPtr(pointee = cl.payloadTy)
+    )
+  )
+  NLocal(name = d)
+}
+
+/// A pointer to payload field `i` of a case.
+func caseFieldPtr(c: in LCtx, cl: in TirCaseLayout, casePtr: in NValue, i: in Int): NValue {
+  val d = tmp(c)
+  val ix: List[NArg] = newList()
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  ix.add(NArg(ty = NI32, value = NLitInt(v = i.toLong(), ty = NI32)))
+  c.insns.add(NGEP(dest = d, ty = cl.payloadTy, ptr = casePtr, indices = ix))
+  NLocal(name = d)
+}
+
+/// A union case value.  An inline union is built in a hoisted stack slot and loaded as a value;
+/// a heap union is allocated after its fields are evaluated and returned owned, the object
+/// owning its reference fields.
+func lowerCase(c: in LCtx, cr: in TirCaseRef, fields: in List[TExpr]): Val {
+  val ul = match mapGet(c.env.unions, cr.unionId) {
+    case Some(u) -> u
+    case None -> return unsupported(c, "a union case of an unregistered union")
+  }
+  val cl = ul.cases[cr.index]
+  if fields.count != cl.fieldTys.count {
+    return unsupported(
+      c,
+      "a union case with " + toString(fields.count) + " of " + toString(cl.fieldTys.count) + " fields"
+    )
+  }
+  val vals: List[Val] = newList()
+  var i = 0
+  while i < fields.count {
+    val v = borrow(c, lowerExpr(c, fields[i]))
+    match cl.fieldTys[i] {
+      case NVoid -> ()
+      case ft -> if nTypeToIrString(ft) != nTypeToIrString(v.ty) {
+        c.problems.add("a union case field of type " + nTypeToIrString(v.ty) + " where the layout has " + nTypeToIrString(ft))
+        return unitVal()
+      }
+    }
+    vals.add(v)
+    i = i + 1
+  }
+  var base: NValue = NUndef(ty = ul.ty)
+  if ul.inline {
+    c.ticker.add(0)
+    val slot = "iu.slot." + toString(c.ticker.count)
+    c.allocas.add(NAlloca(dest = slot, ty = ul.structTy))
+    base = NLocal(name = slot)
+  } else {
+    base = allocObject(c, ul.ty, ul.structTy, ul.dtor)
+  }
+  c.insns.add(
+    NStore(ty = NI32, value = NLitInt(v = cr.index.toLong(), ty = NI32), ptr = unionSlotPtr(c, ul, base, ul.discIdx))
+  )
+  if vals.count > 0 {
+    val casePtr = casePayloadPtr(c, ul, cl, base)
+    var j = 0
+    while j < vals.count {
+      match cl.fieldTys[j] {
+        case NVoid -> ()
+        case ft -> {
+          if isRefN(ft) {
+            retainRef(c, ft, vals[j].value)
+          }
+          c.insns.add(NStore(ty = ft, value = vals[j].value, ptr = caseFieldPtr(c, cl, casePtr, j)))
+        }
+      }
+      j = j + 1
+    }
+  }
+  if ul.inline {
+    val d = tmp(c)
+    c.insns.add(NLoad(dest = d, ty = ul.structTy, ptr = base))
+    return Val(ty = ul.ty, value = NLocal(name = d))
+  }
+  Val(ty = ul.ty, value = base, owned = true)
+}
+
+/// A union scrutinee being matched: its layout, a pointer to its object (the heap pointer
+/// itself, or a stack copy of an inline value) and its value.
+record UnionScrut {
+  lay: TirUnionLayout
+  base: NValue
+  value: Val
+}
+
+/// The union a type names, if the code generator registered it.
+func unionOfTy(c: in LCtx, t: in Ty): Option[TirUnionLayout] {
+  match t {
+    case TNamed(sym, args) -> if args.count == 0 { mapGet(c.env.unions, sym.id) } else { None }
+    case _ -> None
+  }
+}
+
+/// Open a union scrutinee: a borrowed pointer to its object.  An inline value is spilled to a
+/// stack slot so every case reads its payload through the same pointer.
+func openUnion(c: in LCtx, ul: in TirUnionLayout, scrut: in Val): UnionScrut {
+  val v = borrow(c, scrut)
+  if not ul.inline {
+    return UnionScrut(lay = ul, base = v.value, value = v)
+  }
+  c.ticker.add(0)
+  val slot = "iu.scrut." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = slot, ty = ul.structTy))
+  c.insns.add(NStore(ty = ul.structTy, value = v.value, ptr = NLocal(name = slot)))
+  UnionScrut(lay = ul, base = NLocal(name = slot), value = v)
+}
+
+/// The value of payload field `i` of case `cr`, read through the scrutinee's pointer.  Reading a
+/// field of a case the discriminant has not selected is memory-safe (the payload area covers
+/// every case) and its value is only used under the discriminant test.
+func loadCaseField(c: in LCtx, u: in UnionScrut, cr: in TirCaseRef, i: in Int): Val {
+  val cl = u.lay.cases[cr.index]
+  val casePtr = casePayloadPtr(c, u.lay, cl, u.base)
+  val ft = cl.fieldTys[i]
+  val d = tmp(c)
+  c.insns.add(NLoad(dest = d, ty = ft, ptr = caseFieldPtr(c, cl, casePtr, i)))
+  Val(ty = ft, value = NLocal(name = d))
+}
+
+/// Whether a sub-pattern of a case field needs a test (anything but a wildcard or a plain binding).
+func subPatTests(pat: in TPat): Bool {
+  match pat.kind {
+    case TpWild -> false
+    case TpBind(_, inner) -> match inner { case None -> false; case Some(p) -> subPatTests(p) }
+    case _ -> true
+  }
+}
+
+/// The `i1` that says whether `pat` matches the union: the discriminant of a case pattern,
+/// and then its scalar sub-patterns on the payload fields.
+func patTestU(c: in LCtx, u: in UnionScrut, pat: in TPat): Val {
+  match pat.kind {
+    case TpWild -> trueV()
+    case TpBind(_, inner) -> match inner { case None -> trueV(); case Some(p) -> patTestU(c, u, p) }
+    case TpCtor(sym, args) -> match mapGet(c.env.cases, sym.id) {
+      case None -> unsupported(c, "a pattern on a case outside the registered unions")
+      case Some(cr) -> {
+        val dp = unionSlotPtr(c, u.lay, u.base, u.lay.discIdx)
+        val disc = tmp(c)
+        c.insns.add(NLoad(dest = disc, ty = NI32, ptr = dp))
+        val eq = tmp(c)
+        c.insns.add(
+          NICmp(dest = eq, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = cr.index.toLong(), ty = NI32))
+        )
+        var acc = Val(ty = NI1, value = NLocal(name = eq))
+        var i = 0
+        while i < args.count {
+          if subPatTests(args[i]) {
+            match u.lay.cases[cr.index].fieldTys[i] {
+              case NVoid -> c.problems.add("a pattern on a Unit field")
+              case _ -> {
+                val fv = loadCaseField(c, u, cr, i)
+                acc = andV(c, acc, patTest(c, args[i], fv, args[i].ty))
+              }
+            }
+          }
+          i = i + 1
+        }
+        acc
+      }
+    }
+    case TpOr(alts) -> {
+      var acc = patTestU(c, u, alts[0])
+      var i = 1
+      while i < alts.count {
+        acc = orV(c, acc, patTestU(c, u, alts[i]))
+        i = i + 1
+      }
+      acc
+    }
+    case _ -> unsupported(c, "a pattern of this kind on a union")
+  }
+}
+
+/// A pattern binding is a borrow of the scrutinee, which outlives the arm, so it is never
+/// retained or released; a reference binding that could be reassigned is not supported.
+func bindBorrowed(c: in LCtx, decl: in LocalDecl, v: in Val): Unit {
+  if decl.mutable and isRefN(v.ty) {
+    c.problems.add("a mutable reference binding in a pattern")
+    return
+  }
+  match declareSlot(c, decl) {
+    case Some(slot) -> c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
+    case None -> ()
+  }
+}
+
+/// Store the matched parts into the locals `pat` binds.
+func patBindU(c: in LCtx, u: in UnionScrut, pat: in TPat): Unit {
+  match pat.kind {
+    case TpBind(decl, inner) -> {
+      bindBorrowed(c, decl, u.value)
+      match inner {
+        case Some(p) -> patBindU(c, u, p)
+        case None -> ()
+      }
+    }
+    case TpCtor(sym, args) -> match mapGet(c.env.cases, sym.id) {
+      case None -> ()
+      case Some(cr) -> {
+        var i = 0
+        while i < args.count {
+          match args[i].kind {
+            case TpBind(decl, inner) -> match u.lay.cases[cr.index].fieldTys[i] {
+              case NVoid -> c.problems.add("a binding of a Unit field")
+              case _ -> {
+                bindBorrowed(c, decl, loadCaseField(c, u, cr, i))
+                match inner {
+                  case Some(_) -> c.problems.add("a sub-pattern under a binding in a case pattern")
+                  case None -> ()
+                }
+              }
+            }
+            case _ -> ()
+          }
+          i = i + 1
+        }
+      }
+    }
+    case _ -> ()
   }
 }
 
@@ -1096,7 +1382,7 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
     case TLBool(b) -> Val(ty = NI1, value = NLitInt(v = if b { 1i64 } else { 0i64 }, ty = NI1))
     case TLChar(cp) -> Val(ty = NI32, value = NLitInt(v = cp.toLong(), ty = NI32))
     case TLString(text) -> stringLiteral(c, text)
-    case TLInt(v) -> match tyToN(c.env.recs, e.ty) {
+    case TLInt(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "an integer literal of type " + renderTy(e.ty))
       case Some(nt) -> if isFloatTy(e.ty) {
         Val(ty = nt, value = NLitFloat(v = v.toDouble(), ty = nt))
@@ -1104,7 +1390,7 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
         Val(ty = nt, value = NLitInt(v = wrapLit(v, nt), ty = nt))
       }
     }
-    case TLFloat(v) -> match tyToN(c.env.recs, e.ty) {
+    case TLFloat(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "a float literal of type " + renderTy(e.ty))
       case Some(nt) -> Val(ty = nt, value = NLitFloat(v = v, ty = nt))
     }
@@ -1134,7 +1420,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         if isStringN(a.ty) {
           return lowerStringBinary(c, op, a, b)
         }
-        match tyToN(c.env.recs, ins[0].ty) {
+        match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else {
@@ -1144,7 +1430,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       } else if ins.count == 1 {
         val a = borrow(c, lowerExpr(c, ins[0]))
-        match tyToN(c.env.recs, ins[0].ty) {
+        match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else {
@@ -1178,7 +1464,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
-          match tyToN(c.env.recs, e.ty) {
+          match tyToN(c.env, e.ty) {
             case None -> unsupported(c, "a call returning " + renderTy(e.ty))
             case Some(rt) -> match rt {
               case NVoid -> {
@@ -1332,14 +1618,14 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
     case CvUnrefine -> lowerExpr(c, inner)
     case CvFromNever -> {
       val _ = lowerExpr(c, inner)
-      match tyToN(c.env.recs, e.ty) {
+      match tyToN(c.env, e.ty) {
         case Some(nt) -> Val(ty = nt, value = NUndef(ty = nt))
         case None -> unsupported(c, "a conversion from Never to " + renderTy(e.ty))
       }
     }
     case CvWiden(_) -> {
       val v = lowerExpr(c, inner)
-      match tyToN(c.env.recs, e.ty) {
+      match tyToN(c.env, e.ty) {
         case None -> unsupported(c, "a widening to " + renderTy(e.ty))
         case Some(to) -> lowerWiden(c, inner.ty, v, to)
       }
@@ -1400,7 +1686,7 @@ func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option
   pushTemps(c)
   val cv = lowerExpr(c, cond)
   popTemps(c)
-  val wantRef = match tyToN(c.env.recs, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
+  val wantRef = match tyToN(c.env, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
   val thenL = newLabel(c, "if.then")
   val elseL = newLabel(c, "if.else")
   val endL = newLabel(c, "if.end")
@@ -1414,7 +1700,7 @@ func lowerIf(c: in LCtx, e: in TExpr, cond: in TExpr, t: in TExpr, el: in Option
   val elseEnd = curBlock(c)
   c.insns.add(NBr(label = endL))
   startBlock(c, endL)
-  match tyToN(c.env.recs, e.ty) {
+  match tyToN(c.env, e.ty) {
     case None -> unsupported(c, "an if of type " + renderTy(e.ty))
     case Some(nt) -> match nt {
       case NVoid -> unitVal()
@@ -1631,20 +1917,26 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
   if arms.count == 0 {
     return unsupported(c, "a match with no arms")
   }
-  val scrut = lowerExpr(c, scrutE)
-  match scrut.ty {
+  val scrut0 = lowerExpr(c, scrutE)
+  match scrut0.ty {
     case NVoid -> return unsupported(c, "a match on a non-scalar")
     case _ -> ()
   }
-  if isRefN(scrut.ty) {
+  val us: Option[UnionScrut] = match unionOfTy(c, scrutE.ty) {
+    case Some(ul) -> Some(value = openUnion(c, ul, scrut0))
+    case None -> None
+  }
+  val scrut = scrut0
+  val isUnion = match us { case Some(_) -> true; case None -> false }
+  if isRefN(scrut.ty) and not isUnion {
     return unsupported(c, "a match on a reference value")
   }
-  val wantRef = match tyToN(c.env.recs, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
-  match tyToN(c.env.recs, scrutE.ty) {
+  val wantRef = match tyToN(c.env, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
+  match tyToN(c.env, scrutE.ty) {
     case None -> return unsupported(c, "a match on " + renderTy(scrutE.ty))
     case Some(_) -> ()
   }
-  val resN = tyToN(c.env.recs, e.ty)
+  val resN = tyToN(c.env, e.ty)
   val endL = newLabel(c, "match.end")
   val incoming: List[NPhiIncoming] = newList()
   var i = 0
@@ -1656,12 +1948,15 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
         case _ -> ()
       }
     }
-    val test = patTest(c, arm.pat, scrut, scrutE.ty)
+    val test = match us { case Some(u) -> patTestU(c, u, arm.pat); case None -> patTest(c, arm.pat, scrut, scrutE.ty) }
     val bindL = newLabel(c, "arm.bind")
     val nextL = newLabel(c, "arm.next")
     c.insns.add(NCondBr(cond = test.value, thenLabel = bindL, elseLabel = nextL))
     startBlock(c, bindL)
-    patBind(c, arm.pat, scrut)
+    match us {
+      case Some(u) -> patBindU(c, u, arm.pat)
+      case None -> patBind(c, arm.pat, scrut)
+    }
     val bodyL = newLabel(c, "arm.body")
     match arm.guard {
       case Some(g) -> {
@@ -1704,7 +1999,7 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
     case XRange(lo, hi, inclusive) -> {
       val lov = lowerExpr(c, lo)
       val hiv = lowerExpr(c, hi)
-      match tyToN(c.env.recs, lo.ty) {
+      match tyToN(c.env, lo.ty) {
         case None -> {
           c.problems.add("a for over " + renderTy(lo.ty))
           return
@@ -1928,7 +2223,7 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
     case None -> return fallback(fn.sym, "no IR name for symbol #" + toString(fn.sym.id))
   }
   val body = match fn.body { case Some(b) -> b; case None -> return fallback(fn.sym, "no body") }
-  val retTy = match tyToN(env.recs, fn.ret) {
+  val retTy = match tyToN(env, fn.ret) {
     case Some(t) -> t
     case None -> return fallback(fn.sym, "return type " + renderTy(fn.ret))
   }
@@ -1955,7 +2250,7 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
       case TMIn -> ()
       case _ -> return fallback(fn.sym, "an out or inout parameter")
     }
-    val pt = match tyToN(env.recs, p.local.ty) {
+    val pt = match tyToN(env, p.local.ty) {
       case Some(t) -> t
       case None -> return fallback(fn.sym, "parameter type " + renderTy(p.local.ty))
     }

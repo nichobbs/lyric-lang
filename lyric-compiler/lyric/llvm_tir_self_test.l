@@ -929,3 +929,207 @@ test "a Unit field stores nothing and reads as Unit; an index outside the layout
   val ir2 = render(lowerTirFunction(unitFieldEnv(names), fnDecl(100, ps, intT(), bad)))
   assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
 }
+
+func shapeT(): Ty {
+  TNamed(sym = sym(11), args = newList())
+}
+
+func caseL(name: in String, fts: in List[NType]): TirCaseLayout {
+  TirCaseLayout(payloadTy = NStruct(name = "P.Shape." + name, fields = fts), fieldTys = fts)
+}
+
+func tys1(a: in NType): List[NType] {
+  val xs: List[NType] = newList()
+  xs.add(a)
+  xs
+}
+
+func tys2(a: in NType, b: in NType): List[NType] {
+  val xs: List[NType] = newList()
+  xs.add(a)
+  xs.add(b)
+  xs
+}
+
+/// `union Shape { Circle(r: Int), Rect(w: Int, h: Int), Empty }` as an inline tagged value, or as
+/// a heap object with a `Label(s: String)` case when `heap`.
+func shapeEnv(names: in List[String], heap: in Bool): TirLowerEnv {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < names.count {
+    m.add(100 + i, names[i])
+    i = i + 1
+  }
+  val cases: List[TirCaseLayout] = newList()
+  cases.add(caseL("Circle", tys1(NI32)))
+  cases.add(caseL("Rect", tys2(NI32, NI32)))
+  cases.add(caseL("Empty", newList()))
+  val fields: List[NType] = newList()
+  var structTy: NType = NStruct(name = "P.Shape", fields = fields)
+  var ty: NType = structTy
+  if heap {
+    cases.add(caseL("Label", tys1(lyricStringNType())))
+    addArcHeader(fields)
+    fields.add(NI32)
+    fields.add(NI32)
+    fields.add(NArray(elem = NI64, size = 2))
+    structTy = NStruct(name = "P.Shape", fields = fields)
+    ty = NPtr(pointee = structTy)
+  } else {
+    fields.add(NI32)
+    fields.add(NI32)
+    fields.add(NArray(elem = NI64, size = 2))
+    structTy = NStruct(name = "P.Shape", fields = fields)
+    ty = structTy
+  }
+  val unions: Map[Int, TirUnionLayout] = newMap()
+  unions.add(
+    11,
+    TirUnionLayout(
+      ty = ty,
+      structTy = structTy,
+      inline = not heap,
+      payloadWords = 2,
+      discIdx = if heap { 3 } else { 0 },
+      payloadIdx = if heap { 5 } else { 2 },
+      dtor = if heap { "P.Shape.dtor" } else { "" },
+      cases = cases
+    )
+  )
+  val cm: Map[Int, TirCaseRef] = newMap()
+  cm.add(12, TirCaseRef(unionId = 11, index = 0))
+  cm.add(13, TirCaseRef(unionId = 11, index = 1))
+  cm.add(14, TirCaseRef(unionId = 11, index = 2))
+  cm.add(15, TirCaseRef(unionId = 11, index = 3))
+  TirLowerEnv(fnNames = m, panicFile = "P", unions = unions, cases = cm)
+}
+
+test "an inline union case is built in a stack slot with its discriminant and payload, then loaded" {
+  // func f(a: Int, b: Int): Shape { Rect(a, b) }
+  val a = local(1, "a", intT(), false)
+  val b = local(2, "b", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  ps.add(param(b))
+  val fields: List[TExpr] = newList()
+  fields.add(ex(3, intT(), XLocal(local = a.id)))
+  fields.add(ex(4, intT(), XLocal(local = b.id)))
+  val body = ex(5, shapeT(), XConstruct(sym = sym(13), fields = fields))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, ps, shapeT(), body)))
+  assertTrue(Str.contains(ir, "alloca %P.Shape"), ir)
+  assertTrue(Str.contains(ir, "store i32 1, i32*"), "the Rect discriminant is 1: " + ir)
+  assertTrue(Str.contains(ir, "bitcast [2 x i64]*"), "the payload area is viewed as the case struct: " + ir)
+  assertTrue(Str.contains(ir, "load %P.Shape"), ir)
+  assertFalse(Str.contains(ir, "lyric_alloc"), "an inline union allocates nothing: " + ir)
+}
+
+test "a match on an inline union tests the discriminant and binds the payload fields" {
+  // func area(s: Shape): Int { match s { Circle(r) -> r; Rect(w, h) -> w * h; Empty -> 0 } }
+  val s = local(1, "s", shapeT(), false)
+  val r = local(2, "r", intT(), false)
+  val w = local(3, "w", intT(), false)
+  val h = local(4, "h", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(s))
+  val arms: List[TArm] = newList()
+  val circleArgs: List[TPat] = newList()
+  circleArgs.add(pat(30, intT(), TpBind(decl = r, inner = None)))
+  arms.add(arm(pat(31, shapeT(), TpCtor(sym = sym(12), args = circleArgs)), None, ex(32, intT(), XLocal(local = r.id))))
+  val rectArgs: List[TPat] = newList()
+  rectArgs.add(pat(33, intT(), TpBind(decl = w, inner = None)))
+  rectArgs.add(pat(34, intT(), TpBind(decl = h, inner = None)))
+  val area = ex(
+    35,
+    intT(),
+    XCall(
+      callee = Intrinsic(op = IoMul),
+      args = inArgs(ex(36, intT(), XLocal(local = w.id)), ex(37, intT(), XLocal(local = h.id)))
+    )
+  )
+  arms.add(arm(pat(38, shapeT(), TpCtor(sym = sym(13), args = rectArgs)), None, area))
+  arms.add(arm(pat(39, shapeT(), TpCtor(sym = sym(14), args = newList())), None, intLit(40, 0i64)))
+  val m = ex(41, intT(), XMatch(scrutinee = ex(42, shapeT(), XLocal(local = s.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.area")
+  val ir = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "i32 @P.area(%P.Shape %a1)"), ir)
+  assertTrue(Str.contains(ir, "icmp eq i32"), "the discriminant is tested: " + ir)
+  assertTrue(Str.contains(ir, "mul i32"), ir)
+  assertTrue(Str.contains(ir, "phi i32"), ir)
+  assertTrue(Str.contains(ir, "iu.scrut"), "an inline scrutinee is spilled to read its payload: " + ir)
+}
+
+test "a heap union case owns its reference payload and a bound field is a borrow" {
+  // func f(t: String): Shape { Label(t) }  and  func g(s: Shape): String { match s { Label(x) -> x; _ -> "" } }
+  val t = local(1, "t", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(t))
+  val fields: List[TExpr] = newList()
+  fields.add(ex(2, strT(), XLocal(local = t.id)))
+  val body = ex(3, shapeT(), XConstruct(sym = sym(15), fields = fields))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(shapeEnv(names, true), fnDecl(100, ps, shapeT(), body)))
+  assertTrue(Str.contains(ir, "call i8* @lyric_alloc("), ir)
+  assertTrue(Str.contains(ir, "@P.Shape.dtor"), ir)
+  assertTrue(Str.contains(ir, "call void @lyric_retain("), "the object owns the string payload: " + ir)
+  assertTrue(Str.contains(ir, "ret %P.Shape*"), ir)
+  val s = local(4, "s", shapeT(), false)
+  val x = local(5, "x", strT(), false)
+  val ps2: List[TParamDecl] = newList()
+  ps2.add(param(s))
+  val arms: List[TArm] = newList()
+  val labelArgs: List[TPat] = newList()
+  labelArgs.add(pat(6, strT(), TpBind(decl = x, inner = None)))
+  arms.add(arm(pat(7, shapeT(), TpCtor(sym = sym(15), args = labelArgs)), None, ex(8, strT(), XLocal(local = x.id))))
+  arms.add(arm(pat(9, shapeT(), TpWild), None, strLit(10, "")))
+  val m = ex(11, strT(), XMatch(scrutinee = ex(12, shapeT(), XLocal(local = s.id)), arms = arms, exhaustive = true))
+  val names2: List[String] = newList()
+  names2.add("P.g")
+  val ir2 = render(lowerTirFunction(shapeEnv(names2, true), fnDecl(100, ps2, strT(), m)))
+  assertTrue(Str.contains(ir2, "icmp eq i32"), ir2)
+  assertTrue(Str.contains(ir2, "phi %LyricString*"), ir2)
+  assertFalse(Str.contains(ir2, "iu.scrut"), "a heap union is read through its own pointer: " + ir2)
+}
+
+test "a literal sub-pattern on a case field is tested under the discriminant" {
+  // func f(s: Shape): Int { match s { Circle(0) -> 1; _ -> 2 } }
+  val s = local(1, "s", shapeT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(s))
+  val arms: List[TArm] = newList()
+  val args: List[TPat] = newList()
+  args.add(pat(2, intT(), TpLit(lit = TLInt(value = 0i64))))
+  arms.add(arm(pat(3, shapeT(), TpCtor(sym = sym(12), args = args)), None, intLit(4, 1i64)))
+  arms.add(arm(pat(5, shapeT(), TpWild), None, intLit(6, 2i64)))
+  val m = ex(7, intT(), XMatch(scrutinee = ex(8, shapeT(), XLocal(local = s.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "and i1"), "the field test is combined with the discriminant test: " + ir)
+}
+
+test "an operator on a union and a case outside the registered unions fall back" {
+  val a = local(1, "a", shapeT(), false)
+  val b = local(2, "b", shapeT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  ps.add(param(b))
+  val eq = ex(
+    3,
+    tyBool(),
+    XCall(
+      callee = Intrinsic(op = IoEq),
+      args = inArgs(ex(4, shapeT(), XLocal(local = a.id)), ex(5, shapeT(), XLocal(local = b.id)))
+    )
+  )
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, ps, tyBool(), eq)))
+  assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
+  val unknown = ex(6, shapeT(), XConstruct(sym = sym(99), fields = newList()))
+  val ir2 = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, newList(), shapeT(), unknown)))
+  assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
+}
