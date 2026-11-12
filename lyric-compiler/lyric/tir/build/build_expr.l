@@ -2525,8 +2525,11 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
 }
 
-/// Whether `t` is a block with no tail value whose last statement always leaves it.
-func blockNeverCompletes(t: in TExpr): Bool {
+/// Whether control never reaches the end of `t`: a block with no tail value whose last
+/// statement always leaves it (`return`, `throw`, `break`, `continue`, a `scope` or an
+/// expression statement that never completes), an `if` with an `else` whose branches
+/// both leave, or a `match` whose arms all do.
+func neverCompletes(t: in TExpr): Bool {
   match t.kind {
     case XBlock(stmts, None) -> {
       if stmts.count == 0 {
@@ -2535,21 +2538,61 @@ func blockNeverCompletes(t: in TExpr): Bool {
       match stmts[stmts.count - 1].kind {
         case TsReturn(_) -> true
         case TsThrow(_) -> true
-        case TsScope(_, body) -> blockNeverCompletes(body)
+        case TsBreak(_) -> true
+        case TsContinue(_) -> true
+        case TsScope(_, body) -> neverCompletes(body)
+        case TsExpr(x) -> neverCompletes(x)
         case _ -> false
       }
     }
+    case XIf(_, a, Some(b)) -> neverCompletes(a) and neverCompletes(b)
+    case XMatch(_, arms, _) -> {
+      if arms.count == 0 {
+        return false
+      }
+      for arm in arms {
+        if not neverCompletes(arm.body) {
+          return false
+        }
+      }
+      true
+    }
     case _ -> false
+  }
+}
+
+/// `t`, which never completes, typed as `ty` all the way down: the verifier takes a branch
+/// that is not `Never` only at the type of the whole, so the branches of a nested `if` or
+/// `match` are retyped with it.
+func retypeNeverCompleting(t: in TExpr, ty: in Ty): TExpr {
+  match t.kind {
+    case XIf(c, a, Some(b)) -> TExpr(
+      id = t.id,
+      ty = ty,
+      span = t.span,
+      kind = XIf(
+        cond = c,
+        thenBranch = retypeNeverCompleting(a, ty),
+        elseBranch = Some(value = retypeNeverCompleting(b, ty))
+      )
+    )
+    case XMatch(scrut, arms, ex) -> {
+      val fresh: List[TArm] = newList()
+      for arm in arms {
+        fresh.add(TArm(pat = arm.pat, guard = arm.guard, body = retypeNeverCompleting(arm.body, ty)))
+      }
+      TExpr(id = t.id, ty = ty, span = t.span, kind = XMatch(scrutinee = scrut, arms = fresh, exhaustive = ex))
+    }
+    case _ -> TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind)
   }
 }
 
 /// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
 /// its own, or not at all (counted).  A branch that never completes fits any type.
 func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
-  // A block with no tail whose last statement always leaves it (`return`, `throw`, or a
-  // `scope` that ends in one) never completes, so it fits any type.
-  if blockNeverCompletes(t) {
-    return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+  // A branch that never completes (see `neverCompletes`) fits any type.
+  if neverCompletes(t) {
+    return Some(value = retypeNeverCompleting(t, ty))
   }
   // A block is typed as the whole, but its tail keeps its own type, which is
   // the value that needs converting.
@@ -2570,9 +2613,11 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> {
-      noteUncovered(env, "a branch conversion")
+      noteUncoveredAt(env, "a branch conversion", t.span)
       env.errors.add(
-        "I0002: the builder has no case for a branch conversion at " + toString(t.span.startPos.line) + ":" +
+        "I0002: the builder has no case for a branch conversion from " + renderTy(t.ty) + " to " + renderTy(ty) + " at " +
+          toString(t.span.startPos.line) +
+          ":" +
           toString(t.span.startPos.column)
       )
       None

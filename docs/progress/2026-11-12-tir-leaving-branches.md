@@ -1,0 +1,3 @@
+# 2026-11-12 - TIR builder: branches that leave through a nested if, match, break or continue (D583)
+
+docs/70 phase 3a, #8613. The builder's "this branch never completes" test now covers nested `if`/`match` whose branches all leave, `break`, `continue` and expression statements that never complete, and retypes such a branch as the whole all the way down so the verifier's branch-type rule holds. About 125 compiler-area sites were counted as `a branch conversion` from `Unit` before. `tir_build_self_test.l` adds a case with the three shapes (150 pass). The wide census was not re-measured for this change alone.
