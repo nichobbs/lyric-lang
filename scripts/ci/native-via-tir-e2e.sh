@@ -108,7 +108,7 @@ cat "$work/u_census.txt"
 "$work/u_tir" > "$work/u_tir.out"
 diff -u "$work/u_ast.out" "$work/u_tir.out"
 printf '12\n15\n0\ntrue\nfalse\nhello\nab,ab\n-\n' | diff -u - "$work/u_tir.out"
-grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/u_census.txt" || {
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/u_census.txt" || {
   echo "::error::expected every function of unions.l to be lowered from TIR"
   exit 1
 }
