@@ -761,3 +761,171 @@ test "an operator on a by-value record falls back" {
   val ir = render(lowerTirFunction(pointEnv(names), fnDecl(100, ps, tyBool(), body)))
   assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
 }
+
+func personEnv(names: in List[String]): TirLowerEnv {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < names.count {
+    m.add(100 + i, names[i])
+    i = i + 1
+  }
+  val body: List[NType] = newList()
+  addArcHeader(body)
+  body.add(lyricStringNType())
+  body.add(NI32)
+  val fieldTys: List[NType] = newList()
+  fieldTys.add(lyricStringNType())
+  fieldTys.add(NI32)
+  val recs: Map[Int, TirRecLayout] = newMap()
+  recs.add(
+    8,
+    TirRecLayout(
+      ty = NPtr(pointee = NStruct(name = "P.Person", fields = body)),
+      fieldTys = fieldTys,
+      byValue = false,
+      dtor = "P.Person.dtor"
+    )
+  )
+  TirLowerEnv(fnNames = m, panicFile = "P", recs = recs)
+}
+
+func personT(): Ty {
+  TNamed(sym = sym(8), args = newList())
+}
+
+func personField(name: in String, index: in Int): FieldRef {
+  FieldRef(owner = sym(8), name = name, index = index)
+}
+
+test "a heap record is allocated with its destructor, owns its reference fields and is returned owned" {
+  // func make(n: String, a: Int): Person { Person(n, a) }
+  val n = local(1, "n", strT(), false)
+  val a = local(2, "a", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  ps.add(param(a))
+  val fields: List[TExpr] = newList()
+  fields.add(ex(3, strT(), XLocal(local = n.id)))
+  fields.add(ex(4, intT(), XLocal(local = a.id)))
+  val body = ex(5, personT(), XConstruct(sym = sym(8), fields = fields))
+  val names: List[String] = newList()
+  names.add("P.make")
+  val ir = render(lowerTirFunction(personEnv(names), fnDecl(100, ps, personT(), body)))
+  assertTrue(Str.contains(ir, "call i8* @lyric_alloc("), ir)
+  assertTrue(Str.contains(ir, "@P.Person.dtor"), "the destructor pointer is stored in the header: " + ir)
+  assertTrue(Str.contains(ir, "call void @lyric_weak_init("), ir)
+  assertTrue(Str.contains(ir, "call void @lyric_retain("), "the object owns the string field, so it is retained: " + ir)
+  assertTrue(Str.contains(ir, "ret %P.Person*"), ir)
+}
+
+test "a heap record field read is a load through the field pointer and is borrowed" {
+  // func name(p: Person): String { p.name }
+  val p = local(1, "p", personT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(p))
+  val body = ex(2, strT(), XField(recv = ex(3, personT(), XLocal(local = p.id)), field = personField("name", 0)))
+  val names: List[String] = newList()
+  names.add("P.name")
+  val ir = render(lowerTirFunction(personEnv(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "getelementptr inbounds %P.Person, %P.Person* %"), ir)
+  assertTrue(Str.contains(ir, "i32 3"), "the first field follows the three header slots: " + ir)
+  assertTrue(Str.contains(ir, "call void @lyric_retain("), "returning the borrowed field retains it first: " + ir)
+}
+
+test "a heap record copy is a new object that retains the base's reference fields" {
+  // func older(p: Person): Person { p.copy(age = 9) }
+  val p = local(1, "p", personT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(p))
+  val ups: List[TFieldUpdate] = newList()
+  ups.add(TFieldUpdate(field = personField("age", 1), value = intLit(3, 9i64)))
+  val body = ex(4, personT(), XCopy(base = ex(2, personT(), XLocal(local = p.id)), updates = ups))
+  val names: List[String] = newList()
+  names.add("P.older")
+  val ir = render(lowerTirFunction(personEnv(names), fnDecl(100, ps, personT(), body)))
+  assertTrue(Str.contains(ir, "call i8* @lyric_alloc("), ir)
+  assertTrue(Str.contains(ir, "call void @lyric_retain("), "the copy shares the name string, so it is retained: " + ir)
+}
+
+test "a heap record local is released when its scope closes" {
+  // func f(n: String): Int { val p = Person(n, 1); p.age }
+  val n = local(1, "n", strT(), false)
+  val p = local(2, "p", personT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  val fields: List[TExpr] = newList()
+  fields.add(ex(3, strT(), XLocal(local = n.id)))
+  fields.add(intLit(4, 1i64))
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(20, p, ex(5, personT(), XConstruct(sym = sym(8), fields = fields))))
+  val tail = ex(6, intT(), XField(recv = ex(7, personT(), XLocal(local = p.id)), field = personField("age", 1)))
+  val body = ex(8, intT(), XBlock(stmts = stmts, tail = Some(value = tail)))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(personEnv(names), fnDecl(100, ps, intT(), body)))
+  assertTrue(Str.contains(ir, "call void @lyric_release("), "the scope releases p: " + ir)
+}
+
+test "an operator on a heap record falls back" {
+  val a = local(1, "a", personT(), false)
+  val b = local(2, "b", personT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(a))
+  ps.add(param(b))
+  val body = ex(
+    3,
+    tyBool(),
+    XCall(
+      callee = Intrinsic(op = IoEq),
+      args = inArgs(ex(4, personT(), XLocal(local = a.id)), ex(5, personT(), XLocal(local = b.id)))
+    )
+  )
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(personEnv(names), fnDecl(100, ps, tyBool(), body)))
+  assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
+}
+
+func unitFieldEnv(names: in List[String]): TirLowerEnv {
+  val m: Map[Int, String] = newMap()
+  var i = 0
+  while i < names.count {
+    m.add(100 + i, names[i])
+    i = i + 1
+  }
+  val fts: List[NType] = newList()
+  fts.add(NI32)
+  fts.add(NI8)
+  val fieldTys: List[NType] = newList()
+  fieldTys.add(NI32)
+  fieldTys.add(NVoid)
+  val recs: Map[Int, TirRecLayout] = newMap()
+  recs.add(9, TirRecLayout(ty = NStruct(name = "P.Tagged", fields = fts), fieldTys = fieldTys))
+  TirLowerEnv(fnNames = m, panicFile = "P", recs = recs)
+}
+
+test "a Unit field stores nothing and reads as Unit; an index outside the layout falls back" {
+  val taggedT = TNamed(sym = sym(9), args = newList())
+  val fields: List[TExpr] = newList()
+  fields.add(intLit(2, 5i64))
+  fields.add(ex(3, tyUnit(), XLit(lit = TLUnit)))
+  val body = ex(4, taggedT, XConstruct(sym = sym(9), fields = fields))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(unitFieldEnv(names), fnDecl(100, newList(), taggedT, body)))
+  assertTrue(Str.contains(ir, "insertvalue %P.Tagged undef, i32 5, 0"), ir)
+  assertFalse(Str.contains(ir, "insertvalue %P.Tagged %t1, i8"), "the placeholder byte is left undef: " + ir)
+  val p = local(1, "p", taggedT, false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(p))
+  val bad = ex(
+    5,
+    intT(),
+    XField(
+      recv = ex(6, taggedT, XLocal(local = p.id)),
+      field = FieldRef(owner = sym(9), name = "ghost", index = 7)
+    )
+  )
+  val ir2 = render(lowerTirFunction(unitFieldEnv(names), fnDecl(100, ps, intT(), bad)))
+  assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
+}

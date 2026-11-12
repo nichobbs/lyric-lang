@@ -18406,12 +18406,64 @@ func sameSignature(a: in NFunc, b: in NFunc): Bool {
 /// the TIR path's input and the TIR lowering covers `fn` (docs/70 phase 4a, D520).  The
 /// IR name, linkage and attributes stay the AST path's; every function that stays on the
 /// AST path is counted in the unit's census with the reason.
-func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn: in FunctionDecl, ast: in NFunc): NFunc {
+/// What the TIR lowering needs from the code generator for one unit, built once per unit: the
+/// IR name of each function symbol, and the layout of each record it registered.
+record TirUnitMaps {
+  fnNames: Map[Int, String]
+  recs: Map[Int, LlvmTir.TirRecLayout]
+}
+
+func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput): TirUnitMaps {
+  val fnNames: Map[Int, String] = newMap()
+  // A type's DefPath key is `Pkg::Name`: the code generator keeps the layout and the lowering
+  // only reads it.  Heap records come with their destructor; a protected type, a foreign
+  // record and a `@nativeDtor` type stay on the AST path.
+  val recs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
+        case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
+          case Some(sg) -> fnNames.add(id, sg.irName)
+          case None -> ()
+        }
+        case None -> match Str.indexOf(key, "::") {
+          case None -> ()
+          case Some(sep) -> {
+            val rest = Str.substring(key, sep + 2)
+            if not Str.contains(rest, "::") and not Str.contains(rest, "(") {
+              match mapGet(ctx.recordDefs, Str.substring(key, 0, sep) + "." + rest) {
+                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
+                  recs.add(
+                    id,
+                    LlvmTir.TirRecLayout(
+                      ty = recPtrType(ri),
+                      fieldTys = ri.fieldTys,
+                      byValue = ri.byValue,
+                      dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" }
+                    )
+                  )
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  TirUnitMaps(fnNames = fnNames, recs = recs)
+}
+
+func tirOrAst(
+  ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc
+): NFunc {
   if u.tir.count == 0 {
     return ast
   }
   val input = u.tir[0]
   val census = input.census
+  val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
   for f in input.pkg.funcs {
@@ -18427,41 +18479,6 @@ func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn
       }
     }
   }
-  val fnNames: Map[Int, String] = newMap()
-  for id in mapKeys(input.names) {
-    match mapGet(input.names, id) {
-      case None -> ()
-      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
-        case None -> ()
-        case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
-          case Some(sg) -> fnNames.add(id, sg.irName)
-          case None -> ()
-        }
-      }
-    }
-  }
-  // The by-value records, by the symbol the TIR names them with (a type's DefPath key is
-  // `Pkg::Name`): the code generator keeps the layout and the lowering only reads it.
-  val recs: Map[Int, LlvmTir.TirRecLayout] = newMap()
-  for id in mapKeys(input.names) {
-    match mapGet(input.names, id) {
-      case None -> ()
-      case Some(key) -> match Str.indexOf(key, "::") {
-        case None -> ()
-        case Some(sep) -> {
-          val rest = Str.substring(key, sep + 2)
-          if not Str.contains(rest, "::") and not Str.contains(rest, "(") {
-            match mapGet(ctx.recordDefs, Str.substring(key, 0, sep) + "." + rest) {
-              case Some(ri) -> if ri.byValue and ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 {
-                recs.add(id, LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys))
-              }
-              case None -> ()
-            }
-          }
-        }
-      }
-    }
-  }
   match decl {
     case None -> {
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
@@ -18472,7 +18489,7 @@ func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn
       if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
-      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = recs), d) {
+      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs), d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
           ast
@@ -18763,6 +18780,11 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       }
       ei = ei + 1
     }
+    val tirMaps = if u.tir.count > 0 {
+      tirUnitMaps(ctx, sigs, u.tir[0])
+    } else {
+      TirUnitMaps(fnNames = newMap(), recs = newMap())
+    }
     var fi = 0
     while fi < u.fns.count {
       val fn = u.fns[fi]
@@ -18782,7 +18804,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
         }
       }
       val irName = match mapGet(sigs, key) { case Some(s) -> s.irName; case None -> u.pkgName + "." + fn.name }
-      fns.add(tirOrAst(ctx, sigs, u, fn, lowerFunction(ctx, u.pkgName, fn, irName)))
+      fns.add(tirOrAst(ctx, u, tirMaps, fn, lowerFunction(ctx, u.pkgName, fn, irName)))
       if ui == 0 and fn.name == "main" and fn.params.count == 0 {
         mainRet = retTypeToNType(fn.ret)
         mainIr = irName
