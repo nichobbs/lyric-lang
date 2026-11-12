@@ -1,0 +1,3 @@
+# 2026-11-12 - Checker: nested case patterns are proved exhaustive (D585, #9025)
+
+`case One(Circle(r))` / `case One(Rect(a, b))` / `case Zero` covers every `Wrap` but was recorded as not proved, so `XMatch.exhaustive` was false and the native TIR lowering fell back to the AST. The checker's proof now also runs a pattern-matrix check over unguarded arms (union and enum cases with their payloads, `Bool`, tuples, or-patterns); it only adds to the old proof and treats every pattern it does not read as covering nothing. `tir_build_self_test.l` adds three cases (157 pass). The native lowering of nested `TpCtor` is separate.

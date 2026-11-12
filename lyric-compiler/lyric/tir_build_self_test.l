@@ -706,6 +706,57 @@ test "a guarded arm never proves a match exhaustive" {
   assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
 }
 
+test "nested case patterns that cover every value are proved exhaustive" {
+  val head = "package App\nunion Shape {\n  case Circle(r: Int)\n  case Rect(w: Int, h: Int)\n}\nunion Wrap {\n  case One(s: Shape)\n  case Zero\n}\n"
+  val all = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case One(Rect(a, b)) -> a + b\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertEqualInt(all.diagnostics, 0, "checks clean")
+  assertTrue(all.env.errors.count == 0, if all.env.errors.count > 0 { all.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(all.body) == "3:exhaustive", matchSummary(all.body))
+  val missing = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertTrue(matchSummary(missing.body) == "2:open", matchSummary(missing.body))
+  val wild = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case One(_) -> 1\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertTrue(matchSummary(wild.body) == "3:exhaustive", matchSummary(wild.body))
+}
+
+test "a tuple of a Bool and a union is proved exhaustive only when every pair is covered" {
+  val head = "package App\nunion U {\n  case A(n: Int)\n  case B\n}\n"
+  val ok = buildFirstFn(
+    head +
+      "func f(b: Bool, u: U): Int {\n  match (b, u) {\n    case (true, A(n)) -> n\n    case (true, B) -> 1\n    case (false, _) -> 2\n  }\n}\n"
+  )
+  assertTrue(ok.env.errors.count == 0, if ok.env.errors.count > 0 { ok.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(ok.body) == "3:exhaustive", matchSummary(ok.body))
+  val gap = buildFirstFn(
+    head +
+      "func f(b: Bool, u: U): Int {\n  match (b, u) {\n    case (true, A(n)) -> n\n    case (false, _) -> 2\n  }\n}\n"
+  )
+  assertTrue(matchSummary(gap.body) == "2:open", matchSummary(gap.body))
+}
+
+test "an or-pattern of cases and a guard are read soundly by the exhaustiveness matrix" {
+  val head = "package App\nunion U {\n  case A\n  case B\n  case C\n}\nunion W {\n  case P(u: U)\n  case Q\n}\n"
+  val orOk = buildFirstFn(
+    head +
+      "func f(w: W): Int {\n  match w {\n    case P(A | B) -> 1\n    case P(C) -> 2\n    case Q -> 3\n  }\n}\n"
+  )
+  assertTrue(orOk.env.errors.count == 0, if orOk.env.errors.count > 0 { orOk.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(orOk.body) == "3:exhaustive", matchSummary(orOk.body))
+  val guarded = buildFirstFn(
+    head +
+      "func f(w: W, k: Int): Int {\n  match w {\n    case P(A | B) if k > 0 -> 1\n    case P(C) -> 2\n    case Q -> 3\n  }\n}\n"
+  )
+  assertTrue(matchSummary(guarded.body) == "3:open", matchSummary(guarded.body))
+}
+
 func constructLits(b: in Option[TExpr]): String {
   match b {
     case Some(body) -> match body.kind {
