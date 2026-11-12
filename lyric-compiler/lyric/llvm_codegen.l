@@ -18417,6 +18417,7 @@ record TirUnitMaps {
   enumCases: Map[Int, Int]
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
+  funcs: Map[String, NType] = newMap()
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18554,12 +18555,13 @@ func lowerWithTuples(
       cases = maps.cases,
       enums = maps.enums,
       enumCases = maps.enumCases,
-      tuples = maps.tuples
+      tuples = maps.tuples,
+      funcs = maps.funcs
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if f.needTuples.count == 0 or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18573,6 +18575,9 @@ func lowerWithTuples(
               dtor = if recHasRefFields(ri) { recDtorName(ri) } else { "" }
             )
           )
+        }
+        for n in f.needFuncs {
+          maps.funcs.add(n.key, closureNType(ctx, n.paramTys, n.retTy))
         }
         attempt = attempt + 1
       }
@@ -18625,6 +18630,15 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
           } else {
             for g in l.globals {
               ctx.globals.add(g)
+            }
+            for xf in l.extraFns {
+              ctx.moduleFns.add(xf)
+            }
+            for cd in l.closures {
+              ctx.moduleTypeDefs.add(NTypeDefn(name = cd.implName, fields = cd.implFields))
+              if cd.dtor.length > 0 {
+                ctx.moduleFns.add(synthClosureDtor(ctx, cd.dtor, cd.implName, cd.implFields, cd.capTys))
+              }
             }
             census.lowered.add(fn.name)
             NFunc(
