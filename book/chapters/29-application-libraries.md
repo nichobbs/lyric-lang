@@ -364,22 +364,111 @@ func main(): Unit {
 
 ---
 
+## Backends in lyric-ecosystem
+
+The libraries above define interfaces (`StorageBucket`, `JobScheduler`,
+`CacheStore`, `SessionStore`, `MessageQueue`) and ship one in-tree reference
+backend each. Backends that talk to an external service live in a separate
+repository, [`nichobbs/lyric-ecosystem`](https://github.com/nichobbs/lyric-ecosystem),
+one package per backend (D552, D561). Each backend implements the interface,
+re-exports it with `pub use`, and passes the interface's conformance suite
+from `lyric-testing` on every target its manifest claims in `[package]
+targets`; a build for a target it does not claim fails with `F0054`.
+
+Application code depends on the interface and picks the backend where it is
+wired, so swapping one for another does not touch the code that uses it:
+
+```lyric
+import Std.Core
+import Storage.S3
+
+func publish(keyId: in String, secret: in String, pdfBase64: in String): Result[String, StorageError] {
+  val bucket = connect(awsConfig("my-bucket", "eu-west-1", keyId, secret))?
+  put(bucket, "reports/q3.pdf", pdfBase64, "application/pdf")?
+  bucket.presignedUrl("reports/q3.pdf", 3600)
+}
+```
+
+`connect` returns a `Storage.StorageBucket`; everything after that line is
+the interface from this chapter. The same holds for the other backends:
+
+```lyric
+import Cache.Redis as RedisCache
+import Session.Redis as RedisSessions
+import Mq.ActiveMq
+
+val cache = RedisCache.connect("redis://cache.internal:6379/1", RedisCache.options("myapp:cache:"))?
+val sessions = RedisSessions.connect("redis://sessions.internal:6379", RedisSessions.options("myapp:session:", 3600))?
+val orders = Mq.ActiveMq.connectUrl("stomp://app:passcode@broker.internal:61613", "orders")?
+```
+
+A job scheduler needs handlers as well as a connection. With Quartz (JVM
+only) a registered `JobHandler` runs on a Quartz worker thread:
+
+```lyric
+import Std.Core
+import Jobs
+import Jobs.Quartz
+
+record SendEmail {
+  tag: Int
+}
+
+impl Jobs.JobHandler for SendEmail {
+  func handle(spec: in Jobs.JobSpec): Result[String, Jobs.JobError] {
+    Ok("sent " + spec.payload)
+  }
+}
+
+func run(): Result[Unit, String] {
+  val sched = Quartz.create(Quartz.defaultConfig().copy(workerThreads = 8))?
+  Quartz.registerHandler(sched, "send-email", SendEmail(tag = 0))
+  Quartz.start(sched)?
+  val once = sched.enqueue("send-email", "{\"to\":\"a@example.com\"}", 3, 30000)?
+  val nightly = sched.schedule("send-email", "{}", "0 3 * * 1-5", 1, 30000)?
+  Quartz.shutdown(sched, true)
+}
+```
+
+Backend-only features sit in a separate module of each package and are not
+part of the interface: `Jobs.Quartz.Triggers` (native Quartz cron, intervals,
+misfire policy), `Storage.S3.Extras` (byte-level put and get, storage class,
+presigned PUT), `Mq.ActiveMq.Extras` (topics, send options, selectors).
+
+| Package | Interface | Backend | .NET | JVM | Implementation |
+|---|---|---|---|---|---|
+| `Lyric.Storage.S3` | `Storage.StorageBucket` | Amazon S3 and S3-compatible stores | real | real | pure Lyric: AWS Signature V4 over `Std.Http`, no SDK |
+| `Lyric.Jobs.Quartz` | `Jobs.JobScheduler` | Quartz 2.5 (RAM job store) | not supported (`F0054`) | real | Quartz through Maven and auto-FFI |
+| `Lyric.Redis` | none (client) | Redis 6 and later | real | real | pure Lyric: RESP2 and RESP3 over TCP |
+| `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | on `Lyric.Redis` |
+| `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | on `Lyric.Redis`; every read-modify-write is one script |
+| `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | pure Lyric: STOMP 1.2 over TCP |
+
+All six are `experimental` and versioned independently of the compiler. Their
+CI runs the conformance suites against a real Redis, ActiveMQ and MinIO on
+both targets. Until the interface packages they need are in a release, the
+repository builds against a pinned `lyric-lang` commit and resolves the
+interfaces through `[workspace.overrides]`; its README has the setup. Each
+package README lists configuration, pinned library versions and known gaps.
+
+---
+
 ## Library availability matrix
 
-This matrix summarises which backends are real on which target; each library's README is the detailed source, and the two must agree. The Stability column is the library's `[package] stability` manifest field: `stable` (the backends the library ships are real), `experimental` (real but its surface may still change; its README says `@experimental`) or `incomplete` (a headline backend is not implemented). `lyric publish` refuses an `incomplete` package (`F0052`), and `scripts/ci/check-library-stability.sh` fails CI when a library's README `**Stability:**` line and its manifest disagree. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. These backends are scheduled for removal from the public APIs, and SDK-bound backends will move to separate packages (D552, docs/71). At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
+This matrix summarises which backends are real on which target; each library's README is the detailed source, and the two must agree. The Stability column is the library's `[package] stability` manifest field: `stable` (the backends the library ships are real), `experimental` (real but its surface may still change; its README says `@experimental`) or `incomplete` (a headline backend is not implemented). `lyric publish` refuses an `incomplete` package (`F0052`), and `scripts/ci/check-library-stability.sh` fails CI when a library's README `**Stability:**` line and its manifest disagree. A backend marked `NOT_IMPLEMENTED` returns an explicit error; it is not a silent no-op. SDK-bound backends are separate packages in `nichobbs/lyric-ecosystem`, listed under [Backends in lyric-ecosystem](#backends-in-lyric-ecosystem) (D552, D561, docs/71). At v1.0 the graphics and UI libraries are experimental and the native and wasm32 targets are outside the SemVer guarantee (D548), and a library's `requires:` and `ensures:` clauses are not enforced across the package boundary for its consumers (D549).
 
 | Library | Stability | .NET | JVM | Status |
 |---|---|---|---|---|
 | lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | incomplete | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
-| lyric-mq | incomplete | in-process broker (pure Lyric) | in-process broker (pure Lyric) | D056, D552 |
+| lyric-mq | incomplete | in-process broker (pure Lyric); ActiveMQ in `Lyric.Mq.ActiveMq` | in-process broker (pure Lyric); ActiveMQ in `Lyric.Mq.ActiveMq` | D056, D552 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
-| lyric-storage | incomplete | local filesystem (the only backend) | local filesystem (the only backend) | D056, D552 |
+| lyric-storage | incomplete | local filesystem (the only in-tree backend); S3 in `Lyric.Storage.S3` | local filesystem (the only in-tree backend); S3 in `Lyric.Storage.S3` | D056, D552 |
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
-| lyric-jobs | incomplete | `InProcessJobScheduler` real; Hangfire and Quartz.NET removed from the API (D552) | `InProcessJobScheduler` real, suite in CI; Quartz binding removed (D552) | D-progress-633, D552 |
+| lyric-jobs | incomplete | `InProcessJobScheduler` real; Hangfire and Quartz.NET removed from the API (D552) | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
 | lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |

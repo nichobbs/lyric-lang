@@ -53,6 +53,12 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   per backend, each running the published conformance suite; version
   compatibility via the registry (docs/39). Starts only after phase 1 and the
   registry flow are verified.
+  _Progress:_ `nichobbs/lyric-ecosystem` has its workspace, CI and first six
+  packages: `Lyric.Storage.S3`, `Lyric.Jobs.Quartz`, `Lyric.Redis`,
+  `Lyric.Cache.Redis`, `Lyric.Session.Redis`, `Lyric.Mq.ActiveMq` (see
+  docs/progress/2026-11-12-ecosystem-first-backends.md). It builds against a
+  pinned `lyric-lang` commit through `[workspace.overrides]` until the registry
+  flow carries the conformance suites.
 
 ## 4. Open questions
 
