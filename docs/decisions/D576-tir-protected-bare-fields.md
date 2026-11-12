@@ -20,6 +20,6 @@ reported as "a name that is not a local", and a protected type's type entry had 
 
 ## Measured
 
-`tir_build_self_test.l` (133): a protected `entry` that assigns a field (`n = n + k`) and a `func` that reads
+`tir_build_self_test.l` (135): a protected `entry` that assigns a field (`n = n + k`) and a `func` that reads
 it both build and verify, and the existing protected construction test now counts its two members. The census
 effect is in the progress entry.

@@ -19,6 +19,9 @@ pub record FnBuildFailure {
   name: String
   sym: Option[SymbolId]
   messages: List[String]
+  /// The key of the symbol's DefPath (`pkg|segments`) when it has one: the name a consumer can
+  /// match against `PackageBuild.names` without the display `name`.
+  path: Option[String] = None
 }
 
 /// The outcome of building a file.  `pkg.funcs` holds one `TFnDecl` per built function,
@@ -128,7 +131,10 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
                 syms.add(fd.sym.id, ownFnEntry(fd))
               }
             }
-            case None -> failed.add(FnBuildFailure(name = decl.name, sym = symTableFuncSymOf(tbl, decl), messages = env.errors))
+            case None -> {
+              val fsym = symTableFuncSymOf(tbl, decl)
+              failed.add(FnBuildFailure(name = decl.name, sym = fsym, messages = env.errors, path = defPathKey(tbl, fsym)))
+            }
           }
           absorbEnv(env, syms, sums, sites)
         }
@@ -148,13 +154,14 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
         built = built + 1
         funcs.add(fd)
         memberFns.add(fd)
-        if site.isEntry {
+        if site.isEntry and not entryFns.containsKey(fd.sym.id) {
           entryFns.add(fd.sym.id, true)
         }
       }
-      case None -> failed.add(
-        FnBuildFailure(name = site.name, sym = memberSymOf(tbl, pkgName, site), messages = env.errors)
-      )
+      case None -> {
+        val msym = memberSymOf(tbl, pkgName, site)
+        failed.add(FnBuildFailure(name = site.name, sym = msym, messages = env.errors, path = defPathKey(tbl, msym)))
+      }
     }
     absorbEnv(env, syms, sums, sites)
   }
@@ -219,6 +226,13 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
     uncovered = sums,
     sites = sites
   )
+}
+
+func defPathKey(tbl: in SymbolTable, sym: in Option[SymbolId]): Option[String] {
+  match sym {
+    case Some(s) -> symTableDefPathKeyOf(tbl, s)
+    case None -> None
+  }
 }
 
 func noteName(tbl: in SymbolTable, names: in Map[Int, String], sym: in SymbolId): Unit {

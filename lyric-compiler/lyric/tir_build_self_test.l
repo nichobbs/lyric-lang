@@ -2079,3 +2079,19 @@ test "a protected member reads and assigns a field of its receiver by the bare n
   val ds = verifyPackage(pb.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a local that shadows a protected field's name is the local, not the field (D576)" {
+  val pb = packageOf(
+    "package App\nprotected type Holder {\n  var n: Int = 0\n  func label(): String {\n    val n = \"x\"\n    n\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "Holder.label")
+}
+
+test "a failed body names its symbol's DefPath key (D570)" {
+  val pb = packageOf(
+    "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) | B(n) -> n\n  }\n}\n"
+  )
+  assertEqualInt(pb.failed.count, 1, "the or-pattern body fails")
+  assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
+  assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
+}
