@@ -1869,6 +1869,7 @@ pub func compileProjectToNativeWithShape(
   val ownCallArities: List[Map[String, Int]] = newList()
   // Each own file's `calleeSitesOut` (docs/70 phase 2d), parallel to `ownFiles`.
   val ownCallees: List[Map[String, String]] = newList()
+  val ownTir: List[List[LlvmTir.TirUnitInput]] = newList()
   // Each own file's `memberRecvClassesOut` (#8413), parallel to `ownFiles`.
   val ownRecvClasses: List[Map[String, String]] = newList()
   val noDeriveImports: List[Item] = newList()
@@ -1894,6 +1895,7 @@ pub func compileProjectToNativeWithShape(
     val optsGenericItems: List[Item] = newList()
     val optsForeignRecords: List[ForeignValueRecord] = newList()
     val optsIface: List[IfaceBuild.IfaceOutcome] = newList()
+    val optsTirOut: List[TirBuild.PackageBuild] = newList()
     val ownLibrary = mei < packages.count and not isDependencyPackage(packages[mei])
     val opts = nativeMiddleEndOptions(
       nativePkgLabelAt(packages, mei),
@@ -1907,7 +1909,9 @@ pub func compileProjectToNativeWithShape(
       contractsEnabled,
       ownLibrary,
       optsIface,
-      optsCallees
+      optsCallees,
+      LlvmTir.viaTirRequested(),
+      optsTirOut
     )
     val siblingValueGenerics = siblingValueGenericFuncs(
       importedPkgs,
@@ -1931,6 +1935,13 @@ pub func compileProjectToNativeWithShape(
     }
     ownCallArities.add(optsCallArities)
     ownCallees.add(optsCallees)
+    val ownTirInputs: List[LlvmTir.TirUnitInput] = newList()
+    if optsTirOut.count > 0 {
+      ownTirInputs.add(
+        LlvmTir.TirUnitInput(pkg = optsTirOut[0].pkg, names = optsTirOut[0].names, census = LlvmTir.newTirCensus())
+      )
+    }
+    ownTir.add(ownTirInputs)
     ownRecvClasses.add(optsRecvOut)
     for fr in optsForeignRecords {
       foreignRecords.add(fr)
@@ -2129,9 +2140,20 @@ pub func compileProjectToNativeWithShape(
     moi = moi + 1
   }
   val noSites: Map[String, String] = newMap()
+  val noTir: List[LlvmTir.TirUnitInput] = newList()
   val units: List[CodegenUnit] = newList()
   if mainOwnIdx >= 0 {
-    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx], false, ownCallees[mainOwnIdx]))
+    units.add(
+      unitOf(
+        ownFiles[mainOwnIdx],
+        reachable,
+        true,
+        ownCallArities[mainOwnIdx],
+        false,
+        ownCallees[mainOwnIdx],
+        ownTir[mainOwnIdx]
+      )
+    )
   }
   var uoi = 0
   while uoi < ownFiles.count {
@@ -2143,7 +2165,8 @@ pub func compileProjectToNativeWithShape(
           not prunedPkg[uoi],
           ownCallArities[uoi],
           prunedPkg[uoi],
-          if prunedPkg[uoi] { noSites } else { ownCallees[uoi] }
+          if prunedPkg[uoi] { noSites } else { ownCallees[uoi] },
+          if prunedPkg[uoi] { noTir } else { ownTir[uoi] }
         )
       )
     }
@@ -3387,8 +3410,21 @@ func linkAndEmitNative(
   }
 
   val npkg = codegenNativeBundle(units, effTriple)
-  if units[0].tir.count > 0 {
-    for line in LlvmTir.tirCensusLines(units[0].tir[0].census) {
+  val tirTotal = LlvmTir.newTirCensus()
+  var anyTir = false
+  for tu in units {
+    for ti in tu.tir {
+      anyTir = true
+      for l in ti.census.lowered {
+        tirTotal.lowered.add(l)
+      }
+      for f in ti.census.fallbacks {
+        tirTotal.fallbacks.add(f)
+      }
+    }
+  }
+  if anyTir {
+    for line in LlvmTir.tirCensusLines(tirTotal) {
       Console.error(line)
     }
   }
