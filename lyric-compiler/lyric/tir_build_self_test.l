@@ -2007,6 +2007,15 @@ test "assigning to an inout self builds as an assignment to the receiver local" 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a loop invariant builds as an invariant statement of the loop body" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var i = 0\n  while i < n\n    invariant: i <= n\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
