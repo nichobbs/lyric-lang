@@ -18415,6 +18415,8 @@ record TirUnitMaps {
   cases: Map[Int, LlvmTir.TirCaseRef]
   enums: Map[Int, Bool]
   enumCases: Map[Int, Int]
+  /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
+  tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18536,6 +18538,47 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
   TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases, enums = enums, enumCases = enumCases)
 }
 
+/// Lower `d`; tuples are synthesised records, so a lowering that finds a tuple layout missing
+/// reports it, the layout is registered here and the lowering runs again.  Each retry adds at
+/// least one layout, and a nested tuple needs one per level.
+func lowerWithTuples(ctx: in Ctx, maps: in TirUnitMaps, d: in Tir.TFnDecl): Result[LlvmTir.TirLowered, LlvmTir.TirFallback] {
+  var attempt = 0
+  while true {
+    val env = LlvmTir.TirLowerEnv(
+      fnNames = maps.fnNames,
+      panicFile = ctx.mainPkg,
+      recs = maps.recs,
+      unions = maps.unions,
+      cases = maps.cases,
+      enums = maps.enums,
+      enumCases = maps.enumCases,
+      tuples = maps.tuples
+    )
+    match LlvmTir.lowerTirFunction(env, d) {
+      case Ok(l) -> return Ok(value = l)
+      case Err(f) -> {
+        if f.needTuples.count == 0 or attempt >= 8 {
+          return Err(error = f)
+        }
+        for n in f.needTuples {
+          val ri = tupleRecInfo(ctx, n.elemTys)
+          maps.tuples.add(
+            n.key,
+            LlvmTir.TirRecLayout(
+              ty = recPtrType(ri),
+              fieldTys = ri.fieldTys,
+              byValue = false,
+              dtor = if recHasRefFields(ri) { recDtorName(ri) } else { "" }
+            )
+          )
+        }
+        attempt = attempt + 1
+      }
+    }
+  }
+  panic("unreachable")
+}
+
 func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
   if u.tir.count == 0 {
     return ast
@@ -18568,7 +18611,7 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
-      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = maps.recs, unions = maps.unions, cases = maps.cases, enums = maps.enums, enumCases = maps.enumCases), d) {
+      match lowerWithTuples(ctx, maps, d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
           ast
