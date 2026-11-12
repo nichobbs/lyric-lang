@@ -1989,7 +1989,7 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
     if tyEq(p, argTys[i]) {
       score = score + 2
     } else {
-      match widenKind(argTys[i], p) {
+      match hostWidenKind(argTys[i], p) {
         case Some(_) -> {
           score = score + 1
         }
@@ -2120,7 +2120,10 @@ func buildExternCall(
   while i < built.count {
     val want = bestParams[i]
     params.add(TParamTy(mode = TMIn, ty = want))
-    val c = match coerceArg(env, built[i], want) { case Some(x) -> x; case None -> return None }
+    val c = match hostWidenKind(built[i].ty, want) {
+      case Some(k) -> if tyEq(built[i].ty, want) { built[i] } else { convertNode(env, built[i], want, k) }
+      case None -> match coerceArg(env, built[i], want) { case Some(x) -> x; case None -> return None }
+    }
     targsOut.add(TArgIn(value = c))
     i = i + 1
   }
