@@ -52,6 +52,16 @@ pub record BuildEnv {
   /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
   /// leading parameter.
   recvTy: List[Ty] = newList()
+  /// The generic type or `impl` the member being built belongs to (empty or one entry).
+  memberOwner: List[MemberOwner] = newList()
+}
+
+/// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
+/// key), the symbol that stands for it in a `TParam`, and its type parameters in order.
+pub record MemberOwner {
+  key: String
+  sym: SymbolId
+  names: List[String]
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -1306,12 +1316,41 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
+  // A member of a generic type or `impl` has the owner's parameters first and its own after, all
+  // indexed under the member's symbol.  The checker keys the owner's by the owner and the member's
+  // own by `Owner.fn`; both are bound to the member here.
+  var fnKey = fn.name
+  var allNames = names
+  if env.memberOwner.count > 0 {
+    val mo = env.memberOwner[0]
+    fnKey = mo.key + "." + fn.name
+    if mo.names.count > 0 {
+      match sym {
+        case Some(sy) -> {
+          tyConvBind(env.ctx, mo.key, sy, mo.names)
+          gctxPushOwned(gc, mo.names, mo.key)
+        }
+        case None -> {
+          noteUncovered(env, "a member of a generic type with no symbol")
+          env.errors.add("I0002: the builder has no symbol for the member: " + fn.name)
+          return None
+        }
+      }
+      allNames = newList()
+      for n in mo.names {
+        allNames.add(n)
+      }
+      for n in names {
+        allNames.add(n)
+      }
+    }
+  }
   match fn.generics {
     case Some(_) -> {
       match sym {
         case Some(sy) -> {
-          tyConvBind(env.ctx, fn.name, sy, names)
-          gctxPushOwned(gc, names, fn.name)
+          tyConvBind(env.ctx, fnKey, sy, allNames)
+          gctxPushOwned(gc, names, fnKey)
         }
         case None -> {
           noteUncovered(env, "a generic function with no symbol")
@@ -1421,7 +1460,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
     case Some(b) -> Some(
       value = FnCore(
         sym = sym,
-        typeNames = names,
+        typeNames = allNames,
         params = params,
         ret = ret,
         pre = pre,
@@ -1456,6 +1495,7 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
         tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
       }
       val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
+      val ownerCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
       Some(
         value = TFnDecl(
           sym = sym,
@@ -1467,7 +1507,8 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           postconds = c.post,
           body = Some(value = c.body),
           span = fn.span,
-          barrier = c.barrier
+          barrier = c.barrier,
+          ownerParamCount = ownerCount
         )
       )
     }

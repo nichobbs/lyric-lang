@@ -1212,7 +1212,7 @@ func combinedOwners(ownerKey: in String, ownerCount: in Int, own: in List[String
 
 // The binder of an impl block's type parameters: a block has no name of its
 // own, so it is keyed by where the block starts.
-func implOwnerKey(decl: in ImplDecl): String {
+pub func implOwnerKey(decl: in ImplDecl): String {
   "impl@" + toString(decl.span.startPos.fileId) + ":" + toString(decl.span.startPos.offset)
 }
 
