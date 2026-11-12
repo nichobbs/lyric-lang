@@ -1887,6 +1887,15 @@ test "a default argument that is a call is placed afresh at every call of one bo
   )
 }
 
+test "a branch that leaves through a nested if, a match or a break fits the type of the whole" {
+  val c = censusOf(
+    "package App\nfunc f(c: Bool, d: Bool): Int {\n  val x: Int = if c { 1 } else { if d { return 2 } else { return 3 } }\n  x\n}\nfunc g(c: Bool): Int {\n  var n = 0\n  while n < 3 {\n    val y: Int = if c { 1 } else { break }\n    n = n + y\n  }\n  n\n}\nfunc h(c: Bool): Int {\n  val z: Int = match c {\n    case true -> 1\n    case false -> { return 4 }\n  }\n  z\n}\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
