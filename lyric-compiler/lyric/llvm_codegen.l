@@ -18440,6 +18440,28 @@ func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn
       }
     }
   }
+  // The by-value records, by the symbol the TIR names them with (a type's DefPath key is
+  // `Pkg::Name`): the code generator keeps the layout and the lowering only reads it.
+  val recs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match Str.indexOf(key, "::") {
+        case None -> ()
+        case Some(sep) -> {
+          val rest = Str.substring(key, sep + 2)
+          if not Str.contains(rest, "::") and not Str.contains(rest, "(") {
+            match mapGet(ctx.recordDefs, Str.substring(key, 0, sep) + "." + rest) {
+              case Some(ri) -> if ri.byValue and ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 {
+                recs.add(id, LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys))
+              }
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
+  }
   match decl {
     case None -> {
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
@@ -18450,7 +18472,7 @@ func tirOrAst(ctx: in Ctx, sigs: in Map[String, NFuncSig], u: in CodegenUnit, fn
       if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
-      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg), d) {
+      match LlvmTir.lowerTirFunction(LlvmTir.TirLowerEnv(fnNames = fnNames, panicFile = ctx.mainPkg, recs = recs), d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
           ast
