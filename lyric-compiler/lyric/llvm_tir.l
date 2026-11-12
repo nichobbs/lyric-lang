@@ -165,8 +165,13 @@ pub record TirLowerEnv {
 /// the type of each field in declaration order (`NVoid` for a Unit field, whose
 /// placeholder byte the struct holds but nothing reads).
 pub record TirRecLayout {
+  /// The LLVM struct for a by-value record; the pointer to the struct (header, then the
+  /// fields) for a heap record.
   ty: NType
   fieldTys: List[NType]
+  byValue: Bool = true
+  /// A heap record's destructor symbol, or "" when it has no reference field.
+  dtor: String = ""
 }
 
 /// Why a function stayed on the AST path.
@@ -265,9 +270,31 @@ func isStringN(t: in NType): Bool {
   }
 }
 
-/// The types whose values are reference counted.
+/// The types whose values are reference counted: strings and heap records (a pointer to a
+/// struct that starts with the ARC header).
 func isRefN(t: in NType): Bool {
-  isStringN(t)
+  match t {
+    case NPtr(pointee) -> match pointee { case NStruct(_, fields) -> startsWithArcHeader(fields); case _ -> false }
+    case _ -> false
+  }
+}
+
+func startsWithArcHeader(fields: in List[NType]): Bool {
+  if fields.count < 3 {
+    return false
+  }
+  match fields[0] {
+    case NI32 -> ()
+    case _ -> return false
+  }
+  match fields[1] {
+    case NI32 -> ()
+    case _ -> return false
+  }
+  match fields[2] {
+    case NPtr(p) -> match p { case NI8 -> true; case _ -> false }
+    case _ -> false
+  }
 }
 
 func i8ptr(): NType {
@@ -735,13 +762,13 @@ func isStructN(t: in NType): Bool {
   }
 }
 
-/// The by-value layout of the record `sym`; a record the code generator did not register
-/// by value (a heap record, a union case, a generic) stays on the AST path.
+/// The layout of the record `sym`; a symbol the code generator did not register (a union case,
+/// a generic, a protected type) stays on the AST path.
 func recLayout(c: in LCtx, sym: in SymbolId): Option[TirRecLayout] {
   match mapGet(c.env.recs, sym.id) {
     case Some(r) -> Some(value = r)
     case None -> {
-      c.problems.add("a record or union case (symbol #" + toString(sym.id) + ") that is not a by-value record")
+      c.problems.add("a record or union case (symbol #" + toString(sym.id) + ") that is not a registered record")
       None
     }
   }
@@ -760,8 +787,100 @@ func insertField(c: in LCtx, lay: in TirRecLayout, agg: in NValue, i: in Int, v:
   }
 }
 
-/// A by-value record: an `insertvalue` chain from `undef`, no allocation and no ARC.
-/// The fields are evaluated in declaration order.
+/// Whether `v` has the type the layout gave field `i`; a mismatch means the layout and the
+/// TIR disagree, and storing it would be invalid IR.
+func fieldTypeOk(c: in LCtx, lay: in TirRecLayout, i: in Int, v: in Val): Bool {
+  match lay.fieldTys[i] {
+    case NVoid -> true
+    case ft -> if nTypeToIrString(ft) == nTypeToIrString(v.ty) {
+      true
+    } else {
+      c.problems.add(
+        "field " + toString(i) + " has type " + nTypeToIrString(v.ty) + " where the layout has " + nTypeToIrString(ft)
+      )
+      false
+    }
+  }
+}
+
+/// The struct a heap record's pointer points to.
+func heapStruct(lay: in TirRecLayout): NType {
+  match lay.ty {
+    case NPtr(p) -> p
+    case t -> t
+  }
+}
+
+/// A pointer to field `i` of a heap record: the fields follow the three header slots.
+func fieldPtr(c: in LCtx, lay: in TirRecLayout, obj: in NValue, i: in Int): NValue {
+  val d = tmp(c)
+  val idx: List[NArg] = newList()
+  idx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  idx.add(NArg(ty = NI32, value = NLitInt(v = (3 + i).toLong(), ty = NI32)))
+  c.insns.add(NGEP(dest = d, ty = heapStruct(lay), ptr = obj, indices = idx))
+  NLocal(name = d)
+}
+
+/// Allocate a heap record: count 1, the destructor (when it has reference fields) and the
+/// weak count the runtime seeds.
+func allocHeap(c: in LCtx, lay: in TirRecLayout): NValue {
+  val st = heapStruct(lay)
+  val size = tmp(c)
+  c.insns.add(NSizeOf(dest = size, ty = st))
+  val raw = callRt(c, "lyric_alloc", i8ptr(), arg1(NI64, NLocal(name = size)))
+  val o = tmp(c)
+  c.insns.add(NBitcast(dest = o, fromTy = i8ptr(), value = raw, toTy = lay.ty))
+  val obj = NLocal(name = o)
+  val rcIdx: List[NArg] = newList()
+  rcIdx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  rcIdx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  val rc = tmp(c)
+  c.insns.add(NGEP(dest = rc, ty = st, ptr = obj, indices = rcIdx))
+  c.insns.add(NStore(ty = NI32, value = NLitInt(v = 1i64, ty = NI32), ptr = NLocal(name = rc)))
+  val dtIdx: List[NArg] = newList()
+  dtIdx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  dtIdx.add(NArg(ty = NI32, value = NLitInt(v = 2i64, ty = NI32)))
+  val dt = tmp(c)
+  c.insns.add(NGEP(dest = dt, ty = st, ptr = obj, indices = dtIdx))
+  if lay.dtor.length == 0 {
+    c.insns.add(NStore(ty = i8ptr(), value = NLitNull(ty = i8ptr()), ptr = NLocal(name = dt)))
+  } else {
+    val params: List[NType] = newList()
+    params.add(i8ptr())
+    val cast = tmp(c)
+    c.insns.add(
+      NBitcast(
+        dest = cast,
+        fromTy = NFnPtr(params = params, ret = NVoid),
+        value = NGlobal(name = lay.dtor),
+        toTy = i8ptr()
+      )
+    )
+    c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = cast), ptr = NLocal(name = dt)))
+  }
+  callRtVoid(c, "lyric_weak_init", arg1(i8ptr(), raw))
+  obj
+}
+
+/// Store `v` into field `i` of a heap record: the object owns its reference fields, so a
+/// reference is retained first (ARC rule 2).  `v` is a borrowed operand, so an owned temporary
+/// it came from is released when the statement ends.
+func storeHeapField(c: in LCtx, lay: in TirRecLayout, obj: in NValue, i: in Int, v: in Val): Unit {
+  match lay.fieldTys[i] {
+    case NVoid -> ()
+    case ft -> {
+      if isRefN(ft) {
+        retainRef(c, ft, v.value)
+      }
+      c.insns.add(NStore(ty = ft, value = v.value, ptr = fieldPtr(c, lay, obj, i)))
+    }
+  }
+}
+
+/// A record: a by-value record is an `insertvalue` chain from `undef` with no allocation and
+/// no ARC; a heap record is allocated after its fields are evaluated, so an early exit inside
+/// a field expression leaks nothing, and returned owned.  The fields are evaluated in
+/// declaration order.
 func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
   match recLayout(c, sym) {
     case None -> unitVal()
@@ -772,19 +891,38 @@ func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
           "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields"
         )
       }
-      var cur: NValue = NUndef(ty = lay.ty)
+      val vals: List[Val] = newList()
       var i = 0
       while i < fields.count {
         val v = borrow(c, lowerExpr(c, fields[i]))
-        cur = insertField(c, lay, cur, i, v)
+        if not fieldTypeOk(c, lay, i, v) {
+          return unitVal()
+        }
+        vals.add(v)
         i = i + 1
       }
-      Val(ty = lay.ty, value = cur)
+      if lay.byValue {
+        var cur: NValue = NUndef(ty = lay.ty)
+        var j = 0
+        while j < vals.count {
+          cur = insertField(c, lay, cur, j, vals[j])
+          j = j + 1
+        }
+        return Val(ty = lay.ty, value = cur)
+      }
+      val obj = allocHeap(c, lay)
+      var j = 0
+      while j < vals.count {
+        storeHeapField(c, lay, obj, j, vals[j])
+        j = j + 1
+      }
+      Val(ty = lay.ty, value = obj, owned = true)
     }
   }
 }
 
-/// A field read: `extractvalue` out of the aggregate.  A Unit field reads as Unit.
+/// A field read: `extractvalue` out of a by-value record, a load through the field pointer
+/// of a heap one (the result is borrowed from the object).  A Unit field reads as Unit.
 func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
   match recLayout(c, field.owner) {
     case None -> unitVal()
@@ -797,7 +935,11 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
         case NVoid -> unitVal()
         case ft -> {
           val d = tmp(c)
-          c.insns.add(NExtractValue(dest = d, aggTy = lay.ty, agg = r.value, index = field.index))
+          if lay.byValue {
+            c.insns.add(NExtractValue(dest = d, aggTy = lay.ty, agg = r.value, index = field.index))
+          } else {
+            c.insns.add(NLoad(dest = d, ty = ft, ptr = fieldPtr(c, lay, r.value, field.index)))
+          }
           Val(ty = ft, value = NLocal(name = d))
         }
       }
@@ -805,22 +947,64 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
   }
 }
 
-/// `r.copy(f = v, ...)`: the base is evaluated once, then each update is inserted in
-/// source order.
+/// `r.copy(f = v, ...)`: the base is evaluated once, then the updates in source order.  A
+/// by-value record inserts them into the base; a heap record is a new object whose other
+/// fields are the base's, each reference retained.
 func lowerCopy(c: in LCtx, e: in TExpr, base: in TExpr, updates: in List[TFieldUpdate]): Val {
   val owner = match e.ty { case TNamed(sym, _) -> sym; case _ -> return unsupported(c, "a copy of " + renderTy(e.ty)) }
   match recLayout(c, owner) {
     case None -> unitVal()
     case Some(lay) -> {
-      var cur = borrow(c, lowerExpr(c, base)).value
+      val b = borrow(c, lowerExpr(c, base))
+      val upd: Map[Int, Val] = newMap()
       for u in updates {
         val v = borrow(c, lowerExpr(c, u.value))
         if u.field.index < 0 or u.field.index >= lay.fieldTys.count {
           return unsupported(c, "field " + u.field.name + " outside its record's layout")
         }
-        cur = insertField(c, lay, cur, u.field.index, v)
+        if not fieldTypeOk(c, lay, u.field.index, v) {
+          return unitVal()
+        }
+        if upd.containsKey(u.field.index) {
+          upd.remove(u.field.index)
+        }
+        upd.add(u.field.index, v)
       }
-      Val(ty = lay.ty, value = cur)
+      if lay.byValue {
+        var cur = b.value
+        for u in updates {
+          match mapGet(upd, u.field.index) {
+            case Some(v) -> {
+              cur = insertField(c, lay, cur, u.field.index, v)
+            }
+            case None -> ()
+          }
+        }
+        return Val(ty = lay.ty, value = cur)
+      }
+      val vals: List[Val] = newList()
+      var i = 0
+      while i < lay.fieldTys.count {
+        match mapGet(upd, i) {
+          case Some(v) -> vals.add(v)
+          case None -> match lay.fieldTys[i] {
+            case NVoid -> vals.add(unitVal())
+            case ft -> {
+              val d = tmp(c)
+              c.insns.add(NLoad(dest = d, ty = ft, ptr = fieldPtr(c, lay, b.value, i)))
+              vals.add(Val(ty = ft, value = NLocal(name = d)))
+            }
+          }
+        }
+        i = i + 1
+      }
+      val obj = allocHeap(c, lay)
+      var j = 0
+      while j < vals.count {
+        storeHeapField(c, lay, obj, j, vals[j])
+        j = j + 1
+      }
+      Val(ty = lay.ty, value = obj, owned = true)
     }
   }
 }
@@ -951,7 +1135,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           return lowerStringBinary(c, op, a, b)
         }
         match tyToN(c.env.recs, ins[0].ty) {
-          case Some(nt) -> if isStructN(nt) {
+          case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else {
             lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
@@ -961,7 +1145,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       } else if ins.count == 1 {
         val a = borrow(c, lowerExpr(c, ins[0]))
         match tyToN(c.env.recs, ins[0].ty) {
-          case Some(nt) -> if isStructN(nt) {
+          case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else {
             lowerUnary(c, op, ins[0].ty, nt, a.value)
@@ -1285,9 +1469,11 @@ func assignRef(c: in LCtx, slot: in Slot, op: in AssignKind, value: in TExpr): V
   val rhs = lowerExpr(c, value)
   val nv = match op {
     case AkSet -> own(c, rhs)
-    case AkAdd -> {
+    case AkAdd -> if isStringN(slot.ty) {
       val r = borrow(c, rhs)
       lowerStringBinary(c, IoAdd, Val(ty = slot.ty, value = NLocal(name = prev)), r)
+    } else {
+      unsupported(c, "a compound assignment on a reference")
     }
     case _ -> unsupported(c, "a compound assignment on a reference")
   }

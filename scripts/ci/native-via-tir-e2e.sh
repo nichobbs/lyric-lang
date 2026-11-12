@@ -77,4 +77,24 @@ grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/r_census.txt
   echo "::error::expected every function of records.l to be lowered from TIR"
   exit 1
 }
+
+# Heap records (docs/70 phase 4a): allocation with a destructor, owned reference fields and `.copy`
+# as a new object, lowered from TIR, then the same IR under AddressSanitizer.
+hsrc=scripts/ci/native-via-tir/heaprecords.l
+"$lyric_bin" build --target native "$hsrc" -o "$work/h_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$hsrc" -o "$work/h_tir" 2> "$work/h_census.txt" >/dev/null
+cat "$work/h_census.txt"
+"$work/h_ast" > "$work/h_ast.out"
+"$work/h_tir" > "$work/h_tir.out"
+diff -u "$work/h_ast.out" "$work/h_tir.out"
+printf 'hi ann\n31\nann\n30\nann/core\nann/ops\nann/core\n' | diff -u - "$work/h_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/h_census.txt" || {
+  echo "::error::expected every function of heaprecords.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/h_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/h_asan"
+"$work/h_asan" > "$work/h_asan.out"
+diff -u "$work/h_tir.out" "$work/h_asan.out"
+echo "heap records under AddressSanitizer: clean"
+
 echo "native-via-tir-e2e: ok"
