@@ -33,7 +33,7 @@ done)"
 t_first="$(echo "$stamps" | awk '/first/ {print $1}')"
 t_second="$(echo "$stamps" | awk '/second/ {print $1}')"
 if [ -z "$t_first" ] || [ -z "$t_second" ] || [ $((t_second - t_first)) -lt 1000 ]; then
-  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second); server wrote: $(grep DOTNET-H2-SMOKE-STREAM "$server_log" | tail -1)"
+  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second); server wrote: $(grep "DOTNET-H2-SMOKE-STREAM first=" "$server_log" | tail -1)"
   exit 1
 fi
 
