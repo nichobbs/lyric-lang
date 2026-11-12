@@ -1,4 +1,4 @@
-# D581 - A method call whose signature lists no generics takes the owner's arguments from the receiver (docs/70 phase 3a, #9016)
+# D582 - A method call whose signature lists no generics takes the owner's arguments from the receiver (docs/70 phase 3a, #9016)
 
 **Status:** shipped; corrects D580.
 

@@ -47,6 +47,7 @@ pub func instantiateMethod(
     // arguments are the caller's own parameters; they are the receiver's type arguments.
     val none: List[Ty] = newList()
     val recvArgs = receiverTypeArgs(site.recvTy)
+    // An interface call carries no type arguments (D580), and a receiver without any is not generic.
     if recvArgs.count == 0 or isSome(site.iface) {
       return Some(value = MethodInst(sig = sig, tyArgs = none))
     }
