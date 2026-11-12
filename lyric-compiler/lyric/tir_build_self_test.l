@@ -2034,7 +2034,7 @@ func assertBuildsAndVerifies(pb: in PackageBuild, total: in Int, what: in String
   assertEqualInt(ds.count, 0, what + ": " + if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "a method of a generic record builds with the owner's parameter as its receiver's argument (D578)" {
+test "a method of a generic record builds with the owner's parameter as its receiver's argument (D579)" {
   val pb = packageOf("package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.get")
   val f = pb.pkg.funcs[0]
@@ -2043,7 +2043,7 @@ test "a method of a generic record builds with the owner's parameter as its rece
   assertTrue(f.ownerSym.isSome(), "the owner is recorded")
 }
 
-test "a generic record's method may declare parameters of its own beside the owner's (D578)" {
+test "a generic record's method may declare parameters of its own beside the owner's (D579)" {
   val pb = packageOf(
     "package App\nrecord Box[T] {\n  v: T\n  func pair[U](self: in Box[T], u: in U): (T, U) { (self.v, u) }\n}\n"
   )
@@ -2052,14 +2052,14 @@ test "a generic record's method may declare parameters of its own beside the own
   assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 1, "the owner's T")
 }
 
-test "a member of a generic protected type reads and writes a field typed by the owner's parameter (D578)" {
+test "a member of a generic protected type reads and writes a field typed by the owner's parameter (D579)" {
   val pb = packageOf(
     "package App\nprotected type Cell[T] {\n  var v: T\n  entry put(x: in T): Unit {\n    v = x\n  }\n  func get(): T {\n    v\n  }\n}\n"
   )
   assertBuildsAndVerifies(pb, 2, "Cell")
 }
 
-test "a member of a generic impl builds with the impl's parameter in scope (D578)" {
+test "a member of a generic impl builds with the impl's parameter in scope (D579)" {
   val pb = packageOf(
     "package App\ninterface Has[T] {\n  func first(self: in Self): T\n}\nrecord Wrap[T] {\n  v: T\n}\nimpl[T] Has[T] for Wrap[T] {\n  func first(self: in Wrap[T]): T { self.v }\n}\n"
   )
@@ -2096,7 +2096,7 @@ test "a failed body names its symbol's DefPath key (D570)" {
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
 }
 
-test "a generic method of a non-generic record binds its parameter under Owner.fn (D578)" {
+test "a generic method of a non-generic record binds its parameter under Owner.fn (D579)" {
   val pb = packageOf(
     "package App\nrecord Tag {\n  n: Int\n  func pick[U](self: in Tag, u: in U): U { u }\n}\n"
   )

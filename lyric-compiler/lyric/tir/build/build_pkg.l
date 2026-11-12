@@ -154,6 +154,8 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
         built = built + 1
         funcs.add(fd)
         memberFns.add(fd)
+        // Two sites can share a symbol (a stub impl shares its member's span), and a map add of a
+        // key already present would fail.
         if site.isEntry and not entryFns.containsKey(fd.sym.id) {
           entryFns.add(fd.sym.id, true)
         }

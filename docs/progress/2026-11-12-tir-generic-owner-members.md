@@ -1,4 +1,4 @@
-# TIR builder: members of generic records, protected types and impls (D578, #8613)
+# TIR builder: members of generic records, protected types and impls (D579, #8613)
 
 Docs/70 phase 3a: `PackageBuild.failed` listed every member of a generic owner as "a method of a generic
 type" (159 bodies in the linked self-test census). They now build as `TFnDecl`s with the owner's parameters in

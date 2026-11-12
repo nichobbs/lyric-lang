@@ -1,4 +1,4 @@
-# D578 - Members of generic records, protected types and impls are TFnDecls over the owner's parameters (docs/70 phase 3a, #8613)
+# D579 - Members of generic records, protected types and impls are TFnDecls over the owner's parameters (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D573 and D576.
 
@@ -26,7 +26,8 @@ bare-field resolution of D576, which refused a generic owner.
 - `protectedFieldsOf` no longer skips a generic protected type, and `typeEntries` binds the type's parameters
   while converting its field types and records the parameter count on its type entry.
 - Calls of a method of a generic type must instantiate the owner's parameters from the receiver's type
-  arguments; `TSig.typeParamCount` is the member's own count. That is the call builder's side, not changed here.
+  arguments; `TSig.typeParamCount` is the member's own count. That is the call builder's side, not changed here;
+  tracked in #9016.
 
 - Small carry-overs from earlier reviews ride along, all on the declaration side: `FnBuildFailure.path` carries the
   DefPath key of a failed body's symbol (D570 left only the display name); `buildPackage` guards the `entryFns`

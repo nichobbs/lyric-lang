@@ -2,7 +2,7 @@
 //! record, the members of an `impl` block, the `func`s and entries of a protected type.  Each is a
 //! `TFnDecl` whose first parameter is the receiver `self`, passed `in` (declared, or added by the builder when the source leaves it implicit); an entry carries its
 //! `when:` clause as `barrier` (D553).  A member of a generic type or `impl` is built with its
-//! owner's type parameters in scope, as `TParam(owner, i)` with the owner's symbol (D578).
+//! owner's type parameters in scope, as `TParam(owner, i)` with the owner's symbol (D579).
 package Lyric.Tir.Build
 
 import Std.Core
