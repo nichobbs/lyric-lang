@@ -40,6 +40,7 @@ pub func buildPublishNuspec(
   dependenciesMetadata: in String,
   absDllPath: in String,
   dllBase: in String,
+  targetTags: in String,
 ): String {
   var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
   nuspec = nuspec + "<package>\n"
@@ -51,7 +52,7 @@ pub func buildPublishNuspec(
       description,
       license,
       repository,
-      "lyric-package",
+      if Str.isEmpty(targetTags) { "lyric-package" } else { "lyric-package " + targetTags },
       dependenciesMetadata
     )
   nuspec = nuspec + "  <files>\n"
@@ -756,7 +757,8 @@ func cmdPublish(argv: in slice[String]): Int {
     pkg.repository,
     nuspecDeps,
     absDllPath,
-    dllBase
+    dllBase,
+    Mf.packageTargetTags(pkg)
   )
 
   packAndPush(manifest, mfDir, effectiveVersion, nuspec, outDir, registryUrl, apiKey, skipDuplicate)
@@ -1024,9 +1026,26 @@ func packAndPush(
 // ─────────────────────────────────────────────────────────────────────────────
 // §11a. Search command
 // ─────────────────────────────────────────────────────────────────────────────
+/// The tags of a NuGet search result, as a space-separated string: the text of
+/// the first `"tags":[...]` array in `entry`, quotes and commas removed.
+pub func searchResultTags(entry: in String): String {
+  val needle = "\"tags\":["
+  match Str.indexOf(entry, needle) {
+    case None -> ""
+    case Some(open) -> {
+      val start = open + needle.length
+      match Str.indexOfFrom(entry, "]", start) {
+        case None -> ""
+        case Some(close) -> Str.replace(Str.replace(Str.substring(entry, start, close - start), "\"", " "), ",", " ")
+      }
+    }
+  }
+}
+
 func cmdSearch(argv: in slice[String]): Int {
   val positional: List[String] = newList()
   var allMode = false
+  var targetFilter = ""
 
   var i = 1
   while i < argv.length {
@@ -1034,6 +1053,23 @@ func cmdSearch(argv: in slice[String]): Int {
     if arg == "--all" {
       allMode = true
       i += 1
+    } else if arg == "--target" {
+      if i + 1 >= argv.length {
+        printErr("search: --target needs a value (dotnet, jvm or native)")
+        return 1
+      }
+      targetFilter = argv[i + 1]
+      var knownTarget = false
+      for t in Mf.knownTargetNames().toArray() {
+        if t == targetFilter {
+          knownTarget = true
+        }
+      }
+      if not knownTarget {
+        printErr("search: --target must be one of dotnet, jvm, native, got '" + targetFilter + "'")
+        return 1
+      }
+      i += 2
     } else if rejectUnknownOption("search", arg) {
       return 1
     } else {
@@ -1061,7 +1097,8 @@ func cmdSearch(argv: in slice[String]): Int {
   val encodedQuery = percentEncodeQuery(query)
 
   // Query the NuGet.org search API, filtered by the lyric-package tag.
-  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + encodedQuery + "&packageType=lyric-package&take=20"
+  val searchUrl = "https://azuresearch-usnc.nuget.org/query?q=" + encodedQuery + "&packageType=lyric-package&take=" +
+    (if Str.isEmpty(targetFilter) { "20" } else { "100" })
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
   curlArgs.add(searchUrl)
@@ -1108,7 +1145,8 @@ func cmdSearch(argv: in slice[String]): Int {
               d
             }
           }
-          if versionVal != "" {
+          val supported = Str.isEmpty(targetFilter) or Mf.tagsSupportTarget(searchResultTags(rest), targetFilter)
+          if versionVal != "" and supported {
             results.add(idVal + "\t" + versionVal + "\t" + descVal)
           }
           pos = pos + rel + idNeedle.length + 1

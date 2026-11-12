@@ -170,7 +170,8 @@ test "buildPublishNuspec: emits a dependency as nuspec metadata, never a Package
     None,
     deps,
     "/abs/Lyric.OTel.dll",
-    "Lyric.OTel.dll"
+    "Lyric.OTel.dll",
+    ""
   )
   assertTrue(
     strContains(ns, "<dependency id=\"Lyric.Proto\" version=\"1.2.3\" />"),
@@ -193,7 +194,8 @@ test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/
     None,
     "",
     "/abs/Lyric.OTel.dll",
-    "Lyric.OTel.dll"
+    "Lyric.OTel.dll",
+    ""
   )
   assertTrue(strContains(ns, "<id>Lyric.OTel</id>"), "id present")
   assertTrue(strContains(ns, "<version>1.2.3</version>"), "version present")
@@ -214,7 +216,8 @@ test "buildPublishNuspec: description falls back to the id when empty (NuGet req
     None,
     "",
     "/abs/Lyric.Proto.dll",
-    "Lyric.Proto.dll"
+    "Lyric.Proto.dll",
+    ""
   )
   assertTrue(strContains(ns, "<description>Lyric.Proto</description>"), "empty description falls back to the id")
   assertFalse(strContains(ns, "<license"), "no license element when license is empty")
@@ -234,7 +237,8 @@ test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
     Some(value = "https://ex.com/?a=1&b=2"),
     "",
     "/abs/A&B.dll",
-    "A&B.dll"
+    "A&B.dll",
+    ""
   )
   assertTrue(strContains(ns, "<id>A&amp;B</id>"), "id ampersand escaped")
   assertTrue(strContains(ns, "<version>1.0-&lt;rc&gt;</version>"), "version angle brackets escaped")
@@ -264,7 +268,8 @@ test "buildPublishNuspec: emits manifest authors as a comma-separated escaped li
     None,
     "",
     "/abs/Lyric.OTel.dll",
-    "Lyric.OTel.dll"
+    "Lyric.OTel.dll",
+    ""
   )
   assertTrue(
     strContains(ns, "<authors>Alice Example, Bob &amp; Co</authors>"),
@@ -355,4 +360,27 @@ test "buildGeneratorNuspec: only lyric-plugin/, no lib/ and no dependencies" {
   assertTrue(not nuspec.contains("<dependencies>"), "no NuGet dependencies")
   assertTrue(nuspec.contains("<tags>lyric-package lyric-source-generator</tags>"), "tagged as a generator")
   assertTrue(nuspec.contains("<authors>Acme</authors>"), "shared metadata")
+}
+
+test "buildPublishNuspec: appends the target tags to lyric-package (#9031)" {
+  val ns = Cli.buildPublishNuspec(
+    "Lyric.Jobs.Quartz",
+    "0.1.0",
+    noAuthors(),
+    "Quartz",
+    "MIT",
+    None,
+    "",
+    "/abs/Q.dll",
+    "Q.dll",
+    "lyric-target-jvm"
+  )
+  assertTrue(strContains(ns, "<tags>lyric-package lyric-target-jvm</tags>"), "tags carry the target")
+}
+
+test "searchResultTags reads the tags array of a search entry (#9031)" {
+  val entry = "{\"id\":\"Q\",\"tags\":[\"lyric-package\",\"lyric-target-jvm\"],\"version\":\"1\"}"
+  assertTrue(strContains(Cli.searchResultTags(entry), "lyric-target-jvm"), "target tag present")
+  assertTrue(strContains(Cli.searchResultTags(entry), "lyric-package"), "package tag present")
+  assertEqual(Cli.searchResultTags("{\"id\":\"Q\"}"), "", "no tags array")
 }

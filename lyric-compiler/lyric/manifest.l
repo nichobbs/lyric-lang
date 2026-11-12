@@ -127,21 +127,103 @@ pub func packageSupportsTarget(pkg: in PackageSection, target: in String): Bool 
   }
 }
 
+/// `names` joined with ", ".
+pub func joinNames(names: in List[String]): String {
+  var joined = ""
+  var i = 0
+  while i < names.count {
+    if i > 0 {
+      joined = joined + ", "
+    }
+    joined = joined + names[i]
+    i += 1
+  }
+  joined
+}
+
 /// The declared targets as `"jvm, dotnet"`, or `"all"` when none are declared.
 pub func packageTargetsText(pkg: in PackageSection): String {
   match pkg.targets {
     case None -> "all"
+    case Some(ts) -> joinNames(ts)
+  }
+}
+
+/// The registry tag prefix publish writes for each supported target
+/// (`lyric-target-jvm`), so a package's targets are readable from its
+/// `.nuspec` and from search results without its DLL or manifest.
+pub func targetTagPrefix(): String {
+  "lyric-target-"
+}
+
+/// The space-separated nuspec tags `lyric publish` writes for `pkg`: one
+/// `lyric-target-<t>` per supported target.  A package that declares no
+/// `targets` is tagged with all of them, so a tag filter never hides it.
+pub func packageTargetTags(pkg: in PackageSection): String {
+  val known = knownTargetNames()
+  var tags = ""
+  var i = 0
+  while i < known.count {
+    if packageSupportsTarget(pkg, known[i]) {
+      if tags.length > 0 {
+        tags = tags + " "
+      }
+      tags = tags + targetTagPrefix() + known[i]
+    }
+    i += 1
+  }
+  tags
+}
+
+/// The targets named by the `lyric-target-<t>` entries of a tag string
+/// (space-separated, as in a nuspec `<tags>` element or a search result).
+/// `None` when it has none: a package published before `targets` existed,
+/// which is taken to support every target.
+pub func targetsFromTags(tags: in String): Option[List[String]] {
+  val found: List[String] = newList()
+  val parts = Str.split(tags, " ")
+  var i = 0
+  while i < parts.length {
+    val tag = Str.trim(parts[i])
+    if Str.startsWith(tag, targetTagPrefix()) {
+      found.add(Str.substring(tag, targetTagPrefix().length))
+    }
+    i += 1
+  }
+  if found.count == 0 {
+    None
+  } else {
+    Some(value = found)
+  }
+}
+
+/// Whether tags (see `targetsFromTags`) allow building for `target`.
+pub func tagsSupportTarget(tags: in String, target: in String): Bool {
+  match targetsFromTags(tags) {
+    case None -> true
     case Some(ts) -> {
-      var joined = ""
       var i = 0
       while i < ts.count {
-        if i > 0 {
-          joined = joined + ", "
+        if ts[i] == target {
+          return true
         }
-        joined = joined + ts[i]
         i += 1
       }
-      joined
+      false
+    }
+  }
+}
+
+/// The `<tags>` text of a `.nuspec` document, or "" when it has none.
+pub func nuspecTags(nuspec: in String): String {
+  match Str.indexOf(nuspec, "<tags>") {
+    case None -> ""
+    case Some(open) -> {
+      val start = open + "<tags>".length
+      match Str.indexOfFrom(nuspec, "</tags>", start) {
+        case None -> ""
+        case Some(close) -> Str.substring(nuspec, start, close - start)
+      }
     }
   }
 }

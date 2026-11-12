@@ -326,7 +326,7 @@ func usageText(): String {
     "  lyric remove  <name> [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
     "                (removes a dependency from [dependencies] (or [nuget]) and restores)\n" +
     "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
-    "  lyric search  <term>\n" +
+    "  lyric search  <term> [--target dotnet|jvm|native]\n" +
     "  lyric version [--manifest <lyric.toml>]\n" +
     "                (print the current package version)\n" +
     "  lyric version --set <semver> [--manifest <lyric.toml>]\n" +

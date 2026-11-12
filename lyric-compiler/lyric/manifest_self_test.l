@@ -66,6 +66,41 @@ test "[package] targets rejects malformed values with F0053 (#9030)" {
   assertTrue(isInvalidField(parseErr(head + "targets = 3\n"), "package", "targets"), "non-array")
 }
 
+test "publish tags every supported target; an undeclared field tags all three (#9031)" {
+  val head = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  assertEqual(
+    packageTargetTags(parseOk(head).packageSection),
+    "lyric-target-dotnet lyric-target-jvm lyric-target-native",
+    "undeclared"
+  )
+  assertEqual(
+    packageTargetTags(parseOk(head + "targets = [\"jvm\"]\n").packageSection),
+    "lyric-target-jvm",
+    "jvm only"
+  )
+}
+
+test "targetsFromTags and tagsSupportTarget read lyric-target tags (#9031)" {
+  val tags = "lyric-package lyric-target-jvm"
+  assertTrue(tagsSupportTarget(tags, "jvm"), "jvm listed")
+  assertFalse(tagsSupportTarget(tags, "dotnet"), "dotnet not listed")
+  match targetsFromTags(tags) {
+    case Some(ts) -> assertEqual(joinNames(ts), "jvm", "only the target tags")
+    case None -> assertTrue(false, "tags present")
+  }
+  assertTrue(tagsSupportTarget("lyric-package cache", "native"), "no target tags means every target")
+  match targetsFromTags("") {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "no tags")
+  }
+}
+
+test "nuspecTags extracts the tags element (#9031)" {
+  val nuspec = "<package><metadata><id>X</id><tags>lyric-package lyric-target-jvm</tags></metadata></package>"
+  assertEqual(nuspecTags(nuspec), "lyric-package lyric-target-jvm", "tags text")
+  assertEqual(nuspecTags("<package></package>"), "", "no tags element")
+}
+
 func parseOk(toml: in String): Manifest {
   match parseManifest(toml, "<test>") {
     case Ok(m) -> m
