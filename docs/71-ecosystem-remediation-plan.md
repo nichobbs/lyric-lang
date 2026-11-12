@@ -58,7 +58,11 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   `Lyric.Cache.Redis`, `Lyric.Session.Redis`, `Lyric.Mq.ActiveMq` (see
   docs/progress/2026-11-12-ecosystem-first-backends.md). It builds against a
   pinned `lyric-lang` commit through `[workspace.overrides]` until the registry
-  flow carries the conformance suites.
+  flow carries the conformance suites. Since then: TLS for the Redis, ActiveMQ and
+  RabbitMQ clients, and `Lyric.Storage.AzureBlob`, `Lyric.Storage.Gcs`,
+  `Lyric.Jobs.QuartzNet`, `Lyric.Mq.RabbitMq`, `Lyric.Mq.Sqs`,
+  `Lyric.Flags.Flipt` and `Lyric.Aws.SigV4`
+  (docs/progress/2026-11-13-ecosystem-tls-and-second-wave.md).
 
 ## 4. Open questions
 
