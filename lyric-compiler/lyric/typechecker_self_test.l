@@ -7211,7 +7211,11 @@ test "impl method: unknown name in body rejected with T0020 (#6487)" {
 test "record body method: self.field read+write well-typed stays clean (#6487 control)" {
   val src = "package P\nref record Box {\n  var n: Int\n  func setN(v: in Int): Unit {\n    self.n = v\n  }\n  func getN(): Int {\n    self.n\n  }\n}\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "record method body: well-typed self.n write+read has no diagnostics: " + diagCodesOf(cr))
+  assertEqualInt(
+    diagCount(cr),
+    0,
+    "record method body: well-typed self.n write+read has no diagnostics: " + diagCodesOf(cr)
+  )
 }
 
 test "record body method: self.field write-type mismatch rejected with T0063 (#6487)" {
@@ -9285,6 +9289,24 @@ test "a case of another union against a union scrutinee is T0129" {
 test "a case of the scrutinee's own union is not T0129" {
   val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0129"), "own cases: no T0129")
+}
+
+// #9024: a constructor pattern whose head is a record (`P(0, b)`) or an unknown name
+// bound its names untyped, and a later stage failed on them; it is T0129 now.
+test "a record named as a constructor pattern is T0129 with a record-pattern hint" {
+  val src = "package P\nrecord R { x: Int; y: Int }\nfunc f(r: in R): Int { match r { case R(0, b) -> b; case R(a, _) -> a } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0129"), "R(0, b) against R: T0129")
+}
+
+test "an unknown name as a constructor pattern against a union is T0129" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case Nope(k) -> k; case _ -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0129"), "Nope(k) against U: T0129")
+}
+
+test "a record pattern and a case of the scrutinee's union are not T0129" {
+  val src = "package P\nrecord R { x: Int; y: Int }\nunion U { case A(n: Int); case B }\nfunc f(r: in R): Int { match r { case R { x = 0, y } -> y; case R { x, y = _ } -> x } }\nfunc g(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0129"), "valid record and case patterns: no T0129")
 }
 
 // #7119: `reportMissingCtorFields` (#6739/#3156) was only wired into
