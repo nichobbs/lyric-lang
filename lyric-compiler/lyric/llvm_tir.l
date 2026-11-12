@@ -526,10 +526,7 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
     } else {
       None
     }
-    case TTuple(_) -> match tupleLayout(env, t) {
-      case Some(lay) -> Some(value = lay.ty)
-      case None -> None
-    }
+    case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
     case _ -> None
   }
 }

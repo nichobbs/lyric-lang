@@ -11,22 +11,19 @@ func pair(n: in Int): (Int, String) {
 }
 
 func swap(p: in (Int, Int)): (Int, Int) {
-  val (a, b) = p
+  val (a, b) = p;
   (b, a)
 }
 
 func describe(p: in (Int, String)): String {
   match p {
-    case (n, s) -> match n {
-      case 0 -> "zero:" + s
-      case 1 -> "one"
-      case _ -> s + "/" + toString(n)
-    }
+    case (n, s) -> match n { case 0 -> "zero:" + s; case 1 -> "one"; case _ -> s + "/" + toString(n) }
   }
 }
 
 func nested(): Int {
-  val ((a, b), c) = ((1, 2), 3)
+  val (ab, c) = ((1, 2), 3)
+  val (a, b) = ab
   a * 100 + b * 10 + c
 }
 

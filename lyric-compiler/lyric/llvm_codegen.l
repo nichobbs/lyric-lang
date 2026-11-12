@@ -18541,7 +18541,9 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
 /// Lower `d`; tuples are synthesised records, so a lowering that finds a tuple layout missing
 /// reports it, the layout is registered here and the lowering runs again.  Each retry adds at
 /// least one layout, and a nested tuple needs one per level.
-func lowerWithTuples(ctx: in Ctx, maps: in TirUnitMaps, d: in Tir.TFnDecl): Result[LlvmTir.TirLowered, LlvmTir.TirFallback] {
+func lowerWithTuples(
+  ctx: in Ctx, maps: in TirUnitMaps, d: in Tir.TFnDecl
+): Result[LlvmTir.TirLowered, LlvmTir.TirFallback] {
   var attempt = 0
   while true {
     val env = LlvmTir.TirLowerEnv(
