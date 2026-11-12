@@ -368,7 +368,7 @@ func main(): Unit {
 
 The libraries above define interfaces (`StorageBucket`, `JobScheduler`,
 `CacheStore`, `SessionStore`, `MessageQueue`) and ship one in-tree reference
-backend each. Backends that talk to an external service live in a separate
+backend each (`FlagStore` likewise). Backends that talk to an external service live in a separate
 repository, [`nichobbs/lyric-ecosystem`](https://github.com/nichobbs/lyric-ecosystem),
 one package per backend (D552, D561). Each backend implements the interface,
 re-exports it with `pub use`, and passes the interface's conformance suite
@@ -433,23 +433,46 @@ func run(): Result[Unit, String] {
 Backend-only features sit in a separate module of each package and are not
 part of the interface: `Jobs.Quartz.Triggers` (native Quartz cron, intervals,
 misfire policy), `Storage.S3.Extras` (byte-level put and get, storage class,
-presigned PUT), `Mq.ActiveMq.Extras` (topics, send options, selectors).
+presigned PUT), `Mq.ActiveMq.Extras` (topics, send options, selectors),
+`Mq.RabbitMq.Extras` (exchanges, bindings, queue arguments), `Mq.Sqs.Extras`
+(queue management, FIFO, redrive), `Flags.Flipt.Extras` (evaluation for an
+entity and context).
 
 | Package | Interface | Backend | .NET | JVM | Implementation |
 |---|---|---|---|---|---|
 | `Lyric.Storage.S3` | `Storage.StorageBucket` | Amazon S3 and S3-compatible stores | real | real | pure Lyric: AWS Signature V4 over `Std.Http`, no SDK |
+| `Lyric.Storage.AzureBlob` | `Storage.StorageBucket` | Azure Blob Storage | real | real | pure Lyric: Shared Key and service SAS over `Std.Http` |
+| `Lyric.Storage.Gcs` | `Storage.StorageBucket` | Google Cloud Storage | implemented, not yet verified with a real key | implemented, not yet verified with a real key | pure Lyric: XML API with HMAC keys (`GOOG4-HMAC-SHA256`) |
 | `Lyric.Jobs.Quartz` | `Jobs.JobScheduler` | Quartz 2.5 (RAM job store) | not supported (`F0054`) | real | Quartz through Maven and auto-FFI |
-| `Lyric.Redis` | none (client) | Redis 6 and later | real | real | pure Lyric: RESP2 and RESP3 over TCP |
+| `Lyric.Jobs.QuartzNet` | `Jobs.JobScheduler` | Quartz.NET 3 (RAM job store) | real | not supported (`F0054`) | Quartz.NET through NuGet and auto-FFI; same API as `Lyric.Jobs.Quartz` |
+| `Lyric.Redis` | none (client) | Redis 6 and later | real | real | pure Lyric: RESP2 and RESP3 over TCP or TLS |
 | `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | on `Lyric.Redis` |
 | `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | on `Lyric.Redis`; every read-modify-write is one script |
-| `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | pure Lyric: STOMP 1.2 over TCP |
+| `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | pure Lyric: STOMP 1.2 over TCP or TLS |
+| `Lyric.Mq.RabbitMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | RabbitMQ 3.12 and 4.0 | real | real | pure Lyric: AMQP 0-9-1 over TCP or TLS |
+| `Lyric.Mq.Sqs` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Amazon SQS | real against ElasticMQ; not yet run against AWS | real against ElasticMQ; not yet run against AWS | pure Lyric: AWS JSON 1.0 over `Std.Http`, SigV4 |
+| `Lyric.Flags.Flipt` | `Flags.FlagStore` | Flipt v1 | real | real | pure Lyric: Flipt REST over `Std.Http` |
+| `Lyric.Aws.SigV4` | none (shared signing) | AWS Signature V4 | real | real | pure Lyric; used by the S3, SQS and GCS packages |
 
-All six are `experimental` and versioned independently of the compiler. Their
-CI runs the conformance suites against a real Redis, ActiveMQ and MinIO on
-both targets. Until the interface packages they need are in a release, the
-repository builds against a pinned `lyric-lang` commit and resolves the
-interfaces through `[workspace.overrides]`; its README has the setup. Each
-package README lists configuration, pinned library versions and known gaps.
+The TCP clients (Redis, ActiveMQ, RabbitMQ) take `rediss://`, `stomp+ssl://`
+and `amqps://` URLs. They verify the server against the system trust store by
+default and accept a custom CA, a client certificate and a minimum TLS version,
+with the same two-key rule as `Std.Http` for skipping verification.
+
+Two things differ between backends of one interface and are worth reading in
+the package README before choosing: what `nack` without requeue does (ActiveMQ
+and RabbitMQ dead-letter or drop, SQS deletes), and whether order is kept (an
+SQS standard queue is unordered; the conformance suite runs on FIFO queues).
+A handler running under `Lyric.Jobs.QuartzNet` cannot be interrupted, so a
+timed-out or cancelled attempt is recorded when the handler returns.
+
+All of these are `experimental` and versioned independently of the compiler.
+Their CI runs the conformance suites against a real Redis, ActiveMQ, RabbitMQ,
+MinIO, Azurite, ElasticMQ and Flipt on both targets. Until the interface
+packages they need are in a release, the repository builds against a pinned
+`lyric-lang` commit and resolves the interfaces through
+`[workspace.overrides]`; its README has the setup. Each package README lists
+usage, configuration, surprises, pinned library versions and known gaps.
 
 ---
 
@@ -462,13 +485,13 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | incomplete | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
-| lyric-mq | incomplete | in-process broker (pure Lyric); ActiveMQ in `Lyric.Mq.ActiveMq` | in-process broker (pure Lyric); ActiveMQ in `Lyric.Mq.ActiveMq` | D056, D552 |
+| lyric-mq | incomplete | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | D056, D552 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
-| lyric-storage | incomplete | local filesystem (the only in-tree backend); S3 in `Lyric.Storage.S3` | local filesystem (the only in-tree backend); S3 in `Lyric.Storage.S3` | D056, D552 |
+| lyric-storage | incomplete | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | D056, D552 |
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
-| lyric-jobs | incomplete | `InProcessJobScheduler` real; Hangfire and Quartz.NET removed from the API (D552) | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
+| lyric-jobs | incomplete | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
 | lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
