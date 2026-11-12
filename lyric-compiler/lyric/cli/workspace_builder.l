@@ -1771,3 +1771,80 @@ pub func resolveWorkspaceImportDeps(
     depPackageFeatures = memberFeatures
   )
 }
+
+// ── Target support (`[package] targets`, issue #9030) ─────────────────────────
+/// The F0054 refusal: the package being built does not support `--target`.
+func unsupportedTargetMessage(pkg: in Mf.PackageSection, mfPath: in String, targetName: in String): String {
+  "error[F0054]: package '" + pkg.name + "' (" + mfPath + ") supports targets [" + Mf.packageTargetsText(pkg) +
+    "] and cannot be built for --target " +
+    targetName
+}
+
+/// The F0055 refusal: a (transitive) dependency does not support `--target`.
+/// `chain` is the path from the package being built down to the dependency.
+func unsupportedDependencyTargetMessage(dep: in Mf.PackageSection, chain: in String, targetName: in String): String {
+  "error[F0055]: dependency '" + dep.name + "' supports targets [" + Mf.packageTargetsText(dep) +
+    "] and cannot be linked into a --target " +
+    targetName +
+    " build (" +
+    chain +
+    ")"
+}
+
+func targetErrorInDeps(
+  mf: in Mf.Manifest,
+  mfDir: in String,
+  wsCtxOpt: in Option[Ws.WorkspaceContext],
+  targetName: in String,
+  chain: in String,
+  seen: in List[String],
+): Option[String] {
+  var i = 0
+  while i < mf.deps.count {
+    val dep = mf.deps[i]
+    i += 1
+    if stringListContains(seen, dep.name) {
+      continue
+    }
+    seen.add(dep.name)
+    match localDepDir(dep, mfDir, wsCtxOpt) {
+      case None -> ()
+      case Some(depDir) -> {
+        val tomlPath = Path.join(depDir, "lyric.toml")
+        if File.fileExists(tomlPath) {
+          match File.readText(tomlPath) {
+            case Err(_) -> ()
+            case Ok(text) -> match Mf.parseManifest(text, tomlPath) {
+              case Err(_) -> ()
+              case Ok(depMf) -> {
+                val depChain = chain + " -> " + dep.name
+                if not Mf.packageSupportsTarget(depMf.packageSection, targetName) {
+                  return Some(value = unsupportedDependencyTargetMessage(depMf.packageSection, depChain, targetName))
+                }
+                match targetErrorInDeps(depMf, depDir, wsCtxOpt, targetName, depChain, seen) {
+                  case Some(msg) -> return Some(value = msg)
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  None
+}
+
+/// Checks `[package] targets` for a build, test or run of the manifest at
+/// `mfPath` for backend `targetName` ("dotnet", "jvm" or "native"): the package
+/// itself (F0054), then every path and workspace dependency, transitively
+/// (F0055).  Registry and git dependencies are not examined here: their
+/// manifests are not on disk until restored.
+pub func targetSupportError(mfPath: in String, manifest: in Mf.Manifest, targetName: in String): Option[String] {
+  if not Mf.packageSupportsTarget(manifest.packageSection, targetName) {
+    return Some(value = unsupportedTargetMessage(manifest.packageSection, mfPath, targetName))
+  }
+  val mfDir = Path.dirname(mfPath)
+  val seen: List[String] = newList()
+  targetErrorInDeps(manifest, mfDir, Ws.findWorkspaceRoot(mfDir), targetName, manifest.packageSection.name, seen)
+}

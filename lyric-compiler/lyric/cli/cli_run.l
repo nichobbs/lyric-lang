@@ -58,6 +58,13 @@ func runProjectOnceWithFeatures(
     }
     case Some(p) -> p
   }
+  match targetSupportError(mfPath, manifest, Emitter.compileTargetName(target)) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   val mfDir = Path.dirname(mfPath)
   val buildRc = buildProject(
     mfPath,

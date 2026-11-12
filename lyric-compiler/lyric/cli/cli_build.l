@@ -2884,6 +2884,13 @@ pub func buildProjectFromManifest(
       return 1
     }
   }
+  match targetSupportError(mfPath, manifest, Emitter.compileTargetName(target)) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
 
   // Auto-restore: when the manifest declares dependencies and lyric.lock is
   // missing or out of sync with the [dependencies] table, resolve them before
