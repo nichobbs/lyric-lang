@@ -3008,9 +3008,9 @@ func bundledTirOf(pkg: in String, f: in SourceFile, stdlib: in NativeStdlib): Li
     }
   }
   val pb = TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, pkg)
-  val out: List[LlvmTir.TirUnitInput] = newList()
-  out.add(LlvmTir.TirUnitInput(pkg = pb.pkg, names = pb.names, census = LlvmTir.newTirCensus()))
-  out
+  val tirList: List[LlvmTir.TirUnitInput] = newList()
+  tirList.add(LlvmTir.TirUnitInput(pkg = pb.pkg, names = pb.names, census = LlvmTir.newTirCensus()))
+  tirList
 }
 
 /// Each bundled/own file's OWN direct import package names, keyed by its
