@@ -2006,7 +2006,7 @@ pub func compileProjectToNativeWithShape(
             worklist.add("Std.String")
           }
           toBundle.add(stdFormatted)
-          if opts.wantTir {
+          if LlvmTir.viaTirRequested() {
             tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
           }
           var fi = 0
