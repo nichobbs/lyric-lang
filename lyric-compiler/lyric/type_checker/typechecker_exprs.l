@@ -779,6 +779,242 @@ func armCoversWholeCase(tbl: in SymbolTable, p: in Pattern): Bool {
   }
 }
 
+// The head of a pattern read for the exhaustiveness matrix: `tag` 0 matches every value, 1 is a
+// union or enum case `name` with sub-patterns `args`, 2 is the Bool literal `flag`, 3 is a tuple
+// of `args`, and 4 is a pattern the matrix does not read (it covers nothing, which is safe).
+record PatHead {
+  tag: Int
+  name: String
+  flag: Bool
+  args: List[Pattern]
+}
+
+func patHeadOf(tbl: in SymbolTable, p: in Pattern): PatHead {
+  val none: List[Pattern] = newList()
+  match p.kind {
+    case PParen(inner) -> patHeadOf(tbl, inner)
+    case PWildcard -> PatHead(tag = 0, name = "", flag = false, args = none)
+    case PBinding(name, inner) -> {
+      if name == "_" or tbl.patBindingNodes.containsKey(p.nodeId) {
+        match inner {
+          case Some(ip) -> patHeadOf(tbl, ip)
+          case None -> PatHead(tag = 0, name = "", flag = false, args = none)
+        }
+      } else {
+        PatHead(tag = 1, name = name, flag = false, args = none)
+      }
+    }
+    case PConstructor(head, args) -> {
+      if head.segments.count == 0 {
+        PatHead(tag = 4, name = "", flag = false, args = none)
+      } else {
+        PatHead(tag = 1, name = head.segments[head.segments.count - 1], flag = false, args = args)
+      }
+    }
+    case PLiteral(lit) -> match lit {
+      case LBool(b) -> PatHead(tag = 2, name = "", flag = b, args = none)
+      case _ -> PatHead(tag = 4, name = "", flag = false, args = none)
+    }
+    case PTuple(ps) -> PatHead(tag = 3, name = "", flag = false, args = ps)
+    case _ -> PatHead(tag = 4, name = "", flag = false, args = none)
+  }
+}
+
+func wildcardPatterns(n: in Int): List[Pattern] {
+  val ws: List[Pattern] = newList()
+  var i = 0
+  while i < n {
+    ws.add(Pattern(kind = PWildcard, span = syntheticSpan()))
+    i = i + 1
+  }
+  ws
+}
+
+// Each row of `rows` whose first pattern is an or-pattern, replaced by one row per alternative.
+func expandOrRows(rows: in List[List[Pattern]]): List[List[Pattern]] {
+  val acc: List[List[Pattern]] = newList()
+  for row in rows {
+    var first = row[0]
+    var peeling = true
+    while peeling {
+      match first.kind {
+        case PParen(inner) -> {
+          first = inner
+        }
+        case _ -> {
+          peeling = false
+        }
+      }
+    }
+    match first.kind {
+      case POr(alts) -> {
+        for alt in alts {
+          val r: List[Pattern] = newList()
+          r.add(alt)
+          var k = 1
+          while k < row.count {
+            r.add(row[k])
+            k = k + 1
+          }
+          val one: List[List[Pattern]] = newList()
+          one.add(r)
+          for x in expandOrRows(one) {
+            acc.add(x)
+          }
+        }
+      }
+      case _ -> acc.add(row)
+    }
+  }
+  acc
+}
+
+// The rows after the constructor `c` of arity `k` is matched: a row whose head is `c` contributes its
+// sub-patterns (padded with wildcards when it names fewer than the case has, as the backends read
+// it), a row with a wildcard head contributes `k` wildcards, and any other row is dropped.
+func specializeRows(
+  tbl: in SymbolTable,
+  rows: in List[List[Pattern]],
+  tag: in Int,
+  name: in String,
+  flag: in Bool,
+  k: in Int,
+): List[List[Pattern]] {
+  val acc: List[List[Pattern]] = newList()
+  for row in rows {
+    val h = patHeadOf(tbl, row[0])
+    val r: List[Pattern] = newList()
+    var keep = false
+    if h.tag == 0 {
+      for w in wildcardPatterns(k) {
+        r.add(w)
+      }
+      keep = true
+    } else if h.tag == tag and h.tag == 1 and h.name == name and h.args.count <= k {
+      for a in h.args {
+        r.add(a)
+      }
+      var pad = h.args.count
+      while pad < k {
+        r.add(Pattern(kind = PWildcard, span = syntheticSpan()))
+        pad = pad + 1
+      }
+      keep = true
+    } else if h.tag == tag and h.tag == 2 and h.flag == flag {
+      keep = true
+    } else if h.tag == tag and h.tag == 3 and h.args.count == k {
+      for a in h.args {
+        r.add(a)
+      }
+      keep = true
+    }
+    if keep {
+      var j = 1
+      while j < row.count {
+        r.add(row[j])
+        j = j + 1
+      }
+      acc.add(r)
+    }
+  }
+  acc
+}
+
+// Whether the rows of patterns (one pattern per column type in `tys`) cover every value of those
+// types.  Unguarded rows only; a pattern the matrix does not read covers nothing, so a `true`
+// answer is never wrong, and `fuel` bounds the recursion.
+func rowsCoverTypes(tbl: in SymbolTable, rows0: in List[List[Pattern]], tys: in List[Type], fuel: in Int): Bool {
+  if tys.count == 0 {
+    return rows0.count > 0
+  }
+  if rows0.count == 0 or fuel <= 0 {
+    return false
+  }
+  val rows = expandOrRows(rows0)
+  val colTy = unrefine(tys[0])
+  val rest: List[Type] = newList()
+  var ri = 1
+  while ri < tys.count {
+    rest.add(tys[ri])
+    ri = ri + 1
+  }
+  match finiteCaseNames(tbl, colTy) {
+    case Some(names) -> {
+      for name in names {
+        val sym = match scrutineeCaseNamed(tbl, colTy, name) { case Some(s) -> s; case None -> return false }
+        val scratch: List[Diagnostic] = newList()
+        val ftypes = caseFieldTypesInstantiated(tbl, scratch, sym, colTy)
+        val cols: List[Type] = newList()
+        for f in ftypes {
+          cols.add(f)
+        }
+        for r in rest {
+          cols.add(r)
+        }
+        if not rowsCoverTypes(tbl, specializeRows(tbl, rows, 1, name, false, ftypes.count), cols, fuel - 1) {
+          return false
+        }
+      }
+      return true
+    }
+    case None -> ()
+  }
+  match colTy {
+    case TyPrim(pt) -> match pt {
+      case PtBool -> {
+        if not rowsCoverTypes(tbl, specializeRows(tbl, rows, 2, "", true, 0), rest, fuel - 1) {
+          return false
+        }
+        return rowsCoverTypes(tbl, specializeRows(tbl, rows, 2, "", false, 0), rest, fuel - 1)
+      }
+      case _ -> ()
+    }
+    case TyTuple(es) -> {
+      val cols: List[Type] = newList()
+      for e in es {
+        cols.add(e)
+      }
+      for r in rest {
+        cols.add(r)
+      }
+      return rowsCoverTypes(tbl, specializeRows(tbl, rows, 3, "", false, es.count), cols, fuel - 1)
+    }
+    case _ -> ()
+  }
+  // A type with no finite constructor set: only a wildcard head covers it.
+  val dflt: List[List[Pattern]] = newList()
+  for row in rows {
+    if patHeadOf(tbl, row[0]).tag == 0 {
+      val r: List[Pattern] = newList()
+      var j = 1
+      while j < row.count {
+        r.add(row[j])
+        j = j + 1
+      }
+      dflt.add(r)
+    }
+  }
+  rowsCoverTypes(tbl, dflt, rest, fuel - 1)
+}
+
+// The arms (unguarded ones only) cover every value of `st`, nested case patterns included.
+func armsCoverByMatrix(tbl: in SymbolTable, st: in Type, arms: in List[MatchArm]): Bool {
+  val rows: List[List[Pattern]] = newList()
+  for arm in arms {
+    match arm.guard {
+      case None -> {
+        val r: List[Pattern] = newList()
+        r.add(arm.pattern)
+        rows.add(r)
+      }
+      case Some(_) -> ()
+    }
+  }
+  val tys: List[Type] = newList()
+  tys.add(st)
+  rowsCoverTypes(tbl, rows, tys, 12)
+}
+
 // Whether the arms are proved to cover every value of `st` (`matchExhaustive`,
 // D369).  `false` means not proved: the existing exhaustiveness check judges
 // only `Bool`, unbounded scalars and finite-case types, and looks at case
@@ -793,7 +1029,7 @@ func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[Match
     }
   }
   match finiteCaseNames(tbl, st) {
-    case None -> false
+    case None -> armsCoverByMatrix(tbl, st, arms)
     case Some(caseNames) -> {
       if armsHaveCatchAll(arms, caseNames) {
         return true
@@ -805,12 +1041,13 @@ func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[Match
           case Some(_) -> ()
         }
       }
+      var allCovered = true
       for c in caseNames {
         if not listContainsStr(covered, c) {
-          return false
+          allCovered = false
         }
       }
-      true
+      allCovered or armsCoverByMatrix(tbl, st, arms)
     }
   }
 }
