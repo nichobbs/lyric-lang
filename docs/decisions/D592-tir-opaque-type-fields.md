@@ -1,4 +1,4 @@
-# D601 - The fields of an opaque type are readable in its own package (docs/70 phase 3a, #8613)
+# D592 - The fields of an opaque type are readable in its own package (docs/70 phase 3a, #8613)
 
 **Status:** shipped.
 

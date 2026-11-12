@@ -1098,14 +1098,14 @@ test "a Long argument to a host Double parameter is widened at the boundary (D60
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
 }
 
-test "a field of an opaque type is readable in its own package (D601)" {
+test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
   )
   assertBuildsAndVerifies(pb, 1, "Id.label")
 }
 
-test "a field of a generic opaque type is read at the receiver's arguments (D601)" {
+test "a field of a generic opaque type is read at the receiver's arguments (D592)" {
   val pb = packageOf("package App\nopaque type Box[T] {\n  v: T\n}\nfunc g(b: in Box[Int]): Int {\n  b.v\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.v")
 }
