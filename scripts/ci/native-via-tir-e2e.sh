@@ -247,4 +247,7 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/b
 diff -u "$work/f_tir.out" "$work/f_asan.out"
 echo "generic fallback under AddressSanitizer: clean"
 
+# Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
+
 echo "native-via-tir-e2e: ok"
