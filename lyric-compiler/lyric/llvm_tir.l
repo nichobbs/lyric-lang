@@ -1941,9 +1941,9 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     c.insns.add(NStore(ty = capTys[si], value = NLocal(name = cv), ptr = NLocal(name = cs)))
     si = si + 1
   }
-  val out = tmp(c)
-  c.insns.add(NBitcast(dest = out, fromTy = implTy, value = obj, toTy = closTy))
-  Val(ty = closTy, value = NLocal(name = out), owned = true)
+  val closOut = tmp(c)
+  c.insns.add(NBitcast(dest = closOut, fromTy = implTy, value = obj, toTy = closTy))
+  Val(ty = closTy, value = NLocal(name = closOut), owned = true)
 }
 
 
