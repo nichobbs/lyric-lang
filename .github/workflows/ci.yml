@@ -4595,13 +4595,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Http async-surface test ran: http_async_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_async_tests.l"
 
-      # Binary request bodies (withBytesBody), signed-request headers, HEAD and
-      # DELETE, headerNames and retry against a live Std.HttpServer listener.
-      - name: Std.Http byte-body round trips on JVM (native lyric test --target jvm)
+      - name: Std.Http byte bodies (jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci/self-test.sh --summary \"Std.Http byte-body test ran: http_bytes_body_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_bytes_body_tests.l"
+        run: "bash scripts/ci/self-test.sh --summary \"http_bytes_body_tests.l ran (jvm)\" --target jvm lyric-stdlib/tests/http_bytes_body_tests.l"
 
       # Extra barrier (JVM batch 1-split): the JVM batch-1 group had grown to
       # ~21 concurrent in-process JVM compilations — well over the ~14-step cap
@@ -7519,9 +7517,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_async_concurrency_tests.l
 
-      # Binary request bodies (withBytesBody), signed-request headers, HEAD and
-      # DELETE, headerNames and retry against a live Std.HttpServer listener.
-      - name: Std.Http byte-body round trips (native lyric test)
+      - name: Std.Http byte bodies (dotnet)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_bytes_body_tests.l
 
