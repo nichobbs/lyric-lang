@@ -578,10 +578,7 @@ func funcType(env: in TirLowerEnv, t: in Ty): Option[NType] {
       case _ -> return None
     }
     match tyToN(env, p.ty) {
-      case Some(nt) -> match nt {
-        case NVoid -> return None
-        case _ -> ptys.add(nt)
-      }
+      case Some(nt) -> match nt { case NVoid -> return None; case _ -> ptys.add(nt) }
       case None -> return None
     }
   }
@@ -1767,13 +1764,7 @@ func assembleFn(c: in LCtx, name: in String, params: in List[NParam], stores: in
   pushRefScope(c)
   pushTemps(c)
   val result0 = lowerExpr(c, body)
-  val result = match c.retTy {
-    case NVoid -> {
-      discard(c, result0)
-      result0
-    }
-    case _ -> own(c, result0)
-  }
+  val result = match c.retTy { case NVoid -> { discard(c, result0); result0 }; case _ -> own(c, result0) }
   popTemps(c)
   popRefScope(c)
   match c.retTy {
@@ -1945,7 +1936,6 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   c.insns.add(NBitcast(dest = closOut, fromTy = implTy, value = obj, toTy = closTy))
   Val(ty = closTy, value = NLocal(name = closOut), owned = true)
 }
-
 
 /// `toString` of a scalar: the runtime's formatter, a fresh owned string.
 func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
@@ -2785,7 +2775,14 @@ func fallback(sym: in SymbolId, why: in String): Result[TirLowered, TirFallback]
 pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowered, TirFallback] {
   match lowerTirFunctionInner(env, fn) {
     case Ok(l) -> Ok(value = l)
-    case Err(f) -> Err(error = TirFallback(sym = f.sym, reason = f.reason, needTuples = env.needTuples, needFuncs = env.needFuncs))
+    case Err(f) -> Err(
+      error = TirFallback(
+        sym = f.sym,
+        reason = f.reason,
+        needTuples = env.needTuples,
+        needFuncs = env.needFuncs
+      )
+    )
   }
 }
 
