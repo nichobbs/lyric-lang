@@ -2218,6 +2218,18 @@ test "a member of a generic impl builds with the impl's parameter in scope (D579
   assertBuildsAndVerifies(pb, 1, "impl.first")
 }
 
+test "a call of a member of a generic impl is built and verified, or counted, never misbuilt" {
+  val c = censusOf(
+    "package App\ninterface Has[T] {\n  func first(self: in Self): T\n}\nrecord Wrap[T] {\n  v: T\n}\nimpl[T] Has[T] for Wrap[T] {\n  func first(self: in Wrap[T]): T { self.v }\n}\nfunc f(w: in Wrap[Int]): Int {\n  w.first()\n}\n"
+  )
+  if c.built == 2 {
+    val ds = verifyPackage(c.pkg, newList())
+    assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  } else {
+    assertTrue(c.firstErrors.count > 0, "a body that does not build says why")
+  }
+}
+
 test "a protected member reads and assigns a field of its receiver by the bare name" {
   val pb = packageOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\n"

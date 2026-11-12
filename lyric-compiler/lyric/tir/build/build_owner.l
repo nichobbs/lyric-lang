@@ -45,6 +45,8 @@ func receiverTypeId(t: in Type): Option[SymbolId] {
   }
 }
 
+/// A DefPath key is the owner's key, `::`, then the member's name; the `::` terminator keeps a
+/// type whose name is a prefix of another's (`Box`, `BoxOf`) from matching the other's members.
 /// Whether the callee `sym` is declared in the body of the receiver's type (a record's or a
 /// protected type's member, whose owner parameters are the type's own), not in an `impl`.
 func isBodyMemberOf(env: in BuildEnv, sym: in SymbolId, recvTy: in Type): Bool {
