@@ -97,4 +97,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/h_tir.ll" lyric-rt/b
 diff -u "$work/h_tir.out" "$work/h_asan.out"
 echo "heap records under AddressSanitizer: clean"
 
+
+# Unions (docs/70 phase 4a): an inline tagged value and a heap object with reference payloads,
+# built and matched from TIR, then the same IR under AddressSanitizer.
+usrc=scripts/ci/native-via-tir/unions.l
+"$lyric_bin" build --target native "$usrc" -o "$work/u_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$usrc" -o "$work/u_tir" 2> "$work/u_census.txt" >/dev/null
+cat "$work/u_census.txt"
+"$work/u_ast" > "$work/u_ast.out"
+"$work/u_tir" > "$work/u_tir.out"
+diff -u "$work/u_ast.out" "$work/u_tir.out"
+printf '12\n15\n0\ntrue\nfalse\nhello\nab,ab\n-\n' | diff -u - "$work/u_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/u_census.txt" || {
+  echo "::error::expected every function of unions.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/u_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/u_asan"
+"$work/u_asan" > "$work/u_asan.out"
+diff -u "$work/u_tir.out" "$work/u_asan.out"
+echo "unions under AddressSanitizer: clean"
+
 echo "native-via-tir-e2e: ok"
