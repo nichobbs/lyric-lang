@@ -70,3 +70,13 @@ and still holds generics and un-elaborated contracts.
 - Layout stays the code generator's. `TirLowerEnv.recs` maps a record's `SymbolId` to a `TirRecLayout` (the LLVM struct type and the field types it chose), built in `tirOrAst` from the DefPath keys (`Pkg::Name`) and `ctx.recordDefs`. `LlvmTir` never decides between the heap and the by-value form: a symbol with no entry (a heap record, a union case, a generic) falls back. `tyToN` takes the map so a record can be a parameter, result, local or field type.
 - Operators on a record (`==`, unary) fall back: structural equality is a derive, not an intrinsic.
 - Still on the AST path: heap records and unions (the ARC and destructor slice), patterns on records, tuples, lists, closures.
+
+## Slice 6: heap records
+
+- `XConstruct`, `XField` and `XCopy` also lower for the records the code generator registers in the heap form (a `var` field, or a field that is not by-value). `TirRecLayout` carries `byValue` and the destructor symbol; `LlvmTir` still never decides between the forms.
+- Construction evaluates every field first, then allocates (`lyric_alloc`, count 1, the destructor in the header, the weak count seeded by `lyric_weak_init`), then stores. An owned field value is a statement temporary (released when the statement ends) and the object takes its own count on each reference field (ARC rule 2), so an early exit inside a later field expression leaks nothing. The result is an owned reference.
+- A field read is a load through the field pointer (header slots first) and is borrowed from the object; a binding or a return retains it.
+- `.copy` allocates a new object: updated fields from the updates, the others loaded from the base with each reference retained.
+- `isRefN` is now "a pointer to a struct that starts with the ARC header", so record locals are released at scope exit and `return`/`break`/`continue` release them. Operators on a reference other than a string, and a compound assignment on one, fall back.
+- The layout and function-name maps are built once per unit (`tirUnitMaps`), not once per function. A field value whose type differs from the layout's is a fallback, not invalid IR.
+- Protected types, `foreign record`s and `@nativeDtor` types stay on the AST path. `heaprecords.l` runs both ways and under AddressSanitizer.
