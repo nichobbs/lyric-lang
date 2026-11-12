@@ -1577,8 +1577,10 @@ test "two calls leaving out the same default get distinct node ids" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "a default that is not a literal or a name is counted, not guessed" {
-  val c = censusOf("package App\nfunc g(a: Int, b: Int = 1 + 2): Int { a + b }\nfunc f(): Int { g(1) }\n")
+test "a default of a shape the builder cannot copy is counted, not guessed" {
+  val c = censusOf(
+    "package App\nfunc g(a: Int, b: Int = if true { 1 } else { 2 }): Int { a + b }\nfunc f(): Int { g(1) }\n"
+  )
   assertEqualInt(c.built, 1, "only g builds")
   assertTrue(c.firstErrors.count > 0, "f reports an I0002")
 }
@@ -1809,10 +1811,10 @@ test "a conversion method on a range-subtype or distinct value unwraps it" {
 
 test "a use of a name whose binding failed is not counted as an unbuildable name of its own" {
   val c = censusOf(
-    "package App\nfunc h(): Int { 1 }\nfunc g(a: Int = h()): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
+    "package App\nfunc g(a: Int = if true { 1 } else { 2 }): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
   )
   assertTrue(
-    c.uncovered.containsKey("a default argument that is not a literal or a name"),
+    c.uncovered.containsKey("a default argument of a shape not yet built"),
     "the failed initializer is counted"
   )
   assertFalse(c.uncovered.containsKey("a name that is not a local"), "its later uses are not")
@@ -1852,6 +1854,19 @@ test "named arguments that reorder effects are bound to temporaries in source or
     }
   }
   assertEqualInt(most, 2, "f binds both reordered arguments (n() before m()); g binds none")
+}
+
+test "a default argument that is a call is placed afresh at every call of one body" {
+  val c = censusOf(
+    "package App\nfunc mk(): Int { 7 }\nfunc k(a: Int, b: Int = mk()): Int { a + b }\nfunc m(): Int { k(1) + k(2) }\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(
+    ds.count,
+    0,
+    if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "node ids unique across the two calls" }
+  )
 }
 
 func hostTy(name: in String): Ty {

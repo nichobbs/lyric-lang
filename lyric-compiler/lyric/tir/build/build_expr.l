@@ -3074,23 +3074,121 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
   buildExpr(env, x)
 }
 
+/// `t` with every node numbered afresh and its spans set to `at`, so that a default
+/// argument built from the declaration's nodes can stand at several calls of one body
+/// (the verifier requires node ids unique within a body).  None after counting why not:
+/// only the kinds a default is made of are handled (literals, names, calls by value,
+/// constructions, conversions, lists and tuples).
+func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr] {
+  val kind: TExprKind = match t.kind {
+    case XLit(_) -> t.kind
+    case XGlobal(_, _) -> t.kind
+    case XLocal(_) -> return noteUncoveredAtSpan(env, at, "a default argument naming a local")
+    case XCall(callee, args) -> {
+      val fresh: List[TArg] = newList()
+      for a in args {
+        match a {
+          case TArgIn(v) -> match refreshDefaultIds(env, v, at) {
+            case Some(r) -> fresh.add(TArgIn(value = r))
+            case None -> return None
+          }
+          case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
+        }
+      }
+      match callee {
+        case Indirect(_) -> return noteUncoveredAtSpan(env, at, "a default argument calling a function value")
+        case _ -> XCall(callee = callee, args = fresh)
+      }
+    }
+    case XConstruct(sym, fields) -> {
+      val fresh: List[TExpr] = newList()
+      for f in fields {
+        match refreshDefaultIds(env, f, at) {
+          case Some(r) -> fresh.add(r)
+          case None -> return None
+        }
+      }
+      XConstruct(sym = sym, fields = fresh)
+    }
+    case XConvert(k, inner) -> match refreshDefaultIds(env, inner, at) {
+      case Some(r) -> XConvert(kind = k, inner = r)
+      case None -> return None
+    }
+    case XListLit(elems) -> {
+      val fresh: List[TExpr] = newList()
+      for x in elems {
+        match refreshDefaultIds(env, x, at) {
+          case Some(r) -> fresh.add(r)
+          case None -> return None
+        }
+      }
+      XListLit(elems = fresh)
+    }
+    case XTuple(elems) -> {
+      val fresh: List[TExpr] = newList()
+      for x in elems {
+        match refreshDefaultIds(env, x, at) {
+          case Some(r) -> fresh.add(r)
+          case None -> return None
+        }
+      }
+      XTuple(elems = fresh)
+    }
+    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built")
+  }
+  Some(value = TExpr(id = freshNodeId(env), ty = t.ty, span = at, kind = kind))
+}
+
+/// `noteUncovered` at a span rather than an expression, answering None.
+func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[TExpr] {
+  noteUncoveredAt(env, why, at)
+  env.errors.add("I0002: the builder has no case for " + why)
+  None
+}
+
 /// The argument for a parameter the call leaves out: its declared default, placed at
-/// the call under a fresh node id (the declaration's own node stays the parameter's).
-/// A literal or a name the checker resolved to a declaration (a constant, `None`);
-/// any other default, and one from a restored package, has no case yet.
-func buildDefaultArg(env: in BuildEnv, call: in Expr, p: in ResolvedParam): Option[TExpr] {
+/// the call under fresh node ids (the declaration's own nodes stay the parameter's).
+/// The default is built from the checker's record of the declaration's own package, so
+/// a default declared in another package has no case yet, and neither has one from a
+/// restored package.
+func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in ResolvedParam): Option[TExpr] {
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
   val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
+  if not simple {
+    val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
+    if origin != "" and origin != here {
+      return uncoveredExpr(env, call, "a default argument declared in another package")
+    }
+  }
   val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
     case ELiteral(_) -> buildExpr(env, d)
     case EPath(_) -> buildRefPath(env, d, ty)
-    case _ -> uncoveredExpr(env, call, "a default argument that is not a literal or a name")
+    case _ -> {
+      // The declaration's node is shared by every call that takes the default, each at
+      // its own instantiation: the parameter's type settles it for this call only.
+      env.settled.remove(d.nodeId)
+      env.settled.add(d.nodeId, pty)
+      val b = buildExpr(env, d)
+      env.settled.remove(d.nodeId)
+      b
+    }
   }
   match built {
-    case Some(t) -> match coerceArg(env, TExpr(id = freshNodeId(env), ty = t.ty, span = call.span, kind = t.kind), pty) {
-      case Some(c) -> Some(value = c)
-      case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+    case Some(t0) -> {
+      val t = if simple {
+        Some(value = TExpr(id = freshNodeId(env), ty = t0.ty, span = call.span, kind = t0.kind))
+      } else {
+        refreshDefaultIds(env, t0, call.span)
+      }
+      match t {
+        case Some(t1) -> match coerceArg(env, t1, pty) {
+          case Some(c) -> Some(value = c)
+          case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+        }
+        case None -> None
+      }
     }
     case None -> None
   }
@@ -3181,7 +3279,7 @@ func buildCallArgs(
     match slots[i] {
       case None -> {
         if p.hasDefault {
-          match buildDefaultArg(env, e, p) {
+          match buildDefaultArg(env, e, sig.originPackage, p) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {
               ok = false
