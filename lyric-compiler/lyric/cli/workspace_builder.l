@@ -1872,7 +1872,7 @@ func restoredNuspecText(pkgDir: in String): Option[String] {
   None
 }
 
-func restoredDepTargetError(
+pub func restoredDepTargetError(
   dep: in Mf.DependencyEntry,
   pkgDir: in String,
   owner: in String,
