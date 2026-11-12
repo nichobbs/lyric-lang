@@ -1,0 +1,16 @@
+# A two-package project for native-via-tir-e2e.sh (docs/70 phase 4a, D520): the TIR path lowers
+# every own package, including calls, records and unions that cross the package boundary.
+[package]
+name        = "Lyric.ViaTirProject"
+version     = "0.1.0"
+description = "Two own packages built through the native TIR lowering."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name   = "Lyric.ViaTirProject"
+output = "single"
+
+[project.packages]
+"Calc" = "src/calc.l"
+"App"  = "src/app.l"

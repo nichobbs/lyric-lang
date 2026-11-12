@@ -152,4 +152,20 @@ grep -q '^native via-TIR: 3 of 3 functions lowered from TIR' "$work/e_census.txt
   exit 1
 }
 
+
+# Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
+# record and a union that cross the package boundary.
+pmf=scripts/ci/native-via-tir/project/lyric.toml
+"$lyric_bin" build --manifest "$pmf" --target native -o "$work/p_ast" >/dev/null
+"$lyric_bin" build --manifest "$pmf" --target native --via-tir -o "$work/p_tir" 2> "$work/p_census.txt" >/dev/null
+cat "$work/p_census.txt"
+"$work/p_ast" > "$work/p_ast.out"
+"$work/p_tir" > "$work/p_tir.out"
+diff -u "$work/p_ast.out" "$work/p_tir.out"
+printf '35\n2\n42\n' | diff -u - "$work/p_tir.out"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/p_census.txt" || {
+  echo "::error::expected every function of the two-package project to be lowered from TIR"
+  exit 1
+}
+
 echo "native-via-tir-e2e: ok"

@@ -100,3 +100,9 @@ and still holds generics and un-elaborated contracts.
 
 - An enum value is its `i32` ordinal (the code generator's `enumDefs` representation). `TirLowerEnv.enums` lists the enum types and `TirLowerEnv.enumCases` maps each case symbol (DefPath key `Pkg::Enum::Case`) to its ordinal; the code generator builds both once per unit from `enumDefs`. A case value is a literal ordinal, a case pattern compares the scrutinee with it, and `==` on enums is the existing `i32` comparison.
 - Still on the AST path: enums with payloads (they are unions), generic enums.
+
+## Slice 10: project builds
+
+- `lyric build --manifest ... --target native --via-tir` hands each own package's TIR to its code generation unit, as the single-file path does for the user package: the project loop of `compileProjectToNativeWithShape` asks the middle end for each own package's TIR (`MiddleEndOptions.wantTir`) and passes it to `unitOf`. Bundled stdlib packages and restored dependencies still compile through the AST path.
+- The census is one total over every unit that carried TIR, printed once.
+- `scripts/ci/native-via-tir/project/` (two packages, calls, a record and a union across the boundary) is built both ways by `native-via-tir-e2e.sh`.
