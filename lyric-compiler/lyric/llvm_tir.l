@@ -165,6 +165,7 @@ pub record TirLowerEnv {
   cases: Map[Int, TirCaseRef] = newMap()
   /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
   /// case's symbol).  An enum value is its `i32` ordinal.
+  /// A set: the value is always `true`.
   enums: Map[Int, Bool] = newMap()
   enumCases: Map[Int, Int] = newMap()
 }
