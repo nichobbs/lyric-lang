@@ -28,6 +28,44 @@ func manifestErrorText(e: in ManifestError): String {
   }
 }
 
+test "[package] targets is absent by default and then supports every target (#9030)" {
+  val m = parseOk("[package]\nname = \"P\"\nversion = \"0.1.0\"\n")
+  match m.packageSection.targets {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "targets absent by default")
+  }
+  assertTrue(packageSupportsTarget(m.packageSection, "dotnet"), "dotnet")
+  assertTrue(packageSupportsTarget(m.packageSection, "jvm"), "jvm")
+  assertTrue(packageSupportsTarget(m.packageSection, "native"), "native")
+  assertEqual(packageTargetsText(m.packageSection), "all", "text")
+}
+
+test "[package] targets restricts the supported backends (#9030)" {
+  val head = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val jvm = parseOk(head + "targets = [\"jvm\"]\n").packageSection
+  assertTrue(packageSupportsTarget(jvm, "jvm"), "jvm supported")
+  assertFalse(packageSupportsTarget(jvm, "dotnet"), "dotnet not supported")
+  assertFalse(packageSupportsTarget(jvm, "native"), "native not supported")
+  assertEqual(packageTargetsText(jvm), "jvm", "one target")
+  val two = parseOk(head + "targets = [\"dotnet\", \"jvm\"]\n").packageSection
+  assertTrue(packageSupportsTarget(two, "dotnet"), "dotnet in pair")
+  assertTrue(packageSupportsTarget(two, "jvm"), "jvm in pair")
+  assertFalse(packageSupportsTarget(two, "native"), "native not in pair")
+  assertEqual(packageTargetsText(two), "dotnet, jvm", "two targets")
+}
+
+test "[package] targets rejects malformed values with F0053 (#9030)" {
+  val head = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val unknown = parseErr(head + "targets = [\"wasm\"]\n")
+  assertTrue(isInvalidField(unknown, "package", "targets"), "unknown target is an InvalidField")
+  assertTrue(Str.contains(manifestErrorText(unknown), "F0053"), "the message carries F0053")
+  assertTrue(Str.contains(manifestErrorText(unknown), "\"wasm\""), "the message names the bad value")
+  assertTrue(Str.contains(manifestErrorText(parseErr(head + "targets = []\n")), "empty"), "empty list")
+  assertTrue(Str.contains(manifestErrorText(parseErr(head + "targets = [\"jvm\", \"jvm\"]\n")), "twice"), "duplicate")
+  assertTrue(isInvalidField(parseErr(head + "targets = \"jvm\"\n"), "package", "targets"), "string instead of array")
+  assertTrue(isInvalidField(parseErr(head + "targets = 3\n"), "package", "targets"), "non-array")
+}
+
 func parseOk(toml: in String): Manifest {
   match parseManifest(toml, "<test>") {
     case Ok(m) -> m

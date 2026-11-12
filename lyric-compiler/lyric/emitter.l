@@ -2045,7 +2045,7 @@ func failResultWith(msg: in String, extra: in List[Diagnostic]): EmitResult {
 }
 
 // `target` as the name its `@cfg(target = ...)` atoms use.
-func compileTargetName(target: in CompileTarget): String {
+pub func compileTargetName(target: in CompileTarget): String {
   match target {
     case Dotnet -> "dotnet"
     case Jvm -> "jvm"

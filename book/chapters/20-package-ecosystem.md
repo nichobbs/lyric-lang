@@ -28,6 +28,7 @@ The `[package]` fields:
 - `version` — SemVer 2.0.0. The string must be a valid three-part version; pre-release labels (`1.2.0-rc.1`) are allowed.
 - `authors` — a list of strings in free-form "Name <email>" format.
 - `description`, `license`, `repository` — optional metadata that flows into the published `.nupkg`.
+- `targets` — optional list of the backends the package supports, drawn from `"dotnet"`, `"jvm"` and `"native"` (for example `targets = ["jvm"]` for a package that wraps a JVM-only library). Omit it to support every target. Building, testing or running the package for another `--target` fails with `F0054`, and so does building any package that depends on it (directly or through other path and workspace dependencies) with `F0055`. An empty, unknown or repeated entry is `F0053`.
 - `[dependencies]` — packages required at build and runtime. Versions are NuGet-style constraints.
 
 Version constraints are resolved against the NuGet registry (or a compatible private registry).

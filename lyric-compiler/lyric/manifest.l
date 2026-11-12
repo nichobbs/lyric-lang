@@ -94,6 +94,56 @@ pub record PackageSection {
   kind: Option[String]
   /// `[package] stability`; `None` when the manifest does not declare it.
   stability: Option[Stability]
+  /// `[package] targets`: the `--target` backends the package supports, each
+  /// one of "dotnet", "jvm" or "native" (validated, de-duplicated, never
+  /// empty).  `None` when the manifest does not declare it: every target.
+  targets: Option[List[String]]
+}
+
+/// The `--target` names a `[package] targets` entry may use.
+pub func knownTargetNames(): List[String] {
+  val names: List[String] = newList()
+  names.add("dotnet")
+  names.add("jvm")
+  names.add("native")
+  names
+}
+
+/// Whether `pkg` supports the backend named `target` ("dotnet", "jvm" or
+/// "native").  A package that declares no `targets` supports all of them.
+pub func packageSupportsTarget(pkg: in PackageSection, target: in String): Bool {
+  match pkg.targets {
+    case None -> true
+    case Some(ts) -> {
+      var i = 0
+      while i < ts.count {
+        if ts[i] == target {
+          return true
+        }
+        i += 1
+      }
+      false
+    }
+  }
+}
+
+/// The declared targets as `"jvm, dotnet"`, or `"all"` when none are declared.
+pub func packageTargetsText(pkg: in PackageSection): String {
+  match pkg.targets {
+    case None -> "all"
+    case Some(ts) -> {
+      var joined = ""
+      var i = 0
+      while i < ts.count {
+        if i > 0 {
+          joined = joined + ", "
+        }
+        joined = joined + ts[i]
+        i += 1
+      }
+      joined
+    }
+  }
 }
 
 pub record PackageEntry {
@@ -1052,6 +1102,61 @@ func resolveStability(entries: in List[Entry]): Result[Option[Stability], Manife
   }
 }
 
+func invalidTargets(message: in String): ManifestError {
+  InvalidField(section = "package", field = "targets", message = "F0053: " + message)
+}
+
+/// `[package] targets` (issue #9030): a non-empty array of distinct backend
+/// names drawn from `knownTargetNames()`.
+func resolveTargets(entries: in List[Entry]): Result[Option[List[String]], ManifestError] {
+  if not hasKey(entries, "package", "targets") {
+    return Ok(value = None)
+  }
+  match findStringList(entries, "package", "targets") {
+    case None -> Err(
+      error = invalidTargets("expected an array of strings, such as [\"jvm\"] (one or more of \"dotnet\", \"jvm\", \"native\")")
+    )
+    case Some(items) -> {
+      if items.count == 0 {
+        return Err(
+          error = invalidTargets("the list is empty; omit the field to support every target, or name at least one of \"dotnet\", \"jvm\", \"native\"")
+        )
+      }
+      val known = knownTargetNames()
+      val seen: List[String] = newList()
+      var i = 0
+      while i < items.count {
+        val t = items[i]
+        var isKnown = false
+        var k = 0
+        while k < known.count {
+          if known[k] == t {
+            isKnown = true
+          }
+          k += 1
+        }
+        if not isKnown {
+          return Err(error = invalidTargets("\"" + t + "\" is not a target; expected one of \"dotnet\", \"jvm\", \"native\""))
+        }
+        var dup = false
+        var s = 0
+        while s < seen.count {
+          if seen[s] == t {
+            dup = true
+          }
+          s += 1
+        }
+        if dup {
+          return Err(error = invalidTargets("\"" + t + "\" is listed twice"))
+        }
+        seen.add(t)
+        i += 1
+      }
+      Ok(value = Some(value = seen))
+    }
+  }
+}
+
 func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestError] {
   match requireString(entries, "package", "name") {
     case Err(e) -> Err(error = e)
@@ -1065,18 +1170,22 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
         val kind = findString(entries, "package", "kind")
         match resolveStability(entries) {
           case Err(e) -> Err(error = e)
-          case Ok(stability) -> Ok(
-            value = PackageSection(
-              name = name,
-              version = version,
-              description = description,
-              authors = authors,
-              license = license,
-              repository = repository,
-              kind = kind,
-              stability = stability
+          case Ok(stability) -> match resolveTargets(entries) {
+            case Err(e) -> Err(error = e)
+            case Ok(targets) -> Ok(
+              value = PackageSection(
+                name = name,
+                version = version,
+                description = description,
+                authors = authors,
+                license = license,
+                repository = repository,
+                kind = kind,
+                stability = stability,
+                targets = targets
+              )
             )
-          )
+          }
         }
       }
     }

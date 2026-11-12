@@ -1386,6 +1386,13 @@ func cmdTestManifest(
       return 1
     }
   }
+  match targetSupportError(mfPath, manifest, (if targetJvm { "jvm" } else { "dotnet" })) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
 
   val mfDir = Path.dirname(mfPath)
 
