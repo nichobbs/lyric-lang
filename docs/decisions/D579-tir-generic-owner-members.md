@@ -12,17 +12,19 @@ bare-field resolution of D576, which refused a generic owner.
 ## Decision
 
 - The checker keys a member's generic scope by binder: the owner's parameters under the owner (a type's name,
-  or `implOwnerKey` for an `impl`, now `pub`), the member's own parameters under `Owner.fn`. The builder binds
-  the same keys. `MemberOwner` (key, symbol, parameter names) lives in `BuildEnv.memberOwner`; `buildFnCore`
-  binds and pushes it before the member's own generics, so a `TyParam` of either converts to
-  `TParam(binderSymbol, index)`.
-- The owner's symbol is the type's symbol; an `impl`, which has none of its own, uses the symbol interned from
-  `implDefPath`. The receiver `self` is the owner applied to its own parameters (`ownerRecvTy`), or the
-  converted target type for an `impl`.
-- `TFnDecl.typeParams` stays the member's own parameters. Two defaulted fields, `ownerSym` and
-  `ownerParamCount`, say which owner parameters the body may name; `Lyric.Tir.Verify`'s `paramInScope` accepts
-  `TParam(ownerSym, i)` for `i < ownerParamCount`, so the closed-type rule (docs/70 §6.4) still rejects a
-  parameter of any other declaration.
+  or `implOwnerKey`, now `pub`), the member's own under `Owner.fn`. The builder binds the same keys, both to
+  the member's symbol: the owner's parameters come first in the member's generic space and its own after, so
+  `TParam(memberSym, i)` is the owner's `i`-th parameter for `i < ownerParamCount` and the member's own after
+  that. `MemberOwner` (key, owner type symbol, parameter names) lives in `BuildEnv.memberOwner`.
+- `TFnDecl.typeParams` is the owner's parameters then the member's own, and the defaulted
+  `TFnDecl.ownerParamCount` says how many lead. Nothing in `Lyric.Tir.Verify` changes: the closed-type rule
+  already admits `TParam(fnSym, i)` for `i < typeParams.count`, and a call instantiates the owner's
+  parameters like any generic call's (owner arguments from the receiver first, then the member's own), which
+  is why the leading-parameter model was chosen over `TParam(ownerSym, i)` (it would have needed a second
+  substitution rule in the verifier and in every backend).
+- The receiver `self` is the owner applied to its own parameters as the member sees them
+  (`TNamed(ownerSym, [TParam(memberSym, 0..n)])`), or the converted target type of a generic `impl`; it is
+  made when the member is built, once its symbol is known.
 - `protectedFieldsOf` no longer skips a generic protected type, and `typeEntries` binds the type's parameters
   while converting its field types and records the parameter count on its type entry.
 - Calls of a method of a generic type must instantiate the owner's parameters from the receiver's type

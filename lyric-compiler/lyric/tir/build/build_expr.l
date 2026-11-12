@@ -1316,22 +1316,40 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
-  // A member of a generic type or `impl` sees the owner's parameters, keyed by the owner, and
-  // keys its own by `Owner.fn`, as the checker does.
+  // A member of a generic type or `impl` has the owner's parameters first and its own after, all
+  // indexed under the member's symbol.  The checker keys the owner's by the owner and the member's
+  // own by `Owner.fn`; both are bound to the member here.
   var fnKey = fn.name
+  var allNames = names
   if env.memberOwner.count > 0 {
     val mo = env.memberOwner[0]
     fnKey = mo.key + "." + fn.name
     if mo.names.count > 0 {
-      tyConvBind(env.ctx, mo.key, mo.sym, mo.names)
-      gctxPushOwned(gc, mo.names, mo.key)
+      match sym {
+        case Some(sy) -> {
+          tyConvBind(env.ctx, mo.key, sy, mo.names)
+          gctxPushOwned(gc, mo.names, mo.key)
+        }
+        case None -> {
+          noteUncovered(env, "a member of a generic type with no symbol")
+          env.errors.add("I0002: the builder has no symbol for the member: " + fn.name)
+          return None
+        }
+      }
+      allNames = newList()
+      for n in mo.names {
+        allNames.add(n)
+      }
+      for n in names {
+        allNames.add(n)
+      }
     }
   }
   match fn.generics {
     case Some(_) -> {
       match sym {
         case Some(sy) -> {
-          tyConvBind(env.ctx, fnKey, sy, names)
+          tyConvBind(env.ctx, fnKey, sy, allNames)
           gctxPushOwned(gc, names, fnKey)
         }
         case None -> {
@@ -1442,7 +1460,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
     case Some(b) -> Some(
       value = FnCore(
         sym = sym,
-        typeNames = names,
+        typeNames = allNames,
         params = params,
         ret = ret,
         pre = pre,
@@ -1490,7 +1508,6 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           body = Some(value = c.body),
           span = fn.span,
           barrier = c.barrier,
-          ownerSym = if ownerCount > 0 { Some(value = env.memberOwner[0].sym) } else { None },
           ownerParamCount = ownerCount
         )
       )

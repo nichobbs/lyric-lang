@@ -527,22 +527,3 @@ test "a scope statement binding is not usable after the scope" {
     "scope binding after the scope"
   )
 }
-
-func ownedFn(paramOwner: in Int, index: in Int, ownerCount: in Int): List[VerifyDiag] {
-  val ty = TParam(owner = sym(paramOwner), index = index)
-  val x = local(1, "x", ty, false)
-  val f = fnDecl(10, 0, params1(x), ty, ex(2, ty, XLocal(local = x.id)))
-  oneFn(entries(), f.copy(ownerSym = Some(value = sym(99)), ownerParamCount = ownerCount))
-}
-
-test "a member may name its owner's parameters within the owner's count (D579)" {
-  assertEqual(rulesOf(ownedFn(99, 0, 1)), "", "T of the owner")
-}
-
-test "a member may not name an owner parameter at or past the owner's count (D579)" {
-  assertTrue(rulesOf(ownedFn(99, 1, 1)).contains("closed-type"), "index 1 of a one-parameter owner")
-}
-
-test "a member may not name a parameter of another declaration (D579)" {
-  assertTrue(rulesOf(ownedFn(98, 0, 1)).contains("closed-type"), "a parameter of another owner")
-}

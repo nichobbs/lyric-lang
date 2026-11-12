@@ -52,8 +52,6 @@ record Ctx {
   syms: Map[Int, TSymEntry]
   fnSym: SymbolId
   tpCount: Int
-  ownerSym: Option[SymbolId]
-  ownerCount: Int
   locals: Map[Int, LocalDecl]
   /// Locals whose scope is open: a binding leaves it when its block, arm,
   /// loop, closure or quantifier ends, while `locals` keeps the declaration.
@@ -166,10 +164,6 @@ func substList(xs: in List[Ty], subs: in List[Subst], selfTy: in Option[Ty]): Li
 func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
   if symbolIdEq(owner, c.fnSym) {
     return index >= 0 and index < c.tpCount
-  }
-  match c.ownerSym {
-    case Some(os) -> if symbolIdEq(owner, os) and index >= 0 and index < c.ownerCount { return true }
-    case None -> ()
   }
   if index == selfParamIndex() {
     match lookupSym(c, owner) {
@@ -1053,8 +1047,6 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
     syms = shared.syms,
     fnSym = f.sym,
     tpCount = f.typeParams.count,
-    ownerSym = f.ownerSym,
-    ownerCount = f.ownerParamCount,
     locals = newMap(),
     live = newMap(),
     scopeIds = newList(),
@@ -1113,8 +1105,6 @@ pub func verifyPackage(pkg: in TPackage, deps: in List[TSymEntry]): List[VerifyD
     syms = syms,
     fnSym = SymbolId(id = 0),
     tpCount = 0,
-    ownerSym = None,
-    ownerCount = 0,
     locals = newMap(),
     live = newMap(),
     scopeIds = newList(),

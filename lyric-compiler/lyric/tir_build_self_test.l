@@ -2038,9 +2038,8 @@ test "a method of a generic record builds with the owner's parameter as its rece
   val pb = packageOf("package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.get")
   val f = pb.pkg.funcs[0]
-  assertEqualInt(f.typeParams.count, 0, "the method declares no parameter of its own")
-  assertEqualInt(f.ownerParamCount, 1, "the owner's one parameter is in scope")
-  assertTrue(f.ownerSym.isSome(), "the owner is recorded")
+  assertEqualInt(f.typeParams.count, 1, "the owner's T is its one parameter")
+  assertEqualInt(f.ownerParamCount, 1, "and it is the owner's")
 }
 
 test "a generic record's method may declare parameters of its own beside the owner's (D579)" {
@@ -2048,8 +2047,8 @@ test "a generic record's method may declare parameters of its own beside the own
     "package App\nrecord Box[T] {\n  v: T\n  func pair[U](self: in Box[T], u: in U): (T, U) { (self.v, u) }\n}\n"
   )
   assertBuildsAndVerifies(pb, 1, "Box.pair")
-  assertEqualInt(pb.pkg.funcs[0].typeParams.count, 1, "its own U")
-  assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 1, "the owner's T")
+  assertEqualInt(pb.pkg.funcs[0].typeParams.count, 2, "the owner's T then its own U")
+  assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 1, "the first is the owner's")
 }
 
 test "a member of a generic protected type reads and writes a field typed by the owner's parameter (D579)" {
@@ -2101,5 +2100,4 @@ test "a generic method of a non-generic record binds its parameter under Owner.f
   assertBuildsAndVerifies(pb, 1, "Tag.pick")
   assertEqualInt(pb.pkg.funcs[0].typeParams.count, 1, "its own U")
   assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 0, "the owner declares none")
-  assertTrue(not pb.pkg.funcs[0].ownerSym.isSome(), "so no owner is recorded")
 }
