@@ -1175,6 +1175,13 @@ test "calls of a generic protected type's entry at two instantiations verify (D5
   assertBuildsAndVerifies(pb, 2, "Cell.put and f")
 }
 
+test "an impl method reads and writes a bare field of its receiver (D594)" {
+  val pb = packageOf(
+    "package App\ninterface Scaler {\n  func scale(k: in Int): Int\n}\nref record Doubler {\n  var base: Int\n}\nimpl Scaler for Doubler {\n  func scale(k: in Int): Int {\n    base = base * k + 1\n    base\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "Doubler.scale")
+}
+
 // ─── Generic calls (docs/70 §6.3, D394) ──────────────────────────────────────
 func directTypeArgs(b: in Option[TExpr]): Option[List[Ty]] {
   match b {
