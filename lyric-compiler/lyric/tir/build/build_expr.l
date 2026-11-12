@@ -2274,6 +2274,47 @@ func buildExternCall(
   Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
 }
 
+/// The position a tuple element access names (`t.0`), or `None` for a name that is not a decimal number.
+func tupleIndexOf(name: in String): Option[Int] {
+  if name.length == 0 {
+    return None
+  }
+  var n = 0
+  var k = 0
+  while k < name.length {
+    val c = name.substring(k, 1)
+    if c < "0" or c > "9" {
+      return None
+    }
+    n = n * 10 +
+      (
+        if c == "0" {
+          0
+        } else if c == "1" {
+          1
+        } else if c == "2" {
+          2
+        } else if c == "3" {
+          3
+        } else if c == "4" {
+          4
+        } else if c == "5" {
+          5
+        } else if c == "6" {
+          6
+        } else if c == "7" {
+          7
+        } else if c == "8" {
+          8
+        } else {
+          9
+        }
+      )
+    k = k + 1
+  }
+  Some(value = n)
+}
+
 /// The field `name` of the record type `ty` declares, by its position among the record's
 /// declared fields (the order a construction places them in).  `fieldsOfRecord` is empty
 /// for a declared type that is not a record (a union, an enum, a distinct type), so such a
@@ -2307,6 +2348,15 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
 /// property, a config field, a tuple or union payload) is counted.
 func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  match rt.ty {
+    case TTuple(elems) -> match tupleIndexOf(name) {
+      case Some(i) -> if i < elems.count {
+        return Some(value = mkExpr(e, ty, XTupleField(recv = rt, index = i)))
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
     case None -> match builtinPropertyName(env, recv, name) {

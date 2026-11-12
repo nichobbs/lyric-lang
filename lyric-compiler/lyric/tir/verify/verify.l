@@ -790,6 +790,17 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         visitExpr(c, x)
       }
     }
+    case XTupleField(recv, index) -> {
+      visitExpr(c, recv)
+      match recv.ty {
+        case TTuple(elems) -> if index < 0 or index >= elems.count {
+          report(c, e.id, "tuple-field", "element " + toString(index) + " of a tuple of " + toString(elems.count))
+        } else {
+          expectTy(c, e.id, e.ty, elems[index], "tuple-field-type", "tuple element " + toString(index))
+        }
+        case _ -> report(c, e.id, "tuple-field", "tuple element access on a value of type " + renderTy(recv.ty))
+      }
+    }
     case XListLit(elems) -> {
       for x in elems {
         visitExpr(c, x)

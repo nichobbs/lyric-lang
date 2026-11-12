@@ -259,6 +259,8 @@ pub union TExprKind {
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])
+  /// `t.0`: the element at `index` of a tuple value; `recv` has a `TTuple` type with more than `index` elements.
+  case XTupleField(recv: TExpr, index: Int)
   case XListLit(elems: List[TExpr])
   /// Every part is a `String`: literal text is an `XLit`.
   case XInterp(parts: List[TExpr])

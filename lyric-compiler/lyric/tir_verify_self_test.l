@@ -527,3 +527,32 @@ test "a scope statement binding is not usable after the scope" {
     "scope binding after the scope"
   )
 }
+
+func pairTy(): Ty {
+  val es: List[Ty] = newList()
+  es.add(tyInt())
+  es.add(tyString())
+  TTuple(elems = es)
+}
+
+func tupleFieldFn(index: in Int, resTy: in Ty): TFnDecl {
+  val t = local(1, "t", pairTy(), false)
+  val recv = ex(3, pairTy(), XLocal(local = t.id))
+  fnDecl(10, 0, params1(t), resTy, ex(2, resTy, XTupleField(recv = recv, index = index)))
+}
+
+test "a tuple element access of the element's type verifies clean" {
+  assertEqualInt(oneFn(entries(), tupleFieldFn(1, tyString())).count, 0, "t.1 is a String")
+}
+
+test "a tuple element access past the arity or of the wrong type is reported" {
+  assertTrue(rulesOf(oneFn(entries(), tupleFieldFn(2, tyString()))).contains("tuple-field"), "out of range")
+  assertTrue(rulesOf(oneFn(entries(), tupleFieldFn(0, tyString()))).contains("tuple-field-type"), "wrong type")
+}
+
+test "a tuple element access on a value that is not a tuple is reported" {
+  val x = local(1, "x", tyInt(), false)
+  val recv = ex(3, tyInt(), XLocal(local = x.id))
+  val f = fnDecl(10, 0, params1(x), tyInt(), ex(2, tyInt(), XTupleField(recv = recv, index = 0)))
+  assertTrue(rulesOf(oneFn(entries(), f)).contains("tuple-field"), "not a tuple")
+}

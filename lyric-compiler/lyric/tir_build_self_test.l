@@ -2016,6 +2016,41 @@ test "a loop invariant builds as an invariant statement of the loop body" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a tuple element access builds as a tuple field of the element's type (D596)" {
+  val pb = packageOf(
+    "package App\nfunc f(t: in (Int, String)): String {\n  t.1\n}\nfunc g(t: in (Int, String)): Int {\n  t.0\n}\n"
+  )
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  assertEqualInt(pb.built, 2, "both build")
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var seen = 0
+  for fd in pb.pkg.funcs {
+    match fd.body {
+      case Some(b) -> match b.kind {
+        case XBlock(_, Some(t)) -> match t.kind {
+          case XTupleField(_, i) -> {
+            seen = seen + 1
+            assertTrue(i == 0 or i == 1, "an element index")
+          }
+          case _ -> ()
+        }
+        case XTupleField(_, i) -> {
+          seen = seen + 1
+          assertTrue(i == 0 or i == 1, "an element index")
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(seen, 2, "two tuple field reads")
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
