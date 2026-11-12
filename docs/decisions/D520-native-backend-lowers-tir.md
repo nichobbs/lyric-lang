@@ -111,3 +111,11 @@ and still holds generics and un-elaborated contracts.
 
 - `scripts/ci/native-via-tir/fallback.l` has a generic record, a generic union and a generic function beside one plain function. `native-via-tir-e2e.sh` requires that exactly the plain function is lowered from TIR, that the others are counted as fallbacks with a reason, that the output equals the AST build's and the specified output, and that the TIR build is clean under AddressSanitizer (nichobbs/lyric-lang#9023). When phase 3c monomorphises, this stage flips to asserting they lower.
 - A self-test covers a case pattern on a value that is not an enum; `TirLowerEnv.enums` is documented as a set.
+
+## Slice 12: tuples
+
+- `XTuple`, a destructuring `let` over a tuple pattern and `TpTuple` in a `match` lower from TIR. A tuple is the synthesised heap record `__tuple<...>` the AST path already builds (`tupleRecInfo`), so layout stays the code generator's. Because those records are registered on demand, the lowering cannot be handed them up front: `tyToN` of a `TTuple` looks the layout up in `TirLowerEnv.tuples` (keyed by `renderTy`), and a missing one is recorded in `needTuples`, which the failed `TirFallback` carries. `lowerWithTuples` in the code generator registers those layouts with `tupleRecInfo` and lowers again (bounded; a nested tuple needs one round per level). Layouts persist per unit in `TirUnitMaps.tuples`.
+- A destructuring `let` binds each name as an ordinary owning local (reference elements are retained) so the tuple is released at the end of the statement; tuple pattern bindings in a `match` are borrows of the borrowed scrutinee, like union payload bindings.
+- A tuple pattern's element patterns are tested through `patTestAny`, which opens a union element first. Literal and nested tuple patterns are therefore accepted by the TIR path although the AST path rejects them (N0007); the fixture sticks to what both paths accept.
+- Still on the AST path: element access `t.0` (the builder does not build it yet: it has no `FieldRef` owner for a tuple), tuple equality, a tuple holding a Unit element in a pattern.
+- `scripts/ci/native-via-tir/tuples.l` (6 of 6 lowered, output equal to the AST build and the specified output, clean under AddressSanitizer) is run by `native-via-tir-e2e.sh`.

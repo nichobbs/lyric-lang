@@ -149,6 +149,25 @@ grep -q '^native via-TIR: 3 of 3 functions lowered from TIR' "$work/e_census.txt
   exit 1
 }
 
+# Tuples (docs/70 phase 4a): construction, destructuring lets and tuple patterns, then the same
+# IR under AddressSanitizer.
+tsrc=scripts/ci/native-via-tir/tuples.l
+"$lyric_bin" build --target native "$tsrc" -o "$work/t_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$tsrc" -o "$work/t_tir" 2> "$work/t_census.txt" >/dev/null
+cat "$work/t_census.txt"
+"$work/t_ast" > "$work/t_ast.out"
+"$work/t_tir" > "$work/t_tir.out"
+diff -u "$work/t_ast.out" "$work/t_tir.out"
+printf 'n5=5\n4,3\nzero:n0\none\nn9/9\n123\n' | diff -u - "$work/t_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/t_census.txt" || {
+  echo "::error::expected every function of tuples.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/t_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/t_asan"
+"$work/t_asan" > "$work/t_asan.out"
+diff -u "$work/t_tir.out" "$work/t_asan.out"
+echo "tuples under AddressSanitizer: clean"
+
 # Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
 # record and a union that cross the package boundary.
 pmf=scripts/ci/native-via-tir/project/lyric.toml

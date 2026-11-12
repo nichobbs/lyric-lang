@@ -168,6 +168,19 @@ pub record TirLowerEnv {
   /// A set: the value is always `true`.
   enums: Map[Int, Bool] = newMap()
   enumCases: Map[Int, Int] = newMap()
+  /// The tuple layouts the code generator has registered, keyed by `renderTy` of the tuple type.
+  /// A tuple is a synthesised heap record, so the code generator cannot list them up front: a
+  /// lowering that meets one that is missing records it in `needTuples`, fails, and is run
+  /// again with the layout added.
+  tuples: Map[String, TirRecLayout] = newMap()
+  needTuples: List[TirTupleNeed] = newList()
+}
+
+/// A tuple type the lowering needs a layout for: its key in `TirLowerEnv.tuples` and the
+/// element types the code generator registers the record from.
+pub record TirTupleNeed {
+  key: String
+  elemTys: List[NType]
 }
 
 /// A union case's payload: the struct its fields are stored through and each field's type
@@ -214,6 +227,8 @@ pub record TirRecLayout {
 pub record TirFallback {
   sym: SymbolId
   reason: String
+  /// Tuple layouts the failed lowering found missing; registering them and lowering again can succeed.
+  needTuples: List[TirTupleNeed] = newList()
 }
 
 pub record TirLowered {
@@ -496,28 +511,52 @@ func primN(k: in TPrimKind): NType {
 
 /// The LLVM type of a scalar `Ty`; None for anything this slice does not lower.
 func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
-  tyToNIn(env.recs, env.unions, env.enums, t)
-}
-
-func tyToNIn(
-  recs: in Map[Int, TirRecLayout], unions: in Map[Int, TirUnionLayout], enums: in Map[Int, Bool], t: in Ty
-): Option[NType] {
   match t {
     case TPrim(k) -> Some(value = primN(k))
-    case TRefined(u, _, _, _) -> tyToNIn(recs, unions, enums, u)
+    case TRefined(u, _, _, _) -> tyToN(env, u)
     case TNever -> Some(value = NVoid)
     case TNamed(sym, args) -> if args.count == 0 {
-      match mapGet(recs, sym.id) {
+      match mapGet(env.recs, sym.id) {
         case Some(r) -> Some(value = r.ty)
-        case None -> match mapGet(unions, sym.id) {
+        case None -> match mapGet(env.unions, sym.id) {
           case Some(u) -> Some(value = u.ty)
-          case None -> if enums.containsKey(sym.id) { Some(value = NI32) } else { None }
+          case None -> if env.enums.containsKey(sym.id) { Some(value = NI32) } else { None }
         }
       }
     } else {
       None
     }
+    case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
     case _ -> None
+  }
+}
+
+/// The layout of a tuple type.  A tuple whose layout the code generator has not registered yet
+/// is recorded in `env.needTuples` (once) and reads as unsupported for this attempt.
+func tupleLayout(env: in TirLowerEnv, t: in Ty): Option[TirRecLayout] {
+  val elems = match t { case TTuple(xs) -> xs; case _ -> return None }
+  val tys: List[NType] = newList()
+  for x in elems {
+    match tyToN(env, x) {
+      case Some(nt) -> tys.add(nt)
+      case None -> return None
+    }
+  }
+  val key = renderTy(t)
+  match mapGet(env.tuples, key) {
+    case Some(lay) -> Some(value = lay)
+    case None -> {
+      var seen = false
+      for n in env.needTuples {
+        if n.key == key {
+          seen = true
+        }
+      }
+      if not seen {
+        env.needTuples.add(TirTupleNeed(key = key, elemTys = tys))
+      }
+      None
+    }
   }
 }
 
@@ -798,6 +837,7 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XConstruct(sym, fields) -> lowerConstruct(c, sym, fields)
     case XField(recv, field) -> lowerField(c, recv, field)
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
+    case XTuple(elems) -> lowerTuple(c, e, elems)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
   }
 }
@@ -939,41 +979,59 @@ func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
   }
   match recLayout(c, sym) {
     case None -> unitVal()
-    case Some(lay) -> {
-      if fields.count != lay.fieldTys.count {
-        return unsupported(
-          c,
-          "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields"
-        )
-      }
-      val vals: List[Val] = newList()
-      var i = 0
-      while i < fields.count {
-        val v = borrow(c, lowerExpr(c, fields[i]))
-        if not fieldTypeOk(c, lay, i, v) {
-          return unitVal()
-        }
-        vals.add(v)
-        i = i + 1
-      }
-      if lay.byValue {
-        var cur: NValue = NUndef(ty = lay.ty)
-        var j = 0
-        while j < vals.count {
-          cur = insertField(c, lay, cur, j, vals[j])
-          j = j + 1
-        }
-        return Val(ty = lay.ty, value = cur)
-      }
-      val obj = allocHeap(c, lay)
-      var j = 0
-      while j < vals.count {
-        storeHeapField(c, lay, obj, j, vals[j])
-        j = j + 1
-      }
-      Val(ty = lay.ty, value = obj, owned = true)
-    }
+    case Some(lay) -> constructWith(c, lay, fields)
   }
+}
+
+func constructWith(c: in LCtx, lay: in TirRecLayout, fields: in List[TExpr]): Val {
+  if fields.count != lay.fieldTys.count {
+    return unsupported(
+      c,
+      "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields"
+    )
+  }
+  val vals: List[Val] = newList()
+  var i = 0
+  while i < fields.count {
+    val v = borrow(c, lowerExpr(c, fields[i]))
+    if not fieldTypeOk(c, lay, i, v) {
+      return unitVal()
+    }
+    vals.add(v)
+    i = i + 1
+  }
+  if lay.byValue {
+    var cur: NValue = NUndef(ty = lay.ty)
+    var j = 0
+    while j < vals.count {
+      cur = insertField(c, lay, cur, j, vals[j])
+      j = j + 1
+    }
+    return Val(ty = lay.ty, value = cur)
+  }
+  val obj = allocHeap(c, lay)
+  var j = 0
+  while j < vals.count {
+    storeHeapField(c, lay, obj, j, vals[j])
+    j = j + 1
+  }
+  Val(ty = lay.ty, value = obj, owned = true)
+}
+
+/// A tuple value: a heap record of its elements, built like any heap record.
+func lowerTuple(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
+  match tupleLayout(c.env, e.ty) {
+    case None -> unsupported(c, "a tuple of " + renderTy(e.ty))
+    case Some(lay) -> constructWith(c, lay, elems)
+  }
+}
+
+/// Element `i` of a tuple, borrowed from the tuple object.
+func loadTupleElem(c: in LCtx, lay: in TirRecLayout, tuple: in NValue, i: in Int): Val {
+  val ft = lay.fieldTys[i]
+  val d = tmp(c)
+  c.insns.add(NLoad(dest = d, ty = ft, ptr = fieldPtr(c, lay, tuple, i)))
+  Val(ty = ft, value = NLocal(name = d))
 }
 
 /// A field read: `extractvalue` out of a by-value record, a load through the field pointer
@@ -1882,6 +1940,14 @@ func orV(c: in LCtx, a: in Val, b: in Val): Val {
 func patBinds(pat: in TPat): Bool {
   match pat.kind {
     case TpBind(_, _) -> true
+    case TpTuple(elems) -> {
+      for a in elems {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
     case TpOr(alts) -> {
       for a in alts {
         if patBinds(a) {
@@ -1962,6 +2028,26 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
       }
       case None -> unsupported(c, "a case pattern on a value that is not an enum")
     }
+    case TpTuple(elems) -> match tupleLayout(c.env, sty) {
+      case None -> unsupported(c, "a tuple pattern on " + renderTy(sty))
+      case Some(lay) -> {
+        val tys = match sty { case TTuple(xs) -> xs; case _ -> newList() }
+        var acc = trueV()
+        var i = 0
+        while i < elems.count {
+          if subPatTests(elems[i]) {
+            match lay.fieldTys[i] {
+              case NVoid -> c.problems.add("a pattern on a Unit element")
+              case _ -> {
+                acc = andV(c, acc, patTestAny(c, elems[i], loadTupleElem(c, lay, scrut.value, i), tys[i]))
+              }
+            }
+          }
+          i = i + 1
+        }
+        acc
+      }
+    }
     case TpOr(alts) -> {
       var acc = patTest(c, alts[0], scrut, sty)
       var i = 1
@@ -1975,6 +2061,14 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
   }
 }
 
+/// `patTest`, opening the value first when it is a union.
+func patTestAny(c: in LCtx, pat: in TPat, v: in Val, ty: in Ty): Val {
+  match unionOfTy(c, ty) {
+    case Some(ul) -> patTestU(c, openUnion(c, ul, v), pat)
+    case None -> patTest(c, pat, v, ty)
+  }
+}
+
 /// Store the scrutinee into the locals `pat` binds.
 func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
   match pat.kind {
@@ -1985,7 +2079,58 @@ func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
         case None -> ()
       }
     }
+    case TpTuple(elems) -> match tupleLayout(c.env, pat.ty) {
+      case None -> c.problems.add("a tuple pattern on " + renderTy(pat.ty))
+      case Some(lay) -> {
+        var i = 0
+        while i < elems.count {
+          if patBinds(elems[i]) {
+            match lay.fieldTys[i] {
+              case NVoid -> c.problems.add("a binding of a Unit element")
+              case _ -> patBind(c, elems[i], loadTupleElem(c, lay, scrut.value, i))
+            }
+          }
+          i = i + 1
+        }
+      }
+    }
     case _ -> ()
+  }
+}
+
+/// A destructuring `let`: each bound name becomes an ordinary local that owns its value (a
+/// reference element is retained), so the tuple itself can be released at the end of the
+/// statement.
+func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
+  match pat.kind {
+    case TpWild -> ()
+    case TpBind(decl, inner) -> match inner {
+      case Some(_) -> c.problems.add("a binding with a sub-pattern")
+      case None -> match declareSlot(c, decl) {
+        case None -> ()
+        case Some(slot) -> {
+          val ov = own(c, v)
+          c.insns.add(NStore(ty = slot.ty, value = ov.value, ptr = NLocal(name = slot.ptr)))
+          trackRef(c, slot)
+        }
+      }
+    }
+    case TpTuple(elems) -> match tupleLayout(c.env, pat.ty) {
+      case None -> c.problems.add("a tuple pattern on " + renderTy(pat.ty))
+      case Some(lay) -> {
+        var i = 0
+        while i < elems.count {
+          if patBinds(elems[i]) {
+            match lay.fieldTys[i] {
+              case NVoid -> c.problems.add("a binding of a Unit element")
+              case _ -> patBindOwned(c, elems[i], loadTupleElem(c, lay, v.value, i))
+            }
+          }
+          i = i + 1
+        }
+      }
+    }
+    case _ -> c.problems.add("a destructuring let pattern of this kind")
   }
 }
 
@@ -2005,9 +2150,10 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
     case Some(ul) -> Some(value = openUnion(c, ul, scrut0))
     case None -> None
   }
-  val scrut = if isStringN(scrut0.ty) { borrow(c, scrut0) } else { scrut0 }
+  val isTuple = match scrutE.ty { case TTuple(_) -> true; case _ -> false }
+  val scrut = if isStringN(scrut0.ty) or isTuple { borrow(c, scrut0) } else { scrut0 }
   val isUnion = match us { case Some(_) -> true; case None -> false }
-  if isRefN(scrut.ty) and not isUnion and not isStringN(scrut.ty) {
+  if isRefN(scrut.ty) and not isUnion and not isStringN(scrut.ty) and not isTuple {
     return unsupported(c, "a match on a reference value")
   }
   val wantRef = match tyToN(c.env, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
@@ -2172,6 +2318,11 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
           }
         }
       }
+      case TpTuple(_) -> {
+        val v = lowerExpr(c, init)
+        patBindOwned(c, pat, v)
+        discard(c, v)
+      }
       case _ -> {
         c.problems.add("a destructuring let")
       }
@@ -2288,6 +2439,13 @@ func fallback(sym: in SymbolId, why: in String): Result[TirLowered, TirFallback]
 /// construct this slice does not cover; the caller keeps the AST path's
 /// lowering of `fn` and counts the fallback.
 pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowered, TirFallback] {
+  match lowerTirFunctionInner(env, fn) {
+    case Ok(l) -> Ok(value = l)
+    case Err(f) -> Err(error = TirFallback(sym = f.sym, reason = f.reason, needTuples = env.needTuples))
+  }
+}
+
+func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowered, TirFallback] {
   if fn.typeParams.count > 0 {
     return fallback(fn.sym, "a generic function")
   }
