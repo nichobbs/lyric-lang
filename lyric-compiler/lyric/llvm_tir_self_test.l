@@ -1133,3 +1133,91 @@ test "an operator on a union and a case outside the registered unions fall back"
   val ir2 = render(lowerTirFunction(shapeEnv(names, false), fnDecl(100, newList(), shapeT(), unknown)))
   assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
 }
+
+test "a string interpolation is a left fold of concatenations that releases each intermediate" {
+  // func f(n: Int, s: String): String { "n=${n} s=${s}" }
+  val n = local(1, "n", intT(), false)
+  val s = local(2, "s", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(n))
+  ps.add(param(s))
+  val parts: List[TExpr] = newList()
+  parts.add(strLit(3, "n="))
+  parts.add(
+    ex(
+      4,
+      strT(),
+      XCall(
+        callee = Intrinsic(op = IoBuiltin(name = "Int.toString")),
+        args = list1Arg(ex(5, intT(), XLocal(local = n.id)))
+      )
+    )
+  )
+  parts.add(strLit(6, " s="))
+  parts.add(ex(7, strT(), XLocal(local = s.id)))
+  val body = ex(8, strT(), XInterp(parts = parts))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, strT(), body)))
+  assertTrue(Str.contains(ir, "call %LyricString* @lyric_string_concat("), ir)
+  assertTrue(Str.contains(ir, "call void @lyric_release("), "an intermediate string is released: " + ir)
+  assertTrue(Str.contains(ir, "ret %LyricString*"), ir)
+}
+
+func list1Arg(a: in TExpr): List[TArg] {
+  val xs: List[TArg] = newList()
+  xs.add(TArgIn(value = a))
+  xs
+}
+
+test "a match on a string tests literal patterns with the runtime comparison" {
+  // func f(s: String): Int { match s { "a" -> 1; _ -> 0 } }
+  val s = local(1, "s", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(s))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(2, strT(), TpLit(lit = TLString(text = "a"))), None, intLit(3, 1i64)))
+  arms.add(arm(pat(4, strT(), TpWild), None, intLit(5, 0i64)))
+  val m = ex(6, intT(), XMatch(scrutinee = ex(7, strT(), XLocal(local = s.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "call i32 @lyric_string_eq("), ir)
+  assertTrue(Str.contains(ir, "phi i32"), ir)
+}
+
+test "a float literal pattern compares with fcmp oeq" {
+  val x = local(1, "x", TPrim(TPDouble), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(x))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(2, TPrim(TPDouble), TpLit(lit = TLFloat(value = 1.0))), None, intLit(3, 1i64)))
+  arms.add(arm(pat(4, TPrim(TPDouble), TpWild), None, intLit(5, 0i64)))
+  val m = ex(
+    6,
+    intT(),
+    XMatch(scrutinee = ex(7, TPrim(TPDouble), XLocal(local = x.id)), arms = arms, exhaustive = true)
+  )
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.contains(ir, "fcmp oeq double"), ir)
+}
+
+test "indexing a string reads the scalar value at a byte offset; other indexing falls back" {
+  val s = local(1, "s", strT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(s))
+  val body = ex(
+    2,
+    TPrim(TPChar),
+    XIndex(recv = ex(3, strT(), XLocal(local = s.id)), idx = intLit(4, 0i64), how = IkString)
+  )
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, TPrim(TPChar), body)))
+  assertTrue(Str.contains(ir, "call i32 @lyric_string_char_at("), ir)
+  val bad = ex(5, intT(), XIndex(recv = ex(6, strT(), XLocal(local = s.id)), idx = intLit(7, 0i64), how = IkList))
+  val ir2 = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), bad)))
+  assertTrue(Str.startsWith(ir2, "FALLBACK:"), ir2)
+}

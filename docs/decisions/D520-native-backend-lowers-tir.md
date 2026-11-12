@@ -87,3 +87,11 @@ and still holds generics and un-elaborated contracts.
 - A case value: an inline union is built in a hoisted stack slot and loaded; a heap union is allocated after its fields are evaluated (`allocObject`, shared with heap records) and returned owned, the object owning its reference payload. Field types are checked against the layout.
 - `match` on a union: the scrutinee is a borrowed pointer (an inline value is spilled to a stack slot). A `TpCtor` pattern tests the discriminant and then its scalar sub-patterns (literal, range, or-pattern) on the payload fields, and a binding stores the loaded field. A bound reference is a borrow of the scrutinee, which outlives the arm, so it is neither retained nor released and a guard that fails leaks nothing; a mutable reference binding falls back. Reading a field of a case the discriminant did not select is memory-safe (the payload area covers every case) and its value is used only under the discriminant test.
 - Still on the AST path: generic unions (`Option`, `Result` until monomorphisation, docs/70 phase 3c), enums, nested case patterns, record patterns, `XPropagate`.
+
+## Slice 8: text and common patterns
+
+- `XInterp` is a left fold of `lyric_string_concat` over its (already `String`) parts; each intermediate is released as soon as the next concatenation has run, and the result is owned by the caller.
+- `match` on a `String` scrutinee: a borrowed operand tested with `lyric_string_eq` for each `TpLit(TLString)`, with wildcard and borrowed bindings. A `Double`/`Float` literal pattern compares with `fcmp oeq`.
+- `s[i]` on a string (`IkString`) calls `lyric_string_char_at` with the index widened to 64 bits. Indexing a list, map, array or slice stays on the AST path.
+- A pattern binding of a reference scrutinee is a borrow (`bindBorrowed`) for every scrutinee kind, not only unions.
+- Fallback census of a probe program (before this slice): `XInterp`, a match on a reference, a non-integer literal pattern, `XIndex`, enums, nested case patterns (the builder does not prove them exhaustive), `List` (an extern type; its calls are generic), tuples, function types and `Option` (generic, phase 3c).

@@ -117,4 +117,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/u_tir.ll" lyric-rt/b
 diff -u "$work/u_tir.out" "$work/u_asan.out"
 echo "unions under AddressSanitizer: clean"
 
+
+# Text (docs/70 phase 4a): interpolation, matching a String against literals, a Double literal
+# pattern and string indexing from TIR, then the same IR under AddressSanitizer.
+xsrc=scripts/ci/native-via-tir/text.l
+"$lyric_bin" build --target native "$xsrc" -o "$work/x_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$xsrc" -o "$work/x_tir" 2> "$work/x_census.txt" >/dev/null
+cat "$work/x_census.txt"
+"$work/x_ast" > "$work/x_ast.out"
+"$work/x_tir" > "$work/x_tir.out"
+diff -u "$work/x_ast.out" "$work/x_tir.out"
+printf 'n=7 s=q!\n2\n0\n0.5\n2.5\nz\n' | diff -u - "$work/x_tir.out"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/x_census.txt" || {
+  echo "::error::expected every function of text.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/x_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/x_asan"
+"$work/x_asan" > "$work/x_asan.out"
+diff -u "$work/x_tir.out" "$work/x_asan.out"
+echo "text under AddressSanitizer: clean"
+
 echo "native-via-tir-e2e: ok"
