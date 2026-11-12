@@ -24,11 +24,16 @@ fi
 
 # 2. A chunked response whose second chunk is held back 1.5 s: the first line
 #    must arrive at least one second before the second.
-stamps="$(curl -sk --http2 -N --max-time 8 "$base/stream" | while IFS= read -r line; do echo "$(date +%s%3N) $line"; done)"
+#    Arrivals are stamped with $EPOCHREALTIME, a bash builtin: forking `date` for each line
+#    let a starved runner delay the first stamp by most of the gap.
+stamps="$(curl -sk --http2 -N --max-time 8 "$base/stream" | while IFS= read -r line; do
+  now="${EPOCHREALTIME/./}"
+  echo "$((now / 1000)) $line"
+done)"
 t_first="$(echo "$stamps" | awk '/first/ {print $1}')"
 t_second="$(echo "$stamps" | awk '/second/ {print $1}')"
 if [ -z "$t_first" ] || [ -z "$t_second" ] || [ $((t_second - t_first)) -lt 1000 ]; then
-  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second)"
+  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second); server wrote: $(grep DOTNET-H2-SMOKE-STREAM "$server_log" | tail -1)"
   exit 1
 fi
 

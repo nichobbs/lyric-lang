@@ -34,6 +34,7 @@ import Std.HttpServer
 import Std.Encoding
 import Std.Collections
 import Std.String
+import Std.Time
 
 val serverCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -109,8 +110,12 @@ func streamTwoChunks(ctx: in HttpContext): Unit {
   val headers: Map[String, String] = newMap()
   val s = beginChunkedResponse(ctx, 200, "text/plain; charset=utf-8", headers)
   val _1 = streamWriteChunk(s, encodeUtf8("first\n"), 0, 6)
+  val firstAt = nowEpochMillis()
   threadSleep(1500)
   val _2 = streamWriteChunk(s, encodeUtf8("second\n"), 0, 7)
+  // The server's own write times, so a client-side timing failure can be told apart from a
+  // server that held a chunk back (the scheduler smoke prints these when check 2 fails).
+  println("DOTNET-H2-SMOKE-STREAM first=" + toString(firstAt) + " second=" + toString(nowEpochMillis()))
   endChunkedResponse(ctx, s)
 }
 
