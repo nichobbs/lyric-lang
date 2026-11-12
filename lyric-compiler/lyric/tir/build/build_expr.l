@@ -2991,8 +2991,9 @@ func buildMethodCall(
   }
   val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
   val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
+  val inst = match instantiateMethod(env, e, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
-  val rest = match buildCallArgs(env, e, site.sig, args, pre) { case Some(a) -> a; case None -> return None }
+  val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
   // The receiver is evaluated before any argument: when arguments were hoisted ahead of
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
@@ -3013,7 +3014,7 @@ func buildMethodCall(
   }
   val callee = match site.iface {
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
-    case None -> Direct(sym = sym, typeArgs = newList())
+    case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
   noteFuncSym(
     env,

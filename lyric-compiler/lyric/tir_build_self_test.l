@@ -2101,3 +2101,24 @@ test "a generic method of a non-generic record binds its parameter under Owner.f
   assertEqualInt(pb.pkg.funcs[0].typeParams.count, 1, "its own U")
   assertEqualInt(pb.pkg.funcs[0].ownerParamCount, 0, "the owner declares none")
 }
+
+test "a call of a method of a generic record instantiates the owner's parameter from the receiver (D580)" {
+  val pb = packageOf(
+    "package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\nfunc f(b: in Box[Int]): Int {\n  b.get()\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Box.get and f")
+}
+
+test "a call of a method with its own parameter beside the owner's instantiates both (D580)" {
+  val pb = packageOf(
+    "package App\nrecord Box[T] {\n  v: T\n  func pair[U](self: in Box[T], u: in U): (T, U) { (self.v, u) }\n}\nfunc f(b: in Box[Int]): (Int, String) {\n  b.pair(\"x\")\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Box.pair and f")
+}
+
+test "a call of a generic protected type's func instantiates the owner's parameter (D580)" {
+  val pb = packageOf(
+    "package App\nprotected type Cell[T] {\n  var v: T\n  func get(): T {\n    v\n  }\n}\nfunc f(c: in Cell[Int]): Int {\n  c.get()\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.get and f")
+}

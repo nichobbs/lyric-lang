@@ -5723,19 +5723,23 @@ func recordMethodCalleeNode(
 
 // The method call's shape under its `NodeId` (`methodCallByNode`, D389): its
 // receiver-dropped signature and receiver type, and the interface the receiver
-// is a value of.  A non-generic call on a closed receiver only; a generic one
-// waits for the generic-call step.
+// is a value of.  A member of a record, protected type or `impl` is recorded with
+// its generics (D580: the owner's parameters then its own, instantiated from the
+// receiver's type arguments); a dot-named generic function and a generic
+// interface receiver wait for the generic-call step.
 func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
-  if mp.sig.generics.count > 0 {
+  if mp.sig.generics.count > 0 and mp.fullSig.isSome() {
     return
   }
   val recv = unrefine(recvTy)
   var iface: Option[SymbolId] = None
+  var recvArgs = 0
   match recv {
     case TyUser(id, _, targs) -> {
-      if targs.count > 0 {
+      if targs.count > 0 and mp.fullSig.isSome() {
         return
       }
+      recvArgs = targs.count
       match symbolOfDefId(tbl, id) {
         case Some(s) -> match s.kind { case DKInterface(_, _) -> { iface = Some(value = id) }; case _ -> () }
         case None -> ()
@@ -5747,6 +5751,10 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
   // function `Feed.f(self, ...)` called on the value is a plain function.
   if mp.fullSig.isSome() {
     iface = None
+  }
+  // An interface call carries no type arguments yet.
+  if iface.isSome() and (mp.sig.generics.count > 0 or recvArgs > 0) {
+    return
   }
   val declared = match mp.fullSig {
     case Some(full) -> if full.params.count > 0 { full.params[0].ty } else { recv }
