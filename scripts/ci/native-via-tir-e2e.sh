@@ -187,6 +187,25 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/c_tir.ll" lyric-rt/b
 diff -u "$work/c_tir.out" "$work/c_asan.out"
 echo "closures under AddressSanitizer: clean"
 
+# out/inout parameters and assignment to record fields (docs/70 phase 4a), then the same IR under
+# AddressSanitizer.
+isrc=scripts/ci/native-via-tir/inout.l
+"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
+cat "$work/i_census.txt"
+"$work/i_ast" > "$work/i_ast.out"
+"$work/i_tir" > "$work/i_tir.out"
+diff -u "$work/i_ast.out" "$work/i_tir.out"
+printf '3\n42\nbc\n4t!!\ndt!!\n' | diff -u - "$work/i_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/i_census.txt" || {
+  echo "::error::expected every function of inout.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/i_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/i_asan"
+"$work/i_asan" > "$work/i_asan.out"
+diff -u "$work/i_tir.out" "$work/i_asan.out"
+echo "inout under AddressSanitizer: clean"
+
 # Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
 # record and a union that cross the package boundary.
 pmf=scripts/ci/native-via-tir/project/lyric.toml

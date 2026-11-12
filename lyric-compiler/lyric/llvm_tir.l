@@ -1639,21 +1639,38 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
         case Some(irName) -> {
           val nargs: List[NArg] = newList()
+          var anyByRef = false
+          for a in args {
+            match a {
+              case TArgIn(_) -> ()
+              case _ -> {
+                anyByRef = true
+              }
+            }
+          }
+          // A reference passed `in` beside a by-reference argument may be the very cell the callee
+          // writes: it is held for the call so the write cannot free what the callee still reads.
+          val held: List[Val] = newList()
           for a in args {
             match a {
               case TArgIn(v) -> {
                 val av = borrow(c, lowerExpr(c, v))
                 match av.ty {
                   case NVoid -> c.problems.add("a Unit argument")
-                  case _ -> nargs.add(NArg(ty = av.ty, value = av.value))
+                  case _ -> {
+                    if anyByRef and isRefN(av.ty) {
+                      retainRef(c, av.ty, av.value)
+                      held.add(av)
+                    }
+                    nargs.add(NArg(ty = av.ty, value = av.value))
+                  }
                 }
               }
-              case _ -> {
-                c.problems.add("an out or inout argument")
-              }
+              case TArgOut(place) -> nargs.add(byRefArg(c, place))
+              case TArgInout(place) -> nargs.add(byRefArg(c, place))
             }
           }
-          match tyToN(c.env, e.ty) {
+          val result = match tyToN(c.env, e.ty) {
             case None -> unsupported(c, "a call returning " + renderTy(e.ty))
             case Some(rt) -> match rt {
               case NVoid -> {
@@ -1667,6 +1684,10 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
+          for h in held {
+            releaseRef(c, h.ty, h.value)
+          }
+          result
         }
       }
     }
@@ -1935,6 +1956,58 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   val closOut = tmp(c)
   c.insns.add(NBitcast(dest = closOut, fromTy = implTy, value = obj, toTy = closTy))
   Val(ty = closTy, value = NLocal(name = closOut), owned = true)
+}
+
+/// The address of an `out` or `inout` argument's place, as the pointer argument the callee's
+/// parameter takes: a local's slot, or a field of a heap record (a field of a by-value record
+/// lives in its owner's aggregate and has no address).
+func byRefArg(c: in LCtx, place: in TPlace): NArg {
+  val none = NArg(ty = NI8, value = NLitInt(v = 0i64, ty = NI8))
+  match place.kind {
+    case PlLocal(id) -> match mapGet(c.slots, id.id) {
+      case Some(slot) -> NArg(ty = NPtr(pointee = slot.ty), value = NLocal(name = slot.ptr))
+      case None -> {
+        c.problems.add("a by-reference argument with no slot")
+        none
+      }
+    }
+    case PlField(recv, field) -> match heapFieldPlace(c, recv, field) {
+      case Some(fp) -> NArg(ty = NPtr(pointee = fp.ty), value = fp.value)
+      case None -> none
+    }
+    case _ -> {
+      c.problems.add("a by-reference argument that is not a local or a record field")
+      none
+    }
+  }
+}
+
+/// The address of field `field` of the heap record `recv` evaluates to, typed with the field's
+/// type.  The receiver is borrowed, so an owned temporary stays alive until the statement ends.
+func heapFieldPlace(c: in LCtx, recv: in TExpr, field: in FieldRef): Option[Val] {
+  match recLayout(c, field.owner) {
+    case None -> None
+    case Some(lay) -> {
+      if lay.byValue {
+        c.problems.add("a field of a by-value record as a place")
+        return None
+      }
+      if field.index < 0 or field.index >= lay.fieldTys.count {
+        c.problems.add("field " + field.name + " outside its record's layout")
+        return None
+      }
+      match lay.fieldTys[field.index] {
+        case NVoid -> {
+          c.problems.add("a Unit field as a place")
+          None
+        }
+        case ft -> {
+          val r = borrow(c, lowerExpr(c, recv))
+          Some(value = Val(ty = ft, value = fieldPtr(c, lay, r.value, field.index)))
+        }
+      }
+    }
+  }
 }
 
 /// `toString` of a scalar: the runtime's formatter, a fresh owned string.
@@ -2220,28 +2293,39 @@ func assignRef(c: in LCtx, slot: in Slot, op: in AssignKind, value: in TExpr): V
   unitVal()
 }
 
+/// `x = e` and `x op= e` on a cell: a local's slot, a by-reference parameter's pointer or a
+/// heap record's field.  A reference is replaced (the new value owned, the old one released).
+func assignSlot(c: in LCtx, slot: in Slot, placeTy: in Ty, op: in AssignKind, value: in TExpr): Val {
+  if isRefN(slot.ty) {
+    return assignRef(c, slot, op, value)
+  }
+  val rhs = lowerExpr(c, value)
+  match assignOp(op) {
+    case None -> c.insns.add(NStore(ty = slot.ty, value = rhs.value, ptr = NLocal(name = slot.ptr)))
+    case Some(iop) -> {
+      val cur = tmp(c)
+      c.insns.add(NLoad(dest = cur, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
+      val res = lowerBinary(c, iop, placeTy, slot.ty, NLocal(name = cur), rhs.value, value.span.startPos.line)
+      c.insns.add(NStore(ty = slot.ty, value = res.value, ptr = NLocal(name = slot.ptr)))
+    }
+  }
+  unitVal()
+}
+
 func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExpr): Val {
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "an assignment to a local with no slot")
-      case Some(slot) -> {
-        if isRefN(slot.ty) {
-          return assignRef(c, slot, op, value)
-        }
-        val rhs = lowerExpr(c, value)
-        match assignOp(op) {
-          case None -> c.insns.add(NStore(ty = slot.ty, value = rhs.value, ptr = NLocal(name = slot.ptr)))
-          case Some(iop) -> {
-            val cur = tmp(c)
-            c.insns.add(NLoad(dest = cur, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
-            val res = lowerBinary(c, iop, place.ty, slot.ty, NLocal(name = cur), rhs.value, value.span.startPos.line)
-            c.insns.add(NStore(ty = slot.ty, value = res.value, ptr = NLocal(name = slot.ptr)))
-          }
-        }
-        unitVal()
+      case Some(slot) -> assignSlot(c, slot, place.ty, op, value)
+    }
+    case PlField(recv, field) -> match heapFieldPlace(c, recv, field) {
+      case None -> unitVal()
+      case Some(fp) -> match fp.value {
+        case NLocal(name) -> assignSlot(c, Slot(ptr = name, ty = fp.ty), place.ty, op, value)
+        case _ -> unsupported(c, "an assignment to a field")
       }
     }
-    case _ -> unsupported(c, "an assignment to a field, element or global")
+    case _ -> unsupported(c, "an assignment to an element or global")
   }
 }
 
@@ -2827,10 +2911,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   val params: List[NParam] = newList()
   val stores: List[NInsn] = newList()
   for p in fn.params {
-    match p.mode {
-      case TMIn -> ()
-      case _ -> return fallback(fn.sym, "an out or inout parameter")
-    }
+    val byRef = match p.mode { case TMIn -> false; case _ -> true }
     val pt = match tyToN(env, p.local.ty) {
       case Some(t) -> t
       case None -> return fallback(fn.sym, "parameter type " + renderTy(p.local.ty))
@@ -2840,10 +2921,18 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
       case _ -> ()
     }
     val pname = "a" + toString(p.local.id.id)
-    params.add(NParam(name = pname, ty = pt))
-    match declareSlot(c, p.local) {
-      case Some(slot) -> stores.add(NStore(ty = pt, value = NLocal(name = pname), ptr = NLocal(name = slot.ptr)))
-      case None -> ()
+    if byRef {
+      // An out or inout parameter is the address of the caller's cell: the local's slot is that
+      // pointer, so every read and write reaches the caller's storage, and the callee owns
+      // nothing (it is never tracked for release).
+      params.add(NParam(name = pname, ty = NPtr(pointee = pt)))
+      c.slots.add(p.local.id.id, Slot(ptr = pname, ty = pt))
+    } else {
+      params.add(NParam(name = pname, ty = pt))
+      match declareSlot(c, p.local) {
+        case Some(slot) -> stores.add(NStore(ty = pt, value = NLocal(name = pname), ptr = NLocal(name = slot.ptr)))
+        case None -> ()
+      }
     }
   }
   val lowered = assembleFn(c, irName, params, stores, body)
