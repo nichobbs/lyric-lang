@@ -344,7 +344,7 @@ m.files.snapshot();                    // { '/out/report.txt': Uint8Array, ... }
 
 Open, read, write, append, seek, truncate, rename, remove, directory listing and `stat` (size, type, modified time) all work. Paths cannot leave `/`, there are no symbolic links, and a file is capped at 1 GiB. The contents live only as long as the instance. `files` is a reserved export name, like `run` and `memory`.
 
-`Std.Http` works in the module shape: requests go through the host's `fetch` (or the function you pass as `imports['std.http'].fetch`). TLS options (`withCaCertificate`, `withMinTlsVersion`, `withInsecureSkipVerify`, ...) and Unix sockets are not available in a browser, so a client that uses them fails every request with `ConnectionFailed` rather than ignoring the option; `tlsConfigSupported()` is `false`. HTTP version pins have no effect and `negotiatedVersion` reports HTTP/1.1.
+`Std.Http` works in the module shape: requests go through the host's `fetch` (or the function you pass as `imports['std.http'].fetch`). A binary body (`withBytesBody`) reaches `fetch` as a `Uint8Array`; a replacement `fetch` import receives it as base64 text with its eighth argument, `bodyIsBase64`, set. TLS options (`withCaCertificate`, `withMinTlsVersion`, `withInsecureSkipVerify`, ...) and Unix sockets are not available in a browser, so a client that uses them fails every request with `ConnectionFailed` rather than ignoring the option; `tlsConfigSupported()` is `false`. HTTP version pins have no effect and `negotiatedVersion` reports HTTP/1.1.
 
 ::: sidebar
 **Why the native backend and not .NET?** The first design compiled through .NET's WASI

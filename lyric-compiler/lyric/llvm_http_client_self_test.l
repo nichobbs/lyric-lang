@@ -1627,3 +1627,78 @@ test "Std.HttpHost native client rejects a URL port number above 65535 (item T, 
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpHost native client rejects a URL port above 65535")
 }
+
+test "Std.HttpHost native client sends a byte body unchanged (item U, withBytesBody)" {
+  // The server thread reads the raw request off the socket and checks its
+  // tail: the Content-Type as written, a Content-Length of 7, the blank line,
+  // then the seven body bytes (NUL, 0xFF, a lone UTF-8 continuation byte,
+  // CR, LF, NUL, a lone UTF-8 lead byte), none of which survives a text body.
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.String as Str\n" +
+    "import Std.TcpHost\n" +
+    "import Std.HttpHost\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
+    "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val listener = match hostListen(\"127.0.0.1\", 0) {\n" +
+    "    case Ok(l) -> l\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val port = hostLocalPort(listener)\n" +
+    "  val worker: () -> NativePtr[Byte] = { ->\n" +
+    "    match hostAccept(listener) {\n" +
+    "      case Err(_) -> toC(\"accept_failed\")\n" +
+    "      case Ok(conn) -> {\n" +
+    "        var seen = \"\"\n" +
+    "        match hostRead(conn, 8192) {\n" +
+    "          case Ok(bytes) -> { seen = encodeHex(bytes).toLower() }\n" +
+    "          case Err(_) -> ()\n" +
+    "        }\n" +
+    "        val resp = \"HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "        val _ = hostWrite(conn, encodeUtf8(resp))\n" +
+    "        hostClose(conn)\n" +
+    "        val wantHead = encodeHex(encodeUtf8(\"Content-Type: application/octet-stream\\r\\nContent-Length: 7\\r\\n\\r\\n\")).toLower()\n" +
+    "        if Str.endsWith(seen, wantHead + \"00ff800d0a00c3\") { toC(\"ok\") } else { toC(\"wrong_bytes\") }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  }\n" +
+    "  var tid: Long = 0\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
+    "  if rc != 0 {\n" +
+    "    hostCloseListener(listener)\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  val client = hostDefaultClient()\n" +
+    "  val url = \"http://127.0.0.1:\" + port.toString() + \"/x\"\n" +
+    "  val body: slice[Byte] = [0u8, 255u8, 128u8, 13u8, 10u8, 0u8, 195u8]\n" +
+    "  val request = hostWithBytesBody(hostMakeRequest(\"PUT\", url), \"application/octet-stream\", body)\n" +
+    "  var finalStatus = 0\n" +
+    "  match await hostSendSafe(client, request) {\n" +
+    "    case Ok(response) -> { finalStatus = hostStatusCode(response) }\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
+    "  var serverOk = false\n" +
+    "  if rj == 0 {\n" +
+    "    val n = cStrlen(outp)\n" +
+    "    if n == 2 {\n" +
+    "      serverOk = true\n" +
+    "    }\n" +
+    "    freeC(outp)\n" +
+    "  }\n" +
+    "  hostCloseListener(listener)\n" +
+    "  if not serverOk {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  if finalStatus != 200 {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpHost native client sends a byte body unchanged")
+}

@@ -222,12 +222,14 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
    - `Http.getAsync(url: in String): Result[HttpResponse, HttpError]` ✅
    - `Http.postAsync(url: in String, body: in String): Result[HttpResponse, HttpError]` ✅
    - `Http.withJsonBody(request: in HttpRequest, json: in String): HttpRequest` ✅
+   - `Http.withBytesBody(request: in HttpRequest, contentType: in String, bytes: in slice[Byte]): Result[HttpRequest, HttpError]` ✅ — a binary body sent byte for byte on every target (dotnet, JVM, native, wasm module); `InvalidHeader` for an empty or unsafe content type; replayed by `retry`
    - `Http.withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError]` ✅ — rejects a reserved framing-header name (`Host`/`Connection`/`Content-Type`/`Content-Length`, case-insensitive) with `HttpError.ReservedHeader` instead of producing a duplicate header line on the wire (#6658), and a non-token name or a value containing CR, LF or NUL with `HttpError.InvalidHeader` (#7251)
 
 3. **Response parsing**
    - `HttpResponse.statusCode: Int` (accessor function) ✅
    - `HttpResponse.bodyText(): Result[String, IOError]` ✅ async source shape
    - `HttpResponse.bodyBytes(): Result[slice[Byte], IOError]` ✅ async source shape
+   - `HttpResponse.headerNames(): slice[String]` ✅ — the name of every response header, each once, for discovering headers by prefix
    - Status code helpers: `isSuccess()`, `isClientError()`, `isServerError()` ✅
 
 4. **Domain-friendly request/response modeling**
@@ -451,7 +453,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Json` (`json.l`) | `@stable` | `parseJson`, `rootElement`, `getProperty`, `tryGetProperty`, scalar getters, `encodeString`. `@runtime_checked`: `getProperty` and the `get*` getters require `hasProperty` / `isJson*` (#7251). |
 | `Std.Time` — core (`time.l`) | `@stable` | `now`, `zeroDuration`, duration constructors, `since`, `plus`, `totalMillis`/`Seconds`, `addMonths`/`Years`/`Days`, `fromEpochMillis`/`Seconds`, `parseOptInstant`, comparison/arithmetic helpers, `toIsoString`. |
 | `Std.Time` — DTO helpers (`time.l`) | package-private | `dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime` are internal FFI helpers (not `pub`) — they take/return the host `DateTimeOffset` extern type, so they stay implementation details behind the public `fromEpochMillis`/`fromEpochSeconds` surface. (`findTimeZone` and the kernel `TimeZone` extern surface were removed as dead code in D-N-027/#5237.) A full DateTimeOffset/timezone API is tracked for a future public, non-BCL-leaking design. |
-| `Std.Http` — core (`http.l`) | `@stable` | `HttpMethod`, `Url`/`Uri`, `HttpRequest`, `HttpResponse`, `Headers`, core constructors, `request`, `withHeader`, `withJsonBody`/`withTextBody`, `sendAsync`, `getAsync`, `postAsync`, `HttpResponse.*` status helpers, `bodyText`/`bodyBytes`, `HttpResponse.header`. |
+| `Std.Http` — core (`http.l`) | `@stable` | `HttpMethod`, `Url`/`Uri`, `HttpRequest`, `HttpResponse`, `Headers`, core constructors, `request`, `withHeader`, `withJsonBody`/`withTextBody`/`withBytesBody`, `sendAsync`, `getAsync`, `postAsync`, `HttpResponse.*` status helpers, `bodyText`/`bodyBytes`, `HttpResponse.header`/`headerNames`. |
 | `Std.Http` — advanced (`http.l`) | `@experimental` | `retry`, cancel/timeout variants (`sendWithCancelAsync`, `getWithCancelAsync`, `postWithCancelAsync`, `sendWithTimeoutAsync`, `getWithTimeoutAsync`, `postWithTimeoutAsync`, `HttpResponse.bodyTextWithCancel`), `clientWithRedirects`, `clientNoRedirects`. Cancellation/retry contract semantics still under design — tracked for stabilisation alongside `@experimental` → `@stable` cuts. |
 | `Std.Rest` (`rest.l`) | `@stable` | `RestError` union, `RestAuth` enum, `RestClient` opaque type; `create`, `withAuth`; `get`, `post`, `put`, `patch`, `delete`; `bodyText`, `jsonBody`, `jsonString`, `jsonInt`, `jsonBool`; `statusCode`, `isSuccess`, `ensureSuccess`. |
 | `Std.Tls` (`tls.l`) | `@stable` | PEM certificate/private-key loading (docs/61 §3.1, D128, phase 1.1 of epic #5874): `Certificate`/`Identity` opaque types, `TlsVersion` enum, `TlsServerConfig` record (mTLS-ready from v1 per D128 decision 5), `TlsError` union; `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem`. Backed by `Std.TlsHost` (`_kernel/tls_host.l` / `_kernel_jvm/tls_host.l`); only unencrypted PKCS8 private keys are supported (PKCS1/SEC1/encrypted keys are `Unsupported` on both targets, kept in parity deliberately). |

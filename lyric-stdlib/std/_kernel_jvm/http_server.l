@@ -702,12 +702,13 @@ pub func requestMethod(c: in HttpContext): String {
   }
 }
 
-/// Absolute path of the request URL.  Returns `"/"` if the host
-/// throws — same defensive shape as the .NET twin.
+/// Absolute path of the request target (everything before the first `?`),
+/// still percent-escaped, as the .NET and native twins return it; decode a
+/// segment with `urlDecode`.  Returns `"/"` if the host throws.
 @experimental
 pub func requestPath(c: in HttpContext): String {
   return try {
-    c.getRequestURI().getPath() ?? "/"
+    c.getRequestURI().getRawPath() ?? "/"
   } catch Bug as _ {
     "/"
   }
@@ -725,6 +726,19 @@ pub func requestBody(c: in HttpContext): String {
   }
 }
 
+/// The request body's bytes, exactly as received (a binary upload, or text
+/// in any encoding). `requestBody` is the UTF-8 text view of the same bytes.
+/// Empty on a transport error, as `requestBody` is `""`.
+@experimental
+pub func requestBodyBytes(c: in HttpContext): slice[Byte] {
+  val empty: slice[Byte] = []
+  return try {
+    storedBodyBytes(c)
+  } catch Bug as _ {
+    empty
+  }
+}
+
 // Request bodies larger than this are answered `413` and never reach
 // `nextContext`, the same cap the dotnet server applies by default
 // (`EngineLimits.defaults().maxBodyBytes`, 10 MiB). Before #7269 the body was
@@ -735,11 +749,21 @@ val maxRequestBodyBytes: Int = 10485760
 // The `HttpExchange` attribute the admitted body is stored under.
 val bodyAttribute: String = "lyric.requestBody"
 
+// The admitted body is stored as an ISO-8859-1 `String`: one char per byte, so
+// the exact bytes come back from `getBytes` and a binary body survives (a
+// UTF-8 decode at admission replaced every malformed sequence).
 // `HttpExchange.getAttribute` returns `Object`; `String.valueOf` turns the
 // stored `String` back into one (and an absent attribute into "null", which
 // `admitExchange` guarantees never happens for a queued exchange).
+val bodyCarrierCharset: String = "ISO-8859-1"
+
+func storedBodyBytes(c: in HttpContext): slice[Byte] {
+  val carrier: JString = JString.valueOf(c.getAttribute(bodyAttribute))
+  carrier.getBytes(bodyCarrierCharset)
+}
+
 func storedBody(c: in HttpContext): String {
-  JString.valueOf(c.getAttribute(bodyAttribute))
+  JString.new(storedBodyBytes(c), "UTF-8")
 }
 
 // Tail-position call: a discarded auto-FFI instance call on a parameter
@@ -748,7 +772,7 @@ func storeBody(c: in HttpContext, body: in String): Unit {
   c.setAttribute(bodyAttribute, body)
 }
 
-// Read the request body, bounded: `Some(text)` when it fits in
+// Read the request body, bounded: `Some(carrier)` (see `bodyCarrierCharset`) when it fits in
 // `maxRequestBodyBytes`, `None` when it is larger (at most `max + 1` bytes
 // are ever read: one byte past the cap is proof enough). A transport failure
 // reads as an empty body, as `requestBody` always has.
@@ -759,7 +783,7 @@ func readBoundedBody(c: in HttpContext): Option[String] {
     if ins.read() >= 0 {
       None
     } else {
-      Some(value = JString.new(bytes, "UTF-8"))
+      Some(value = JString.new(bytes, bodyCarrierCharset))
     }
   } catch Bug as _ {
     Some(value = "")

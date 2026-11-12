@@ -645,10 +645,11 @@ function fsWasiImports(fs, view, bytes) {
 const HTTP_BODY_LIMIT = 10 * 1024 * 1024;
 
 // The default `std.http.fetch` (the host import behind the module-shape
-// `Std.Http` kernel): request fields in, one reply String out.  Every failure,
+// `Std.Http` kernel): request fields in, one reply String out.  A binary request
+// body (`withBytesBody`) arrives as base64 with `bodyIsBase64` set.  Every failure,
 // including a body over the size cap, is an `error` reply and never a rejection,
 // because a rejected host promise panics the awaiting Lyric code.
-async function defaultStdHttpFetch(method, url, headerLines, contentType, body, hasBody, followRedirects) {
+async function defaultStdHttpFetch(method, url, headerLines, contentType, body, hasBody, followRedirects, bodyIsBase64) {
   try {
     if (typeof fetch !== 'function') return 'error\nthis host has no global fetch (pass options.imports["std.http"].fetch)';
     const headers = new Headers();
@@ -662,7 +663,7 @@ async function defaultStdHttpFetch(method, url, headerLines, contentType, body, 
     const response = await fetch(url, {
       method,
       headers,
-      body: hasBody ? body : undefined,
+      body: hasBody ? (bodyIsBase64 ? Uint8Array.from(atob(body), (c) => c.charCodeAt(0)) : body) : undefined,
       redirect: followRedirects ? 'follow' : 'manual',
     });
     if (response.type === 'opaqueredirect') {

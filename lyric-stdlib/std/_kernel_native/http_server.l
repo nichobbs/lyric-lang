@@ -1700,6 +1700,13 @@ pub func requestBody(c: in HttpContext): String {
   }
 }
 
+/// The request body's bytes, exactly as received (a binary upload, or text
+/// in any encoding). `requestBody` is the UTF-8 text view of the same bytes.
+@experimental
+pub func requestBodyBytes(c: in HttpContext): slice[Byte] {
+  c.body
+}
+
 /// Every request header as a name/value map. Multi-valued headers are
 /// comma-joined (RFC 7230 §3.2.2), matching the dotnet/JVM twins. Names
 /// carry the case the client supplied.
