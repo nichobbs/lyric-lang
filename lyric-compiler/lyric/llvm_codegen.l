@@ -18418,6 +18418,8 @@ record TirUnitMaps {
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
+  /// D163: this unit's integer arithmetic panics on overflow.
+  checkedArith: Bool = false
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18541,7 +18543,15 @@ func tirUnitMaps(
     }
     k = k + 1
   }
-  TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases, enums = enums, enumCases = enumCases)
+  TirUnitMaps(
+    fnNames = fnNames,
+    recs = recs,
+    unions = unions,
+    cases = cases,
+    enums = enums,
+    enumCases = enumCases,
+    checkedArith = input.checkedArith
+  )
 }
 
 /// Lower `d`; tuples are synthesised records, so a lowering that finds a tuple layout missing
@@ -18561,7 +18571,8 @@ func lowerWithTuples(
       enums = maps.enums,
       enumCases = maps.enumCases,
       tuples = maps.tuples,
-      funcs = maps.funcs
+      funcs = maps.funcs,
+      checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
