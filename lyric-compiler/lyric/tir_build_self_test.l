@@ -2016,6 +2016,30 @@ test "a loop invariant builds as an invariant statement of the loop body" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a member of a generic type whose body does not build is described by its declaration, not a call site (D595)" {
+  val pb = packageOf(
+    "package App\nextern type Math = \"System.Math\"\nprotected type Cell[T] {\n  var v: T\n  entry put(x: in T): Unit {\n    val d = Math.Sqrt(1.0)\n    v = x\n  }\n}\nfunc f(a: in Cell[String], b: in Cell[Int]): Unit {\n  a.put(\"s\")\n  b.put(1)\n}\n"
+  )
+  assertEqualInt(pb.failed.count, 1, "the entry's body does not build without host metadata")
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var found = false
+  for en in pb.pkg.symbols {
+    if en.kind == TSkEntry {
+      found = true
+      assertEqualInt(en.typeParamCount, 1, "the owner's parameter")
+      match en.sig {
+        case Some(sg) -> match sg.params[1].ty {
+          case TParam(_, _) -> ()
+          case _ -> assertTrue(false, "the parameter is the owner's T")
+        }
+        case None -> assertTrue(false, "a signature")
+      }
+    }
+  }
+  assertTrue(found, "an entry symbol")
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }

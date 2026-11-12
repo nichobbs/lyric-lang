@@ -199,6 +199,17 @@ func genericRecvOf(env: in BuildEnv, tbl: in SymbolTable, site: in MemberSite, m
 
 /// Build one member in a fresh env sharing `counter`.  `None` carries the reasons in `env.errors`.
 pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[TFnDecl] {
+  buildMemberWith(env, tbl, pkg, site, false)
+}
+
+/// The member's signature as a body-less declaration, for a member whose body does not build.
+pub func buildMemberSig(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[TFnDecl] {
+  buildMemberWith(env, tbl, pkg, site, true)
+}
+
+func buildMemberWith(
+  env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, sigOnly: in Bool
+): Option[TFnDecl] {
   // A method declares its receiver as an explicit first parameter named `self`; a protected
   // type's members and some `impl` members leave it implicit, and the builder declares it.
   val declaresSelf = site.fn.params.count > 0 and site.fn.params[0].name == "self"
@@ -226,7 +237,11 @@ pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site
   }
   env.symOverride.add(sym)
   env.memberOwner.add(site.owner)
-  buildFnDecl(env, site.fn, tbl)
+  if sigOnly {
+    buildFnSigDecl(env, site.fn, tbl)
+  } else {
+    buildFnDecl(env, site.fn, tbl)
+  }
 }
 
 /// The field `name` of the non-generic protected type `ty`, as the position the type entry gives it.
