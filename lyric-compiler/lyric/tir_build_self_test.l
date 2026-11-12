@@ -2020,7 +2020,11 @@ test "a protected entry is a declaration with an implicit receiver, its when: cl
 }
 
 func firstFailure(pb: in PackageBuild): String {
-  if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  if pb.failed.count > 0 and pb.failed[0].messages.count > 0 {
+    pb.failed[0].messages[0]
+  } else {
+    "built"
+  }
 }
 
 func assertBuildsAndVerifies(pb: in PackageBuild, total: in Int, what: in String): Unit {

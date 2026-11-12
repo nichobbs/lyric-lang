@@ -168,9 +168,7 @@ func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
     return index >= 0 and index < c.tpCount
   }
   match c.ownerSym {
-    case Some(os) -> if symbolIdEq(owner, os) and index >= 0 and index < c.ownerCount {
-      return true
-    }
+    case Some(os) -> if symbolIdEq(owner, os) and index >= 0 and index < c.ownerCount { return true }
     case None -> ()
   }
   if index == selfParamIndex() {

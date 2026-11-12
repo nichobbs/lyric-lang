@@ -330,9 +330,7 @@ pub func protectedFieldsOf(tbl: in SymbolTable, sid: in SymbolId): List[ProtFiel
 func protectedGenericNames(tbl: in SymbolTable, sid: in SymbolId): List[String] {
   for s in tbl.symbols {
     match s.kind {
-      case DKProtected(i, d) -> if i.id == sid.id {
-        return extractGenericNames(d.generics)
-      }
+      case DKProtected(i, d) -> if i.id == sid.id { return extractGenericNames(d.generics) }
       case _ -> ()
     }
   }
@@ -343,9 +341,7 @@ func protectedGenericNames(tbl: in SymbolTable, sid: in SymbolId): List[String] 
 func protectedKey(tbl: in SymbolTable, sid: in SymbolId): String {
   for s in tbl.symbols {
     match s.kind {
-      case DKProtected(i, d) -> if i.id == sid.id {
-        return d.name
-      }
+      case DKProtected(i, d) -> if i.id == sid.id { return d.name }
       case _ -> ()
     }
   }
