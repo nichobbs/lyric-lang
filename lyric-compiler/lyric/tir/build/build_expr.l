@@ -3083,7 +3083,7 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
   val kind: TExprKind = match t.kind {
     case XLit(_) -> t.kind
     case XGlobal(_, _) -> t.kind
-    case XLocal(_) -> return noteUncovered2(env, at, "a default argument naming a local")
+    case XLocal(_) -> return noteUncoveredAtSpan(env, at, "a default argument naming a local")
     case XCall(callee, args) -> {
       val fresh: List[TArg] = newList()
       for a in args {
@@ -3092,11 +3092,11 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
             case Some(r) -> fresh.add(TArgIn(value = r))
             case None -> return None
           }
-          case _ -> return noteUncovered2(env, at, "a default argument passing a place")
+          case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
         }
       }
       match callee {
-        case Indirect(_) -> return noteUncovered2(env, at, "a default argument calling a function value")
+        case Indirect(_) -> return noteUncoveredAtSpan(env, at, "a default argument calling a function value")
         case _ -> XCall(callee = callee, args = fresh)
       }
     }
@@ -3134,13 +3134,13 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
       }
       XTuple(elems = fresh)
     }
-    case _ -> return noteUncovered2(env, at, "a default argument of a shape not yet built")
+    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built")
   }
   Some(value = TExpr(id = freshNodeId(env), ty = t.ty, span = at, kind = kind))
 }
 
 /// `noteUncovered` at a span rather than an expression, answering None.
-func noteUncovered2(env: in BuildEnv, at: in Span, why: in String): Option[TExpr] {
+func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[TExpr] {
   noteUncoveredAt(env, why, at)
   env.errors.add("I0002: the builder has no case for " + why)
   None
@@ -3166,10 +3166,13 @@ func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in R
     case ELiteral(_) -> buildExpr(env, d)
     case EPath(_) -> buildRefPath(env, d, ty)
     case _ -> {
-      if not env.settled.containsKey(d.nodeId) {
-        env.settled.add(d.nodeId, pty)
-      }
-      buildExpr(env, d)
+      // The declaration's node is shared by every call that takes the default, each at
+      // its own instantiation: the parameter's type settles it for this call only.
+      env.settled.remove(d.nodeId)
+      env.settled.add(d.nodeId, pty)
+      val b = buildExpr(env, d)
+      env.settled.remove(d.nodeId)
+      b
     }
   }
   match built {
