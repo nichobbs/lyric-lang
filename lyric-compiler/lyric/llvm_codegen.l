@@ -18440,7 +18440,9 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
   )
 }
 
-func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput): TirUnitMaps {
+func tirUnitMaps(
+  ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput, invariantRecs: in Map[String, Bool]
+): TirUnitMaps {
   val fnNames: Map[Int, String] = newMap()
   // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code
   // generator keeps the layout and the lowering only reads it.  Heap records come with their
@@ -18469,7 +18471,10 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
               ()
             } else if not Str.contains(rest, "::") {
               match mapGet(ctx.recordDefs, pkg + "." + rest) {
-                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
+                // A record with an invariant is re-checked at public boundaries by the contract
+                // elaborator, whose asserts TIR does not carry yet (phase 3c): functions touching it
+                // stay on the AST path.
+                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -18667,6 +18672,21 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
+  val invariantRecs: Map[String, Bool] = newMap()
+  for iu in units {
+    for rd in iu.records {
+      for m in rd.members {
+        match m {
+          case RMInvariant(_) -> {
+            if not invariantRecs.containsKey(iu.pkgName + "." + rd.name) {
+              invariantRecs.add(iu.pkgName + "." + rd.name, true)
+            }
+          }
+          case _ -> ()
+        }
+      }
+    }
+  }
   // Module-level `val`/`const` bindings across the whole bundle (#5977 part 2),
   // keyed BOTH by qualified name (`Pkg.name`) and bare name (`name`) — the same
   // two-part scheme `buildSigs` uses for functions (and `loadLocal` looks up
@@ -18919,7 +18939,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       ei = ei + 1
     }
     val tirMaps = if u.tir.count > 0 {
-      tirUnitMaps(ctx, sigs, u.tir[0])
+      tirUnitMaps(ctx, sigs, u.tir[0], invariantRecs)
     } else {
       TirUnitMaps(
         fnNames = newMap(),
