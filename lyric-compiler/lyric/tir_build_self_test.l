@@ -1110,6 +1110,20 @@ test "a field of a generic opaque type is read at the receiver's arguments (D592
   assertBuildsAndVerifies(pb, 1, "Box.v")
 }
 
+test "a sibling method called through self inside a lambda of a generic record is defined (D593)" {
+  val pb = packageOf(
+    "package App\nrecord Cell[T] {\n  v: T\n  func get(self: in Cell[T]): T { self.v }\n  func viaLambda(self: in Cell[T]): T {\n    val g = { -> self.get() }\n    g()\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.get and viaLambda")
+}
+
+test "calls of a generic protected type's entry at two instantiations verify (D593)" {
+  val pb = packageOf(
+    "package App\nprotected type Cell[T] {\n  var v: T\n  entry put(x: in T): Unit {\n    v = x\n  }\n}\nfunc f(a: in Cell[String], b: in Cell[Int]): Unit {\n  a.put(\"s\")\n  b.put(1)\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.put and f")
+}
+
 // ─── Generic calls (docs/70 §6.3, D394) ──────────────────────────────────────
 func directTypeArgs(b: in Option[TExpr]): Option[List[Ty]] {
   match b {

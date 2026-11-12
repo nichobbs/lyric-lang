@@ -167,36 +167,52 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
     }
     absorbEnv(env, syms, sums, sites)
   }
+  // A member the package builds is described by its declaration, not by the first call site's
+  // signature: a call of a member of a generic type sees the receiver's arguments, not the
+  // owner's parameters (D579), and a signature that cannot be converted leaves no entry.  The
+  // kind a call recorded is kept: a call of a protected type's `func` is recorded as an entry.
+  val memberEntries: Map[Int, TSymEntry] = newMap()
   for fd in memberFns {
-    if not syms.containsKey(fd.sym.id) {
+    if not memberEntries.containsKey(fd.sym.id) {
       val own = ownFnEntry(fd)
-      if entryFns.containsKey(fd.sym.id) {
-        syms.add(
-          fd.sym.id,
-          TSymEntry(
-            sym = own.sym,
-            kind = TSkEntry,
-            typeParamCount = own.typeParamCount,
-            sig = own.sig,
-            fields = own.fields,
-            ty = own.ty,
-            mutable = own.mutable
-          )
+      val callKind: TSymKind = match mapGet(syms, fd.sym.id) { case Some(prev) -> prev.kind; case None -> TSkFunc }
+      val kind: TSymKind = if entryFns.containsKey(fd.sym.id) { TSkEntry } else { callKind }
+      memberEntries.add(
+        fd.sym.id,
+        TSymEntry(
+          sym = own.sym,
+          kind = kind,
+          typeParamCount = own.typeParamCount,
+          sig = own.sig,
+          fields = own.fields,
+          ty = own.ty,
+          mutable = own.mutable
         )
-      } else {
-        syms.add(fd.sym.id, own)
-      }
+      )
+    }
+  }
+  val all: Map[Int, TSymEntry] = newMap()
+  for sk in mapKeys(syms) {
+    match mapGet(syms, sk) {
+      case Some(en) -> if not memberEntries.containsKey(sk) { all.add(sk, en) }
+      case None -> ()
+    }
+  }
+  for mk in mapKeys(memberEntries) {
+    match mapGet(memberEntries, mk) {
+      case Some(me) -> all.add(mk, me)
+      case None -> ()
     }
   }
   for te in typeEntries(tbl) {
-    if not syms.containsKey(te.sym.id) {
-      syms.add(te.sym.id, te)
+    if not all.containsKey(te.sym.id) {
+      all.add(te.sym.id, te)
     }
   }
   val entries: List[TSymEntry] = newList()
   val names: Map[Int, String] = newMap()
-  for k in mapKeys(syms) {
-    match mapGet(syms, k) {
+  for k in mapKeys(all) {
+    match mapGet(all, k) {
       case Some(en) -> {
         entries.add(en)
         noteName(tbl, names, en.sym)

@@ -37,21 +37,45 @@ func receiverTypeArgs(t: in Type): List[Type] {
   }
 }
 
-/// The method call `e` instantiated: `site.sig` unchanged for a member with no generics.
+/// The receiver type's own `SymbolId` when it is a user type.
+func receiverTypeId(t: in Type): Option[SymbolId] {
+  match t {
+    case TyUser(id, _, _) -> Some(value = id)
+    case _ -> None
+  }
+}
+
+/// Whether the callee `sym` is declared in the body of the receiver's type (a record's or a
+/// protected type's member, whose owner parameters are the type's own), not in an `impl`.
+func isBodyMemberOf(env: in BuildEnv, sym: in SymbolId, recvTy: in Type): Bool {
+  val tid = match receiverTypeId(recvTy) { case Some(t) -> t; case None -> return false }
+  val tk = match defPathKeyOf(env.ctx.tbl.interner, tid) { case Some(k) -> k; case None -> return false }
+  match defPathKeyOf(env.ctx.tbl.interner, sym) {
+    case Some(k) -> k.startsWith(tk + "::")
+    case None -> false
+  }
+}
+
+/// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
+/// a member declared in the type's body) then the member's own (the checker's record, else
+/// inferred from the arguments and the result as a generic function's are).  The checker's
+/// signature lists only the member's own generics for a concrete receiver and none for a
+/// receiver typed over the caller's own parameters, so the owner's are never read from it.
 pub func instantiateMethod(
-  env: in BuildEnv, e: in Expr, site: in MethodCallSite, args: in List[CallArg]
+  env: in BuildEnv,
+  e: in Expr,
+  sym: in SymbolId,
+  site: in MethodCallSite,
+  args: in List[CallArg],
 ): Option[MethodInst] {
   val sig = site.sig
-  if sig.generics.count == 0 {
-    // The checker leaves the owner's parameters out of the signature when the receiver's
-    // arguments are the caller's own parameters; they are the receiver's type arguments.
-    val none: List[Ty] = newList()
-    val recvArgs = receiverTypeArgs(site.recvTy)
-    // An interface call carries no type arguments (D580), and a receiver without any is not generic.
-    if recvArgs.count == 0 or isSome(site.iface) {
-      return Some(value = MethodInst(sig = sig, tyArgs = none))
+  val recvArgs = receiverTypeArgs(site.recvTy)
+  val owned: List[Ty] = newList()
+  if recvArgs.count > 0 and not isSome(site.iface) {
+    if not isBodyMemberOf(env, sym, site.recvTy) {
+      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
+      return None
     }
-    val owned: List[Ty] = newList()
     for ta in recvArgs {
       match tyOfType(env.ctx, ta) {
         case Ok(t) -> owned.add(t)
@@ -61,9 +85,10 @@ pub func instantiateMethod(
         }
       }
     }
+  }
+  if sig.generics.count == 0 {
     return Some(value = MethodInst(sig = sig, tyArgs = owned))
   }
-  val ownerN = ownerGenericCount(sig)
   var checkerArgs: List[Type] = newList()
   var recorded = false
   match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
@@ -78,23 +103,16 @@ pub func instantiateMethod(
         return None
       }
     }
-    val inferred = genericArgsFromCall(env, sig, rt, args)
-    val recvArgs = receiverTypeArgs(site.recvTy)
-    if ownerN > 0 and recvArgs.count != ownerN {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
-      return None
-    }
-    var i = 0
-    while i < inferred.count {
-      checkerArgs.add(if i < ownerN { recvArgs[i] } else { inferred[i] })
-      i = i + 1
-    }
+    checkerArgs = genericArgsFromCall(env, sig, rt, args)
   }
   if checkerArgs.count != sig.generics.count {
     val _ = uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
     return None
   }
   val tyArgs: List[Ty] = newList()
+  for t in owned {
+    tyArgs.add(t)
+  }
   for ta in checkerArgs {
     match tyOfType(env.ctx, ta) {
       case Ok(t) -> tyArgs.add(t)

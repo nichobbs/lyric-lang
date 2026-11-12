@@ -3048,7 +3048,7 @@ func buildMethodCall(
   }
   val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
   val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
-  val inst = match instantiateMethod(env, e, site, args) { case Some(i) -> i; case None -> return None }
+  val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
   val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
