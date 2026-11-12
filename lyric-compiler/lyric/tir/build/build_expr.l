@@ -1417,11 +1417,15 @@ record FnCore {
   ret: Ty
   pre: List[TExpr]
   post: List[TExpr]
-  body: TExpr
+  body: Option[TExpr]
   barrier: Option[TExpr] = None
 }
 
-func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool): Option[FnCore] {
+/// `sigOnly` builds the signature half alone (symbol, type parameters, parameters, return type),
+/// leaving defaults, contracts and body unbuilt: the description of a member whose body does not build.
+func buildFnCore(
+  env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool, sigOnly: in Bool
+): Option[FnCore] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
@@ -1488,12 +1492,14 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   for p in fn.params {
     var dflt: Option[TExpr] = None
     match p.dflt {
-      case Some(dx) -> match buildExpr(env, dx) {
-        case Some(t) -> {
-          dflt = Some(value = t)
-        }
-        case None -> {
-          ok = false
+      case Some(dx) -> if not sigOnly {
+        match buildExpr(env, dx) {
+          case Some(t) -> {
+            dflt = Some(value = t)
+          }
+          case None -> {
+            ok = false
+          }
         }
       }
       case None -> ()
@@ -1525,7 +1531,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
   var barrier: Option[TExpr] = None
-  if ok {
+  if ok and not sigOnly {
     for c in fn.contracts {
       match c {
         case CCRequires(x, _) -> match buildExpr(env, x) { case Some(t) -> pre.add(t); case None -> { ok = false } }
@@ -1543,7 +1549,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
     }
   }
   var res: Option[TExpr] = None
-  if ok {
+  if ok and not sigOnly {
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
@@ -1567,6 +1573,23 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
     }
   }
   popScope(env)
+  if sigOnly {
+    if not ok {
+      return None
+    }
+    return Some(
+      value = FnCore(
+        sym = sym,
+        typeNames = allNames,
+        params = params,
+        ret = ret,
+        pre = pre,
+        post = post,
+        body = None,
+        barrier = None
+      )
+    )
+  }
   match res {
     case Some(b) -> Some(
       value = FnCore(
@@ -1576,7 +1599,7 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
         ret = ret,
         pre = pre,
         post = post,
-        body = b,
+        body = Some(value = b),
         barrier = barrier
       )
     )
@@ -1589,8 +1612,8 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
 /// parameters to its symbol.  Contracts are built with the body: a clause the
 /// builder has no case for fails it like any other expression.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
-  match buildFnCore(env, fn, tbl, false) {
-    case Some(c) -> Some(value = c.body)
+  match buildFnCore(env, fn, tbl, false, false) {
+    case Some(c) -> c.body
     case None -> None
   }
 }
@@ -1599,7 +1622,16 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
 /// parameters (their bounds are not converted yet), parameters with modes and
 /// defaults, return type, contracts as `preconds`/`postconds`, and the body.
 pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
-  match buildFnCore(env, fn, tbl, true) {
+  buildFnDeclWith(env, fn, tbl, false)
+}
+
+/// A function's signature as a body-less `TFnDecl`: what describes a function whose body does not build.
+pub func buildFnSigDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
+  buildFnDeclWith(env, fn, tbl, true)
+}
+
+func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, sigOnly: in Bool): Option[TFnDecl] {
+  match buildFnCore(env, fn, tbl, true, sigOnly) {
     case Some(c) -> {
       val tps: List[TTypeParam] = newList()
       for n in c.typeNames {
@@ -1616,7 +1648,7 @@ pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
           isAsync = fn.isAsync,
           preconds = c.pre,
           postconds = c.post,
-          body = Some(value = c.body),
+          body = c.body,
           span = fn.span,
           barrier = c.barrier,
           ownerParamCount = ownerCount

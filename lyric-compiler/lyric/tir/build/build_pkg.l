@@ -145,6 +145,7 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
   }
   val pkgName = modulePathJoin(file.packageDecl.path.segments)
   val memberFns: List[TFnDecl] = newList()
+  val sigOnlyFns: List[TFnDecl] = newList()
   val entryFns: Map[Int, Bool] = newMap()
   for site in memberSites(ctx, tbl, file) {
     total = total + 1
@@ -163,6 +164,17 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
       case None -> {
         val msym = memberSymOf(tbl, pkgName, site)
         failed.add(FnBuildFailure(name = site.name, sym = msym, messages = env.errors, path = defPathKey(tbl, msym)))
+        // The member still has a signature: describe it by its declaration, so a call site's
+        // instantiated signature is not taken for it.
+        match buildMemberSig(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {
+          case Some(sd) -> {
+            sigOnlyFns.add(sd)
+            if site.isEntry and not entryFns.containsKey(sd.sym.id) {
+              entryFns.add(sd.sym.id, true)
+            }
+          }
+          case None -> ()
+        }
       }
     }
     absorbEnv(env, syms, sums, sites)
@@ -172,7 +184,14 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
   // owner's parameters (D579), and a signature that cannot be converted leaves no entry.  The
   // kind a call recorded is kept: a call of a protected type's `func` is recorded as an entry.
   val memberEntries: Map[Int, TSymEntry] = newMap()
+  val described: List[TFnDecl] = newList()
   for fd in memberFns {
+    described.add(fd)
+  }
+  for fd in sigOnlyFns {
+    described.add(fd)
+  }
+  for fd in described {
     if not memberEntries.containsKey(fd.sym.id) {
       val own = ownFnEntry(fd)
       val callKind: TSymKind = match mapGet(syms, fd.sym.id) { case Some(prev) -> prev.kind; case None -> TSkFunc }
