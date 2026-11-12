@@ -1114,12 +1114,16 @@ func resolveTargets(entries: in List[Entry]): Result[Option[List[String]], Manif
   }
   match findStringList(entries, "package", "targets") {
     case None -> Err(
-      error = invalidTargets("expected an array of strings, such as [\"jvm\"] (one or more of \"dotnet\", \"jvm\", \"native\")")
+      error = invalidTargets(
+        "expected an array of strings, such as [\"jvm\"] (one or more of \"dotnet\", \"jvm\", \"native\")"
+      )
     )
     case Some(items) -> {
       if items.count == 0 {
         return Err(
-          error = invalidTargets("the list is empty; omit the field to support every target, or name at least one of \"dotnet\", \"jvm\", \"native\"")
+          error = invalidTargets(
+            "the list is empty; omit the field to support every target, or name at least one of \"dotnet\", \"jvm\", \"native\""
+          )
         )
       }
       val known = knownTargetNames()
@@ -1431,8 +1435,7 @@ func buildDepSource(
   // Check for git = "..."
   match findInlineStr(pairs, "git") {
     case Some(url) -> {
-      if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\0") or Str.startsWith(url, "ext::") or
-        not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
+      if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\u{0000}") or Str.startsWith(url, "ext::") or not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
         return Err(
           error = InvalidField(
             section = section,
@@ -1443,8 +1446,7 @@ func buildDepSource(
       }
       val subdir = findInlineStr(pairs, "subdir")
       match subdir {
-        case Some(sd) -> if sd.length == 0 or Str.startsWith(sd, "-") or Str.startsWith(sd, "/") or
-          Str.startsWith(sd, "\\") or Str.contains(sd, ":") or Str.contains(sd, "..") or Str.contains(sd, "\0") {
+        case Some(sd) -> if sd.length == 0 or Str.startsWith(sd, "-") or Str.startsWith(sd, "/") or Str.startsWith(sd, "\\") or Str.contains(sd, ":") or Str.contains(sd, "..") or Str.contains(sd, "\u{0000}") {
           return Err(
             error = InvalidField(
               section = section,
@@ -1463,7 +1465,7 @@ func buildDepSource(
       // early-return form sidesteps that.
       match findInlineStr(pairs, "tag") {
         case Some(t) -> {
-          if t.length == 0 or Str.startsWith(t, "-") or Str.contains(t, "..") or Str.contains(t, "\0") {
+          if t.length == 0 or Str.startsWith(t, "-") or Str.contains(t, "..") or Str.contains(t, "\u{0000}") {
             return Err(
               error = InvalidField(
                 section = section,
@@ -1478,7 +1480,7 @@ func buildDepSource(
       }
       match findInlineStr(pairs, "rev") {
         case Some(r) -> {
-          if r.length == 0 or Str.startsWith(r, "-") or Str.contains(r, "..") or Str.contains(r, "\0") {
+          if r.length == 0 or Str.startsWith(r, "-") or Str.contains(r, "..") or Str.contains(r, "\u{0000}") {
             return Err(
               error = InvalidField(
                 section = section,
@@ -1493,7 +1495,7 @@ func buildDepSource(
       }
       match findInlineStr(pairs, "branch") {
         case Some(b) -> {
-          if b.length == 0 or Str.startsWith(b, "-") or Str.contains(b, "..") or Str.contains(b, "\0") {
+          if b.length == 0 or Str.startsWith(b, "-") or Str.contains(b, "..") or Str.contains(b, "\u{0000}") {
             return Err(
               error = InvalidField(
                 section = section,
@@ -2281,8 +2283,7 @@ pub func prebuiltMemberFileName(member: in String): String {
 func assemblePrebuilt(
   entries: in List[Entry], section: in String, triple: in String
 ): Result[NativePrebuilt, ManifestError] {
-  if triple.length == 0 or Str.startsWith(triple, ".") or Str.startsWith(triple, "-") or Str.contains(triple, "/") or
-    Str.contains(triple, "\\") or Str.contains(triple, "..") {
+  if triple.length == 0 or Str.startsWith(triple, ".") or Str.startsWith(triple, "-") or Str.contains(triple, "/") or Str.contains(triple, "\\") or Str.contains(triple, "..") {
     return Err(
       error = InvalidField(
         section = section,
@@ -2318,8 +2319,7 @@ func assemblePrebuilt(
   }
   for m in members {
     val name = prebuiltMemberFileName(m)
-    if name.length == 0 or Str.startsWith(name, ".") or Str.contains(name, "..") or Str.contains(name, "/") or
-      Str.contains(name, "\\") or prebuiltMemberPath(m).length == 0 {
+    if name.length == 0 or Str.startsWith(name, ".") or Str.contains(name, "..") or Str.contains(name, "/") or Str.contains(name, "\\") or prebuiltMemberPath(m).length == 0 {
       return Err(
         error = InvalidField(
           section = section,

@@ -1773,22 +1773,22 @@ pub func resolveWorkspaceImportDeps(
 }
 
 // ── Target support (`[package] targets`, issue #9030) ─────────────────────────
-
 /// The F0054 refusal: the package being built does not support `--target`.
 func unsupportedTargetMessage(pkg: in Mf.PackageSection, mfPath: in String, targetName: in String): String {
   "error[F0054]: package '" + pkg.name + "' (" + mfPath + ") supports targets [" + Mf.packageTargetsText(pkg) +
-    "] and cannot be built for --target " + targetName
+    "] and cannot be built for --target " +
+    targetName
 }
 
 /// The F0055 refusal: a (transitive) dependency does not support `--target`.
 /// `chain` is the path from the package being built down to the dependency.
-func unsupportedDependencyTargetMessage(
-  dep: in Mf.PackageSection,
-  chain: in String,
-  targetName: in String,
-): String {
+func unsupportedDependencyTargetMessage(dep: in Mf.PackageSection, chain: in String, targetName: in String): String {
   "error[F0055]: dependency '" + dep.name + "' supports targets [" + Mf.packageTargetsText(dep) +
-    "] and cannot be linked into a --target " + targetName + " build (" + chain + ")"
+    "] and cannot be linked into a --target " +
+    targetName +
+    " build (" +
+    chain +
+    ")"
 }
 
 func targetErrorInDeps(
@@ -1846,12 +1846,5 @@ pub func targetSupportError(mfPath: in String, manifest: in Mf.Manifest, targetN
   }
   val mfDir = Path.dirname(mfPath)
   val seen: List[String] = newList()
-  targetErrorInDeps(
-    manifest,
-    mfDir,
-    Ws.findWorkspaceRoot(mfDir),
-    targetName,
-    manifest.packageSection.name,
-    seen
-  )
+  targetErrorInDeps(manifest, mfDir, Ws.findWorkspaceRoot(mfDir), targetName, manifest.packageSection.name, seen)
 }
