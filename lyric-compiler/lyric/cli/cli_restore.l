@@ -1622,6 +1622,30 @@ func runRestoreWith(
   carriedKeys: in Map[String, String],
   restoreTarget: in String,
 ): Int {
+  val rc = restoreDependencies(mfPath, lockedMode, updates, carriedKeys, restoreTarget)
+  if rc != 0 or restoreTarget == "" {
+    return rc
+  }
+  val manifest = match File.readText(mfPath) {
+    case Ok(text) -> match Mf.parseManifest(text, mfPath) { case Ok(m) -> m; case Err(_) -> return rc }
+    case Err(_) -> return rc
+  }
+  match restoredTargetSupportError(mfPath, manifest, restoreTarget) {
+    case Some(msg) -> {
+      printErr(msg)
+      1
+    }
+    case None -> 0
+  }
+}
+
+func restoreDependencies(
+  mfPath: in String,
+  lockedMode: in Bool,
+  updates: in List[String],
+  carriedKeys: in Map[String, String],
+  restoreTarget: in String,
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {

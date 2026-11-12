@@ -1,4 +1,4 @@
-# `[package] targets` and F0053-F0055 (#9030, D601)
+# `[package] targets` and F0053-F0055 (#9030, D603)
 
 `Lyric.Manifest` parses `[package] targets` into `PackageSection.targets`
 (F0053 on a bad value). `lyric build`, `lyric test` and `lyric run` refuse a

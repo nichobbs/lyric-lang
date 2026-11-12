@@ -945,3 +945,65 @@ test "findWorkspaceRoot stops at the filesystem root instead of reading the work
     assertTrue(not isSomeWs(Ws.findWorkspaceRoot(dir)), "no workspace above " + dir)
   }
 }
+
+// ── restored dependencies and [package] targets (#9031) ──────────────────────
+func registryDep(name: in String): Mf.DependencyEntry {
+  Mf.DependencyEntry(name = name, source = Mf.DepSource.Registry(version = "1.0.0"), registry = None)
+}
+
+func writeNuspecWithTags(pkgDir: in String, id: in String, tags: in String): Unit {
+  writeFileOrPanic(
+    Path.join(pkgDir, id.toLower() + ".nuspec"),
+    "<?xml version=\"1.0\"?><package><metadata><id>" + id + "</id><tags>" + tags + "</tags></metadata></package>"
+  )
+}
+
+test "restoredDepTargetError: a registry package whose tags exclude the target is F0055 (#9031)" {
+  val root = freshTempDir("regtags")
+  val pkgDir = mkPackageDir(root, "q", "[package]\nname = \"Q\"\nversion = \"1.0.0\"\n")
+  writeNuspecWithTags(pkgDir, "Q", "lyric-package lyric-target-jvm")
+  val dep = registryDep("Q")
+  match Cli.restoredDepTargetError(dep, pkgDir, "App", "dotnet") {
+    case Some(msg) -> {
+      assertTrue(Str.contains(msg, "F0055"), "carries F0055")
+      assertTrue(Str.contains(msg, "[jvm]"), "names the package's targets")
+      assertTrue(Str.contains(msg, "App -> Q"), "names the chain")
+    }
+    case None -> assertTrue(false, "dotnet must be refused")
+  }
+  match Cli.restoredDepTargetError(dep, pkgDir, "App", "jvm") {
+    case Some(_) -> assertTrue(false, "jvm must be accepted")
+    case None -> ()
+  }
+  cleanup(root)
+}
+
+test "restoredDepTargetError: a registry package with no target tags supports every target (#9031)" {
+  val root = freshTempDir("regnotags")
+  val pkgDir = mkPackageDir(root, "q", "[package]\nname = \"Q\"\nversion = \"1.0.0\"\n")
+  writeNuspecWithTags(pkgDir, "Q", "lyric-package")
+  match Cli.restoredDepTargetError(registryDep("Q"), pkgDir, "App", "native") {
+    case Some(_) -> assertTrue(false, "a pre-field package supports all targets")
+    case None -> ()
+  }
+  cleanup(root)
+}
+
+test "restoredDepTargetError: a git checkout is judged by its lyric.toml (#9031)" {
+  val root = freshTempDir("gitdep")
+  val pkgDir = mkPackageDir(root, "g", "[package]\nname = \"G\"\nversion = \"1.0.0\"\ntargets = [\"dotnet\"]\n")
+  val dep = Mf.DependencyEntry(
+    name = "G",
+    source = Mf.DepSource.Git(url = "file:///unused", refKind = "tag", refValue = "v1", subdir = None),
+    registry = None
+  )
+  match Cli.restoredDepTargetError(dep, pkgDir, "App", "jvm") {
+    case Some(msg) -> assertTrue(Str.contains(msg, "F0055"), "git dependency refused for jvm")
+    case None -> assertTrue(false, "jvm must be refused")
+  }
+  match Cli.restoredDepTargetError(dep, pkgDir, "App", "dotnet") {
+    case Some(_) -> assertTrue(false, "dotnet must be accepted")
+    case None -> ()
+  }
+  cleanup(root)
+}

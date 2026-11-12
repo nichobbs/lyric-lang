@@ -719,6 +719,10 @@ func emitSingleFileOrProject(
     }
     case Some(l) -> l
   }
+  match targetSupportError(lm.mfPath, lm.manifest, Emitter.compileTargetName(req.target)) {
+    case Some(msg) -> return failedEmitOutcome(msg)
+    case None -> ()
+  }
 
   // The file's features, chosen as `lyric prove` chooses them for the same
   // file (D182): this manifest's, whether or not its entries list the file.
@@ -1083,6 +1087,22 @@ pub func buildOneNativeWithFeatures(
   allFeatures: in Bool,
   cliDefines: in List[String],
 ): Int {
+  match manifestPath {
+    case None -> ()
+    case Some(mp) -> match File.readText(mp) {
+      case Err(_) -> ()
+      case Ok(mfText) -> match Mf.parseManifest(mfText, mp) {
+        case Err(_) -> ()
+        case Ok(m) -> match targetSupportError(mp, m, Emitter.compileTargetName(target)) {
+          case Some(msg) -> {
+            printErr(msg)
+            return 1
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
   buildOneNativeShaped(
     sourcePath,
     outPath,

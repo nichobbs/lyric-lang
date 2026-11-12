@@ -1431,6 +1431,7 @@ lyric publish --package-version <ver>  # override the NuGet <version>, .nupkg fi
 lyric publish --wasm                   # pack the built wasm32 module/component as an NPM tarball
                                        # (--wasm-file <path>, -o <dir>); then `npm publish <tgz>`
 lyric search <query>                   # search the registry for matching packages
+                                       # (--target dotnet|jvm|native keeps packages that support it)
 
 # Interactive REPL
 lyric repl                             # start interactive read-eval-print loop

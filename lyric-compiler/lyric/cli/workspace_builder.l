@@ -1838,13 +1838,96 @@ func targetErrorInDeps(
 /// Checks `[package] targets` for a build, test or run of the manifest at
 /// `mfPath` for backend `targetName` ("dotnet", "jvm" or "native"): the package
 /// itself (F0054), then every path and workspace dependency, transitively
-/// (F0055).  Registry and git dependencies are not examined here: their
-/// manifests are not on disk until restored.
+/// (F0055), then the registry and git dependencies that are already restored
+/// (`restoredTargetSupportError`).
 pub func targetSupportError(mfPath: in String, manifest: in Mf.Manifest, targetName: in String): Option[String] {
   if not Mf.packageSupportsTarget(manifest.packageSection, targetName) {
     return Some(value = unsupportedTargetMessage(manifest.packageSection, mfPath, targetName))
   }
   val mfDir = Path.dirname(mfPath)
   val seen: List[String] = newList()
-  targetErrorInDeps(manifest, mfDir, Ws.findWorkspaceRoot(mfDir), targetName, manifest.packageSection.name, seen)
+  match targetErrorInDeps(manifest, mfDir, Ws.findWorkspaceRoot(mfDir), targetName, manifest.packageSection.name, seen) {
+    case Some(msg) -> Some(value = msg)
+    case None -> restoredTargetSupportError(mfPath, manifest, targetName)
+  }
+}
+
+// ── Target support of restored dependencies (issue #9031) ─────────────────────
+func restoredNuspecText(pkgDir: in String): Option[String] {
+  val files = match File.listFiles(pkgDir) { case Ok(fs) -> fs; case Err(_) -> return None }
+  var i = 0
+  while i < files.count {
+    if Str.endsWith(files[i], ".nuspec") {
+      match File.readText(files[i]) {
+        case Ok(text) -> return Some(value = text)
+        case Err(_) -> return None
+      }
+    }
+    i += 1
+  }
+  None
+}
+
+pub func restoredDepTargetError(
+  dep: in Mf.DependencyEntry, pkgDir: in String, owner: in String, targetName: in String
+): Option[String] {
+  val chain = owner + " -> " + dep.name
+  match dep.source {
+    case Mf.DepSource.Registry(_) -> match restoredNuspecText(pkgDir) {
+      case None -> None
+      case Some(nuspec) -> {
+        val tags = Mf.nuspecTags(nuspec)
+        if Mf.tagsSupportTarget(tags, targetName) {
+          return None
+        }
+        val declared = match Mf.targetsFromTags(tags) { case Some(ts) -> Mf.joinNames(ts); case None -> "all" }
+        Some(
+          value = "error[F0055]: dependency '" + dep.name + "' supports targets [" + declared +
+            "] and cannot be linked into a --target " +
+            targetName +
+            " build (" +
+            chain +
+            ")"
+        )
+      }
+    }
+    case Mf.DepSource.Git(_, _, _, _) -> {
+      val tomlPath = Path.join(pkgDir, "lyric.toml")
+      match File.readText(tomlPath) {
+        case Err(_) -> None
+        case Ok(text) -> match Mf.parseManifest(text, tomlPath) {
+          case Err(_) -> None
+          case Ok(depMf) -> if Mf.packageSupportsTarget(depMf.packageSection, targetName) {
+            None
+          } else {
+            Some(value = unsupportedDependencyTargetMessage(depMf.packageSection, chain, targetName))
+          }
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// F0055 for the registry and git dependencies of `manifest`, once restored: a
+/// registry package is read from the `lyric-target-<t>` tags `lyric publish`
+/// wrote into its `.nuspec`, a git checkout from its `lyric.toml`.  A package
+/// with no target tags predates the field and supports every target, as does
+/// a dependency that is not restored yet.  Call after `lyric restore`.
+pub func restoredTargetSupportError(mfPath: in String, manifest: in Mf.Manifest, targetName: in String): Option[String] {
+  val mfDir = Path.dirname(mfPath)
+  val lf = lockFileOf(mfDir, Ws.findWorkspaceRoot(mfDir))
+  var i = 0
+  while i < manifest.deps.count {
+    val dep = manifest.deps[i]
+    i += 1
+    match restoredDepDir(dep, lf) {
+      case None -> ()
+      case Some(pkgDir) -> match restoredDepTargetError(dep, pkgDir, manifest.packageSection.name, targetName) {
+        case Some(msg) -> return Some(value = msg)
+        case None -> ()
+      }
+    }
+  }
+  None
 }

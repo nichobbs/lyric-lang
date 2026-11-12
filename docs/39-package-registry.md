@@ -72,6 +72,12 @@ Every published Lyric package carries the NuGet tag `lyric-package`. This tag is
 the discriminator used by `lyric search` and by the NuGet.org search API to
 distinguish Lyric packages from ordinary C# packages.
 
+`lyric publish` also writes one `lyric-target-<t>` tag per backend the package
+supports (`dotnet`, `jvm`, `native`), from `[package] targets` (D602): a package
+that declares no `targets` is tagged with all three. Tools read the supported
+targets from these tags without the DLL or manifest. A package published before
+the field existed has no `lyric-target-*` tag and is taken to support every target.
+
 ### 3.2 JVM packages (Maven)
 
 Maven uses a `groupId:artifactId:version` triple. The mapping:
@@ -299,7 +305,12 @@ priority model.
 lyric search cache            # search for packages matching "cache"
 lyric search "Lyric.Cache"    # look up a specific package
 lyric search --all            # list all published Lyric packages
+lyric search quartz --target jvm   # only packages that support --target jvm
 ```
+
+`--target dotnet|jvm|native` keeps the results whose `lyric-target-*` tags include
+the target (and the ones with no target tags). The filter is applied to the
+first 100 results of the query.
 
 Implementation: queries the NuGet.org search API with `q=<term>&packageType=lyric-package`.
 (`packageType` is the NuGet search API's filter for a named package type, distinct from
