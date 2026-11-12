@@ -1959,6 +1959,15 @@ test "a branch that leaves through a nested if, a match or a break fits the type
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a try that ends a block yields its body's or its catch's value through a local" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  try {\n    n + 1\n  } finally {\n    val _ = n\n  }\n}\nfunc g(n: Int): Int {\n  try {\n    n + 1\n  } catch Exception as e {\n    0\n  }\n}\nfunc h(n: Int): Int {\n  try {\n    panic(\"boom\")\n  } finally {\n    val _ = n\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }

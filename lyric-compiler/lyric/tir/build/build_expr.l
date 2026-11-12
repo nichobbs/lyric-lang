@@ -934,6 +934,23 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in 
           }
         }
       }
+      case STry(body, catches, fin) -> if last and not unitBlock and known.isSome() {
+        match buildTryValue(env, s, body, catches, fin, known, stmts) {
+          case Some(t) -> {
+            tail = Some(value = t)
+          }
+          case None -> {
+            ok = false
+          }
+        }
+      } else {
+        match buildStmt(env, s) {
+          case Some(ts) -> stmts.add(ts)
+          case None -> {
+            ok = false
+          }
+        }
+      }
       case _ -> match buildStmt(env, s) { case Some(ts) -> stmts.add(ts); case None -> { ok = false } }
     }
     i = i + 1
@@ -950,6 +967,102 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in 
     }
   }
   Some(value = TExpr(id = id, ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
+}
+
+/// Whether the last statement of `b` is a `try` statement.
+func blockEndsInTry(b: in Block): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  match b.statements[b.statements.count - 1].kind {
+    case STry(_, _, _) -> true
+    case _ -> false
+  }
+}
+
+/// A block of a value-yielding `try`, typed Unit: the block's tail value is assigned to `local`
+/// instead, so the value reaches the code after the `try` statement.  A block that never
+/// completes assigns nothing.
+func tryValueBlock(env: in BuildEnv, b: in Block, ty: in Ty, local: in LocalDecl): Option[TExpr] {
+  settleBlockTail(env, b, ty)
+  val built = match buildBlock(env, b, Some(value = ty), freshNodeId(env)) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  match built.kind {
+    case XBlock(stmts, Some(tail)) -> match coerceBranch(env, tail, ty) {
+      case Some(v) -> {
+        val place = TPlace(ty = ty, kind = PlLocal(local = local.id))
+        // A tail that never completes (a `panic`) has nothing to assign: it stays a statement.
+        val last = match v.ty {
+          case TNever -> v
+          case _ -> TExpr(
+            id = freshNodeId(env),
+            ty = tyUnit(),
+            span = v.span,
+            kind = XAssign(place = place, op = AkSet, value = v)
+          )
+        }
+        val all: List[TStmt] = newList()
+        for st in stmts {
+          all.add(st)
+        }
+        all.add(TStmt(id = freshNodeId(env), span = v.span, kind = TsExpr(expr = last)))
+        Some(value = TExpr(id = built.id, ty = tyUnit(), span = built.span, kind = XBlock(stmts = all, tail = None)))
+      }
+      case None -> None
+    }
+    case XBlock(stmts, None) -> if neverCompletes(built) {
+      Some(value = TExpr(id = built.id, ty = tyUnit(), span = built.span, kind = built.kind))
+    } else {
+      noteUncoveredAt(env, "a try block that yields no value", built.span)
+      env.errors.add("I0002: the builder has no case for a try block that yields no value")
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// A `try` that ends a non-Unit block yields the value of its body, or of the catch that ran:
+/// a `var` of the block's type is declared before the `try`, the body and each catch assign
+/// their tail value to it, and the block's value is that local.  `try` stays a statement in TIR.
+func buildTryValue(
+  env: in BuildEnv,
+  s: in Statement,
+  body: in Block,
+  catches: in List[CatchClause],
+  fin: in Option[Block],
+  known: in Option[Ty],
+  stmts: in List[TStmt],
+): Option[TExpr] {
+  val ty = match known { case Some(k) -> k; case None -> return None }
+  val local = declareLocal(env, "__try" + toString(env.nextLocal[0] + 1), ty, true)
+  val tb = match tryValueBlock(env, body, ty, local) { case Some(x) -> x; case None -> return None }
+  val tcs: List[TCatch] = newList()
+  for c in catches {
+    pushScope(env)
+    var binding: Option[LocalDecl] = None
+    match c.bindName {
+      case Some(n) -> {
+        binding = Some(value = declareLocal(env, n, TException, false))
+      }
+      case None -> ()
+    }
+    val built = tryValueBlock(env, c.body, ty, local)
+    popScope(env)
+    match built {
+      case Some(cb) -> tcs.add(TCatch(binding = binding, exceptionType = c.typeName, body = cb))
+      case None -> return None
+    }
+  }
+  var tfin: Option[TExpr] = None
+  match fin {
+    case Some(fb) -> match loopBody(env, fb) { case Some(x) -> { tfin = Some(value = x) }; case None -> return None }
+    case None -> ()
+  }
+  stmts.add(TStmt(id = freshNodeId(env), span = s.span, kind = TsVar(decl = local, init = None)))
+  stmts.add(stmtOf(s, TsTry(body = tb, catches = tcs, finallyBody = tfin)))
+  Some(value = TExpr(id = freshNodeId(env), ty = ty, span = s.span, kind = XLocal(local = local.id)))
 }
 
 /// Does control never fall out of the end of `stmts`: the last statement is a `return`,
@@ -1437,7 +1550,9 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   if ok {
     match fn.body {
       case Some(FBBlock(b)) -> {
-        res = buildBlock(env, b, None, freshNodeId(env))
+        // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
+        val known: Option[Ty] = if not isUnitTy(ret) and blockEndsInTry(b) { Some(value = ret) } else { None }
+        res = buildBlock(env, b, known, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
         res = buildExpr(env, x)
