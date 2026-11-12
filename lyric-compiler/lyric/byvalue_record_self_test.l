@@ -31,7 +31,7 @@ record Sphere {
 
 ref record Tagged {
   var count: Int
-  at: Vec3
+  var at: Vec3
 }
 
 union Hit {
