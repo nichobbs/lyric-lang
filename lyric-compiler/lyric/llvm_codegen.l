@@ -18461,7 +18461,8 @@ func tirUnitMaps(
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
-          case Some(sg) -> fnNames.add(id, sg.irName)
+          // An async callee returns a task the call site unwraps: its calls stay on the AST path.
+          case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
           case None -> ()
         }
         case None -> match Str.indexOf(key, "::") {
@@ -18635,7 +18636,7 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
     }
     case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
-      if not fnNames.containsKey(d.sym.id) {
+      if not fnNames.containsKey(d.sym.id) and not d.isAsync {
         fnNames.add(d.sym.id, ast.name)
       }
       match lowerWithTuples(ctx, maps, d) {
