@@ -546,4 +546,3 @@ test "a member may not name an owner parameter at or past the owner's count (D57
 test "a member may not name a parameter of another declaration (D579)" {
   assertTrue(rulesOf(ownedFn(98, 0, 1)).contains("closed-type"), "a parameter of another owner")
 }
-
