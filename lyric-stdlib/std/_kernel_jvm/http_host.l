@@ -85,6 +85,10 @@ extern type JHttpHeaders = "java.net.http.HttpHeaders"
 
 extern type JOptional = "java.util.Optional"
 
+extern type JMap = "java.util.Map"
+
+extern type JIterator = "java.util.Iterator"
+
 extern type JURI = "java.net.URI"
 
 extern type JString = "java.lang.String"
@@ -117,7 +121,7 @@ pub record HttpRequestMessage {
   headerNames: List[String]
   headerValues: List[String]
   contentType: String
-  body: String
+  body: slice[Byte]
   hasBody: Bool
   timeoutNanos: Long
 }
@@ -976,13 +980,14 @@ pub func hostClientWithTls(
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
   val names: List[String] = newList()
   val values: List[String] = newList()
+  val noBody: slice[Byte] = []
   HttpRequestMessage(
     method = httpMethod,
     url = url,
     headerNames = names,
     headerValues = values,
     contentType = "",
-    body = "",
+    body = noBody,
     hasBody = false,
     timeoutNanos = 0i64
   )
@@ -1020,6 +1025,12 @@ pub func hostWithHeader(
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
+  hostWithBytesBody(request, contentType, encodeUtf8(body))
+}
+
+pub func hostWithBytesBody(
+  request: in HttpRequestMessage, contentType: in String, body: in slice[Byte]
+): HttpRequestMessage {
   HttpRequestMessage(
     method = request.method,
     url = request.url,
@@ -1063,7 +1074,7 @@ func buildJavaRequest(request: in HttpRequestMessage): JHttpRequest {
   }
   if request.hasBody {
     b = b.header("Content-Type", request.contentType)
-    b = b.method(request.method, JBodyPublishers.ofString(request.body))
+    b = b.method(request.method, JBodyPublishers.ofByteArray(request.body))
   } else {
     b = b.method(request.method, JBodyPublishers.noBody())
   }
@@ -1308,7 +1319,7 @@ func resolveRedirect(current: in String, location: in String): String {
 
 func unixHop(client: in HttpClientHandle, request: in HttpRequestMessage, deadlineNanos: in Long): ClientResponse {
   val parts = splitUnixUrl(request.url)
-  val body: Option[slice[Byte]] = if request.hasBody { Some(value = encodeUtf8(request.body)) } else { None }
+  val body: Option[slice[Byte]] = if request.hasBody { Some(value = request.body) } else { None }
   val requestBytes = match serializeClientRequest(request.method, parts.target, parts.host, wireRequestHeaders(request), request.contentType, body) {
     case Ok(bytes) -> bytes
     case Err(message) -> panic("Std.Http: " + message)
@@ -1332,6 +1343,7 @@ func doSendUnix(client: in HttpClientHandle, request: in HttpRequestMessage): Ht
     }
     val next = resolveRedirect(current.url, locationOf(result))
     val method = current.method.toUpper()
+    val noBody: slice[Byte] = []
     val keepsMethod = result.status == 307 or result.status == 308
     val becomesGet = not keepsMethod and method != "GET" and method != "HEAD"
     current = HttpRequestMessage(
@@ -1340,7 +1352,7 @@ func doSendUnix(client: in HttpClientHandle, request: in HttpRequestMessage): Ht
       headerNames = current.headerNames,
       headerValues = current.headerValues,
       contentType = if becomesGet { "" } else { current.contentType },
-      body = if becomesGet { "" } else { current.body },
+      body = if becomesGet { noBody } else { current.body },
       hasBody = if becomesGet { false } else { current.hasBody },
       timeoutNanos = current.timeoutNanos
     )
@@ -1401,6 +1413,31 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
     }
     case None -> match headerValue(response.wireHeaders, name) { case Some(value) -> value; case None -> "" }
   }
+}
+
+/// The name of every header on the response, as the JDK reports them
+/// (lowercase over HTTP/2, as sent over HTTP/1.1).
+pub func hostResponseHeaderNames(response: in HttpResponseMessage): List[String] {
+  val names: List[String] = newList()
+  match response.jheaders {
+    case Some(headers) -> {
+      val byName: JMap = headers.map()
+      val keys: JSet = byName.keySet()
+      val it: JIterator = keys.iterator()
+      while it.hasNext() {
+        val name: String = it.next()
+        names.add(name)
+      }
+    }
+    case None -> {
+      var i = 0
+      while i < response.wireHeaders.count {
+        names.add(response.wireHeaders[i].name)
+        i = i + 1
+      }
+    }
+  }
+  names
 }
 
 func readBodyTextOf(response: in HttpResponseMessage): String {

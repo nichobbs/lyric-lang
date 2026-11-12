@@ -29,6 +29,8 @@
 package Std.HttpHost
 
 import Std.Core
+import Std.Collections
+import Std.String as Str
 import Std.Task
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
@@ -49,6 +51,8 @@ extern type HttpResponseMessage = "System.Net.Http.HttpResponseMessage"
 extern type HttpContent = "System.Net.Http.HttpContent"
 
 extern type StringContent = "System.Net.Http.StringContent"
+
+extern type ByteArrayContent = "System.Net.Http.ByteArrayContent"
 
 // `BclHttpMethod` rather than `HttpMethod` because `Std.Http`
 // declares its own user-facing `pub enum HttpMethod { Get, Post, … }`
@@ -122,6 +126,18 @@ func newStringContent(body: in String, encoding: in Encoding, mediaType: in Stri
 }
 
 func setRequestContent(req: in HttpRequestMessage, content: in StringContent): Unit {
+  req.Content = content
+}
+
+func newByteArrayContent(body: in slice[Byte]): ByteArrayContent {
+  ByteArrayContent.new(body)
+}
+
+func byteContentHeaders(content: in ByteArrayContent): HttpHeaders {
+  content.Headers
+}
+
+func setRequestByteContent(req: in HttpRequestMessage, content: in ByteArrayContent): Unit {
   req.Content = content
 }
 
@@ -425,6 +441,19 @@ pub func hostWithHeader(
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
   setRequestContent(request, newStringContent(body, utf8(), contentType))
+  request
+}
+
+/// Attach `body` verbatim as the request content.  `ByteArrayContent` sets no
+/// media type of its own, so `contentType` is added to the content headers
+/// unparsed: the wire carries exactly the string the caller gave, with no
+/// `charset` parameter appended (unlike `StringContent`).
+pub func hostWithBytesBody(
+  request: in HttpRequestMessage, contentType: in String, body: in slice[Byte]
+): HttpRequestMessage {
+  val content = newByteArrayContent(body)
+  val _ = headersTryAdd(byteContentHeaders(content), "Content-Type", contentType)
+  setRequestByteContent(request, content)
   request
 }
 
@@ -1037,6 +1066,48 @@ func firstHeaderValue(values: in IEnumerableStr): String {
   } else {
     ""
   }
+}
+
+func responseHeadersText(h: in HttpResponseHeaders): String {
+  h.ToString()
+}
+
+func contentHeadersText(h: in HttpContentHeaders): String {
+  h.ToString()
+}
+
+// `HttpHeaders.ToString()` renders one `Name: value[, value]` line per
+// header; the names are read off the front of each line.  Enumerating the
+// collection itself would mean a `KeyValuePair<string, IEnumerable<string>>`
+// in a MemberRef, a generic value type auto-FFI cannot name.
+func appendHeaderLineNames(text: in String, into: in List[String]): Unit {
+  val lines = Str.split(text, "\n")
+  var i = 0
+  while i < lines.length {
+    val line = lines[i]
+    val colon = Str.indexOfRaw(line, ":")
+    if colon > 0 {
+      into.add(line.substring(0, colon))
+    }
+    i = i + 1
+  }
+}
+
+/// The name of every header on the response, response-level then
+/// content-level, in the case the BCL reports.
+pub func hostResponseHeaderNames(response: in HttpResponseMessage): List[String] {
+  val names: List[String] = newList()
+  try {
+    appendHeaderLineNames(responseHeadersText(responseHeadersOf(response)), names)
+  } catch Bug as _ {
+    ()
+  }
+  try {
+    appendHeaderLineNames(contentHeadersText(contentHeadersOf(responseContent(response))), names)
+  } catch Bug as _ {
+    ()
+  }
+  names
 }
 
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {

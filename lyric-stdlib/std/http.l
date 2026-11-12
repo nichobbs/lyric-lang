@@ -84,6 +84,7 @@ pub opaque type HttpRequest {
   headerValues: List[String]
   bodyContentType: String
   body: Option[String]
+  bodyBytes: Option[slice[Byte]]
 }
 
 func newHttpRequest(method: in String, url: in String): HttpRequest {
@@ -94,7 +95,8 @@ func newHttpRequest(method: in String, url: in String): HttpRequest {
     headerNames = newList(),
     headerValues = newList(),
     bodyContentType = "",
-    body = None
+    body = None,
+    bodyBytes = None
   )
 }
 
@@ -122,6 +124,10 @@ func rebuildHandle(request: in HttpRequest): HostHttp.HttpRequestMessage {
       case Err(_) -> ()
     }
     i = i + 1
+  }
+  match request.bodyBytes {
+    case Some(bytes) -> return HostHttp.hostWithBytesBody(handle, request.bodyContentType, bytes)
+    case None -> ()
   }
   match request.body {
     case Some(b) -> HostHttp.hostWithStringBody(handle, request.bodyContentType, b)
@@ -158,8 +164,8 @@ pub opaque type Headers {
 ///
 /// All methods accept the URL as a plain `String`; validation and
 /// `InvalidUrl` errors are surfaced through the `Result` return type.
-/// For requests that need custom headers or non-string bodies, use
-/// `send` with a pre-built `HttpRequest`.
+/// For requests that need custom headers or a binary body (`withBytesBody`),
+/// use `send` with a pre-built `HttpRequest`.
 @stable(since = "1.0")
 pub interface HttpClient {
   /// Send a pre-built HTTP request.
@@ -907,8 +913,8 @@ pub func request(method: in HttpMethod, url: in Url): HttpRequest {
 ///   this library sets automatically — `Host`, `Connection`,
 ///   `Content-Type`, or `Content-Length`. Setting one of these directly
 ///   would produce a duplicate header line on the wire once the automatic
-///   one is appended (#6658); use `withJsonBody`/`withTextBody` to set the
-///   content type, or a request-shaping option on `HttpClientBuilder` for
+///   one is appended (#6658); use `withJsonBody`/`withTextBody`/`withBytesBody`
+///   to set the content type, or a request-shaping option on `HttpClientBuilder` for
 ///   `Host`/`Connection`.
 @stable(since = "1.0")
 pub func withHeader(request: in HttpRequest, key: in String, value: in String): Result[HttpRequest, HttpError] {
@@ -925,7 +931,8 @@ pub func withHeader(request: in HttpRequest, key: in String, value: in String): 
         headerNames = appendedCopy(request.headerNames, key),
         headerValues = appendedCopy(request.headerValues, value),
         bodyContentType = request.bodyContentType,
-        body = request.body
+        body = request.body,
+        bodyBytes = request.bodyBytes
       )
     )
   }
@@ -998,7 +1005,43 @@ func withStringBody(request: in HttpRequest, contentType: in String, text: in St
     headerNames = request.headerNames,
     headerValues = request.headerValues,
     bodyContentType = contentType,
-    body = Some(value = text)
+    body = Some(value = text),
+    bodyBytes = None
+  )
+}
+
+/// Attach a binary body, sent byte for byte, with the given content type.
+///
+/// `contentType` is sent as the `Content-Type` header exactly as written (no
+/// `charset` parameter is added); `Content-Length` is the slice's length. An
+/// empty slice sends a zero-length body. Attaching a body replaces any body
+/// attached before.
+///
+/// The request keeps a reference to `bytes` and does not copy it: do not modify
+/// the slice until the request has been sent (and, with `retry`, until the last
+/// attempt has finished).
+///
+/// # Errors
+/// - `InvalidHeader` (name `Content-Type`): `contentType` is empty, or contains
+///   a control character other than tab, or DEL.
+@stable(since = "1.0")
+pub func withBytesBody(
+  request: in HttpRequest, contentType: in String, bytes: in slice[Byte]
+): Result[HttpRequest, HttpError] {
+  if contentType.length == 0 or not isHeaderValueSafe(contentType) {
+    return Err(error = InvalidHeader(url = request.url, name = "Content-Type"))
+  }
+  return Ok(
+    value = HttpRequest(
+      handle = HostHttp.hostWithBytesBody(request.handle, contentType, bytes),
+      url = request.url,
+      method = request.method,
+      headerNames = request.headerNames,
+      headerValues = request.headerValues,
+      bodyContentType = contentType,
+      body = None,
+      bodyBytes = Some(value = bytes)
+    )
   )
 }
 
@@ -1180,7 +1223,8 @@ pub async func retry(request: in HttpRequest, maxAttempts: in Int, backoffMs: in
         headerNames = request.headerNames,
         headerValues = request.headerValues,
         bodyContentType = request.bodyContentType,
-        body = request.body
+        body = request.body,
+        bodyBytes = request.bodyBytes
       )
     }
     last = await sendAsync(attempt)
@@ -1347,6 +1391,30 @@ pub func HttpResponse.header(response: in HttpResponse, name: in String): Option
   } else {
     Some(value = v)
   }
+}
+
+/// The name of every header on the response, each once, for a caller that
+/// must discover headers by prefix (`x-amz-meta-*`, `x-ratelimit-*`) and so
+/// cannot ask for them by name. Read a value with `HttpResponse.header`.
+///
+/// Header names are case-insensitive and arrive in whatever case the peer and
+/// protocol used (always lowercase over HTTP/2): compare them
+/// case-insensitively. The order is unspecified.
+@stable(since = "1.0")
+pub func HttpResponse.headerNames(response: in HttpResponse): slice[String] {
+  val all = HostHttp.hostResponseHeaderNames(response.handle)
+  val unique: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  var i = 0
+  while i < all.count {
+    val key = Str.toLower(all[i])
+    if not seen.containsKey(key) {
+      seen.add(key, true)
+      unique.add(all[i])
+    }
+    i = i + 1
+  }
+  unique.toArray()
 }
 
 /// The HTTP protocol version this response was actually negotiated over

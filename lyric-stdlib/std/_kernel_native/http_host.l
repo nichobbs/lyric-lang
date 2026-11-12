@@ -253,7 +253,7 @@ pub record HttpRequestMessage {
   headerNames: List[String]
   headerValues: List[String]
   contentType: String
-  body: String
+  body: slice[Byte]
   hasBody: Bool
   timeoutNanos: Long
 }
@@ -1072,7 +1072,7 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
     headerNames = names,
     headerValues = values,
     contentType = "",
-    body = "",
+    body = [],
     hasBody = false,
     timeoutNanos = 0i64
   )
@@ -1107,6 +1107,12 @@ pub func hostWithHeader(
 }
 
 pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
+  hostWithBytesBody(request, contentType, encodeUtf8(body))
+}
+
+pub func hostWithBytesBody(
+  request: in HttpRequestMessage, contentType: in String, body: in slice[Byte]
+): HttpRequestMessage {
   HttpRequestMessage(
     method = request.method,
     url = request.url,
@@ -1205,7 +1211,7 @@ func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): Re
   }
   var bodyBytes: slice[Byte] = []
   if request.hasBody {
-    bodyBytes = encodeUtf8(request.body)
+    bodyBytes = request.body
     text = text + "Content-Type: " + request.contentType + "\r\n"
     text = text + "Content-Length: " + bodyBytes.length.toString() + "\r\n"
   }
@@ -1565,6 +1571,17 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): Result
 // =====================================================================
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
   response.status
+}
+
+/// The name of every header on the response, in the order and case received.
+pub func hostResponseHeaderNames(response: in HttpResponseMessage): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < response.headerNames.count {
+    names.add(response.headerNames[i])
+    i = i + 1
+  }
+  names
 }
 
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {

@@ -16,7 +16,9 @@
 //! it (to stub the network in a test, or to add authentication).
 //!
 //! Request: method, URL, header lines (`name: value`, newline separated), content
-//! type, body text, whether there is a body, whether redirects are followed.
+//! type, body, whether there is a body, whether redirects are followed, and
+//! whether the body is base64 (a binary body from `withBytesBody`, which the
+//! host decodes back to bytes; a text body travels as is).
 //! Response: `ok`, the status, header lines, a blank line, then the body as base64
 //! (a String cannot carry arbitrary bytes).  A failure to get any response (offline,
 //! DNS, CORS, an aborted fetch) is `error` and a message, returned as an ordinary
@@ -66,7 +68,7 @@ import Std.Tls as Tls
 // The host import.
 // =====================================================================
 @wasmImport("std.http", promise)
-extern func hostFetch(method: String, url: String, headers: String, contentType: String, body: String, hasBody: Bool, followRedirects: Bool): String = "fetch"
+extern func hostFetch(method: String, url: String, headers: String, contentType: String, body: String, hasBody: Bool, followRedirects: Bool, bodyIsBase64: Bool): String = "fetch"
 
 // =====================================================================
 // Public types.
@@ -91,6 +93,7 @@ pub record HttpRequestMessage {
   contentType: String
   body: String
   hasBody: Bool
+  bodyIsBase64: Bool
   timeoutNanos: Long
 }
 
@@ -248,6 +251,7 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
     contentType = "",
     body = "",
     hasBody = false,
+    bodyIsBase64 = false,
     timeoutNanos = 0i64
   )
 }
@@ -280,6 +284,23 @@ pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in Stri
     contentType = contentType,
     body = body,
     hasBody = true,
+    bodyIsBase64 = false,
+    timeoutNanos = request.timeoutNanos
+  )
+}
+
+pub func hostWithBytesBody(
+  request: in HttpRequestMessage, contentType: in String, body: in slice[Byte]
+): HttpRequestMessage {
+  HttpRequestMessage(
+    method = request.method,
+    url = request.url,
+    headerNames = request.headerNames,
+    headerValues = request.headerValues,
+    contentType = contentType,
+    body = encodeBase64(body),
+    hasBody = true,
+    bodyIsBase64 = true,
     timeoutNanos = request.timeoutNanos
   )
 }
@@ -413,7 +434,8 @@ async func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): 
     request.contentType,
     request.body,
     request.hasBody,
-    client.followRedirects
+    client.followRedirects,
+    request.bodyIsBase64
   )
   parseFetchResult(raw)
 }
@@ -423,6 +445,17 @@ async func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): 
 // =====================================================================
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
   response.status
+}
+
+/// The name of every header on the response, in the order and case received.
+pub func hostResponseHeaderNames(response: in HttpResponseMessage): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < response.headerNames.count {
+    names.add(response.headerNames[i])
+    i = i + 1
+  }
+  names
 }
 
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {

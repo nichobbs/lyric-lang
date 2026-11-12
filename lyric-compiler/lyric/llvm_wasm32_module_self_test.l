@@ -937,6 +937,29 @@ pub async func postJsonWithHeader(url: String, json: String): String {
   }
 }
 
+pub async func putBytes(url: String): String {
+  match Url.tryFrom(url) {
+    case Err(e) -> show(e)
+    case Ok(u) -> {
+      match withBytesBody(request(PUT, u), "application/octet-stream", [0u8, 255u8, 128u8, 10u8]) {
+        case Err(e) -> show(e)
+        case Ok(req) -> {
+          match await sendAsync(req) {
+            case Ok(resp) -> {
+              var names = ""
+              for name in HttpResponse.headerNames(resp) {
+                names = names + name + ";"
+              }
+              "status=" + HttpResponse.statusCode(resp).toString() + " names=" + names
+            }
+            case Err(e) -> show(e)
+          }
+        }
+      }
+    }
+  }
+}
+
 pub async func noRedirects(url: String): String {
   match await HostHttp.hostGetSafe(HostHttp.hostClientNoRedirects(), url) {
     case Ok(resp) -> "status=" + HostHttp.hostStatusCode(resp).toString()
@@ -1037,6 +1060,37 @@ console.log('seen=' + seen.join(' | '));
   assertTrue(
     Str.contains(r.stdout, "GET http://h.test/redirect manual"),
     "no-redirect clients use manual redirects: " + r.stdout
+  )
+}
+
+test "wasm32 module: withBytesBody reaches fetch as bytes, and headerNames lists the response headers" {
+  val r = runNode(
+    httpProgram,
+    r"import { instantiate } from './prog.js';
+const seen = [];
+globalThis.fetch = async (url, init) => {
+  const body = init.body instanceof Uint8Array ? 'bytes:' + Array.from(init.body).join(',') : 'text:' + init.body;
+  seen.push(init.method + ' ' + url + ' ' + body + ' ' + init.headers.get('content-type'));
+  return new Response('ok', { status: 200, headers: { 'Content-Type': 'text/x-probe', 'X-Amz-Meta-Owner': 'alice' } });
+};
+const m = await instantiate();
+console.log('put=' + await m.putBytes('http://h.test/b'));
+console.log('post=' + await m.postText('http://h.test/p', 'payload'));
+console.log('seen=' + seen.join(' | '));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "put=status=200 names=content-type;x-amz-meta-owner;\n"),
+    "the PUT succeeds and both response header names are listed: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "PUT http://h.test/b bytes:0,255,128,10 application/octet-stream"),
+    "the byte body reaches fetch as a Uint8Array with the content type as written: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "POST http://h.test/p text:payload text/plain"),
+    "a text body still reaches fetch as a string: " + r.stdout
   )
 }
 

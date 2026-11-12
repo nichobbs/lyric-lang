@@ -553,6 +553,22 @@ pub interface HttpClient {
 
 The real `HttpClient` implementation wraps `System.Net.Http.HttpClient`. In production you wire it through your `wire` block. In tests you inject a stub that returns canned responses. Chapter 13 covers the FFI aspect of this wrapping; Chapter 15 covers the test stub pattern.
 
+A request that needs its own method, headers or body is built step by step and sent with `sendAsync` (or `client.send`). `withJsonBody` and `withTextBody` attach UTF-8 text; `withBytesBody` attaches a `slice[Byte]` that is sent byte for byte, with the content type exactly as you write it, which is what an upload of an image, an archive or any other binary payload needs:
+
+```lyric
+import Std.Http
+
+async func upload(url: in Url, png: in slice[Byte], token: in String): Result[HttpResponse, HttpError] {
+  val withBody = withBytesBody(request(PUT, url), "image/png", png)?
+  val signed = withHeader(withBody, "Authorization", "Bearer " + token)?
+  return await sendAsync(signed)
+}
+```
+
+`withBytesBody` returns a `Result` because the content type is a header: an empty one, or one with a control character, is `InvalidHeader`. The request keeps a reference to the slice rather than a copy, so leave it unmodified until the request has been sent. `retry` resends a byte body like any other.
+
+On the response, `bodyBytes()` reads the body as bytes, `header(name)` looks one header up, and `headerNames()` lists the names of all of them, for the case where you have to discover headers by prefix (`x-amz-meta-*`, `x-ratelimit-*`) instead of asking for one by name. Compare the names case-insensitively: HTTP/2 always delivers them in lowercase.
+
 For custom transport configuration (redirect policy, Unix sockets, which work on `--target dotnet` and `--target jvm` but speak HTTP/1.1 only on the JVM, HTTP version), build a client with `HttpClientBuilder` instead of the plain factory functions:
 
 ```lyric
