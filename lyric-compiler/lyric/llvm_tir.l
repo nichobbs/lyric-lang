@@ -2321,7 +2321,13 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
     case PlField(recv, field) -> match heapFieldPlace(c, recv, field) {
       case None -> unitVal()
       case Some(fp) -> match fp.value {
-        case NLocal(name) -> assignSlot(c, Slot(ptr = name, ty = fp.ty), place.ty, op, value)
+        case NLocal(name) -> assignSlot(
+          c,
+          Slot(ptr = name, ty = fp.ty),
+          place.ty,
+          op,
+          value
+        )
         case _ -> unsupported(c, "an assignment to a field")
       }
     }
