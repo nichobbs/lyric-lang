@@ -94,7 +94,7 @@ cat "$work/inrange.census"
 "$work/inrange.ast" > "$work/inrange.ast.out"
 "$work/inrange.tir" > "$work/inrange.tir.out"
 diff -u "$work/inrange.ast.out" "$work/inrange.tir.out"
-grep -q '^native via-TIR: 9 of 9 functions lowered from TIR' "$work/inrange.census" || {
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/inrange.census" || {
   echo "::error::expected every function of the in-range program to be lowered from TIR"
   exit 1
 }

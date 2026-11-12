@@ -18624,6 +18624,10 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       }
     }
   }
+  if LlvmTir.tirSkipped(fn.name) {
+    census.fallbacks.add(fn.name + ": skipped by LYRIC_NATIVE_TIR_SKIP")
+    return ast
+  }
   match decl {
     case None -> {
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")

@@ -3464,6 +3464,11 @@ func linkAndEmitNative(
     for line in LlvmTir.tirCensusLines(tirTotal) {
       Console.error(line)
     }
+    if LlvmTir.tirTraceRequested() {
+      for l in tirTotal.lowered {
+        Console.error("  lowered: " + l)
+      }
+    }
   }
   if isPlugin and not addPluginEntryPoint(npkg, units[0].pkgName) {
     Console.error(

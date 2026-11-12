@@ -34,6 +34,26 @@ pub func viaTirRequested(): Bool {
   Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1"
 }
 
+/// `LYRIC_NATIVE_TIR_SKIP=a,b`: the functions (bare names) that stay on the AST path, for
+/// bisecting a miscompile of the TIR lowering without rebuilding the compiler.
+pub func tirSkipped(name: in String): Bool {
+  val raw = Environment.getVarOrDefault("LYRIC_NATIVE_TIR_SKIP", "")
+  if raw.length == 0 {
+    return false
+  }
+  for part in Str.split(raw, ",") {
+    if part == name {
+      return true
+    }
+  }
+  false
+}
+
+/// `LYRIC_NATIVE_TIR_TRACE=1` lists the functions lowered from TIR after the census.
+pub func tirTraceRequested(): Bool {
+  Environment.getVarOrDefault("LYRIC_NATIVE_TIR_TRACE", "") == "1"
+}
+
 /// One package's TIR as the code generator receives it: the built package and the
 /// DefPath key of every symbol in it (`SymbolId.id` to key), from which a top-level
 /// function's package, name and arity are read.
@@ -351,6 +371,19 @@ func unitVal(): Val {
 func unsupported(c: in LCtx, why: in String): Val {
   c.problems.add(why)
   Val(ty = NI32, value = NUndef(ty = NI32))
+}
+
+/// An integer, boolean or floating-point value (what `scalarToString` formats).
+func isScalarN(t: in NType): Bool {
+  match t {
+    case NI1 -> true
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case NFloat -> true
+    case NDouble -> true
+    case _ -> false
+  }
 }
 
 func isStringN(t: in NType): Bool {
@@ -1779,9 +1812,25 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         case _ -> ()
       }
       if ins.count == 2 {
-        val a = borrow(c, lowerExpr(c, ins[0]))
-        val b = borrow(c, lowerExpr(c, ins[1]))
+        val a0 = borrow(c, lowerExpr(c, ins[0]))
+        val b0 = borrow(c, lowerExpr(c, ins[1]))
+        // `String + x` and `x + String` concatenate the text of the scalar `x` (the surface
+        // converts it as `toString` would).
+        val textOf = match op { case IoAdd -> true; case _ -> false }
+        val a = if textOf and isStringN(b0.ty) and not isStringN(a0.ty) and isScalarN(a0.ty) {
+          borrow(c, scalarToString(c, ins[0].ty, a0))
+        } else {
+          a0
+        }
+        val b = if textOf and isStringN(a0.ty) and not isStringN(b0.ty) and isScalarN(b0.ty) {
+          borrow(c, scalarToString(c, ins[1].ty, b0))
+        } else {
+          b0
+        }
         if isStringN(a.ty) {
+          if not isStringN(b.ty) {
+            return unsupported(c, "a string operator with a " + renderTy(ins[1].ty) + " operand")
+          }
           return lowerStringBinary(c, op, a, b)
         }
         match tyToN(c.env, ins[0].ty) {
