@@ -17,9 +17,11 @@ func swap(p: in (Int, Int)): (Int, Int) {
 
 func describe(p: in (Int, String)): String {
   match p {
-    case (0, s) -> "zero:" + s
-    case (1, _) -> "one"
-    case (n, s) -> s + "/" + toString(n)
+    case (n, s) -> match n {
+      case 0 -> "zero:" + s
+      case 1 -> "one"
+      case _ -> s + "/" + toString(n)
+    }
   }
 }
 

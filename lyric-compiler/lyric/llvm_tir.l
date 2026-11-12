@@ -2041,7 +2041,9 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
           if subPatTests(elems[i]) {
             match lay.fieldTys[i] {
               case NVoid -> c.problems.add("a pattern on a Unit element")
-              case _ -> acc = andV(c, acc, patTestAny(c, elems[i], loadTupleElem(c, lay, scrut.value, i), tys[i]))
+              case _ -> {
+                acc = andV(c, acc, patTestAny(c, elems[i], loadTupleElem(c, lay, scrut.value, i), tys[i]))
+              }
             }
           }
           i = i + 1
