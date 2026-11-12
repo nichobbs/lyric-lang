@@ -2536,6 +2536,19 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       )
       case None -> None
     }
+    // `self = ...` in a method that takes `self: inout T`: the receiver is the parameter named `self`.
+    case ESelf -> match lookupLocal(env, "self") {
+      case Some(d) -> {
+        if d.id.id < 0 {
+          return None
+        }
+        Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+      }
+      case None -> {
+        val _ = uncoveredExpr(env, target, "an assignment to self outside a method")
+        None
+      }
+    }
     case _ -> {
       val _ = uncoveredExpr(env, target, "an assignment target that is not a local, field or element")
       None

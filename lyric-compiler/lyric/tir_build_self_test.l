@@ -1991,6 +1991,15 @@ test "ordering and arithmetic on a bounded type parameter, a distinct type and a
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "assigning to an inout self builds as an assignment to the receiver local" {
+  val c = censusOf(
+    "package App\nrecord Ctr {\n  n: Int\n  func reset(self: inout Ctr): Unit {\n    self = Ctr(n = 0)\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
