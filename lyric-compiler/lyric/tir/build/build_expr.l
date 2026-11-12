@@ -3016,7 +3016,7 @@ func buildMethodCall(
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
-  noteFuncSym(
+  noteFuncSymN(
     env,
     sym,
     site.sig,
@@ -3026,7 +3026,8 @@ func buildMethodCall(
     } else {
       site.sig.recvMode
     },
-    if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc }
+    if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc },
+    inst.tyArgs.count
   )
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }

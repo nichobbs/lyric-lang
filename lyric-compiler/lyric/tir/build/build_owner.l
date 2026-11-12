@@ -43,7 +43,24 @@ pub func instantiateMethod(
 ): Option[MethodInst] {
   val sig = site.sig
   if sig.generics.count == 0 {
-    return Some(value = MethodInst(sig = sig, tyArgs = newList()))
+    // The checker leaves the owner's parameters out of the signature when the receiver's
+    // arguments are the caller's own parameters; they are the receiver's type arguments.
+    val none: List[Ty] = newList()
+    val recvArgs = receiverTypeArgs(site.recvTy)
+    if recvArgs.count == 0 or isSome(site.iface) {
+      return Some(value = MethodInst(sig = sig, tyArgs = none))
+    }
+    val owned: List[Ty] = newList()
+    for ta in recvArgs {
+      match tyOfType(env.ctx, ta) {
+        case Ok(t) -> owned.add(t)
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return None
+        }
+      }
+    }
+    return Some(value = MethodInst(sig = sig, tyArgs = owned))
   }
   val ownerN = ownerGenericCount(sig)
   var checkerArgs: List[Type] = newList()
