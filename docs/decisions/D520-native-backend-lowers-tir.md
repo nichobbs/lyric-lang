@@ -106,3 +106,24 @@ and still holds generics and un-elaborated contracts.
 - `lyric build --manifest ... --target native --via-tir` hands each own package's TIR to its code generation unit, as the single-file path does for the user package: the project loop of `compileProjectToNativeWithShape` asks the middle end for each own package's TIR (`MiddleEndOptions.wantTir`) and passes it to `unitOf`. Bundled stdlib packages and restored dependencies still compile through the AST path.
 - The census is one total over every unit that carried TIR, printed once.
 - `scripts/ci/native-via-tir/project/` (two packages, calls, a record and a union across the boundary) is built both ways by `native-via-tir-e2e.sh`.
+
+## Slice 11: the generic fallback is pinned end to end
+
+- `scripts/ci/native-via-tir/fallback.l` has a generic record, a generic union and a generic function beside one plain function. `native-via-tir-e2e.sh` requires that exactly the plain function is lowered from TIR, that the others are counted as fallbacks with a reason, that the output equals the AST build's and the specified output, and that the TIR build is clean under AddressSanitizer (nichobbs/lyric-lang#9023). When phase 3c monomorphises, this stage flips to asserting they lower.
+- A self-test covers a case pattern on a value that is not an enum; `TirLowerEnv.enums` is documented as a set.
+
+## Slice 12: tuples
+
+- `XTuple`, a destructuring `let` over a tuple pattern and `TpTuple` in a `match` lower from TIR. A tuple is the synthesised heap record `__tuple<...>` the AST path already builds (`tupleRecInfo`), so layout stays the code generator's. Because those records are registered on demand, the lowering cannot be handed them up front: `tyToN` of a `TTuple` looks the layout up in `TirLowerEnv.tuples` (keyed by `renderTy`), and a missing one is recorded in `needTuples`, which the failed `TirFallback` carries. `lowerWithTuples` in the code generator registers those layouts with `tupleRecInfo` and lowers again (bounded; a nested tuple needs one round per level). Layouts persist per unit in `TirUnitMaps.tuples`.
+- A destructuring `let` binds each name as an ordinary owning local (reference elements are retained) so the tuple is released at the end of the statement; tuple pattern bindings in a `match` are borrows of the borrowed scrutinee, like union payload bindings.
+- A tuple pattern's element patterns are tested through `patTestAny`, which opens a union element first. Literal and nested tuple patterns are therefore accepted by the TIR path although the AST path rejects them (N0007); the fixture sticks to what both paths accept.
+- Still on the AST path: element access `t.0` (the builder does not build it yet: it has no `FieldRef` owner for a tuple), tuple equality, a tuple holding a Unit element in a pattern.
+- `scripts/ci/native-via-tir/tuples.l` (6 of 6 lowered, output equal to the AST build and the specified output, clean under AddressSanitizer) is run by `native-via-tir-e2e.sh`.
+
+## Slice 13: function types, lambdas and calls through function values
+
+- `TFunc` lowers to the code generator's `__closure<ret(params)>` pointer type, registered on demand like tuples (`TirLowerEnv.funcs`/`needFuncs`, registered by `closureNType` in `lowerWithTuples`'s retry). Only `in` parameters of concrete non-Unit types and non-async functions qualify; anything else keeps the function on the AST path.
+- `XLambda` lowers to a heap closure object (ARC header, code pointer at slot 3, captures from slot 4) exactly as the AST path lays it out, so closure values cross between the two paths. The body is a function of its own (`__lyric.lambda.tir.<fn>.<n>`) lowered by the same `assembleFn` as any function, reading each capture from the environment into a slot. Captures are by value (a reference is retained into the object); a lambda that mutates a capture (`CmByRef`) stays on the AST path, as the AST path itself rejects it. The lowering returns the lambda functions and the environment layouts (`TirLowered.extraFns`/`closures`); the code generator emits them with the capture-releasing destructor (`synthClosureDtor`) only when the function lowers from TIR, so a fallback leaves nothing behind.
+- `Callee.Indirect` loads the code pointer from the closure and calls it with the closure as `i8*` and the borrowed arguments; a reference result is owned.
+- Still on the AST path: a named function used as a value (`XGlobal` of a function), `out`/`inout` function-type parameters, Unit parameters, async lambdas.
+- `scripts/ci/native-via-tir/closures.l` (6 of 6 lowered, output equal to the AST build and the specified output, clean under AddressSanitizer) is run by `native-via-tir-e2e.sh`.

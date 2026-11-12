@@ -1264,3 +1264,18 @@ test "an enum case is its ordinal and a case pattern compares the ordinal" {
   val ir2 = render(lowerTirFunction(enumEnv(names2), fnDecl(100, newList(), colorT(), g)))
   assertTrue(Str.contains(ir2, "ret i32 1"), "Green is ordinal 1: " + ir2)
 }
+
+test "a case pattern on a value that is not an enum falls back" {
+  // func f(x: Int): Int { match x { Red -> 1; _ -> 0 } } with no enum tables for the case symbol
+  val x = local(1, "x", intT(), false)
+  val ps: List[TParamDecl] = newList()
+  ps.add(param(x))
+  val arms: List[TArm] = newList()
+  arms.add(arm(pat(2, intT(), TpCtor(sym = sym(99), args = newList())), None, intLit(3, 1i64)))
+  arms.add(arm(pat(4, intT(), TpWild), None, intLit(5, 0i64)))
+  val m = ex(6, intT(), XMatch(scrutinee = ex(7, intT(), XLocal(local = x.id)), arms = arms, exhaustive = true))
+  val names: List[String] = newList()
+  names.add("P.f")
+  val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
+  assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
+}

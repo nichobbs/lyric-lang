@@ -706,6 +706,57 @@ test "a guarded arm never proves a match exhaustive" {
   assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
 }
 
+test "nested case patterns that cover every value are proved exhaustive" {
+  val head = "package App\nunion Shape {\n  case Circle(r: Int)\n  case Rect(w: Int, h: Int)\n}\nunion Wrap {\n  case One(s: Shape)\n  case Zero\n}\n"
+  val all = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case One(Rect(a, b)) -> a + b\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertEqualInt(all.diagnostics, 0, "checks clean")
+  assertTrue(all.env.errors.count == 0, if all.env.errors.count > 0 { all.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(all.body) == "3:exhaustive", matchSummary(all.body))
+  val missing = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertTrue(matchSummary(missing.body) == "2:open", matchSummary(missing.body))
+  val wild = buildFirstFn(
+    head +
+      "func f(w: Wrap): Int {\n  match w {\n    case One(Circle(r)) -> r\n    case One(_) -> 1\n    case Zero -> 0\n  }\n}\n"
+  )
+  assertTrue(matchSummary(wild.body) == "3:exhaustive", matchSummary(wild.body))
+}
+
+test "a tuple of a Bool and a union is proved exhaustive only when every pair is covered" {
+  val head = "package App\nunion U {\n  case A(n: Int)\n  case B\n}\n"
+  val ok = buildFirstFn(
+    head +
+      "func f(b: Bool, u: U): Int {\n  match (b, u) {\n    case (true, A(n)) -> n\n    case (true, B) -> 1\n    case (false, _) -> 2\n  }\n}\n"
+  )
+  assertTrue(ok.env.errors.count == 0, if ok.env.errors.count > 0 { ok.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(ok.body) == "3:exhaustive", matchSummary(ok.body))
+  val gap = buildFirstFn(
+    head +
+      "func f(b: Bool, u: U): Int {\n  match (b, u) {\n    case (true, A(n)) -> n\n    case (false, _) -> 2\n  }\n}\n"
+  )
+  assertTrue(matchSummary(gap.body) == "2:open", matchSummary(gap.body))
+}
+
+test "an or-pattern of cases and a guard are read soundly by the exhaustiveness matrix" {
+  val head = "package App\nunion U {\n  case A\n  case B\n  case C\n}\nunion W {\n  case P(u: U)\n  case Q\n}\n"
+  val orOk = buildFirstFn(
+    head +
+      "func f(w: W): Int {\n  match w {\n    case P(A | B) -> 1\n    case P(C) -> 2\n    case Q -> 3\n  }\n}\n"
+  )
+  assertTrue(orOk.env.errors.count == 0, if orOk.env.errors.count > 0 { orOk.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(orOk.body) == "3:exhaustive", matchSummary(orOk.body))
+  val guarded = buildFirstFn(
+    head +
+      "func f(w: W, k: Int): Int {\n  match w {\n    case P(A | B) if k > 0 -> 1\n    case P(C) -> 2\n    case Q -> 3\n  }\n}\n"
+  )
+  assertTrue(matchSummary(guarded.body) == "3:open", matchSummary(guarded.body))
+}
+
 func constructLits(b: in Option[TExpr]): String {
   match b {
     case Some(body) -> match body.kind {
@@ -1098,16 +1149,37 @@ test "a Long argument to a host Double parameter is widened at the boundary (D60
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
 }
 
-test "a field of an opaque type is readable in its own package (D601)" {
+test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
   )
   assertBuildsAndVerifies(pb, 1, "Id.label")
 }
 
-test "a field of a generic opaque type is read at the receiver's arguments (D601)" {
+test "a field of a generic opaque type is read at the receiver's arguments (D592)" {
   val pb = packageOf("package App\nopaque type Box[T] {\n  v: T\n}\nfunc g(b: in Box[Int]): Int {\n  b.v\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.v")
+}
+
+test "a sibling method called through self inside a lambda of a generic record is defined (D593)" {
+  val pb = packageOf(
+    "package App\nrecord Cell[T] {\n  v: T\n  func get(self: in Cell[T]): T { self.v }\n  func viaLambda(self: in Cell[T]): T {\n    val g = { -> self.get() }\n    g()\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.get and viaLambda")
+}
+
+test "calls of a generic protected type's entry at two instantiations verify (D593)" {
+  val pb = packageOf(
+    "package App\nprotected type Cell[T] {\n  var v: T\n  entry put(x: in T): Unit {\n    v = x\n  }\n}\nfunc f(a: in Cell[String], b: in Cell[Int]): Unit {\n  a.put(\"s\")\n  b.put(1)\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Cell.put and f")
+}
+
+test "an impl method reads and writes a bare field of its receiver (D594)" {
+  val pb = packageOf(
+    "package App\ninterface Scaler {\n  func scale(k: in Int): Int\n}\nref record Doubler {\n  var base: Int\n}\nimpl Scaler for Doubler {\n  func scale(k: in Int): Int {\n    base = base * k + 1\n    base\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "Doubler.scale")
 }
 
 // ─── Generic calls (docs/70 §6.3, D394) ──────────────────────────────────────
@@ -1904,6 +1976,42 @@ test "a branch that leaves through a nested if, a match or a break fits the type
     "package App\nfunc f(c: Bool, d: Bool): Int {\n  val x: Int = if c { 1 } else { if d { return 2 } else { return 3 } }\n  x\n}\nfunc g(c: Bool): Int {\n  var n = 0\n  while n < 3 {\n    val y: Int = if c { 1 } else { break }\n    n = n + y\n  }\n  n\n}\nfunc h(c: Bool): Int {\n  val z: Int = match c {\n    case true -> 1\n    case false -> { return 4 }\n  }\n  z\n}\n"
   )
   assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a try that ends a block yields its body's or its catch's value through a local" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  try {\n    n + 1\n  } finally {\n    val _ = n\n  }\n}\nfunc g(n: Int): Int {\n  try {\n    n + 1\n  } catch Exception as e {\n    0\n  }\n}\nfunc h(n: Int): Int {\n  try {\n    panic(\"boom\")\n  } finally {\n    val _ = n\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "ordering and arithmetic on a bounded type parameter, a distinct type and a range type build" {
+  val c = censusOf(
+    "package App\ntype Score = Int derives Add, Sub, Compare\ntype Cents = Long range 0 ..= 100000 derives Add, Compare\nfunc bigger[T](a: in T, b: in T): Bool\n  where T: Compare\n{\n  a > b\n}\nfunc plus(a: Score, b: Score): Score { a + b }\nfunc less(a: Score, b: Score): Bool { a < b }\nfunc total(a: Cents, b: Cents): Cents { a + b }\nfunc order(a: Cents, b: Cents): Bool { a <= b }\n"
+  )
+  assertEqualInt(c.built, 5, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "assigning to an inout self builds as an assignment to the receiver local" {
+  val c = censusOf(
+    "package App\nrecord Ctr {\n  n: Int\n  func reset(self: inout Ctr): Unit {\n    self = Ctr(n = 0)\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a loop invariant builds as an invariant statement of the loop body" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): Int {\n  var i = 0\n  while i < n\n    invariant: i <= n\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }

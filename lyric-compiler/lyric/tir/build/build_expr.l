@@ -265,23 +265,16 @@ func shortOfBinop(op: in BinOp): Option[ShortOp] {
   }
 }
 
-/// `a == b` and `a != b` on values that are not primitives: one structural relation (language
-/// reference 2.5, D172, D206), lowered by each backend by the operands' type. The operands have the
-/// same type, the right one converted to the left's when the checker accepted a difference
-/// (`opt == 5`). Any other operator on a declared type has no case.
-func buildDeclaredEquality(
-  env: in BuildEnv,
-  e: in Expr,
-  ty: in Ty,
-  op: in BinOp,
-  iop: in IntrinsicOp,
-  lt: in TExpr,
-  rt: in TExpr,
+/// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
+/// 2.5, D172, D206), the ordering operators a type derives or a type parameter is bounded by
+/// (`T: Compare`), and the arithmetic of a distinct, range or record type that derives `Add`, `Sub`
+/// and the rest.  One intrinsic over both operands, lowered by each backend by the operands' type
+/// (a distinct value by its underlying value, a range subtype's result range-checked).  The operands
+/// have the same type, the right one converted to the left's when the checker accepted a difference
+/// (`opt == 5`); the result has the type the checker gave the expression.
+func buildDeclaredBinary(
+  env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
-  val isEq = match op { case BEq -> true; case BNeq -> true; case _ -> false }
-  if not isEq {
-    return uncoveredExpr(env, e, "an operator on a declared type")
-  }
   val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
   match rhs {
     case Some(r2) -> {
@@ -290,7 +283,7 @@ func buildDeclaredEquality(
       two.add(r2)
       Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
     }
-    case None -> uncoveredExpr(env, e, "an equality of operands of different types")
+    case None -> uncoveredExpr(env, e, "an operator on operands of different types")
   }
 }
 
@@ -504,7 +497,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
                 two.add(rt)
                 Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
               } else {
-                buildDeclaredEquality(env, e, ty, op, iop, lt, rt)
+                buildDeclaredBinary(env, e, ty, iop, lt, rt)
               }
               case None -> uncoveredExpr(env, e, "a bitwise operator")
             }
@@ -934,6 +927,23 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in 
           }
         }
       }
+      case STry(body, catches, fin) -> if last and not unitBlock and known.isSome() {
+        match buildTryValue(env, s, body, catches, fin, known, stmts) {
+          case Some(t) -> {
+            tail = Some(value = t)
+          }
+          case None -> {
+            ok = false
+          }
+        }
+      } else {
+        match buildStmt(env, s) {
+          case Some(ts) -> stmts.add(ts)
+          case None -> {
+            ok = false
+          }
+        }
+      }
       case _ -> match buildStmt(env, s) { case Some(ts) -> stmts.add(ts); case None -> { ok = false } }
     }
     i = i + 1
@@ -950,6 +960,102 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in 
     }
   }
   Some(value = TExpr(id = id, ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
+}
+
+/// Whether the last statement of `b` is a `try` statement.
+func blockEndsInTry(b: in Block): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  match b.statements[b.statements.count - 1].kind {
+    case STry(_, _, _) -> true
+    case _ -> false
+  }
+}
+
+/// A block of a value-yielding `try`, typed Unit: the block's tail value is assigned to `local`
+/// instead, so the value reaches the code after the `try` statement.  A block that never
+/// completes assigns nothing.
+func tryValueBlock(env: in BuildEnv, b: in Block, ty: in Ty, local: in LocalDecl): Option[TExpr] {
+  settleBlockTail(env, b, ty)
+  val built = match buildBlock(env, b, Some(value = ty), freshNodeId(env)) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  match built.kind {
+    case XBlock(stmts, Some(tail)) -> match coerceBranch(env, tail, ty) {
+      case Some(v) -> {
+        val place = TPlace(ty = ty, kind = PlLocal(local = local.id))
+        // A tail that never completes (a `panic`) has nothing to assign: it stays a statement.
+        val last = match v.ty {
+          case TNever -> v
+          case _ -> TExpr(
+            id = freshNodeId(env),
+            ty = tyUnit(),
+            span = v.span,
+            kind = XAssign(place = place, op = AkSet, value = v)
+          )
+        }
+        val all: List[TStmt] = newList()
+        for st in stmts {
+          all.add(st)
+        }
+        all.add(TStmt(id = freshNodeId(env), span = v.span, kind = TsExpr(expr = last)))
+        Some(value = TExpr(id = built.id, ty = tyUnit(), span = built.span, kind = XBlock(stmts = all, tail = None)))
+      }
+      case None -> None
+    }
+    case XBlock(stmts, None) -> if neverCompletes(built) {
+      Some(value = TExpr(id = built.id, ty = tyUnit(), span = built.span, kind = built.kind))
+    } else {
+      noteUncoveredAt(env, "a try block that yields no value", built.span)
+      env.errors.add("I0002: the builder has no case for a try block that yields no value")
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// A `try` that ends a non-Unit block yields the value of its body, or of the catch that ran:
+/// a `var` of the block's type is declared before the `try`, the body and each catch assign
+/// their tail value to it, and the block's value is that local.  `try` stays a statement in TIR.
+func buildTryValue(
+  env: in BuildEnv,
+  s: in Statement,
+  body: in Block,
+  catches: in List[CatchClause],
+  fin: in Option[Block],
+  known: in Option[Ty],
+  stmts: in List[TStmt],
+): Option[TExpr] {
+  val ty = match known { case Some(k) -> k; case None -> return None }
+  val local = declareLocal(env, "__try" + toString(env.nextLocal[0] + 1), ty, true)
+  val tb = match tryValueBlock(env, body, ty, local) { case Some(x) -> x; case None -> return None }
+  val tcs: List[TCatch] = newList()
+  for c in catches {
+    pushScope(env)
+    var binding: Option[LocalDecl] = None
+    match c.bindName {
+      case Some(n) -> {
+        binding = Some(value = declareLocal(env, n, TException, false))
+      }
+      case None -> ()
+    }
+    val built = tryValueBlock(env, c.body, ty, local)
+    popScope(env)
+    match built {
+      case Some(cb) -> tcs.add(TCatch(binding = binding, exceptionType = c.typeName, body = cb))
+      case None -> return None
+    }
+  }
+  var tfin: Option[TExpr] = None
+  match fin {
+    case Some(fb) -> match loopBody(env, fb) { case Some(x) -> { tfin = Some(value = x) }; case None -> return None }
+    case None -> ()
+  }
+  stmts.add(TStmt(id = freshNodeId(env), span = s.span, kind = TsVar(decl = local, init = None)))
+  stmts.add(stmtOf(s, TsTry(body = tb, catches = tcs, finallyBody = tfin)))
+  Some(value = TExpr(id = freshNodeId(env), ty = ty, span = s.span, kind = XLocal(local = local.id)))
 }
 
 /// Does control never fall out of the end of `stmts`: the last statement is a `return`,
@@ -1074,7 +1180,10 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
         case None -> None
       }
     }
-    case SInvariant(_) -> uncoveredStmt(env, s, "a loop invariant")
+    case SInvariant(x) -> match buildExpr(env, x) {
+      case Some(t) -> Some(value = stmtOf(s, TsInvariant(expr = t)))
+      case None -> None
+    }
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")
     case SItem(_) -> uncoveredStmt(env, s, "a local item")
   }
@@ -1437,7 +1546,9 @@ func buildFnCore(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wan
   if ok {
     match fn.body {
       case Some(FBBlock(b)) -> {
-        res = buildBlock(env, b, None, freshNodeId(env))
+        // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
+        val known: Option[Ty] = if not isUnitTy(ret) and blockEndsInTry(b) { Some(value = ret) } else { None }
+        res = buildBlock(env, b, known, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
         res = buildExpr(env, x)
@@ -2428,6 +2539,19 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       )
       case None -> None
     }
+    // `self = ...` in a method that takes `self: inout T`: the receiver is the parameter named `self`.
+    case ESelf -> match lookupLocal(env, "self") {
+      case Some(d) -> {
+        if d.id.id < 0 {
+          return None
+        }
+        Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+      }
+      case None -> {
+        val _ = uncoveredExpr(env, target, "an assignment to self outside a method")
+        None
+      }
+    }
     case _ -> {
       val _ = uncoveredExpr(env, target, "an assignment target that is not a local, field or element")
       None
@@ -3048,7 +3172,7 @@ func buildMethodCall(
   }
   val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
   val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
-  val inst = match instantiateMethod(env, e, site, args) { case Some(i) -> i; case None -> return None }
+  val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
   val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
