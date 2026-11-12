@@ -127,3 +127,11 @@ and still holds generics and un-elaborated contracts.
 - `Callee.Indirect` loads the code pointer from the closure and calls it with the closure as `i8*` and the borrowed arguments; a reference result is owned.
 - Still on the AST path: a named function used as a value (`XGlobal` of a function), `out`/`inout` function-type parameters, Unit parameters, async lambdas.
 - `scripts/ci/native-via-tir/closures.l` (6 of 6 lowered, output equal to the AST build and the specified output, clean under AddressSanitizer) is run by `native-via-tir-e2e.sh`.
+
+## Slice 14: out and inout parameters, assignment to record fields
+
+- An `out` or `inout` parameter is the address of the caller's cell, as on the AST path (N9.6): the parameter's IR type is a pointer to the value type, the local's slot is that pointer, so every read and write reaches the caller's storage; the callee owns nothing and never releases it. A write to a reference goes through the ordinary replace path (new value owned, old one released).
+- At a call, an `out`/`inout` argument is the address of a local's slot or of a field of a heap record. A field of a by-value record has no address and stays on the AST path. A reference passed `in` beside a by-reference argument may be the cell the callee writes, so it is retained for the call and released after it.
+- Assignment to a field of a heap record (`r.f = v`, `r.f += v`) lowers through the same cell assignment as a local: the receiver is evaluated before the right-hand side, a reference field is replaced with the old value released.
+- Not covered: elements and globals as places, interface and generic calls with by-reference arguments, by-value record fields as places.
+- `scripts/ci/native-via-tir/inout.l` (6 of 6 lowered, output equal to the AST build, clean under AddressSanitizer) is run by `native-via-tir-e2e.sh`. `closures.l` gains a nested lambda that captures a captured variable.

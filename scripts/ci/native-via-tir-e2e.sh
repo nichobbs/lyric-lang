@@ -177,8 +177,8 @@ cat "$work/c_census.txt"
 "$work/c_ast" > "$work/c_ast.out"
 "$work/c_tir" > "$work/c_tir.out"
 diff -u "$work/c_ast.out" "$work/c_tir.out"
-printf '15\n21\nn=7\nhi there\n12\nran\n' | diff -u - "$work/c_tir.out"
-grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/c_census.txt" || {
+printf '15\n21\nn=7\nhi there\n12\nran\np-x\n' | diff -u - "$work/c_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/c_census.txt" || {
   echo "::error::expected every function of closures.l to be lowered from TIR"
   exit 1
 }

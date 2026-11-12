@@ -6,7 +6,7 @@ package InoutViaTir
 import Std.Core
 import Std.Console as Console
 
-record Counter {
+ref record Counter {
   var n: Int
   var tag: String
 }
