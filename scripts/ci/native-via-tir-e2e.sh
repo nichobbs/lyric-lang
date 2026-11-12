@@ -97,7 +97,6 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/h_tir.ll" lyric-rt/b
 diff -u "$work/h_tir.out" "$work/h_asan.out"
 echo "heap records under AddressSanitizer: clean"
 
-
 # Unions (docs/70 phase 4a): an inline tagged value and a heap object with reference payloads,
 # built and matched from TIR, then the same IR under AddressSanitizer.
 usrc=scripts/ci/native-via-tir/unions.l
@@ -116,7 +115,6 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/u_tir.ll" lyric-rt/b
 "$work/u_asan" > "$work/u_asan.out"
 diff -u "$work/u_tir.out" "$work/u_asan.out"
 echo "unions under AddressSanitizer: clean"
-
 
 # Text (docs/70 phase 4a): interpolation, matching a String against literals, a Double literal
 # pattern and string indexing from TIR, then the same IR under AddressSanitizer.
@@ -137,7 +135,6 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/x_tir.ll" lyric-rt/b
 diff -u "$work/x_tir.out" "$work/x_asan.out"
 echo "text under AddressSanitizer: clean"
 
-
 # Enums (docs/70 phase 4a): an enum is its ordinal and a case pattern compares it.
 esrc=scripts/ci/native-via-tir/enums.l
 "$lyric_bin" build --target native "$esrc" -o "$work/e_ast" >/dev/null
@@ -151,7 +148,6 @@ grep -q '^native via-TIR: 3 of 3 functions lowered from TIR' "$work/e_census.txt
   echo "::error::expected every function of enums.l to be lowered from TIR"
   exit 1
 }
-
 
 # Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
 # record and a union that cross the package boundary.
@@ -167,5 +163,31 @@ grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/p_census.txt
   echo "::error::expected every function of the two-package project to be lowered from TIR"
   exit 1
 }
+
+# Generic records, unions and functions (#9023): until phase 3c monomorphises them they stay on the
+# AST path with a census reason; the program still builds, prints what the AST path prints, and runs
+# clean under AddressSanitizer, with one function lowered from TIR beside them.
+# The five functions are unbox, pick, ident, plain and main: only `plain` lowers (the others take or
+# construct a generic type, or are generic).
+fsrc=scripts/ci/native-via-tir/fallback.l
+"$lyric_bin" build --target native "$fsrc" -o "$work/f_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$fsrc" -o "$work/f_tir" 2> "$work/f_census.txt" >/dev/null
+cat "$work/f_census.txt"
+"$work/f_ast" > "$work/f_ast.out"
+"$work/f_tir" > "$work/f_tir.out"
+diff -u "$work/f_ast.out" "$work/f_tir.out"
+printf '42\n5\n7\n' | diff -u - "$work/f_tir.out"
+grep -q '^native via-TIR: 1 of 5 functions lowered from TIR' "$work/f_census.txt" || {
+  echo "::error::expected exactly the non-generic function of fallback.l to be lowered from TIR"
+  exit 1
+}
+grep -q '^  fallback: ' "$work/f_census.txt" || {
+  echo "::error::expected the generic functions of fallback.l to be counted as fallbacks"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/f_asan"
+"$work/f_asan" > "$work/f_asan.out"
+diff -u "$work/f_tir.out" "$work/f_asan.out"
+echo "generic fallback under AddressSanitizer: clean"
 
 echo "native-via-tir-e2e: ok"

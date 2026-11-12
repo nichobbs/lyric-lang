@@ -106,3 +106,8 @@ and still holds generics and un-elaborated contracts.
 - `lyric build --manifest ... --target native --via-tir` hands each own package's TIR to its code generation unit, as the single-file path does for the user package: the project loop of `compileProjectToNativeWithShape` asks the middle end for each own package's TIR (`MiddleEndOptions.wantTir`) and passes it to `unitOf`. Bundled stdlib packages and restored dependencies still compile through the AST path.
 - The census is one total over every unit that carried TIR, printed once.
 - `scripts/ci/native-via-tir/project/` (two packages, calls, a record and a union across the boundary) is built both ways by `native-via-tir-e2e.sh`.
+
+## Slice 11: the generic fallback is pinned end to end
+
+- `scripts/ci/native-via-tir/fallback.l` has a generic record, a generic union and a generic function beside one plain function. `native-via-tir-e2e.sh` requires that exactly the plain function is lowered from TIR, that the others are counted as fallbacks with a reason, that the output equals the AST build's and the specified output, and that the TIR build is clean under AddressSanitizer (nichobbs/lyric-lang#9023). When phase 3c monomorphises, this stage flips to asserting they lower.
+- A self-test covers a case pattern on a value that is not an enum; `TirLowerEnv.enums` is documented as a set.
