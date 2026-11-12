@@ -1807,6 +1807,17 @@ test "a conversion method on a range-subtype or distinct value unwraps it" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a use of a name whose binding failed is not counted as an unbuildable name of its own" {
+  val c = censusOf(
+    "package App\nfunc h(): Int { 1 }\nfunc g(a: Int = h()): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
+  )
+  assertTrue(
+    c.uncovered.containsKey("a default argument that is not a literal or a name"),
+    "the failed initializer is counted"
+  )
+  assertFalse(c.uncovered.containsKey("a name that is not a local"), "its later uses are not")
+}
+
 test "a call of a stubbable interface's method resolves despite the stub's synthesized impl" {
   val c = censusOf(
     "package App\n@stubbable\npub interface Feed {\n  func priceOf(symbol: in String): Int\n}\nfunc total(feed: in Feed): Int { feed.priceOf(\"a\") }\n"

@@ -416,7 +416,12 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case EPath(p) -> {
       if p.segments.count == 1 {
         match lookupLocal(env, p.segments[0]) {
-          case Some(d) -> return Some(value = mkExpr(e, ty, XLocal(local = d.id)))
+          case Some(d) -> {
+            if d.id.id < 0 {
+              return None
+            }
+            return Some(value = mkExpr(e, ty, XLocal(local = d.id)))
+          }
           case None -> ()
         }
       }
@@ -1086,7 +1091,81 @@ func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[T
 /// there is one (the initializer is converted to it) and the initializer's otherwise,
 /// declared after the initializer is built so the initializer cannot see it.  A
 /// `var` without an initializer takes its annotation's type.
+/// The names a pattern binds, in order.
+func patBoundNames(p: in Pattern, into: in List[String]): Unit {
+  match p.kind {
+    case PBinding(name, inner) -> {
+      if name != "_" {
+        into.add(name)
+      }
+      match inner {
+        case Some(q) -> patBoundNames(q, into)
+        case None -> ()
+      }
+    }
+    case PConstructor(_, args) -> {
+      for a in args {
+        patBoundNames(a, into)
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      for f in fields {
+        match f {
+          case RPFNamed(_, q, _) -> patBoundNames(q, into)
+          case RPFShort(n, _) -> into.add(n)
+        }
+      }
+    }
+    case PTuple(ps) -> {
+      for q in ps {
+        patBoundNames(q, into)
+      }
+    }
+    case PParen(q) -> patBoundNames(q, into)
+    case PTypeTest(q, _) -> patBoundNames(q, into)
+    case POr(alts) -> {
+      if alts.count > 0 {
+        patBoundNames(alts[0], into)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+/// Make `name` a binding whose initializer failed: a later use of it is not a new
+/// unbuildable construct, only the consequence of the one already counted.
+func poisonName(env: in BuildEnv, name: in String): Unit {
+  val top = env.scopes[env.scopes.count - 1]
+  if top.containsKey(name) {
+    top.remove(name)
+  }
+  top.add(name, LocalDecl(id = LocalId(id = -1), name = name, ty = TirT.TNever, mutable = false))
+}
+
+/// A local binding. When it cannot be built, the names it would bind are poisoned so the
+/// uses that follow are not counted as unbuildable names of their own.
 func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
+  val built = buildLocalCore(env, s, binding)
+  match built {
+    case Some(_) -> ()
+    case None -> {
+      match binding {
+        case LBVal(pat, _, _) -> {
+          val names: List[String] = newList()
+          patBoundNames(pat, names)
+          for n in names {
+            poisonName(env, n)
+          }
+        }
+        case LBLet(name, _, _) -> poisonName(env, name)
+        case LBVar(name, _, _) -> poisonName(env, name)
+      }
+    }
+  }
+  built
+}
+
+func buildLocalCore(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
   match binding {
     case LBVal(pat, ann, init) -> match pat.kind {
       case PBinding(name, None) -> buildLet(env, s, pat, name, ann, init)
@@ -1389,7 +1468,7 @@ pub record BuildCensus {
   /// Where each uncovered kind was first met in the file, as `line:column`.
   sites: Map[String, String] = newMap()
   /// The first I0002 message of each body that did not build: the cause, where
-  /// `uncovered` also counts the uses a failed binding leaves undefined.
+  /// `uncovered` does not count the uses a failed binding leaves undefined (D569).
   firstErrors: List[String] = newList()
   /// The built functions as a package, with the declarations their bodies reach.
   pkg: TPackage = TPackage(name = "", symbols = newList(), funcs = newList())
@@ -2188,7 +2267,12 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
     case EPath(p) -> {
       if p.segments.count == 1 {
         match lookupLocal(env, p.segments[0]) {
-          case Some(d) -> return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          case Some(d) -> {
+            if d.id.id < 0 {
+              return None
+            }
+            return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          }
           case None -> ()
         }
       }
