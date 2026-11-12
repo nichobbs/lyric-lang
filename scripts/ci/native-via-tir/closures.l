@@ -22,6 +22,11 @@ func greet(prefix: in String): (String) -> String {
   { name -> prefix + name }
 }
 
+func nest(prefix: in String): () -> String {
+  val inner: (String) -> String = { s -> prefix + s }
+  { -> inner("x") }
+}
+
 func run(f: in () -> Unit): Unit {
   f()
 }
@@ -38,4 +43,5 @@ func main(): Unit {
   val double: (Int) -> Int = { n -> n * 2 }
   println(toString(twice(double, 3)))
   run({ -> println("ran") })
+  println(nest("p-")())
 }

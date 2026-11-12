@@ -808,7 +808,17 @@ func buildIlcRsp(
   lines.add("--directpinvoke:System.Globalization.Native")
   lines.add("--directpinvoke:System.IO.Compression.Native")
   lines.add("--directpinvoke:System.Net.Security.Native")
-  lines.add("--directpinvoke:System.Security.Cryptography.Native.OpenSsl")
+  if os == "osx" {
+    // The Apple crypto shim is linked statically (buildLinkerArgsMac), but
+    // without a matching directpinvoke its DllImports stay dynamic and fail
+    // at runtime with "Unable to load shared library
+    // 'libSystem.Security.Cryptography.Native.Apple'" (any SHA/crypto use).
+    // The DllImport name carries the "lib" prefix; list both spellings.
+    lines.add("--directpinvoke:System.Security.Cryptography.Native.Apple")
+    lines.add("--directpinvoke:libSystem.Security.Cryptography.Native.Apple")
+  } else {
+    lines.add("--directpinvoke:System.Security.Cryptography.Native.OpenSsl")
+  }
 
   // AOT feature flags and runtime knobs
   appendAotFeatureLines(lines)
