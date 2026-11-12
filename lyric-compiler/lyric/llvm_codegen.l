@@ -18455,9 +18455,7 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
   TirUnitMaps(fnNames = fnNames, recs = recs)
 }
 
-func tirOrAst(
-  ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc
-): NFunc {
+func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
   if u.tir.count == 0 {
     return ast
   }

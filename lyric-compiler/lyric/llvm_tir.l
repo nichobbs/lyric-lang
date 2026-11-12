@@ -274,10 +274,7 @@ func isStringN(t: in NType): Bool {
 /// struct that starts with the ARC header).
 func isRefN(t: in NType): Bool {
   match t {
-    case NPtr(pointee) -> match pointee {
-      case NStruct(_, fields) -> startsWithArcHeader(fields)
-      case _ -> false
-    }
+    case NPtr(pointee) -> match pointee { case NStruct(_, fields) -> startsWithArcHeader(fields); case _ -> false }
     case _ -> false
   }
 }
@@ -798,7 +795,9 @@ func fieldTypeOk(c: in LCtx, lay: in TirRecLayout, i: in Int, v: in Val): Bool {
     case ft -> if nTypeToIrString(ft) == nTypeToIrString(v.ty) {
       true
     } else {
-      c.problems.add("field " + toString(i) + " has type " + nTypeToIrString(v.ty) + " where the layout has " + nTypeToIrString(ft))
+      c.problems.add(
+        "field " + toString(i) + " has type " + nTypeToIrString(v.ty) + " where the layout has " + nTypeToIrString(ft)
+      )
       false
     }
   }
@@ -850,7 +849,12 @@ func allocHeap(c: in LCtx, lay: in TirRecLayout): NValue {
     params.add(i8ptr())
     val cast = tmp(c)
     c.insns.add(
-      NBitcast(dest = cast, fromTy = NFnPtr(params = params, ret = NVoid), value = NGlobal(name = lay.dtor), toTy = i8ptr())
+      NBitcast(
+        dest = cast,
+        fromTy = NFnPtr(params = params, ret = NVoid),
+        value = NGlobal(name = lay.dtor),
+        toTy = i8ptr()
+      )
     )
     c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = cast), ptr = NLocal(name = dt)))
   }
@@ -882,7 +886,10 @@ func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
     case None -> unitVal()
     case Some(lay) -> {
       if fields.count != lay.fieldTys.count {
-        return unsupported(c, "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields")
+        return unsupported(
+          c,
+          "a construction with " + toString(fields.count) + " of " + toString(lay.fieldTys.count) + " fields"
+        )
       }
       val vals: List[Val] = newList()
       var i = 0
@@ -944,10 +951,7 @@ func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
 /// by-value record inserts them into the base; a heap record is a new object whose other
 /// fields are the base's, each reference retained.
 func lowerCopy(c: in LCtx, e: in TExpr, base: in TExpr, updates: in List[TFieldUpdate]): Val {
-  val owner = match e.ty {
-    case TNamed(sym, _) -> sym
-    case _ -> return unsupported(c, "a copy of " + renderTy(e.ty))
-  }
+  val owner = match e.ty { case TNamed(sym, _) -> sym; case _ -> return unsupported(c, "a copy of " + renderTy(e.ty)) }
   match recLayout(c, owner) {
     case None -> unitVal()
     case Some(lay) -> {
@@ -970,7 +974,9 @@ func lowerCopy(c: in LCtx, e: in TExpr, base: in TExpr, updates: in List[TFieldU
         var cur = b.value
         for u in updates {
           match mapGet(upd, u.field.index) {
-            case Some(v) -> cur = insertField(c, lay, cur, u.field.index, v)
+            case Some(v) -> {
+              cur = insertField(c, lay, cur, u.field.index, v)
+            }
             case None -> ()
           }
         }
