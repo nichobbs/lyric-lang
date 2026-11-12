@@ -1,6 +1,6 @@
 # D602 - Registry, git and single-file enforcement of `[package] targets` (#9031)
 
-**Status:** shipped. Completes D601.
+**Status:** shipped. Completes D603.
 
 ## Decision
 

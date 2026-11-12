@@ -1,4 +1,4 @@
-# D601 - `[package] targets` declares the backends a package supports (#9030)
+# D603 - `[package] targets` declares the backends a package supports (#9030)
 
 **Status:** accepted; the manifest field and the local-dependency checks are shipped.
 
