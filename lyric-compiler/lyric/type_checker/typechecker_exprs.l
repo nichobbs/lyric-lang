@@ -11703,6 +11703,52 @@ func checkBareCasePatternScrutinee(
   }
 }
 
+// A constructor pattern whose head names no case of the scrutinee's own declared
+// type: an unknown name, or a record (a record is destructured with a record
+// pattern, `P { x, y }`, not `P(x, y)`).  Without this the pattern type-checked,
+// its sub-patterns got no types, and a later stage failed on the names they bind
+// (#9024).  Scrutinees whose type is unknown or open are left alone.
+func reportUnresolvedCasePattern(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  head: in ModulePath,
+  span: in Span,
+  ty: in Type,
+): Unit {
+  match unrefine(ty) {
+    case TyUser(sid, sname, _) -> {
+      if head.segments.count == 0 {
+        return ()
+      }
+      val nm = head.segments[head.segments.count - 1]
+      var isRecord = false
+      val cands = symTableTryFindAllNamed(tbl, nm)
+      var i = 0
+      while i < cands.count {
+        match cands[i].kind {
+          case DKRecord(_, _) -> {
+            isRecord = true
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      val hint = if isRecord { "; a record is destructured with a record pattern: " + nm + " { field, ... }" } else { "" }
+      diag.add(
+        errorDiagnostic(
+          "T0129",
+          "pattern '" + nm + "(...)' is not a case of '" + sname + "' and can never match a value of type '" +
+            renderType(ty) +
+            "'" +
+            hint,
+          span
+        )
+      )
+    }
+    case _ -> ()
+  }
+}
+
 // True unless the scrutinee is a concrete type that the case with parent
 // `pid` can never belong to (see `checkCasePatternScrutinee`).
 func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in SymbolId, scrutineeTy: in Type): Bool {
@@ -12934,6 +12980,7 @@ func bindPatternTyped(
     }
     case PLiteral(lit) -> recordUnsignedLiteralPattern(tbl, diag, pat, lit, ty)
     case PConstructor(head, args) -> {
+      val diagBefore = diag.count
       val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> {
           if checkCasePatternScrutinee(tbl, diag, caseSym, ty, pat.span) {
@@ -12947,7 +12994,12 @@ func bindPatternTyped(
             newList()
           }
         }
-        case None -> newList()
+        case None -> {
+          if not bindingOnly and diag.count == diagBefore {
+            reportUnresolvedCasePattern(tbl, diag, head, pat.span, ty)
+          }
+          newList()
+        }
       }
       var i = 0
       while i < args.count {
