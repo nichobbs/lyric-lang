@@ -305,7 +305,7 @@ pub func protectedFieldsOf(tbl: in SymbolTable, sid: in SymbolId): List[ProtFiel
   for s in tbl.symbols {
     match s.kind {
       case DKProtected(i, d) -> {
-        if i.id == sid.id and not isSome(d.generics) and res.count == 0 {
+        if i.id == sid.id and res.count == 0 {
           for m in d.members {
             match m {
               case PMField(pf) -> {
@@ -326,12 +326,44 @@ pub func protectedFieldsOf(tbl: in SymbolTable, sid: in SymbolId): List[ProtFiel
   res
 }
 
+/// The type parameters of the protected type `sid`, in order; empty when it is not generic.
+func protectedGenericNames(tbl: in SymbolTable, sid: in SymbolId): List[String] {
+  for s in tbl.symbols {
+    match s.kind {
+      case DKProtected(i, d) -> if i.id == sid.id {
+        return extractGenericNames(d.generics)
+      }
+      case _ -> ()
+    }
+  }
+  newList()
+}
+
+/// The checker's binder key for the protected type `sid`: its name.
+func protectedKey(tbl: in SymbolTable, sid: in SymbolId): String {
+  for s in tbl.symbols {
+    match s.kind {
+      case DKProtected(i, d) -> if i.id == sid.id {
+        return d.name
+      }
+      case _ -> ()
+    }
+  }
+  ""
+}
+
 /// The field signatures of the protected type `sid` for its type entry; empty when a field's type
 /// cannot be converted (a use of the field is then reported, not checked against a partial list).
 func protectedFieldSigs(tbl: in SymbolTable, sid: in SymbolId): List[TFieldSig] {
   val fs: List[TFieldSig] = newList()
   val ctx = newTyConvCtx(tbl)
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  val names = protectedGenericNames(tbl, sid)
+  if names.count > 0 {
+    val key = protectedKey(tbl, sid)
+    tyConvBind(ctx, key, sid, names)
+    gctxPushOwned(gc, names, key)
+  }
   val diag: List[Diagnostic] = newList()
   for pf in protectedFieldsOf(tbl, sid) {
     match tyOfType(ctx, resolveType(tbl, gc, diag, pf.ty)) {
@@ -408,7 +440,7 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             res.add(typeEntry(sid, names.count, fs))
           }
         } else {
-          res.add(typeEntry(sid, 0, protectedFieldSigs(tbl, sid)))
+          res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
         }
       }
       case None -> ()
