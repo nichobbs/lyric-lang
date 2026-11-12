@@ -947,7 +947,6 @@ test "findWorkspaceRoot stops at the filesystem root instead of reading the work
 }
 
 // ── restored dependencies and [package] targets (#9031) ──────────────────────
-
 func registryDep(name: in String): Mf.DependencyEntry {
   Mf.DependencyEntry(name = name, source = Mf.DepSource.Registry(version = "1.0.0"), registry = None)
 }

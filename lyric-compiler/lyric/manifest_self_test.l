@@ -73,11 +73,7 @@ test "publish tags every supported target; an undeclared field tags all three (#
     "lyric-target-dotnet lyric-target-jvm lyric-target-native",
     "undeclared"
   )
-  assertEqual(
-    packageTargetTags(parseOk(head + "targets = [\"jvm\"]\n").packageSection),
-    "lyric-target-jvm",
-    "jvm only"
-  )
+  assertEqual(packageTargetTags(parseOk(head + "targets = [\"jvm\"]\n").packageSection), "lyric-target-jvm", "jvm only")
 }
 
 test "targetsFromTags and tagsSupportTarget read lyric-target tags (#9031)" {

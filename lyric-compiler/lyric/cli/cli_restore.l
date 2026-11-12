@@ -1627,10 +1627,7 @@ func runRestoreWith(
     return rc
   }
   val manifest = match File.readText(mfPath) {
-    case Ok(text) -> match Mf.parseManifest(text, mfPath) {
-      case Ok(m) -> m
-      case Err(_) -> return rc
-    }
+    case Ok(text) -> match Mf.parseManifest(text, mfPath) { case Ok(m) -> m; case Err(_) -> return rc }
     case Err(_) -> return rc
   }
   match restoredTargetSupportError(mfPath, manifest, restoreTarget) {

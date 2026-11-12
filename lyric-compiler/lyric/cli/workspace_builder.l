@@ -1853,12 +1853,8 @@ pub func targetSupportError(mfPath: in String, manifest: in Mf.Manifest, targetN
 }
 
 // ── Target support of restored dependencies (issue #9031) ─────────────────────
-
 func restoredNuspecText(pkgDir: in String): Option[String] {
-  val files = match File.listFiles(pkgDir) {
-    case Ok(fs) -> fs
-    case Err(_) -> return None
-  }
+  val files = match File.listFiles(pkgDir) { case Ok(fs) -> fs; case Err(_) -> return None }
   var i = 0
   while i < files.count {
     if Str.endsWith(files[i], ".nuspec") {
@@ -1873,10 +1869,7 @@ func restoredNuspecText(pkgDir: in String): Option[String] {
 }
 
 pub func restoredDepTargetError(
-  dep: in Mf.DependencyEntry,
-  pkgDir: in String,
-  owner: in String,
-  targetName: in String,
+  dep: in Mf.DependencyEntry, pkgDir: in String, owner: in String, targetName: in String
 ): Option[String] {
   val chain = owner + " -> " + dep.name
   match dep.source {
@@ -1887,13 +1880,14 @@ pub func restoredDepTargetError(
         if Mf.tagsSupportTarget(tags, targetName) {
           return None
         }
-        val declared = match Mf.targetsFromTags(tags) {
-          case Some(ts) -> Mf.joinNames(ts)
-          case None -> "all"
-        }
+        val declared = match Mf.targetsFromTags(tags) { case Some(ts) -> Mf.joinNames(ts); case None -> "all" }
         Some(
           value = "error[F0055]: dependency '" + dep.name + "' supports targets [" + declared +
-            "] and cannot be linked into a --target " + targetName + " build (" + chain + ")"
+            "] and cannot be linked into a --target " +
+            targetName +
+            " build (" +
+            chain +
+            ")"
         )
       }
     }
