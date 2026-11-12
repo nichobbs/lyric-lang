@@ -60,6 +60,7 @@ import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.LlvmTir as LlvmTir
 import Lyric.Tir.Build as TirBuild
+import Lyric.Resolve as Resolve
 import Lyric.WasmGlue
 import Lyric.ComponentGlue
 import Lyric.Version as Ver
@@ -1547,6 +1548,7 @@ pub func compileToNativeWithFeatures(
 
   // Transitive stdlib import closure, in deterministic worklist order.
   val toBundle: List[SourceFile] = newList()
+  val tirByPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
   val seen: Map[String, Bool] = newMap()
   val worklist: List[String] = newList()
   var ui = 0
@@ -1598,6 +1600,9 @@ pub func compileToNativeWithFeatures(
             worklist.add("Std.String")
           }
           toBundle.add(stdFormatted)
+          if opts.wantTir {
+            tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
+          }
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
@@ -1684,7 +1689,7 @@ pub func compileToNativeWithFeatures(
     )
   }
   units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees, tirInputs))
-  appendBundledUnits(toBundle, reachable, units)
+  appendBundledUnits(toBundle, reachable, units, tirByPkg)
 
   linkAndEmitNative(
     units,
@@ -1952,6 +1957,7 @@ pub func compileProjectToNativeWithShape(
 
   // Transitive stdlib import closure across every own package's imports.
   val toBundle: List[SourceFile] = newList()
+  val tirByPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
   val seen: Map[String, Bool] = newMap()
   val worklist: List[String] = newList()
   var ofi = 0
@@ -2000,6 +2006,9 @@ pub func compileProjectToNativeWithShape(
             worklist.add("Std.String")
           }
           toBundle.add(stdFormatted)
+          if opts.wantTir {
+            tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
+          }
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
@@ -2172,7 +2181,7 @@ pub func compileProjectToNativeWithShape(
     }
     uoi = uoi + 1
   }
-  appendBundledUnits(toBundle, reachable, units)
+  appendBundledUnits(toBundle, reachable, units, tirByPkg)
 
   if not linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs, pluginAbiFingerprint(stdlibFiles)) {
     return false
@@ -2963,17 +2972,45 @@ func configFieldValItem(
 // without any Std.Core call). Shared by the single-source and multi-package
 // native entry points (#6817).
 func appendBundledUnits(
-  toBundle: in List[SourceFile], reachable: in Map[String, Bool], units: in List[CodegenUnit]
+  toBundle: in List[SourceFile],
+  reachable: in Map[String, Bool],
+  units: in List[CodegenUnit],
+  tirByPkg: in Map[String, List[LlvmTir.TirUnitInput]],
 ): Unit {
   var bi = 0
   while bi < toBundle.count {
     val noArities: Map[String, Int] = newMap()
-    val u = unitOf(toBundle[bi], reachable, false, noArities)
+    val noSites: Map[String, String] = newMap()
+    val tir: List[LlvmTir.TirUnitInput] = match mapGet(tirByPkg, dottedPath(toBundle[bi].packageDecl.path)) {
+      case Some(t) -> t
+      case None -> newList()
+    }
+    val u = unitOf(toBundle[bi], reachable, false, noArities, false, noSites, tir)
     if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 or u.interfaces.count > 0 {
       units.add(u)
     }
     bi = bi + 1
   }
+}
+
+/// The TIR of a bundled stdlib package for the `--via-tir` census: the package is checked
+/// against its import closure with numbered nodes and built, and its functions that TIR covers
+/// are lowered from it instead of from the AST.  Empty when the package does not check or build
+/// (it then stays on the AST path whole).
+func bundledTirOf(pkg: in String, f: in SourceFile, stdlib: in NativeStdlib): List[LlvmTir.TirUnitInput] {
+  val none: List[LlvmTir.TirUnitInput] = newList()
+  val visible = stdlibImportClosure(pkg, stdlib)
+  val file0 = Resolve.renumberNodeIds(f).file
+  val tcRes = checkWithImportedPackagesForNative(file0, visible)
+  for d in tcRes.diagnostics {
+    if d.severity == DiagError {
+      return none
+    }
+  }
+  val pb = TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, pkg)
+  val out: List[LlvmTir.TirUnitInput] = newList()
+  out.add(LlvmTir.TirUnitInput(pkg = pb.pkg, names = pb.names, census = LlvmTir.newTirCensus()))
+  out
 }
 
 /// Each bundled/own file's OWN direct import package names, keyed by its
