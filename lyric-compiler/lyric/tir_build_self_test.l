@@ -2206,7 +2206,7 @@ test "a slice of Byte passed for a host byte array builds as a host call (D599)"
   val st = buildFirstFnMsil(head + "func f(p: in String, b: in slice[Byte]): Unit {\n  F.WriteAllBytes(p, b)\n}\n")
   assertEqualInt(st.diagnostics, 0, "checks clean")
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
-  match externCallOfStatement(st.body) {
+  match externCallOf(st.body) {
     case Some(m) -> {
       assertEqualInt(m.params.count, 2, "two parameters")
       assertTrue(tyEq(m.params[1].ty, hostTy("an array, pointer or by-reference type")), "over a host array")
