@@ -1869,6 +1869,8 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else if nTypeToIrString(a.ty) != nTypeToIrString(b.ty) {
+            unsupported(c, "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")")
           } else {
             lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
           }
@@ -2608,6 +2610,15 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   }
 }
 
+/// A range-pattern bound as a floating-point number.
+func floatBound(l: in TLit): Option[Double] {
+  match l {
+    case TLFloat(f) -> Some(value = f)
+    case TLInt(v) -> Some(value = v.toDouble())
+    case _ -> None
+  }
+}
+
 func litValue(l: in TLit): Option[Long] {
   match l {
     case TLInt(v) -> Some(value = v)
@@ -2686,7 +2697,31 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
         case None -> unsupported(c, "a literal pattern of this kind")
       }
     }
-    case TpRange(lo, hi, inclusive) -> match litValue(lo) {
+    case TpRange(lo, hi, inclusive) -> if isFloatTy(sty) {
+      match floatBound(lo) {
+        case None -> unsupported(c, "a range pattern with a bound that is no number")
+        case Some(lf) -> match floatBound(hi) {
+          case None -> unsupported(c, "a range pattern with a bound that is no number")
+          case Some(hf) -> {
+            val geLo = tmp(c)
+            c.insns.add(
+              NFCmp(dest = geLo, pred = FOge, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = floatLitValue(scrut.ty, lf), ty = scrut.ty))
+            )
+            val cmpHi = tmp(c)
+            c.insns.add(
+              NFCmp(
+                dest = cmpHi,
+                pred = if inclusive { FOle } else { FOlt },
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, hf), ty = scrut.ty)
+              )
+            )
+            andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+          }
+        }
+      }
+    } else match litValue(lo) {
       case None -> unsupported(c, "a non-integer range pattern")
       case Some(lv) -> match litValue(hi) {
         case None -> unsupported(c, "a non-integer range pattern")
