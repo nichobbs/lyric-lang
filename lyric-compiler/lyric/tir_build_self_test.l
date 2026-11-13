@@ -2229,6 +2229,45 @@ test "a host value passed as its host supertype is converted, read from the meta
   }
 }
 
+/// The `let` statements in a body's blocks, following each block's tail expression.
+func letCount(e: in TExpr): Int {
+  match e.kind {
+    case XBlock(stmts, tail) -> {
+      var n = 0
+      for st in stmts {
+        match st.kind {
+          case TsLet(_, _) -> {
+            n = n + 1
+          }
+          case _ -> ()
+        }
+      }
+      match tail {
+        case Some(t) -> n + letCount(t)
+        case None -> n
+      }
+    }
+    case _ -> 0
+  }
+}
+
+test "a name read before a later call that changes it is bound to a temporary when names reorder the arguments (D171)" {
+  val pb = packageOf(
+    "package App\nfunc zero(x: inout Int): Int {\n  x = 0\n  7\n}\nfunc two(a: in Int, b: in Int): Int { a * 100 + b }\nfunc f(): Int {\n  var x = 5\n  two(b = x, a = zero(x))\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 3, "zero, two and f")
+  var temps = 0
+  for fd in pb.pkg.funcs {
+    match fd.body {
+      case Some(b) -> {
+        temps = temps + letCount(b)
+      }
+      case None -> ()
+    }
+  }
+  assertTrue(temps >= 2, "x and the call are each bound to a temporary in source order (found " + toString(temps) + ")")
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }

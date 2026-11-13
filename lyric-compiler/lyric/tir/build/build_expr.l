@@ -3359,6 +3359,29 @@ func isPlainArg(x: in Expr): Bool {
   }
 }
 
+/// Whether argument `i`, a name, is read before an argument written after it that is not a literal
+/// or a name (a call, which may change the local the name reads: `f(b = x, a = zero(x))` with
+/// `zero(x: inout Int)`).  When names reorder the arguments, such a name is bound to a temporary in
+/// source order like the call is.
+func readsBeforeLaterCall(slots: in List[Option[Expr]], srcIdx: in List[Int], i: in Int): Bool {
+  val x = match slots[i] { case Some(v) -> v; case None -> return false }
+  val isName = match x.kind { case EPath(_) -> true; case _ -> false }
+  if not isName {
+    return false
+  }
+  var j = 0
+  while j < slots.count {
+    if j != i and srcIdx[j] > srcIdx[i] {
+      match slots[j] {
+        case Some(y) -> if not isPlainArg(y) { return true }
+        case None -> ()
+      }
+    }
+    j = j + 1
+  }
+  false
+}
+
 /// The type arguments of a generic call the checker recorded no instantiation for: read
 /// back from the argument types it recorded and from the call's result type together,
 /// since either alone can leave a parameter out (`andThenResult(Ok(value = 5), f)` has
@@ -3905,7 +3928,7 @@ func buildCallArgs(
                 // Arguments are evaluated in the order written. When names reorder them, an
                 // argument that is not a literal or a name is bound to a temporary first, in
                 // source order, and the call takes the temporary.
-                if reordered and not isPlainArg(x) {
+                if reordered and (not isPlainArg(x) or readsBeforeLaterCall(slots, srcIdx, i)) {
                   val d = declareLocal(env, "__arg" + toString(env.nextLocal[0] + 1), c.ty, false)
                   val bindPat = TPat(id = freshNodeId(env), ty = c.ty, span = c.span, kind = TpBind(decl = d, inner = None))
                   hoisted.add(
