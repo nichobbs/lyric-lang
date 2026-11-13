@@ -1086,6 +1086,25 @@ test "an extern call with a named argument is counted" {
   assertEqualInt(mapGetOr0(r.env.uncovered, "an extern call with a named argument"), 1, "counted")
 }
 
+/// The extern call that is the first statement of the function body.
+func externCallOfStatement(b: in Option[TExpr]): Option[HostMemberRef] {
+  match b {
+    case Some(x) -> match x.kind {
+      case XBlock(stmts, _) -> {
+        if stmts.count == 0 {
+          return None
+        }
+        match stmts[0].kind {
+          case TsExpr(ex) -> match ex.kind { case XCall(Extern(m), _) -> Some(value = m); case _ -> None }
+          case _ -> None
+        }
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 func buildFirstFnMsil(src: in String): FnBuilt {
   val file = renumberNodeIds(parse(src).file).file
   val noPkgs: List[ImportedPackage] = newList()
@@ -2133,6 +2152,45 @@ test "a method call whose receiver is inout passes the receiver as a place" {
     "package App\nrecord Pt {\n  x: Int\n  y: Int\n  func reset(self: inout Pt): Unit {\n    self = Pt(x = 0, y = 0)\n  }\n  func twice(self: inout Pt): Unit {\n    reset()\n    reset()\n  }\n}\nfunc f(): Int {\n  var p = Pt(x = 1, y = 2)\n  p.reset()\n  p.x\n}\n"
   )
   assertBuildsAndVerifies(pb, 3, "Pt.reset, twice and f")
+}
+
+test "a host property read is a call of its getter with the receiver first (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Int {\n  sb.Length\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.kind == HMPropertyGet, "a property getter")
+      assertTrue(not m.isStatic, "an instance member")
+      assertEqualInt(m.params.count, 1, "the receiver only")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "an Int")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a host property write is a call of its setter, receiver then value, of type Unit (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length = 0\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOfStatement(st.body) {
+    case Some(m) -> {
+      assertTrue(m.kind == HMPropertySet, "a property setter")
+      assertEqualInt(m.params.count, 2, "receiver and value")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPInt)), "an Int value")
+      assertTrue(tyEq(m.ret, tyUnit()), "Unit")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a compound assignment to a host property is counted, not guessed (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length += 1\n}\n")
+  assertTrue(st.env.errors.count > 0, "an I0002")
+  assertTrue(st.env.errors[0].contains("a compound assignment"), st.env.errors[0])
 }
 
 func hostTy(name: in String): Ty {

@@ -189,6 +189,16 @@ func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr]
   None
 }
 
+/// `uncoveredExpr` with the specifics of the site in the message (the kind `what` stays the census key).
+func uncoveredExprDetail(env: in BuildEnv, e: in Expr, what: in String, detail: in String): Option[TExpr] {
+  noteUncoveredAt(env, what, e.span)
+  env.errors.add(
+    "I0002: the builder has no case for " + what + " (" + detail + ") at " + toString(e.span.startPos.line) + ":" +
+      toString(e.span.startPos.column)
+  )
+  None
+}
+
 func uncoveredArgs(env: in BuildEnv, e: in Expr, what: in String): Option[List[TArg]] {
   val _ = uncoveredExpr(env, e, what)
   None
@@ -2267,6 +2277,37 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
   Some(value = OverloadFit(params = ps, score = score))
 }
 
+/// A host call's node as the checker typed it: a host string can be null (the checker types the call
+/// `String?`, the host's result is the `String`), and a result the checker types as a Lyric type without
+/// checking it (D359: an array as a slice, a host enum as `Int`) takes `CvFromHost`.
+func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: in TExprKind): TExpr {
+  val nullableString = match ty {
+    case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
+    case _ -> false
+  }
+  if nullableString {
+    val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+    return mkExpr(e, ty, XConvert(kind = CvLiftNullable, inner = c))
+  }
+  if hostResultIsCallType(ret, ty) {
+    val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+    return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
+  }
+  mkExpr(e, ty, call)
+}
+
+/// An argument converted to the host parameter type `want`: the host's widening, boxing and narrowing, or
+/// the language's own conversions.
+func hostArgConv(env: in BuildEnv, arg: in TExpr, want: in Ty): Option[TExpr] {
+  match hostWidenKind(arg.ty, want) {
+    case Some(k) -> if tyEq(arg.ty, want) { Some(value = arg) } else { Some(value = convertNode(env, arg, want, k)) }
+    case None -> match hostBoxKind(arg.ty, want) {
+      case Some(k) -> Some(value = convertNode(env, arg, want, k))
+      case None -> coerceArg(env, arg, want)
+    }
+  }
+}
+
 /// A call to a member of a host type (`ExternCallSite`): the overload the argument
 /// types select among the candidates the bridge read from the host's metadata, as a
 /// `HostMemberRef`.  An instance member takes its receiver as the first argument and
@@ -2352,7 +2393,22 @@ func buildExternCall(
   }
   val sig = match bestSig {
     case Some(c) -> c
-    case None -> return uncoveredExpr(env, e, "an extern call no host overload fits")
+    case None -> {
+      val tys: List[String] = newList()
+      for t in argTys {
+        tys.add(renderTy(t))
+      }
+      var shown = ""
+      for i in 0 ..< tys.count {
+        shown = shown + (if i > 0 { ", " } else { "" }) + tys[i]
+      }
+      return uncoveredExprDetail(
+        env,
+        e,
+        "an extern call no host overload fits",
+        site.hostType + "." + site.name + "(" + shown + ")"
+      )
+    }
   }
   if ambiguous {
     return uncoveredExpr(env, e, "an extern call with ambiguous host overloads")
@@ -2385,16 +2441,7 @@ func buildExternCall(
   while i < built.count {
     val want = bestParams[i]
     params.add(TParamTy(mode = TMIn, ty = want))
-    val c = match hostWidenKind(built[i].ty, want) {
-      case Some(k) -> if tyEq(built[i].ty, want) { built[i] } else { convertNode(env, built[i], want, k) }
-      case None -> match hostBoxKind(built[i].ty, want) {
-        case Some(k) -> convertNode(env, built[i], want, k)
-        case None -> match coerceArg(env, built[i], want) {
-          case Some(x) -> x
-          case None -> return None
-        }
-      }
-    }
+    val c = match hostArgConv(env, built[i], want) { case Some(x) -> x; case None -> return None }
     targsOut.add(TArgIn(value = c))
     i = i + 1
   }
@@ -2406,30 +2453,128 @@ func buildExternCall(
     params = params,
     ret = ret
   )
-  // A host string can be null: the checker types the call `String?`, the host's result is the String.
+  Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = targsOut)))
+}
+
+/// The host type a value of type `t` is, and its resolver, when the host metadata can be read.
+func hostOf(env: in BuildEnv, t: in Ty): Option[HostTypeRef] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match t {
+    case TExtern(h) -> Some(value = h)
+    case _ -> None
+  }
+}
+
+/// `recv.name` where `recv` is a host value and `name` one of its properties or public fields: a call of the
+/// getter (or a read of the field) with the receiver first.  None, counting nothing, when the host metadata has
+/// no such instance member or its result is not one the checker's type fits.
+func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr, name: in String): Option[TExpr] {
+  val host = match hostOf(env, rt.ty) { case Some(h) -> h; case None -> return None }
+  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, 0, true) {
+    case Some(c) -> c
+    case None -> return None
+  }
+  var found: Option[ExternMemberSig] = None
+  for c in cands {
+    if not c.isStatic and c.params.count == 0 and not isSome(found) {
+      found = Some(value = c)
+    }
+  }
+  val sig = match found { case Some(c) -> c; case None -> return None }
+  val ret = match sig.ret {
+    case EMTType(el) -> match hostElemTy(el, host.args, ty) { case Some(t) -> t; case None -> return None }
+    case EMTVoid -> return None
+  }
   val nullableString = match ty {
     case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
     case _ -> false
   }
-  if nullableString {
-    val call = TExpr(
-      id = freshNodeId(env),
-      ty = ret,
-      span = e.span,
-      kind = XCall(callee = Extern(member = member), args = targsOut)
-    )
-    return Some(value = mkExpr(e, ty, XConvert(kind = CvLiftNullable, inner = call)))
+  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+    return None
   }
-  if hostResultIsCallType(ret, ty) {
-    val call = TExpr(
-      id = freshNodeId(env),
-      ty = ret,
-      span = e.span,
-      kind = XCall(callee = Extern(member = member), args = targsOut)
-    )
-    return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = call)))
+  val params: List[TParamTy] = newList()
+  params.add(TParamTy(mode = TMIn, ty = rt.ty))
+  val member = HostMemberRef(
+    owner = host,
+    name = name,
+    kind = if sig.isField { HMFieldGet } else { HMPropertyGet },
+    isStatic = false,
+    params = params,
+    ret = ret
+  )
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = rt))
+  Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = args)))
+}
+
+/// Whether the checker typed `r` as a host value.
+func isHostValue(env: in BuildEnv, r: in Expr): Bool {
+  match exprTy(env.ctx, r.nodeId) {
+    case Ok(t) -> match t { case TExtern(_) -> true; case _ -> false }
+    case Err(_) -> false
   }
-  Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
+}
+
+/// `recv.name = value` where `recv` is a host value: a call of the property's setter, `recv` and then the
+/// value converted to the setter's parameter, of type `Unit`.  A compound assignment, a field and a member
+/// the metadata does not give a setter for are counted.
+func buildHostPropertySet(
+  env: in BuildEnv,
+  e: in Expr,
+  target: in Expr,
+  recv: in Expr,
+  name: in String,
+  op: in AssignOp,
+  value: in Expr,
+): Option[TExpr] {
+  val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  val shown = renderTy(rt.ty) + "." + name
+  val kind = "an assignment to a member that is not a record field"
+  val host = match hostOf(env, rt.ty) {
+    case Some(h) -> h
+    case None -> return uncoveredExprDetail(env, target, kind, shown)
+  }
+  match op {
+    case AssEq -> ()
+    case _ -> return uncoveredExprDetail(env, target, kind, shown + " (a compound assignment)")
+  }
+  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, "set_" + name, 1, false) {
+    case Some(c) -> c
+    case None -> return uncoveredExprDetail(env, target, kind, shown + " (no setter)")
+  }
+  var found: Option[ExternMemberSig] = None
+  for c in cands {
+    if not c.isStatic and c.params.count == 1 and not isSome(found) {
+      found = Some(value = c)
+    }
+  }
+  val sig = match found {
+    case Some(c) -> c
+    case None -> return uncoveredExprDetail(env, target, kind, shown + " (no setter)")
+  }
+  val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
+  val want = match hostElemTy(sig.params[0], host.args, vt.ty) {
+    case Some(t) -> t
+    case None -> return uncoveredExprDetail(env, target, kind, shown + " (a setter parameter the builder cannot type)")
+  }
+  val v = match hostArgConv(env, vt, want) { case Some(x) -> x; case None -> return None }
+  val params: List[TParamTy] = newList()
+  params.add(TParamTy(mode = TMIn, ty = rt.ty))
+  params.add(TParamTy(mode = TMIn, ty = want))
+  val member = HostMemberRef(
+    owner = host,
+    name = name,
+    kind = HMPropertySet,
+    isStatic = false,
+    params = params,
+    ret = tyUnit()
+  )
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = rt))
+  args.add(TArgIn(value = v))
+  Some(value = mkExpr(e, tyUnit(), XCall(callee = Extern(member = member), args = args)))
 }
 
 /// The field `name` of the record type `ty` declares, by its position among the record's
@@ -2467,18 +2612,26 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
-    case None -> match builtinPropertyName(env, recv, name) {
-      case Some(bn) -> Some(
-        value = mkExpr(
-          e,
-          ty,
-          XCall(
-            callee = Intrinsic(op = IoBuiltin(name = bn)),
-            args = inArgs(singleTExpr(rt))
+    case None -> match buildHostPropertyRead(env, e, ty, rt, name) {
+      case Some(x) -> Some(value = x)
+      case None -> match builtinPropertyName(env, recv, name) {
+        case Some(bn) -> Some(
+          value = mkExpr(
+            e,
+            ty,
+            XCall(
+              callee = Intrinsic(op = IoBuiltin(name = bn)),
+              args = inArgs(singleTExpr(rt))
+            )
           )
         )
-      )
-      case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+        case None -> uncoveredExprDetail(
+          env,
+          e,
+          "a member access that is not a record field",
+          renderTy(rt.ty) + "." + name
+        )
+      }
     }
   }
 }
@@ -2683,7 +2836,12 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       match fieldRefOf(env, rt.ty, name) {
         case Some(f) -> Some(value = TPlace(ty = pty, kind = PlField(recv = rt, field = f)))
         case None -> {
-          val _ = uncoveredExpr(env, target, "an assignment to a member that is not a record field")
+          val _ = uncoveredExprDetail(
+            env,
+            target,
+            "an assignment to a member that is not a record field",
+            renderTy(rt.ty) + "." + name
+          )
           None
         }
       }
@@ -2731,6 +2889,10 @@ func assignKindOf(op: in AssignOp): AssignKind {
 /// `target op= value`: the place and the value converted to the place's type.  The
 /// result is a `Unit` node (`XAssign`).
 func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp, value: in Expr): Option[TExpr] {
+  match target.kind {
+    case EMember(r, name) -> if isHostValue(env, r) { return buildHostPropertySet(env, e, target, r, name, op, value) }
+    case _ -> ()
+  }
   val place = match buildPlace(env, target) { case Some(p) -> p; case None -> return None }
   val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
   // `s += x` on a `String` takes any value, which is appended as its `toString`.

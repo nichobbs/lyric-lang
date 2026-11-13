@@ -329,6 +329,8 @@ pub record ExternMemberSig {
   isStatic: Bool
   params: List[ExternIterElem]
   ret: ExternMemberType
+  /// A property read that is a public field of the host type, not a getter method.
+  isField: Bool = false
 }
 
 /// What a host member yields.
