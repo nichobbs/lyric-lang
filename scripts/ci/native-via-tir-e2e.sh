@@ -247,6 +247,26 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/b
 diff -u "$work/f_tir.out" "$work/f_asan.out"
 echo "generic fallback under AddressSanitizer: clean"
 
+# String methods that are one runtime call, numeric conversions and `panic`.
+bsrc=scripts/ci/native-via-tir/builtins.l
+"$lyric_bin" build --target native "$bsrc" -o "$work/b_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$bsrc" -o "$work/b_tir" 2> "$work/b_census.txt" >/dev/null
+cat "$work/b_census.txt"
+"$work/b_ast" > "$work/b_ast.out" 2> "$work/b_ast.err" || true
+"$work/b_tir" > "$work/b_tir.out" 2> "$work/b_tir.err" || true
+diff -u "$work/b_ast.out" "$work/b_tir.out"
+printf 'HELLO\ncde|fgh\nbonono\n65\ntrue\n5000000000\n1\n0.75\n' | diff -u - "$work/b_tir.out"
+grep -q 'bad: last' "$work/b_tir.err" || { echo "::error::the TIR build did not panic with the message"; cat "$work/b_tir.err"; exit 1; }
+grep -q 'bad: last' "$work/b_ast.err" || { echo "::error::the AST build did not panic with the message"; exit 1; }
+grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/b_census.txt" || {
+  echo "::error::expected every function of builtins.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/b_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/b_asan"
+"$work/b_asan" > "$work/b_asan.out" 2>/dev/null || true
+diff -u "$work/b_tir.out" "$work/b_asan.out"
+echo "builtins under AddressSanitizer: clean"
+
 # A call to an async function stays on the AST path: only `twice` lowers from TIR.
 asrc=scripts/ci/native-via-tir/async.l
 "$lyric_bin" build --target native "$asrc" -o "$work/a_ast" >/dev/null
