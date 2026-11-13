@@ -56,7 +56,7 @@ func isNarrowHostInt(name: in String): Bool {
 /// `object` (any value), narrowing an `Int` or `Long` to a smaller host integer (range checked, as the MSIL
 /// resolver scores it), and a `Float` as the host's `Single`.  The operand keeps its Lyric type and the node has
 /// the host type.
-func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
+pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match to {
     case TExtern(h) -> {
       if tyEq(from, to) {
