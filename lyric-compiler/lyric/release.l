@@ -994,6 +994,10 @@ func buildLinkerArgsMac(
   args.add("Security")
   args.add("-framework")
   args.add("GSS")
+  // libSystem.Security.Cryptography.Native.Apple.a (pal_networkframework.m)
+  // calls the nw_* Network.framework API.
+  args.add("-framework")
+  args.add("Network")
 
   args
 }
