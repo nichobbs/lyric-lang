@@ -268,7 +268,7 @@ test "a different declaration changes the hash" {
 }
 
 test "the dump is canonical text" {
-  val expected = "interface Shapes (format 3)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
+  val expected = "interface Shapes (format 4)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
     "annotations: pure\n" +
     "reexports: Std.Collections, Std.Json\n" +
     "built against (2):\n" +
@@ -680,7 +680,7 @@ test "parameter defaults of every carried kind round trip through another intern
   val line = dumpIface(oneDecl(defaultsFn(it, dflts)), it)
   assertTrue(line.contains("p0: in Int = {3 : Int}"), "a literal default: " + line)
   assertTrue(line.contains("call T::make[String]({2 : Int})"), "a call default: " + line)
-  assertTrue(line.contains("p9: in Int = <default>"), "a default not recorded: " + line)
+  assertFalse(line.contains("p9: in Int ="), "no default: " + line)
 }
 
 test "a default of a kind the interface cannot record fails the write rather than being dropped" {
