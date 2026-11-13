@@ -639,13 +639,12 @@ test "a record pattern and an enum case pattern build" {
   assertTrue(matchSummary(e.body) == "2:exhaustive", matchSummary(e.body))
 }
 
-test "an or-pattern that binds a name is counted, not guessed" {
+test "an or-pattern that binds a name builds, its alternatives sharing the local" {
   val r = buildFirstFn(
     "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) | B(n) -> n\n  }\n}\n"
   )
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern that binds a name"), 1, "counted")
+  assertTrue(r.body.isSome(), "builds")
 }
 
 test "an as-pattern binds its name before its sub-pattern" {
@@ -882,12 +881,11 @@ test "a method called on an interface value builds as an interface call" {
   assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
 }
 
-test "a method with a mutating receiver is counted, not built as an in argument" {
+test "a method with a mutating receiver is built with the receiver as a place argument" {
   val r = buildFirstFn(
     "package App\nrecord C {\n  var n: Int\n  func bump(self: inout C): Unit { self.n = self.n + 1 }\n}\nfunc f(c: inout C): Unit {\n  c.bump()\n}\n"
   )
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a method call with a mutating receiver"), 1, "counted")
+  assertTrue(r.body.isSome(), "builds")
 }
 
 test "the callee shape and the receiver position of a method call are pinned" {
@@ -2075,6 +2073,40 @@ test "a bare call of a sibling method is called on the enclosing method's self" 
   assertBuildsAndVerifies(pb, 2, "Acc.m and viaSibling")
 }
 
+test "a constant pattern builds as a reference to the constant" {
+  val c = censusOf(
+    "package App\nval LIMIT = 3\nfunc f(n: in Int): Int {\n  match n {\n    case @LIMIT -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a shorthand record pattern field binds the field's local" {
+  val c = censusOf(
+    "package App\nrecord P {\n  x: Int\n  y: Int\n}\nfunc f(p: in P): Int {\n  match p {\n    case P { x, y } -> x + y\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an or-pattern whose alternatives bind the same name shares one local" {
+  val c = censusOf(
+    "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n  case C\n}\nfunc f(u: in U): Int {\n  match u {\n    case A(k) | B(k) -> k\n    case C -> 0\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a method call whose receiver is inout passes the receiver as a place" {
+  val pb = packageOf(
+    "package App\nrecord Pt {\n  x: Int\n  y: Int\n  func reset(self: inout Pt): Unit {\n    self = Pt(x = 0, y = 0)\n  }\n  func twice(self: inout Pt): Unit {\n    reset()\n    reset()\n  }\n}\nfunc f(): Int {\n  var p = Pt(x = 1, y = 2)\n  p.reset()\n  p.x\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 3, "Pt.reset, twice and f")
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
@@ -2320,10 +2352,8 @@ test "a local that shadows a protected field's name is the local, not the field 
 }
 
 test "a failed body names its symbol's DefPath key (D570)" {
-  val pb = packageOf(
-    "package App\nunion U {\n  case A(n: Int)\n  case B(n: Int)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) | B(n) -> n\n  }\n}\n"
-  )
-  assertEqualInt(pb.failed.count, 1, "the or-pattern body fails")
+  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  assertEqualInt(pb.failed.count, 1, "the member access body fails")
   assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
 }

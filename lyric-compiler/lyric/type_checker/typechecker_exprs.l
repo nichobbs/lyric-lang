@@ -12925,6 +12925,7 @@ func checkConstRefPattern(
           diag.add(errorDiagnostic("T0072", "'" + name + "' is not defined; use a val or const for a const pattern", pat.span))
         }
         case Some(sym) -> {
+          recordRefNode(tbl, pat.nodeId, sym)
           match sym.kind {
             case DKConst(cd) -> {
               val ctx = newGenericContext()
