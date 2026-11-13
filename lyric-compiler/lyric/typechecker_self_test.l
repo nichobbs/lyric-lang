@@ -9291,6 +9291,11 @@ test "a constructor pattern in a for with fewer sub-patterns than the case has f
   assertTrue(hasDiagCode(parseCheck(src), "T0229"), "for A(k) over two-field cases: T0229")
 }
 
+test "an enum case written with parentheses and a sub-pattern is T0229" {
+  val src = "package P\nenum Color { case Red; case Blue }\nfunc f(c: in Color): Int { match c { case Red(x) -> 1; case Blue -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "Red(x) against a field-less enum case: T0229")
+}
+
 test "a constructor pattern naming every field, with wildcards, is accepted" {
   val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, _) -> k; case B -> 0 } }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0229"), "A(k, _) names both fields")
