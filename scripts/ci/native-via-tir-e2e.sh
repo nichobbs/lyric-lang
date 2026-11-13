@@ -247,4 +247,21 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/b
 diff -u "$work/f_tir.out" "$work/f_asan.out"
 echo "generic fallback under AddressSanitizer: clean"
 
+# A call to an async function stays on the AST path: only `twice` lowers from TIR.
+asrc=scripts/ci/native-via-tir/async.l
+"$lyric_bin" build --target native "$asrc" -o "$work/a_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$asrc" -o "$work/a_tir" 2> "$work/a_census.txt" >/dev/null
+cat "$work/a_census.txt"
+"$work/a_ast" > "$work/a_ast.out"
+"$work/a_tir" > "$work/a_tir.out"
+diff -u "$work/a_ast.out" "$work/a_tir.out"
+printf '42\n42\n' | diff -u - "$work/a_tir.out"
+grep -q '^native via-TIR: 1 of 3 functions lowered from TIR' "$work/a_census.txt" || {
+  echo "::error::expected only twice() of async.l to be lowered from TIR"
+  exit 1
+}
+
+# Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
+
 echo "native-via-tir-e2e: ok"
