@@ -62,7 +62,9 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   RabbitMQ clients, and `Lyric.Storage.AzureBlob`, `Lyric.Storage.Gcs`,
   `Lyric.Jobs.QuartzNet`, `Lyric.Mq.RabbitMq`, `Lyric.Mq.Sqs`,
   `Lyric.Flags.Flipt` and `Lyric.Aws.SigV4`
-  (docs/progress/2026-11-13-ecosystem-tls-and-second-wave.md).
+  (docs/progress/2026-11-13-ecosystem-tls-and-second-wave.md). Then `Lyric.Net`, the one socket and
+  TLS kernel behind the TCP clients, and `Lyric.Cache.Memcached`
+  (docs/progress/2026-11-13-ecosystem-net-and-memcached.md).
 
 ## 4. Open questions
 
