@@ -434,3 +434,25 @@ func readExprBody(r: in IfaceReader, it: in DefPathInterner): TExpr {
     }
   }
 }
+
+/// The default of parameter `name` of the function declared at the DefPath key `fnKey` in `i`: what a
+/// consumer of a built or restored interface places at a call that leaves the argument out.  `None` when
+/// the function has no such parameter, the parameter declares no default, or the producer could not record
+/// it (the declaration's `hasDefault` still says the argument may be omitted).
+pub func paramDefaultOf(i: in Iface, fnKey: in String, name: in String): Option[TExpr] {
+  for d in i.decls {
+    if defPathKey(d.path) == fnKey {
+      match d.detail {
+        case IfDFunc(_, ps, _, _, _, _) -> {
+          for p in ps {
+            if p.name == name {
+              return p.dflt
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}

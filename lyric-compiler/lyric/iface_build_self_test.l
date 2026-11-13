@@ -194,8 +194,8 @@ test "a parameter default is recorded as a typed expression and reads back (D460
   )
   assertTrue(text.contains("a: in Int = {call P::zero()[]() : Int}"), "a call default:\n" + text)
   assertTrue(
-    text.contains("b: in Long = {convert widen Long ({4 : Int}) : Long}"),
-    "a widened literal default:\n" + text
+    text.contains("b: in Long = {4 : Int}"),
+    "a literal default keeps its own type; the call widens it:\n" + text
   )
   assertTrue(
     text.contains("c: in P::Pt = {new P::Pt({1 : Int}, {2 : Int}) : P::Pt}"),

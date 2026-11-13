@@ -696,3 +696,28 @@ test "a default of a kind the interface cannot record fails the write rather tha
     case Ok(_) -> assertTrue(false, "the write must fail")
   }
 }
+
+test "a default is found by the function's key and the parameter's name, before and after a round trip" {
+  val it = newDefPathInterner()
+  val dflts: List[Option[TExpr]] = newList()
+  dflts.add(Some(value = intLit(3i64)))
+  dflts.add(None)
+  val iface = oneDecl(defaultsFn(it, dflts))
+  assertTrue(isSome(paramDefaultOf(iface, "T::X", "p0")), "built: p0 has a default")
+  assertFalse(isSome(paramDefaultOf(iface, "T::X", "p1")), "built: p1 has none")
+  assertFalse(isSome(paramDefaultOf(iface, "T::X", "nope")), "built: no such parameter")
+  assertFalse(isSome(paramDefaultOf(iface, "T::Y", "p0")), "built: no such function")
+  match encodeIface(iface, it) {
+    case Err(e) -> assertTrue(false, e)
+    case Ok(bytes) -> {
+      val other = newDefPathInterner()
+      match decodeIface(bytes, other) {
+        case Err(e) -> assertTrue(false, e)
+        case Ok(back) -> match paramDefaultOf(back, "T::X", "p0") {
+          case Some(d) -> assertEqual(exprText(other, d), "{3 : Int}", "decoded default")
+          case None -> assertTrue(false, "decoded: p0 has a default")
+        }
+      }
+    }
+  }
+}
