@@ -213,6 +213,8 @@ done
 bash scripts/ci/native-plugin-e2e.sh "$lyric_bin"
 # docs/70 phase 4a (D520): `--via-tir` lowers the functions TIR covers from TIR and prints the fallback census.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-e2e.sh
+# docs/70 §12.2: the bridge-driven native self-tests again, with the TIR lowering on.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-census.sh
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
