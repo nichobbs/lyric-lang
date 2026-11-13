@@ -2254,7 +2254,11 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
         case Some(_) -> {
           score = score + 1
         }
-        case None -> match hostWidenKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
+        case None -> match hostWidenKind(argTys[i], p) {
+          case Some(_) -> ()
+          // Boxing and narrowing rank below every widening, as the host's overload resolution has it.
+          case None -> match hostBoxKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
+        }
       }
     }
     ps.add(p)
@@ -2383,7 +2387,13 @@ func buildExternCall(
     params.add(TParamTy(mode = TMIn, ty = want))
     val c = match hostWidenKind(built[i].ty, want) {
       case Some(k) -> if tyEq(built[i].ty, want) { built[i] } else { convertNode(env, built[i], want, k) }
-      case None -> match coerceArg(env, built[i], want) { case Some(x) -> x; case None -> return None }
+      case None -> match hostBoxKind(built[i].ty, want) {
+        case Some(k) -> convertNode(env, built[i], want, k)
+        case None -> match coerceArg(env, built[i], want) {
+          case Some(x) -> x
+          case None -> return None
+        }
+      }
     }
     targsOut.add(TArgIn(value = c))
     i = i + 1

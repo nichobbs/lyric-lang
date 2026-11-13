@@ -2073,6 +2073,34 @@ test "a bare call of a sibling method is called on the enclosing method's self" 
   assertBuildsAndVerifies(pb, 2, "Acc.m and viaSibling")
 }
 
+test "a value passed to a host object parameter is boxed, an Int to a small host integer narrows (D597)" {
+  val head = "package App\nextern type Obj = \"System.Object\"\nextern type Conv = \"System.Convert\"\n"
+  val st = buildFirstFnMsil(head + "func f(): Bool {\n  Obj.Equals(42, 42)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 2, "two parameters")
+      assertTrue(tyEq(m.params[0].ty, hostTy("System.Object")), "over object")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "host boxing and narrowing pick a conversion by the operand and the host type (D597)" {
+  val obj = hostTy("System.Object")
+  assertTrue(isSome(hostBoxKind(TPrim(kind = TPString), obj)), "a String boxes to object")
+  assertTrue(isSome(hostBoxKind(TPrim(kind = TPInt), obj)), "an Int boxes to object")
+  assertTrue(not isSome(hostBoxKind(obj, obj)), "object is not boxed to object")
+  assertTrue(not isSome(hostBoxKind(TPrim(kind = TPUnit), obj)), "Unit has no value to box")
+  assertTrue(not isSome(hostBoxKind(TNever, obj)), "Never has no value to box")
+  assertTrue(isSome(hostBoxKind(TPrim(kind = TPInt), hostTy("System.Int16"))), "an Int narrows to Int16")
+  assertTrue(isSome(hostBoxKind(TPrim(kind = TPLong), hostTy("System.UInt32"))), "a Long narrows to UInt32")
+  assertTrue(not isSome(hostBoxKind(TPrim(kind = TPString), hostTy("System.Int16"))), "a String is not an Int16")
+  assertTrue(isSome(hostBoxKind(TPrim(kind = TPFloat), hostTy("System.Single"))), "a Float is a Single")
+  assertTrue(not isSome(hostBoxKind(TPrim(kind = TPDouble), hostTy("System.Single"))), "a Double is not a Single")
+}
+
 test "a constant pattern builds as a reference to the constant" {
   val c = censusOf(
     "package App\nval LIMIT = 3\nfunc f(n: in Int): Int {\n  match n {\n    case @LIMIT -> 1\n    case _ -> 0\n  }\n}\n"

@@ -527,3 +527,15 @@ test "a scope statement binding is not usable after the scope" {
     "scope binding after the scope"
   )
 }
+
+func boxFn(resTy: in Ty, host: in HostTypeRef): TFnDecl {
+  val x = local(1, "x", tyInt(), false)
+  val inner = ex(3, tyInt(), XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), resTy, ex(2, resTy, XConvert(kind = CvBoxToHost(host = host), inner = inner)))
+}
+
+test "a conversion to a host type has that host type; one already of it is reported" {
+  val obj = HostTypeRef(name = "System.Object", args = newList())
+  assertEqualInt(oneFn(entries(), boxFn(TExtern(host = obj), obj)).count, 0, "an Int boxed to object")
+  assertTrue(rulesOf(oneFn(entries(), boxFn(tyInt(), obj))).contains("convert-type"), "wrong node type")
+}

@@ -41,3 +41,45 @@ func hostWidenKind(from: in Ty, to: in Ty): Option[ConvKind] {
     case _ -> None
   }
 }
+
+func isHostObject(name: in String): Bool {
+  name == "System.Object" or name == "java.lang.Object"
+}
+
+/// The host integer types with no Lyric type: an `Int` or `Long` argument narrows to one, range checked.
+func isNarrowHostInt(name: in String): Bool {
+  name == "System.SByte" or name == "System.Int16" or name == "System.UInt16" or name == "System.UInt32" or
+    name == "System.UInt64"
+}
+
+/// The conversions a Lyric value takes into a host parameter the language does not widen to: boxing to
+/// `object` (any value), narrowing an `Int` or `Long` to a smaller host integer (range checked, as the MSIL
+/// resolver scores it), and a `Float` as the host's `Single`.  The operand keeps its Lyric type and the node has
+/// the host type.
+pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
+  match to {
+    case TExtern(h) -> {
+      if tyEq(from, to) {
+        return None
+      }
+      if isHostObject(h.name) {
+        // A value with no runtime representation (`Unit`, `Never`) is not boxed.
+        val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
+        return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
+      }
+      match from {
+        case TPrim(f) -> {
+          val narrows = isNarrowHostInt(h.name) and (match f { case TPInt -> true; case TPLong -> true; case _ -> false })
+          val single = h.name == "System.Single" and (match f { case TPFloat -> true; case _ -> false })
+          if narrows or single {
+            Some(value = CvBoxToHost(host = h))
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
