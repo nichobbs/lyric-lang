@@ -12,6 +12,7 @@ import Std.Collections
 import Std.Testing
 import Std.Hash as Hash
 import Std.Encoding as Enc
+import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Iface
@@ -612,4 +613,86 @@ test "the golden dump shows types and detail" {
   assertTrue(text.contains("  pub union Shapes::Shape\n"), text)
   assertTrue(text.contains("  pub union case Shapes::Shape::Circle(radius: Double)\n"), text)
   assertTrue(text.contains("  pub func Shapes::area(s: in Shapes::Shape): Double @pure\n"), text)
+}
+
+func node(ty: in Ty, kind: in TExprKind): TExpr {
+  TExpr(id = NodeId(id = 0), ty = ty, span = noSourceSpan(), kind = kind)
+}
+
+func intLit(n: in Long): TExpr {
+  node(TPrim(kind = TPInt), XLit(lit = TLInt(value = n)))
+}
+
+func defaultsFn(it: in DefPathInterner, dflts: in List[Option[TExpr]]): IfDetail {
+  val ps: List[IfParam] = newList()
+  var i = 0
+  for d in dflts {
+    ps.add(IfParam(name = "p" + toString(i), mode = TMIn, ty = TPrim(kind = TPInt), hasDefault = isSome(d), dflt = d))
+    i = i + 1
+  }
+  IfDFunc(
+    typeParams = newList(),
+    params = ps,
+    ret = TPrim(kind = TPUnit),
+    isAsync = false,
+    isAxiom = false,
+    isPure = false
+  )
+}
+
+test "parameter defaults of every carried kind round trip through another interner" {
+  val it = newDefPathInterner()
+  val listTy = TNamed(sym = owner(it, "Std.Collections", "List"), args = newList())
+  val callee = internDefPath(it, typeDefPath("T", "make"))
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = intLit(2i64)))
+  val targs: List[Ty] = newList()
+  targs.add(TPrim(kind = TPString))
+  val fields: List[TExpr] = newList()
+  fields.add(intLit(1i64))
+  val elems: List[TExpr] = newList()
+  elems.add(intLit(4i64))
+  elems.add(node(TPrim(kind = TPString), XLit(lit = TLString(text = "a"))))
+  val host = HostMemberRef(
+    owner = HostTypeRef(name = "System.Math", args = newList()),
+    name = "Max",
+    kind = HMMethod,
+    isStatic = true,
+    params = newList(),
+    ret = TPrim(kind = TPInt)
+  )
+  val dflts: List[Option[TExpr]] = newList()
+  dflts.add(Some(value = intLit(3i64)))
+  dflts.add(Some(value = node(listTy, XCall(callee = Direct(sym = callee, typeArgs = targs), args = args))))
+  dflts.add(Some(value = node(TPrim(kind = TPInt), XConstruct(sym = callee, fields = fields))))
+  dflts.add(Some(value = node(TTuple(elems = newList()), XTuple(elems = elems))))
+  dflts.add(Some(value = node(TPrim(kind = TPLong), XConvert(kind = CvWiden(to = TPLong), inner = intLit(5i64)))))
+  dflts.add(Some(value = node(TPrim(kind = TPInt), XCall(callee = Extern(member = host), args = newList()))))
+  dflts.add(
+    Some(
+      value = node(TPrim(kind = TPString), XCall(callee = Intrinsic(op = IoBuiltin(name = "toString")), args = args))
+    )
+  )
+  dflts.add(Some(value = node(listTy, XListLit(elems = newList()))))
+  dflts.add(Some(value = node(TPrim(kind = TPInt), XGlobal(sym = callee, typeArgs = newList()))))
+  dflts.add(None)
+  assertEqual(roundTrip(oneDecl(defaultsFn(it, dflts)), it), "", "defaults")
+  val line = dumpIface(oneDecl(defaultsFn(it, dflts)), it)
+  assertTrue(line.contains("p0: in Int = {3 : Int}"), "a literal default: " + line)
+  assertTrue(line.contains("call T::make[String]({2 : Int})"), "a call default: " + line)
+  assertTrue(line.contains("p9: in Int = <default>"), "a default not recorded: " + line)
+}
+
+test "a default of a kind the interface cannot record fails the write rather than being dropped" {
+  val it = newDefPathInterner()
+  val x = intLit(1i64)
+  val lam = node(TPrim(kind = TPInt), XIf(cond = x, thenBranch = x, elseBranch = Some(value = x)))
+  assertFalse(defaultCarriable(lam), "an if is not carried")
+  assertTrue(defaultCarriable(x), "a literal is")
+  val dflts: List[Option[TExpr]] = newList()
+  dflts.add(Some(value = lam))
+  match encodeIface(oneDecl(defaultsFn(it, dflts)), it) {
+    case Err(e) -> assertTrue(e.contains("cannot record"), e)
+    case Ok(_) -> assertTrue(false, "the write must fail")
+  }
 }

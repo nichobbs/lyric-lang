@@ -2274,7 +2274,10 @@ pub func pipeCheckFront(
   // checker records a type per expression, and report the I0002 census after
   // the check.  Off by default: no extra copy of the tree.
   val verifyIr = tirVerifyIrEnabled()
-  val file0 = if verifyIr or opts.wantTir { Resolve.renumberNodeIds(file00).file } else { file00 }
+  // A package interface carries parameter defaults built from the checker's per-node tables
+  // (docs/70 §9.2, D460), so a library build that writes one numbers the nodes too.
+  val wantsInterface = opts.buildInterface and not IfaceBuild.isExecutable(file00)
+  val file0 = if verifyIr or opts.wantTir or wantsInterface { Resolve.renumberNodeIds(file00).file } else { file00 }
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val tcRes = checkWithImportedPackagesForTargetIter(
     file0,

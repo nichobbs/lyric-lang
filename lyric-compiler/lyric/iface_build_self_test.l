@@ -12,6 +12,7 @@ import Std.Collections
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Resolve.{renumberNodeIds}
 import Lyric.Symbols
 import Lyric.Iface
 import Lyric.IfaceBuild
@@ -33,7 +34,7 @@ func targets(): List[String] {
 
 func checked(src: in String): CheckResult {
   val pr = parse(src)
-  val res = check(pr.file)
+  val res = check(renumberNodeIds(pr.file).file)
   var errs = ""
   for d in res.diagnostics {
     errs = errs + d.code + " " + d.message + "; "
@@ -59,7 +60,7 @@ test "functions record their signature, modes, async and purity" {
     "package P\n\n@pure\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n\npub func fill(buf: inout String, n: Int = 3) {\n}\n\nfunc hidden(): Int {\n  1\n}\n"
   )
   has(text, "  pub func P::add(Int,Int)(a: in Int, b: in Int): Int @pure", "add")
-  assertTrue(text.contains("(buf: inout String, n: in Int = <default>): Unit"), "fill:\n" + text)
+  assertTrue(text.contains("(buf: inout String, n: in Int = {3 : Int}): Unit"), "fill:\n" + text)
   assertFalse(text.contains("hidden"), "a private function is not recorded:\n" + text)
 }
 
@@ -185,4 +186,27 @@ test "Self in a type's methods is the type applied to its own parameters" {
   )
   assertTrue(text.contains("pub method P::Counter::bump(Self)(self: in P::Counter): P::Counter\n"), text)
   assertTrue(text.contains("(self: in P::Acc[param P::Acc#0], v: in param P::Acc#0): P::Acc[param P::Acc#0]\n"), text)
+}
+
+test "a parameter default is recorded as a typed expression and reads back (D460)" {
+  val text = dumpOf(
+    "package P\n\npub record Pt {\n  x: Int\n  y: Int\n}\n\npub func zero(): Int {\n  0\n}\n\npub func scale(a: Int = zero(), b: Long = 4, c: Pt = Pt(x = 1, y = 2), d: String = \"s\"): Int {\n  a\n}\n"
+  )
+  assertTrue(text.contains("a: in Int = {call P::zero()[]() : Int}"), "a call default:\n" + text)
+  assertTrue(
+    text.contains("b: in Long = {convert widen Long ({4 : Int}) : Long}"),
+    "a widened literal default:\n" + text
+  )
+  assertTrue(
+    text.contains("c: in P::Pt = {new P::Pt({1 : Int}, {2 : Int}) : P::Pt}"),
+    "a construction default:\n" + text
+  )
+  assertTrue(text.contains("d: in String = {\"s\" : String}"), "a string default:\n" + text)
+}
+
+test "a method default is recorded under the method's key" {
+  val text = dumpOf(
+    "package P\n\npub record Acc {\n  n: Int\n  func add(self: in Acc, k: Int = 1): Int { self.n + k }\n}\n"
+  )
+  assertTrue(text.contains("k: in Int = {1 : Int}"), "a method default:\n" + text)
 }

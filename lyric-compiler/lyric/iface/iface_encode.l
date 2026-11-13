@@ -128,6 +128,13 @@ func putDetail(w: in IfaceWriter, it: in DefPathInterner, d: in IfDetail) {
         putU(w, modeCode(p.mode))
         putTy(w, it, p.ty)
         putBool(w, p.hasDefault)
+        match p.dflt {
+          case Some(d) -> {
+            putBool(w, true)
+            putExpr(w, it, d)
+          }
+          case None -> putBool(w, false)
+        }
       }
       putTy(w, it, ret)
       putBool(w, isAsync)
@@ -189,8 +196,9 @@ func readDetail(r: in IfaceReader, it: in DefPathInterner): IfDetail {
         val mc = readU(r)
         val ty = readTy(r, it)
         val hasDefault = readBool(r)
+        val dflt: Option[TExpr] = if readBool(r) { Some(value = readExpr(r, it)) } else { None }
         match modeOfCode(mc) {
-          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault))
+          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault, dflt = dflt))
           case None -> readFail(r, "unknown parameter mode " + toString(mc))
         }
         k = k + 1
