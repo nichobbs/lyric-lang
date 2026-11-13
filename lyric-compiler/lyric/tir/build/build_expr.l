@@ -13,6 +13,7 @@ package Lyric.Tir.Build
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
@@ -1563,7 +1564,7 @@ func buildFnCore(
     }
     // The body is the function's value: it meets the declared return type through a
     // conversion the types alone derive, or the build counts the one it cannot.
-    if not isUnitTy(ret) {
+    if not isUnitTy(ret) and not functionIsGenerator(fn) {
       match res {
         case Some(b) -> {
           res = coerceBranch(env, b, ret)
@@ -1651,7 +1652,8 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           body = c.body,
           span = fn.span,
           barrier = c.barrier,
-          ownerParamCount = ownerCount
+          ownerParamCount = ownerCount,
+          isGenerator = functionIsGenerator(fn)
         )
       )
     }
@@ -1836,6 +1838,7 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  env.errors.add("I0002 detail: unresolved call, callee form " + exprKindTag(fn) + ", result " + renderTy(ty))
   uncoveredExpr(env, e, "a call the checker did not resolve")
 }
 
@@ -2607,7 +2610,12 @@ func assignKindOf(op: in AssignOp): AssignKind {
 func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp, value: in Expr): Option[TExpr] {
   val place = match buildPlace(env, target) { case Some(p) -> p; case None -> return None }
   val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
-  val v = match coerceArg(env, vt, place.ty) { case Some(c) -> c; case None -> return None }
+  // `s += x` on a `String` takes any value, which is appended as its `toString`.
+  val appended = match op {
+    case AssPlus -> match place.ty { case TPrim(TPString) -> stringPart(env, vt); case _ -> vt }
+    case _ -> vt
+  }
+  val v = match coerceArg(env, appended, place.ty) { case Some(c) -> c; case None -> return None }
   Some(value = mkExpr(e, tyUnit(), XAssign(place = place, op = assignKindOf(op), value = v)))
 }
 
@@ -2687,7 +2695,13 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   match convertValue(env, t, pty) {
     case Some(c) -> Some(value = c)
     case None -> {
-      noteUncovered(env, "an argument conversion")
+      noteUncoveredAt(env, "an argument conversion", t.span)
+      env.errors.add(
+        "I0002: the builder has no case for an argument conversion from " + renderTy(t.ty) + " to " + renderTy(pty) + " at " +
+          toString(t.span.startPos.line) +
+          ":" +
+          toString(t.span.startPos.column)
+      )
       None
     }
   }
@@ -2795,7 +2809,11 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 
 /// The built-ins whose parameter is any `T`: no argument converts.
 func genericBuiltin(name: in String): Bool {
-  name == "println" or name == "print" or name == "toString" or name == "hashCode"
+  name == "println" or name == "print" or name == "toString" or name == "hashCode" or name == "default" or
+    Str.endsWith(name, ".wrappingAdd") or
+    Str.endsWith(name, ".wrappingSub") or
+    Str.endsWith(name, ".wrappingMul") or
+    Str.endsWith(name, ".wrappingNeg")
 }
 
 /// A primitive an implicit widening can change, or a refined number an unrefinement or
@@ -3163,6 +3181,13 @@ func recvIsProtected(env: in BuildEnv, t: in Type): Bool {
 /// parameter, to the method the checker resolved (`Direct`, or `Interface` for an
 /// interface-typed receiver).  Only a receiver passed `in` is built; a mutating
 /// receiver would be a place argument, and an unknown mode is not guessed.
+func isMemberExpr(x: in Expr): Bool {
+  match x.kind {
+    case EMember(_, _) -> true
+    case _ -> false
+  }
+}
+
 func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
@@ -3172,9 +3197,12 @@ func buildMethodCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
-  val recvExpr = match fn.kind {
-    case EMember(r, _) -> r
-    case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
+  // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
+  // the enclosing method's own `self`.
+  val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
+  val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> fn }
+  if not bareSelf and not isMemberExpr(fn) {
+    return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
   var isEntry = false
   var isImplMember = false
@@ -3202,7 +3230,17 @@ func buildMethodCall(
       return None
     }
   }
-  val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
+  val rt = if bareSelf {
+    match lookupLocal(env, "self") {
+      case Some(d) -> TExpr(id = freshNodeId(env), ty = d.ty, span = fn.span, kind = XLocal(local = d.id))
+      case None -> return uncoveredExpr(env, e, "a bare method call outside a method")
+    }
+  } else {
+    match buildExpr(env, recvExpr) {
+      case Some(t) -> t
+      case None -> return None
+    }
+  }
   val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
   val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
@@ -3212,7 +3250,7 @@ func buildMethodCall(
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
   var recvArg = recv
   val stmts: List[TStmt] = newList()
-  if pre.count > 0 and not isPlainArg(recvExpr) {
+  if pre.count > 0 and not bareSelf and not isPlainArg(recvExpr) {
     val d = declareLocal(env, "__recv" + toString(env.nextLocal[0] + 1), recv.ty, false)
     val bindPat = TPat(id = freshNodeId(env), ty = recv.ty, span = recv.span, kind = TpBind(decl = d, inner = None))
     stmts.add(TStmt(id = freshNodeId(env), span = recv.span, kind = TsLet(pat = bindPat, init = recv)))

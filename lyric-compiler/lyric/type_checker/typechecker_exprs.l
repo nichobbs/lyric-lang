@@ -20211,6 +20211,7 @@ func inferExprCore(
               }
             }
             recordOverflowSite(tbl, e.span, "wrap:" + tn)
+            recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(wt) + "." + wName)
             return wt
           }
           cachedRecvType = Some(value = wt)
@@ -23054,6 +23055,7 @@ func inferExprExpectedCore(
 ): Type {
   noteExpectedFlow(sc, tbl, e, expected)
   if not typeIsHole(expected) and isBuiltinDefaultCall(sigs, e) {
+    recordBuiltinCallee(tbl, e.nodeId, "default")
     return expected
   }
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {

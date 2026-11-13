@@ -335,6 +335,9 @@ pub record TFnDecl {
   /// in (0 for a function, or a member of a type that declares none): a call instantiates them from
   /// the receiver's type arguments, then the member's own.
   ownerParamCount: Int = 0
+  /// An `async func` whose body yields: `ret` is the type of each yielded value and the body is the
+  /// generator's code, a `Unit` block, not a value of `ret`.
+  isGenerator: Bool = false
 }
 
 /// A callable's signature, as a call checks against it.

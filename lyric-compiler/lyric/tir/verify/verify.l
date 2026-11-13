@@ -1081,7 +1081,9 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
   match f.body {
     case Some(b) -> {
       visitExpr(c, b)
-      branchTy(c, b.id, b, f.ret, "function body")
+      if not f.isGenerator {
+        branchTy(c, b.id, b, f.ret, "function body")
+      }
     }
     case None -> {
     }

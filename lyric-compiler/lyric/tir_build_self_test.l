@@ -2040,6 +2040,41 @@ test "a member of a generic type whose body does not build is described by its d
   assertTrue(found, "an entry symbol")
 }
 
+test "appending a non-String value to a String builds as its toString" {
+  val c = censusOf("package App\nfunc f(): String {\n  var s = \"n=\"\n  s += 3.5\n  s\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a body that yields is the generator's code, not a value of its yield type" {
+  val c = censusOf("package App\nasync func gen(): Int {\n  yield 1\n  yield 2\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "default() with an expected type builds as the default builtin" {
+  val c = censusOf("package App\nfunc f(v: out Int): Bool {\n  v = default()\n  false\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "wrappingAdd on a Byte builds as a builtin member call" {
+  val c = censusOf("package App\nfunc f(a: in Byte, b: in Byte): Byte {\n  a.wrappingAdd(b)\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a bare call of a sibling method is called on the enclosing method's self" {
+  val pb = packageOf(
+    "package App\nrecord Acc {\n  n: Int\n  func m(self: in Acc, x: in Int): Int { self.n + x }\n  func viaSibling(self: in Acc): Int {\n    m(1)\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "Acc.m and viaSibling")
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }
