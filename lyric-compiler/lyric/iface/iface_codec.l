@@ -32,7 +32,7 @@ pub val ifaceMagic3: Int = 73
 /// The format version this compiler writes and reads.  Interfaces replace
 /// contract metadata outright (docs/70 §12.3); a reader never accepts an
 /// older or newer version.
-pub val ifaceFormatVersion: Int = 3
+pub val ifaceFormatVersion: Int = 4
 
 /// Collects the body of an interface and the string table it refers to.
 /// `err` is the first thing the model could not be encoded as (a type that

@@ -1526,11 +1526,13 @@ record FnCore {
   barrier: Option[TExpr] = None
 }
 
-/// `sigOnly` builds the signature half alone (symbol, type parameters, parameters, return type),
-/// leaving defaults, contracts and body unbuilt: the description of a member whose body does not build.
+/// `mode` 1 builds the signature half alone (symbol, type parameters, parameters, return type),
+/// leaving defaults, contracts and body unbuilt: the description of a member whose body does not
+/// build.  Mode 2 adds the parameters' defaults, each left out on its own when it does not build.
 func buildFnCore(
-  env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool, sigOnly: in Bool
+  env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool, mode: in Int
 ): Option[FnCore] {
+  val sigOnly = mode != 0
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
@@ -1597,13 +1599,15 @@ func buildFnCore(
   for p in fn.params {
     var dflt: Option[TExpr] = None
     match p.dflt {
-      case Some(dx) -> if not sigOnly {
+      case Some(dx) -> if mode != 1 {
         match buildExpr(env, dx) {
           case Some(t) -> {
             dflt = Some(value = t)
           }
           case None -> {
-            ok = false
+            if not sigOnly {
+              ok = false
+            }
           }
         }
       }
@@ -1717,7 +1721,7 @@ func buildFnCore(
 /// parameters to its symbol.  Contracts are built with the body: a clause the
 /// builder has no case for fails it like any other expression.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
-  match buildFnCore(env, fn, tbl, false, false) {
+  match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
     case None -> None
   }
@@ -1727,16 +1731,22 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
 /// parameters (their bounds are not converted yet), parameters with modes and
 /// defaults, return type, contracts as `preconds`/`postconds`, and the body.
 pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
-  buildFnDeclWith(env, fn, tbl, false)
+  buildFnDeclWith(env, fn, tbl, 0)
 }
 
 /// A function's signature as a body-less `TFnDecl`: what describes a function whose body does not build.
 pub func buildFnSigDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
-  buildFnDeclWith(env, fn, tbl, true)
+  buildFnDeclWith(env, fn, tbl, 1)
 }
 
-func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, sigOnly: in Bool): Option[TFnDecl] {
-  match buildFnCore(env, fn, tbl, true, sigOnly) {
+/// A function's signature with the defaults of its parameters, as a body-less `TFnDecl`: the defaults a
+/// package interface carries.  A default that does not build is `None` on its own parameter.
+pub func buildFnDefaultsDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
+  buildFnDeclWith(env, fn, tbl, 2)
+}
+
+func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, mode: in Int): Option[TFnDecl] {
+  match buildFnCore(env, fn, tbl, true, mode) {
     case Some(c) -> {
       val tps: List[TTypeParam] = newList()
       for n in c.typeNames {

@@ -199,16 +199,23 @@ func genericRecvOf(env: in BuildEnv, tbl: in SymbolTable, site: in MemberSite, m
 
 /// Build one member in a fresh env sharing `counter`.  `None` carries the reasons in `env.errors`.
 pub func buildMember(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[TFnDecl] {
-  buildMemberWith(env, tbl, pkg, site, false)
+  buildMemberWith(env, tbl, pkg, site, 0)
 }
 
 /// The member's signature as a body-less declaration, for a member whose body does not build.
 pub func buildMemberSig(env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[TFnDecl] {
-  buildMemberWith(env, tbl, pkg, site, true)
+  buildMemberWith(env, tbl, pkg, site, 1)
+}
+
+/// The member's signature with its parameters' defaults, as a body-less declaration.
+pub func buildMemberDefaults(
+  env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite
+): Option[TFnDecl] {
+  buildMemberWith(env, tbl, pkg, site, 2)
 }
 
 func buildMemberWith(
-  env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, sigOnly: in Bool
+  env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, mode: in Int
 ): Option[TFnDecl] {
   // A method declares its receiver as an explicit first parameter named `self`; a protected
   // type's members and some `impl` members leave it implicit, and the builder declares it.
@@ -237,8 +244,10 @@ func buildMemberWith(
   }
   env.symOverride.add(sym)
   env.memberOwner.add(site.owner)
-  if sigOnly {
+  if mode == 1 {
     buildFnSigDecl(env, site.fn, tbl)
+  } else if mode == 2 {
+    buildFnDefaultsDecl(env, site.fn, tbl)
   } else {
     buildFnDecl(env, site.fn, tbl)
   }

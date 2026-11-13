@@ -11,8 +11,8 @@
 //! it names a declaration by `SymbolId`, which exists only within one
 //! compilation, so the codec writes the DefPath key and a reader interns it
 //! again (`iface_ty.l`).  A declaration carries the detail of its kind
-//! (`IfDetail`).  Bodies, default values, contracts, the linkage table and
-//! hidden exports are not in the model yet: they need the TIR builder and the
+//! (`IfDetail`).  Bodies, contracts, the linkage table and hidden exports
+//! are not in the model yet; a function parameter's default value is (D460): they need the TIR builder and the
 //! consumer work of docs/70 phases 3a and 5b (D321, D324).
 package Lyric.Iface
 
@@ -85,12 +85,14 @@ pub record IfHeader {
 }
 
 /// A parameter of a function.  `hasDefault` records that a call may omit it;
-/// the default's value is a TIR expression and follows with the TIR builder.
+/// `dflt` is the default's value as a typed TIR expression (D460), absent when the
+/// declaration has none or the producer could not record the one it has.
 pub record IfParam {
   name: String
   mode: TMode
   ty: Ty
   hasDefault: Bool
+  dflt: Option[TExpr] = None
 }
 
 /// A field of a record, a protected type or a union case.

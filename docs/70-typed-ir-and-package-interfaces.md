@@ -470,7 +470,7 @@ synthesis, `checkContractSurface` and its whitelist, and
   members, contracts and default methods; protected types with entries and
   barriers; type invariants; `pub val`s with type (and value when it is a
   constant); `pub use` re-exports as references to the original DefPath.
-- Functions: signature, parameter modes, defaults as TIR expressions,
+- Functions: signature, parameter modes, defaults as TIR expressions (shipped for functions and methods, D460: literals, names, calls, constructions, conversions, lists and tuples; another shape is not carried and the consumer counts the call),
   contracts as TIR expressions (§10), per-function verification level, proof
   status (§10.3), `@axiom`, `@pure`, async.
 - Bodies: as TIR, **after** contract elaboration's declaration step, for
