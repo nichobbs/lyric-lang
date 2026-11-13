@@ -3447,27 +3447,45 @@ func linkAndEmitNative(
   }
 
   val npkg = codegenNativeBundle(units, effTriple)
+  // The census of the packages being built, then the standard library's bundled slice.
   val tirTotal = LlvmTir.newTirCensus()
+  val tirBundled = LlvmTir.newTirCensus()
   var anyTir = false
-  for tu in units {
-    for ti in tu.tir {
-      anyTir = true
+  var anyBundledTir = false
+  var tui = 0
+  while tui < units.count {
+    for ti in units[tui].tir {
+      val into = if tui < ownUnits { tirTotal } else { tirBundled }
+      if tui < ownUnits {
+        anyTir = true
+      } else {
+        anyBundledTir = true
+      }
       for l in ti.census.lowered {
-        tirTotal.lowered.add(l)
+        into.lowered.add(l)
       }
       for f in ti.census.fallbacks {
-        tirTotal.fallbacks.add(f)
+        into.fallbacks.add(f)
       }
     }
+    tui = tui + 1
   }
   if anyTir {
     for line in LlvmTir.tirCensusLines(tirTotal) {
       Console.error(line)
     }
-    if LlvmTir.tirTraceRequested() {
-      for l in tirTotal.lowered {
-        Console.error("  lowered: " + l)
-      }
+  }
+  if anyBundledTir {
+    for line in LlvmTir.tirCensusLines(tirBundled, " (bundled stdlib)") {
+      Console.error(line)
+    }
+  }
+  if LlvmTir.tirTraceRequested() {
+    for l in tirTotal.lowered {
+      Console.error("  lowered: " + l)
+    }
+    for l in tirBundled.lowered {
+      Console.error("  lowered (bundled): " + l)
     }
   }
   if isPlugin and not addPluginEntryPoint(npkg, units[0].pkgName) {

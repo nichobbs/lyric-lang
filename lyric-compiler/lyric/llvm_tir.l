@@ -135,10 +135,11 @@ pub func newTirCensus(): TirCensus {
 
 /// The census as report lines: the totals, then each fallback reason with how many
 /// functions it kept on the AST path, most frequent first.
-pub func tirCensusLines(c: in TirCensus): List[String] {
+/// `label` names a group of units in the first line (" (bundled stdlib)"); the own packages have none.
+pub func tirCensusLines(c: in TirCensus, label: in String = ""): List[String] {
   val lines: List[String] = newList()
   lines.add(
-    "native via-TIR: " + toString(c.lowered.count) + " of " + toString(c.lowered.count + c.fallbacks.count) +
+    "native via-TIR" + label + ": " + toString(c.lowered.count) + " of " + toString(c.lowered.count + c.fallbacks.count) +
       " functions lowered from TIR"
   )
   val counts: Map[String, Int] = newMap()
