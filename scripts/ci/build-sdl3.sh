@@ -21,7 +21,13 @@ set -euo pipefail
 
 SDL_VERSION="3.4.18"
 SDL_SHA256="9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3"
-SDL_URL="https://libsdl.org/release/SDL3-${SDL_VERSION}.tar.gz"
+# The same release tarball (one SHA-256) from GitHub's release assets first, then
+# libsdl.org: libsdl.org has been unreachable from hosted runners (connection refused),
+# which failed every macOS SDL3 step on a cache miss.
+SDL_URLS=(
+  "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL3-${SDL_VERSION}.tar.gz"
+  "https://libsdl.org/release/SDL3-${SDL_VERSION}.tar.gz"
+)
 
 x11=0
 if [ "${1:-}" = "--x11" ]; then
@@ -39,7 +45,18 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-curl -fsSL --retry 3 -o "$work/sdl3.tar.gz" "$SDL_URL"
+fetched=0
+for url in "${SDL_URLS[@]}"; do
+  if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 30 -o "$work/sdl3.tar.gz" "$url"; then
+    fetched=1
+    break
+  fi
+  echo "build-sdl3.sh: download from $url failed, trying the next source" >&2
+done
+if [ "$fetched" != 1 ]; then
+  echo "build-sdl3.sh: could not download SDL3 $SDL_VERSION from any source" >&2
+  exit 1
+fi
 if command -v sha256sum >/dev/null; then
   echo "$SDL_SHA256  $work/sdl3.tar.gz" | sha256sum -c -
 else
