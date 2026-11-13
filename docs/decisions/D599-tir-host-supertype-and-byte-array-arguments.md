@@ -20,3 +20,5 @@ and the calls that pass a `slice[Byte]` for a host `byte[]` (`File.WriteAllBytes
   two array overloads that both accept a `Byte` slice tie and are counted as ambiguous.
 - `CvBoxToHost` therefore means "a value passed as a host type" for all of these; the operand keeps its own type and the
   node has the host type. The verifier's rule is unchanged.
+
+Limit: the same placeholder names a by-reference or pointer parameter (`byte&`, `byte*`), so a `Byte` slice can fit such an overload until the metadata distinguishes them; the overload score cannot rank them apart from a real `byte[]`. Carrying the element type in the placeholder is the follow-up.
