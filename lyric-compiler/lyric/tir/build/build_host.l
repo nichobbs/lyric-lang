@@ -42,6 +42,11 @@ func hostWidenKind(from: in Ty, to: in Ty): Option[ConvKind] {
   }
 }
 
+/// The name the host's array, pointer and by-reference types share in a member signature.
+pub func hostArrayName(): String {
+  "an array, pointer or by-reference type"
+}
+
 func isHostObject(name: in String): Bool {
   name == "System.Object" or name == "java.lang.Object"
 }
@@ -66,6 +71,14 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         // A value with no runtime representation (`Unit`, `Never`) is not boxed.
         val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
         return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
+      }
+      // A `slice[Byte]` or `array[N, Byte]` passed for a host byte array: the representation is the host's.
+      if h.name == hostArrayName() {
+        return match from {
+          case TSlice(TPrim(TPByte)) -> Some(value = CvBoxToHost(host = h))
+          case TArray(_, TPrim(TPByte)) -> Some(value = CvBoxToHost(host = h))
+          case _ -> None
+        }
       }
       match from {
         case TPrim(f) -> {
