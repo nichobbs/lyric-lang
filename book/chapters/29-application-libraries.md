@@ -368,7 +368,8 @@ func main(): Unit {
 
 The libraries above define interfaces (`StorageBucket`, `JobScheduler`,
 `CacheStore`, `SessionStore`, `MessageQueue`) and ship one in-tree reference
-backend each (`FlagStore` likewise). Backends that talk to an external service live in a separate
+backend each (`FlagStore` likewise). Backends that talk to an external
+service live in a separate
 repository, [`nichobbs/lyric-ecosystem`](https://github.com/nichobbs/lyric-ecosystem),
 one package per backend (D552, D561). Each backend implements the interface,
 re-exports it with `pub use`, and passes the interface's conformance suite
@@ -447,15 +448,17 @@ entity and context).
 | `Lyric.Jobs.QuartzNet` | `Jobs.JobScheduler` | Quartz.NET 3 (RAM job store) | real | not supported (`F0054`) | Quartz.NET through NuGet and auto-FFI; same API as `Lyric.Jobs.Quartz` |
 | `Lyric.Redis` | none (client) | Redis 6 and later | real | real | pure Lyric: RESP2 and RESP3 over TCP or TLS |
 | `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | on `Lyric.Redis` |
+| `Lyric.Cache.Memcached` | `Cache.CacheStore` | memcached 1.6.10 and later | real | real | pure Lyric: meta protocol on `Lyric.Net`; `clear()` replaces a per-store generation |
 | `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | on `Lyric.Redis`; every read-modify-write is one script |
 | `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | pure Lyric: STOMP 1.2 over TCP or TLS |
 | `Lyric.Mq.RabbitMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | RabbitMQ 3.12 and 4.0 | real | real | pure Lyric: AMQP 0-9-1 over TCP or TLS |
 | `Lyric.Mq.Sqs` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Amazon SQS | real against ElasticMQ; not yet run against AWS | real against ElasticMQ; not yet run against AWS | pure Lyric: AWS JSON 1.0 over `Std.Http`, SigV4 |
 | `Lyric.Flags.Flipt` | `Flags.FlagStore` | Flipt v1 | real | real | pure Lyric: Flipt REST over `Std.Http` |
+| `Lyric.Net` | none (shared TCP and TLS client) | TCP, TLS | real | real | the one socket kernel behind the Redis, memcached, ActiveMQ and RabbitMQ clients |
 | `Lyric.Aws.SigV4` | none (shared signing) | AWS Signature V4 | real | real | pure Lyric; used by the S3, SQS and GCS packages |
 
-The TCP clients (Redis, ActiveMQ, RabbitMQ) take `rediss://`, `stomp+ssl://`
-and `amqps://` URLs. They verify the server against the system trust store by
+The TCP clients (Redis, memcached, ActiveMQ, RabbitMQ) take `rediss://`,
+`memcached+tls://`, `stomp+ssl://` and `amqps://` URLs. They verify the server against the system trust store by
 default and accept a custom CA, a client certificate and a minimum TLS version,
 with the same two-key rule as `Std.Http` for skipping verification.
 
@@ -468,7 +471,7 @@ timed-out or cancelled attempt is recorded when the handler returns.
 
 All of these are `experimental` and versioned independently of the compiler.
 Their CI runs the conformance suites against a real Redis, ActiveMQ, RabbitMQ,
-MinIO, Azurite, ElasticMQ and Flipt on both targets. Until the interface
+memcached, MinIO, Azurite, ElasticMQ and Flipt on both targets. Until the interface
 packages they need are in a release, the repository builds against a pinned
 `lyric-lang` commit and resolves the interfaces through
 `[workspace.overrides]`; its README has the setup. Each package README lists
