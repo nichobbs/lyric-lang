@@ -1685,7 +1685,12 @@ pub func compileToNativeWithFeatures(
   val tirInputs: List[LlvmTir.TirUnitInput] = newList()
   if optsTirOut.count > 0 {
     tirInputs.add(
-      LlvmTir.TirUnitInput(pkg = optsTirOut[0].pkg, names = optsTirOut[0].names, census = LlvmTir.newTirCensus(), checkedArith = not hasWrappingArith(userFile))
+      LlvmTir.TirUnitInput(
+        pkg = optsTirOut[0].pkg,
+        names = optsTirOut[0].names,
+        census = LlvmTir.newTirCensus(),
+        checkedArith = not hasWrappingArith(userFile)
+      )
     )
   }
   units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees, tirInputs))
@@ -1943,7 +1948,12 @@ pub func compileProjectToNativeWithShape(
     val ownTirInputs: List[LlvmTir.TirUnitInput] = newList()
     if optsTirOut.count > 0 {
       ownTirInputs.add(
-        LlvmTir.TirUnitInput(pkg = optsTirOut[0].pkg, names = optsTirOut[0].names, census = LlvmTir.newTirCensus(), checkedArith = not hasWrappingArith(checked))
+        LlvmTir.TirUnitInput(
+          pkg = optsTirOut[0].pkg,
+          names = optsTirOut[0].names,
+          census = LlvmTir.newTirCensus(),
+          checkedArith = not hasWrappingArith(checked)
+        )
       )
     }
     ownTir.add(ownTirInputs)

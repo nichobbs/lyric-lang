@@ -18443,7 +18443,10 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
 }
 
 func tirUnitMaps(
-  ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput, invariantRecs: in Map[String, Bool]
+  ctx: in Ctx,
+  sigs: in Map[String, NFuncSig],
+  input: in LlvmTir.TirUnitInput,
+  invariantRecs: in Map[String, Bool],
 ): TirUnitMaps {
   val fnNames: Map[Int, String] = newMap()
   // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code

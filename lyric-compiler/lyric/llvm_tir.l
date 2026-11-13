@@ -813,21 +813,21 @@ func intLit(ty: in NType, v: in Long): NValue {
 /// D163: after `r = a op b` on a checked type, panic with `arithmetic overflow: <Type> <operation>`
 /// when the exact result does not fit.  The same tests the elaborator's rewrite spells in Lyric.
 func overflowCheck(
-  c: in LCtx, ty: in Ty, nty: in NType, op: in IntrinsicOp, a: in NValue, b: in NValue, r: in NValue, line: in Int
+  c: in LCtx,
+  ty: in Ty,
+  nty: in NType,
+  op: in IntrinsicOp,
+  a: in NValue,
+  b: in NValue,
+  r: in NValue,
+  line: in Int,
 ): Unit {
   if not c.env.checkedArith {
     return
   }
-  val tn = match overflowTypeName(ty) {
-    case Some(n) -> n
-    case None -> return
-  }
+  val tn = match overflowTypeName(ty) { case Some(n) -> n; case None -> return }
   val uns = isUnsignedTy(ty)
-  val word = match op {
-    case IoAdd -> "addition"
-    case IoSub -> "subtraction"
-    case _ -> "multiplication"
-  }
+  val word = match op { case IoAdd -> "addition"; case IoSub -> "subtraction"; case _ -> "multiplication" }
   val msg = "arithmetic overflow: " + tn + " " + word
   match op {
     case IoAdd -> {
@@ -861,7 +861,14 @@ func overflowCheck(
 }
 
 func mulCheck(
-  c: in LCtx, tn: in String, nty: in NType, a: in NValue, b: in NValue, r: in NValue, msg: in String, line: in Int
+  c: in LCtx,
+  tn: in String,
+  nty: in NType,
+  a: in NValue,
+  b: in NValue,
+  r: in NValue,
+  msg: in String,
+  line: in Int,
 ): Unit {
   if tn == "Int" or tn == "UInt" or tn == "Byte" {
     // The product in the next wider type cannot overflow: test it against this type's range.
@@ -911,7 +918,9 @@ func mulCheck(
   c.insns.add(NCondBr(cond = skip, thenLabel = doneL, elseLabel = chkL))
   startBlock(c, chkL)
   val q = tmp(c)
-  c.insns.add(if tn == "Long" { NSDiv(dest = q, ty = nty, a = r, b = a) } else { NUDiv(dest = q, ty = nty, a = r, b = a) })
+  c.insns.add(
+    if tn == "Long" { NSDiv(dest = q, ty = nty, a = r, b = a) } else { NUDiv(dest = q, ty = nty, a = r, b = a) }
+  )
   trapIf(c, icmpV(c, INe, nty, NLocal(name = q), b), msg, line)
   c.insns.add(NBr(label = doneL))
   startBlock(c, doneL)
@@ -922,10 +931,7 @@ func negOverflowCheck(c: in LCtx, ty: in Ty, nty: in NType, a: in NValue, line: 
   if not c.env.checkedArith {
     return
   }
-  val tn = match overflowTypeName(ty) {
-    case Some(n) -> n
-    case None -> return
-  }
+  val tn = match overflowTypeName(ty) { case Some(n) -> n; case None -> return }
   if tn == "Int" {
     trapIf(c, icmpV(c, IEq, nty, a, intLit(nty, -2147483648i64)), "arithmetic overflow: Int negation", line)
   } else if tn == "Long" {
@@ -937,7 +943,6 @@ func negOverflowCheck(c: in LCtx, ty: in Ty, nty: in NType, a: in NValue, line: 
     )
   }
 }
-
 
 func icmpPred(op: in IntrinsicOp, unsigned: in Bool): Option[ICmpPred] {
   match op {
