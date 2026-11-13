@@ -4870,6 +4870,8 @@ pub record HostMemberSigInfo {
   isStatic: Bool
   params: List[SigType]
   ret: SigType
+  /// A public field found by a property lookup, not a getter method.
+  isField: Bool = false
 }
 
 /// The overloads of `member` on `fqn` and every supertype, as
@@ -4931,7 +4933,9 @@ pub func hostMemberSigsOfExtern(
     }
     if isProperty {
       match findFieldExternIn(parsed.img, parsed.layout, parsed.th, cur, member) {
-        case Some(fi) -> found.add(HostMemberSigInfo(isStatic = fi.isStatic, params = newList(), ret = fi.fieldType))
+        case Some(fi) -> found.add(
+          HostMemberSigInfo(isStatic = fi.isStatic, params = newList(), ret = fi.fieldType, isField = true)
+        )
         case None -> ()
       }
     }

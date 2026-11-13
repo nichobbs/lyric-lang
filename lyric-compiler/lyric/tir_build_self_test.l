@@ -2135,6 +2135,45 @@ test "a method call whose receiver is inout passes the receiver as a place" {
   assertBuildsAndVerifies(pb, 3, "Pt.reset, twice and f")
 }
 
+test "a host property read is a call of its getter with the receiver first (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Int {\n  sb.Length\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.kind == HMPropertyGet, "a property getter")
+      assertTrue(not m.isStatic, "an instance member")
+      assertEqualInt(m.params.count, 1, "the receiver only")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "an Int")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a host property write is a call of its setter, receiver then value, of type Unit (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length = 0\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.kind == HMPropertySet, "a property setter")
+      assertEqualInt(m.params.count, 2, "receiver and value")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPInt)), "an Int value")
+      assertTrue(tyEq(m.ret, tyUnit()), "Unit")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a compound assignment to a host property is counted, not guessed (D598)" {
+  val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length += 1\n}\n")
+  assertTrue(st.env.errors.count > 0, "an I0002")
+  assertTrue(st.env.errors[0].contains("a compound assignment"), st.env.errors[0])
+}
+
 func hostTy(name: in String): Ty {
   TExtern(host = HostTypeRef(name = name, args = newList()))
 }

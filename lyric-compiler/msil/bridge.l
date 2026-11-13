@@ -1603,7 +1603,7 @@ impl ExternIterResolver for MsilHostIterIndex {
               case Mdr.STPrim(b) -> if b == 0x01 { EMTVoid } else { EMTType(elem = iterElemOfSig(inf.ret)) }
               case _ -> EMTType(elem = iterElemOfSig(inf.ret))
             }
-            sigs.add(ExternMemberSig(isStatic = inf.isStatic, params = ps, ret = ret))
+            sigs.add(ExternMemberSig(isStatic = inf.isStatic, params = ps, ret = ret, isField = inf.isField))
           }
           self.memberSigs.add(key, sigs)
         }
