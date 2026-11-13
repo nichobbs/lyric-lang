@@ -787,6 +787,17 @@ jobs:
           LOG_DIR="$(mktemp -d)" || { echo "::error::mktemp -d failed; cannot create log directory"; exit 1; }
           declare -a SUCCEEDED=()
           declare -a FAILED=()
+          declare -a SKIPPED=()
+
+          # A package marked `stability = "incomplete"` is refused by
+          # `lyric publish` (F0052, D552) on purpose: it has no working
+          # headline backend. That refusal is the intended outcome, not a
+          # release failure, so such libraries are reported as skipped here
+          # instead of being built and counted as failures. Their dependants
+          # still resolve them from the workspace build output.
+          is_incomplete() {
+            grep -qE '^[[:space:]]*stability[[:space:]]*=[[:space:]]*"incomplete"' "$1"
+          }
 
           # Build + publish one library, streaming all output to a per-library
           # log so concurrent tier members don't interleave. Returns non-zero
@@ -851,6 +862,11 @@ jobs:
             local m
             for m in "${manifests[@]}"; do
               local name; name="$(dirname "$m")"
+              if is_incomplete "$m"; then
+                SKIPPED+=("$name")
+                echo "::notice::Skipping ${name}: stability = \"incomplete\" in ${m} (not published, D552)"
+                continue
+              fi
               local log="${LOG_DIR}/${name}.log"
               publish_lib "$m" "$VERSION" "$log" &
               pids+=("$!")
@@ -926,8 +942,13 @@ jobs:
           {
             echo "## Ecosystem publish summary (v${VERSION})"
             echo ""
-            echo "Succeeded: ${#SUCCEEDED[@]} · Failed: ${#FAILED[@]}"
+            echo "Succeeded: ${#SUCCEEDED[@]} · Failed: ${#FAILED[@]} · Skipped (incomplete): ${#SKIPPED[@]}"
             echo ""
+            if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+              echo "### Skipped (stability = \"incomplete\")"
+              for s in "${SKIPPED[@]}"; do echo "- \`${s}\`"; done
+              echo ""
+            fi
             if [[ ${#SUCCEEDED[@]} -gt 0 ]]; then
               echo "### Succeeded"
               for s in "${SUCCEEDED[@]}"; do echo "- \`${s}\`"; done
