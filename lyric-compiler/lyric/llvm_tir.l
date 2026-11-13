@@ -1870,7 +1870,10 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else if nTypeToIrString(a.ty) != nTypeToIrString(b.ty) {
-            unsupported(c, "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")")
+            unsupported(
+              c,
+              "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")"
+            )
           } else {
             lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
           }
@@ -2610,6 +2613,41 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   }
 }
 
+/// A range pattern with integer bounds on an integer scrutinee.
+func intRangeTest(c: in LCtx, lo: in TLit, hi: in TLit, inclusive: in Bool, scrut: in Val, sty: in Ty): Val {
+  match litValue(lo) {
+    case None -> unsupported(c, "a non-integer range pattern")
+    case Some(lv) -> match litValue(hi) {
+      case None -> unsupported(c, "a non-integer range pattern")
+      case Some(hv) -> {
+        val uns = isUnsignedTy(sty)
+        val geLo = tmp(c)
+        c.insns.add(
+          NICmp(
+            dest = geLo,
+            pred = if uns { IUge } else { ISge },
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        val cmpHi = tmp(c)
+        val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
+        c.insns.add(
+          NICmp(
+            dest = cmpHi,
+            pred = hiPred,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+      }
+    }
+  }
+}
+
 /// A range-pattern bound as a floating-point number.
 func floatBound(l: in TLit): Option[Double] {
   match l {
@@ -2705,7 +2743,13 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
           case Some(hf) -> {
             val geLo = tmp(c)
             c.insns.add(
-              NFCmp(dest = geLo, pred = FOge, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = floatLitValue(scrut.ty, lf), ty = scrut.ty))
+              NFCmp(
+                dest = geLo,
+                pred = FOge,
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, lf), ty = scrut.ty)
+              )
             )
             val cmpHi = tmp(c)
             c.insns.add(
@@ -2721,36 +2765,8 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
           }
         }
       }
-    } else match litValue(lo) {
-      case None -> unsupported(c, "a non-integer range pattern")
-      case Some(lv) -> match litValue(hi) {
-        case None -> unsupported(c, "a non-integer range pattern")
-        case Some(hv) -> {
-          val uns = isUnsignedTy(sty)
-          val geLo = tmp(c)
-          c.insns.add(
-            NICmp(
-              dest = geLo,
-              pred = if uns { IUge } else { ISge },
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
-            )
-          )
-          val cmpHi = tmp(c)
-          val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
-          c.insns.add(
-            NICmp(
-              dest = cmpHi,
-              pred = hiPred,
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
-            )
-          )
-          andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
-        }
-      }
+    } else {
+      intRangeTest(c, lo, hi, inclusive, scrut, sty)
     }
     case TpCtor(sym, _) -> match mapGet(c.env.enumCases, sym.id) {
       case Some(ordinal) -> {
