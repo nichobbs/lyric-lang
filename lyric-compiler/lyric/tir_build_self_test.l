@@ -2071,6 +2071,7 @@ test "a bare call of a sibling method is called on the enclosing method's self" 
     "package App\nrecord Acc {\n  n: Int\n  func m(self: in Acc, x: in Int): Int { self.n + x }\n  func viaSibling(self: in Acc): Int {\n    m(1)\n  }\n}\n"
   )
   assertBuildsAndVerifies(pb, 2, "Acc.m and viaSibling")
+}
 
 test "a value passed to a host object parameter is boxed, an Int to a small host integer narrows (D597)" {
   val head = "package App\nextern type Obj = \"System.Object\"\nextern type Conv = \"System.Convert\"\n"
