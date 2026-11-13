@@ -2719,7 +2719,15 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
       }
       case TLFloat(f) -> if isFloatTy(sty) {
         val d = tmp(c)
-        c.insns.add(NFCmp(dest = d, pred = FOeq, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = f, ty = scrut.ty)))
+        c.insns.add(
+          NFCmp(
+            dest = d,
+            pred = FOeq,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitFloat(v = floatLitValue(scrut.ty, f), ty = scrut.ty)
+          )
+        )
         Val(ty = NI1, value = NLocal(name = d))
       } else {
         unsupported(c, "a float pattern on " + renderTy(sty))
