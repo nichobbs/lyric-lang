@@ -9271,6 +9271,36 @@ test "a function value over an extern type whose name the use site reuses is T01
 // (T0129).  `case Some(i)` against an `Int`, or `case Ok(v)` against an
 // `Option`, used to type-check and then silently miscompile.
 // ─────────────────────────────────────────────────────────────────────────────
+test "a constructor pattern with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern with more sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, j) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k, j) against a one-field case: T0229")
+}
+
+test "a constructor pattern in a val with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(u: in U): Int {\n  val A(k) = u\n  k\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "val A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern in a for with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(us: in slice[U]): Int {\n  var t = 0\n  for A(k) in us {\n    t = t + k\n  }\n  t\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "for A(k) over two-field cases: T0229")
+}
+
+test "an enum case written with parentheses and a sub-pattern is T0229" {
+  val src = "package P\nenum Color { case Red; case Blue }\nfunc f(c: in Color): Int { match c { case Red(x) -> 1; case Blue -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "Red(x) against a field-less enum case: T0229")
+}
+
+test "a constructor pattern naming every field, with wildcards, is accepted" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, _) -> k; case B -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0229"), "A(k, _) names both fields")
+}
+
 test "a union-case pattern against a primitive scrutinee is T0129" {
   val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(n: in Int): Int { match n { case A(k) -> k; case _ -> 0 } }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0129"), "A(k) against Int: T0129")

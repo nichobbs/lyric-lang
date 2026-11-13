@@ -510,7 +510,7 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
       while i < segs.count {
         match segs[i] {
           case ISExpr(se) -> oldExpr(diag, pos, inOld, se)
-          case ISText(_) -> ()
+          case ISText(_, _) -> ()
         }
         i = i + 1
       }

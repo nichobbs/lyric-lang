@@ -66,6 +66,15 @@ match result {
 }
 ```
 
+A constructor pattern names every field of its case, one sub-pattern per field: write `_` for a field you do not use. `case Rect(w)` against `case Rect(w: Int, h: Int)` is a compile error (**T0229**), as is a pattern with more sub-patterns than the case has fields; the rule keeps a pattern honest when a case gains a field later.
+
+```lyric
+match shape {
+  case Rect(w, _) -> w
+  case Dot        -> 0
+}
+```
+
 You can also use `_` in specific positions within a pattern to say "something is here, but I do not care what it is":
 
 ```lyric
