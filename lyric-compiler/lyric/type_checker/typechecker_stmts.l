@@ -787,6 +787,7 @@ pub func checkStatement(
         )
       }
       checkForTuplePattern(diag, pat, elemType)
+      checkForCtorArities(tbl, diag, pat, elemType)
       scopePush(sc)
       // Erase unresolved type variables (a `List[T]` / `slice[T]` element inside
       // a generic function) to the lenient wildcard: `TyParam` passes `typeEquiv`
@@ -2222,7 +2223,10 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
         newList()
       } else {
         match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), t) {
-          case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+          case Some(caseSym) -> {
+            checkCasePatternArity(diag, caseSym, args.count, pat.span)
+            caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+          }
           case None -> newList()
         }
       }
@@ -2267,6 +2271,46 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
     )
   )
   true
+}
+
+// A constructor pattern in a `for` binding names every field of its case (T0229), at every
+// nesting depth, like the patterns of a `match` arm and of a `val`.
+func checkForCtorArities(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+  match pat.kind {
+    case PParen(inner) -> checkForCtorArities(tbl, diag, inner, ty)
+    case PBinding(_, inner) -> match inner {
+      case Some(ip) -> checkForCtorArities(tbl, diag, ip, ty)
+      case None -> ()
+    }
+    case PTuple(ps) -> {
+      val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      var i = 0
+      while i < ps.count {
+        checkForCtorArities(tbl, diag, ps[i], if i < elems.count { elems[i] } else { tyErrorSilent() })
+        i = i + 1
+      }
+    }
+    case PConstructor(head, args) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return
+      }
+      val scratch: List[Diagnostic] = newList()
+      match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+        case Some(caseSym) -> {
+          checkCasePatternArity(diag, caseSym, args.count, pat.span)
+          val fieldTys = caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
+          var i = 0
+          while i < args.count {
+            checkForCtorArities(tbl, diag, args[i], if i < fieldTys.count { fieldTys[i] } else { tyErrorSilent() })
+            i = i + 1
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
 }
 
 // A tuple pattern in a `for` binding must have the element's arity (T0198,

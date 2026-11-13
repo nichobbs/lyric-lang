@@ -9281,6 +9281,16 @@ test "a constructor pattern with more sub-patterns than the case has fields is T
   assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k, j) against a one-field case: T0229")
 }
 
+test "a constructor pattern in a val with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(u: in U): Int {\n  val A(k) = u\n  k\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "val A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern in a for with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(us: in slice[U]): Int {\n  var t = 0\n  for A(k) in us {\n    t = t + k\n  }\n  t\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "for A(k) over two-field cases: T0229")
+}
+
 test "a constructor pattern naming every field, with wildcards, is accepted" {
   val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, _) -> k; case B -> 0 } }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0229"), "A(k, _) names both fields")
