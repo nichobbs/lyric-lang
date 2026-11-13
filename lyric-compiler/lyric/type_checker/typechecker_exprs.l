@@ -12925,6 +12925,7 @@ func checkConstRefPattern(
           diag.add(errorDiagnostic("T0072", "'" + name + "' is not defined; use a val or const for a const pattern", pat.span))
         }
         case Some(sym) -> {
+          recordRefNode(tbl, pat.nodeId, sym)
           match sym.kind {
             case DKConst(cd) -> {
               val ctx = newGenericContext()
@@ -20211,6 +20212,7 @@ func inferExprCore(
               }
             }
             recordOverflowSite(tbl, e.span, "wrap:" + tn)
+            recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(wt) + "." + wName)
             return wt
           }
           cachedRecvType = Some(value = wt)
@@ -23054,6 +23056,7 @@ func inferExprExpectedCore(
 ): Type {
   noteExpectedFlow(sc, tbl, e, expected)
   if not typeIsHole(expected) and isBuiltinDefaultCall(sigs, e) {
+    recordBuiltinCallee(tbl, e.nodeId, "default")
     return expected
   }
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {

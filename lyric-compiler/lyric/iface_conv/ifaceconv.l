@@ -33,10 +33,13 @@ pub ref record BuildCtx {
   /// The number of generic parameters of each type the package declares, by
   /// name, for the `Self` of a `func Type.method` declared outside the type.
   owners: Map[String, Int]
+  /// The built default of each parameter that declares one, by the function's DefPath key and then the
+  /// parameter's name (`Lyric.Tir.Build.buildPackageDefaults`).
+  var defaults: Map[String, Map[String, TExpr]]
 }
 
 pub func newBuildCtx(tbl: in SymbolTable, pkg: in String): BuildCtx {
-  BuildCtx(tbl = tbl, pkg = pkg, errs = newList(), owners = newMap())
+  BuildCtx(tbl = tbl, pkg = pkg, errs = newList(), owners = newMap(), defaults = newMap())
 }
 
 pub func buildFail(bc: in BuildCtx, msg: in String) {

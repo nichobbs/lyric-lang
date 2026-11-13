@@ -16,7 +16,8 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Tir.{Ty, TTypeParam, TLit}
+import Lyric.Tir.{Ty, TTypeParam, TLit, TExpr}
+import Lyric.Tir.Build.{buildPackageDefaults, newTyConvCtx}
 import Lyric.Iface
 import Lyric.IfaceConv
 import Lyric.ModeChecker
@@ -156,6 +157,17 @@ func ifVerifOf(v: in VerificationLevel): IfVerif {
   }
 }
 
+// The built default of parameter `name` of the function keyed `fnKey`, when the interface can record it.
+func builtDefault(bc: in BuildCtx, fnKey: in String, name: in String): Option[TExpr] {
+  match mapGet(bc.defaults, fnKey) {
+    case Some(byName) -> match mapGet(byName, name) {
+      case Some(d) -> if defaultCarriable(d) { Some(value = d) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
 func paramsOf(
   bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], ps: in List[Param], what: in String
 ): List[IfParam] {
@@ -163,7 +175,8 @@ func paramsOf(
   for p in ps {
     val mode = match p.mode { case PMIn -> 0; case PMOut -> 1; case PMInout -> 2 }
     val hasDefault = match p.dflt { case Some(_) -> true; case None -> false }
-    res.add(mkParam(p.name, mode, resolveTy(bc, frames, selfTy, p.ty, what), hasDefault))
+    val param = mkParam(p.name, mode, resolveTy(bc, frames, selfTy, p.ty, what), hasDefault)
+    res.add(param.copy(dflt = builtDefault(bc, what, p.name)))
   }
   res
 }
@@ -649,6 +662,7 @@ pub func buildIface(
   for it in file.items {
     noteOwner(bc, it)
   }
+  bc.defaults = buildPackageDefaults(newTyConvCtx(res.symbols), res.symbols, file)
   for it in file.items {
     addItem(bc, decls, it, fileLevel)
   }

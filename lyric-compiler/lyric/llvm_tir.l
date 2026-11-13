@@ -22,6 +22,7 @@ import Std.Collections
 import Std.Encoding as Encoding
 import Std.Environment as Environment
 import Std.String as Str
+import Lyric.Lexer as Lex
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.Symbols
@@ -34,6 +35,26 @@ pub func viaTirRequested(): Bool {
   Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1"
 }
 
+/// `LYRIC_NATIVE_TIR_SKIP=a,b`: the functions (bare names) that stay on the AST path, for
+/// bisecting a miscompile of the TIR lowering without rebuilding the compiler.
+pub func tirSkipped(name: in String): Bool {
+  val raw = Environment.getVarOrDefault("LYRIC_NATIVE_TIR_SKIP", "")
+  if raw.length == 0 {
+    return false
+  }
+  for part in Str.split(raw, ",") {
+    if part == name {
+      return true
+    }
+  }
+  false
+}
+
+/// `LYRIC_NATIVE_TIR_TRACE=1` lists the functions lowered from TIR after the census.
+pub func tirTraceRequested(): Bool {
+  Environment.getVarOrDefault("LYRIC_NATIVE_TIR_TRACE", "") == "1"
+}
+
 /// One package's TIR as the code generator receives it: the built package and the
 /// DefPath key of every symbol in it (`SymbolId.id` to key), from which a top-level
 /// function's package, name and arity are read.
@@ -41,6 +62,9 @@ pub record TirUnitInput {
   pkg: TPackage
   names: Map[Int, String]
   census: TirCensus
+  /// Whether `+`, `-`, `*` and unary `-` on `Int`, `Long`, `UInt`, `ULong` and `Byte` panic on
+  /// overflow (D163: a debug build of a user package); false wraps (release, the standard library).
+  checkedArith: Bool = false
 }
 
 /// The package, name and parameter count of a top-level function.
@@ -112,10 +136,11 @@ pub func newTirCensus(): TirCensus {
 
 /// The census as report lines: the totals, then each fallback reason with how many
 /// functions it kept on the AST path, most frequent first.
-pub func tirCensusLines(c: in TirCensus): List[String] {
+/// `label` names a group of units in the first line (" (bundled stdlib)"); the own packages have none.
+pub func tirCensusLines(c: in TirCensus, label: in String = ""): List[String] {
   val lines: List[String] = newList()
   lines.add(
-    "native via-TIR: " + toString(c.lowered.count) + " of " + toString(c.lowered.count + c.fallbacks.count) +
+    "native via-TIR" + label + ": " + toString(c.lowered.count) + " of " + toString(c.lowered.count + c.fallbacks.count) +
       " functions lowered from TIR"
   )
   val counts: Map[String, Int] = newMap()
@@ -178,6 +203,9 @@ pub record TirLowerEnv {
   /// type, and the ones a lowering found missing (see `tuples`).
   funcs: Map[String, NType] = newMap()
   needFuncs: List[TirFuncNeed] = newList()
+  /// See `TirUnitInput.checkedArith`.  The contract elaborator's overflow pass rewrites the AST
+  /// the TIR is built from, so the lowering emits the same checks itself.
+  checkedArith: Bool = false
 }
 
 /// A function type the lowering needs a closure type for: its key in `TirLowerEnv.funcs` and
@@ -345,6 +373,36 @@ func unitVal(): Val {
 func unsupported(c: in LCtx, why: in String): Val {
   c.problems.add(why)
   Val(ty = NI32, value = NUndef(ty = NI32))
+}
+
+/// Whether the type of an expression lowers to `nt`.
+func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
+  match tyToN(c.env, ty) {
+    case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
+    case None -> false
+  }
+}
+
+func isIntegerN(t: in NType): Bool {
+  match t {
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case _ -> false
+  }
+}
+
+/// An integer, boolean or floating-point value (what `scalarToString` formats).
+func isScalarN(t: in NType): Bool {
+  match t {
+    case NI1 -> true
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case NFloat -> true
+    case NDouble -> true
+    case _ -> false
+  }
 }
 
 func isStringN(t: in NType): Bool {
@@ -734,6 +792,176 @@ func divGuard(c: in LCtx, ty: in Ty, nty: in NType, a: in NValue, b: in NValue, 
   startBlock(c, okL)
 }
 
+/// The name D163's panic message uses for a type whose arithmetic is overflow-checked.
+func overflowTypeName(ty: in Ty): Option[String] {
+  match ty {
+    case TPrim(k) -> match k {
+      case TPInt -> Some(value = "Int")
+      case TPLong -> Some(value = "Long")
+      case TPUInt -> Some(value = "UInt")
+      case TPULong -> Some(value = "ULong")
+      case TPByte -> Some(value = "Byte")
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// Branch to a panic named `msg` when `cond` holds, and continue otherwise.
+func trapIf(c: in LCtx, cond: in NValue, msg: in String, line: in Int): Unit {
+  val trapL = newLabel(c, "ovf.trap")
+  val okL = newLabel(c, "ovf.ok")
+  c.insns.add(NCondBr(cond = cond, thenLabel = trapL, elseLabel = okL))
+  startBlock(c, trapL)
+  emitPanic(c, msg, line)
+  c.insns.add(NBr(label = okL))
+  startBlock(c, okL)
+}
+
+func icmpV(c: in LCtx, pred: in ICmpPred, ty: in NType, a: in NValue, b: in NValue): NValue {
+  val d = tmp(c)
+  c.insns.add(NICmp(dest = d, pred = pred, ty = ty, a = a, b = b))
+  NLocal(name = d)
+}
+
+func intLit(ty: in NType, v: in Long): NValue {
+  NLitInt(v = v, ty = ty)
+}
+
+/// D163: after `r = a op b` on a checked type, panic with `arithmetic overflow: <Type> <operation>`
+/// when the exact result does not fit.  The same tests the elaborator's rewrite spells in Lyric.
+func overflowCheck(
+  c: in LCtx,
+  ty: in Ty,
+  nty: in NType,
+  op: in IntrinsicOp,
+  a: in NValue,
+  b: in NValue,
+  r: in NValue,
+  line: in Int,
+): Unit {
+  if not c.env.checkedArith {
+    return
+  }
+  val tn = match overflowTypeName(ty) { case Some(n) -> n; case None -> return }
+  val uns = isUnsignedTy(ty)
+  val word = match op { case IoAdd -> "addition"; case IoSub -> "subtraction"; case _ -> "multiplication" }
+  val msg = "arithmetic overflow: " + tn + " " + word
+  match op {
+    case IoAdd -> {
+      if uns {
+        trapIf(c, icmpV(c, IUlt, nty, r, a), msg, line)
+      } else {
+        val x1 = tmp(c)
+        c.insns.add(NXor(dest = x1, ty = nty, a = a, b = r))
+        val x2 = tmp(c)
+        c.insns.add(NXor(dest = x2, ty = nty, a = b, b = r))
+        val both = tmp(c)
+        c.insns.add(NAnd(dest = both, ty = nty, a = NLocal(name = x1), b = NLocal(name = x2)))
+        trapIf(c, icmpV(c, ISlt, nty, NLocal(name = both), intLit(nty, 0i64)), msg, line)
+      }
+    }
+    case IoSub -> {
+      if uns {
+        trapIf(c, icmpV(c, IUlt, nty, a, b), msg, line)
+      } else {
+        val x1 = tmp(c)
+        c.insns.add(NXor(dest = x1, ty = nty, a = a, b = b))
+        val x2 = tmp(c)
+        c.insns.add(NXor(dest = x2, ty = nty, a = a, b = r))
+        val both = tmp(c)
+        c.insns.add(NAnd(dest = both, ty = nty, a = NLocal(name = x1), b = NLocal(name = x2)))
+        trapIf(c, icmpV(c, ISlt, nty, NLocal(name = both), intLit(nty, 0i64)), msg, line)
+      }
+    }
+    case _ -> mulCheck(c, tn, nty, a, b, r, msg, line)
+  }
+}
+
+func mulCheck(
+  c: in LCtx,
+  tn: in String,
+  nty: in NType,
+  a: in NValue,
+  b: in NValue,
+  r: in NValue,
+  msg: in String,
+  line: in Int,
+): Unit {
+  if tn == "Int" or tn == "UInt" or tn == "Byte" {
+    // The product in the next wider type cannot overflow: test it against this type's range.
+    val wide = if tn == "Byte" { NI32 } else { NI64 }
+    val wa = tmp(c)
+    val wb = tmp(c)
+    if tn == "Int" {
+      c.insns.add(NSExt(dest = wa, fromTy = nty, value = a, toTy = wide))
+      c.insns.add(NSExt(dest = wb, fromTy = nty, value = b, toTy = wide))
+    } else {
+      c.insns.add(NZExt(dest = wa, fromTy = nty, value = a, toTy = wide))
+      c.insns.add(NZExt(dest = wb, fromTy = nty, value = b, toTy = wide))
+    }
+    val w = tmp(c)
+    c.insns.add(NMul(dest = w, ty = wide, a = NLocal(name = wa), b = NLocal(name = wb)))
+    if tn == "Int" {
+      val lo = icmpV(c, ISlt, wide, NLocal(name = w), intLit(wide, -2147483648i64))
+      val hi = icmpV(c, ISgt, wide, NLocal(name = w), intLit(wide, 2147483647i64))
+      val bad = tmp(c)
+      c.insns.add(NOr(dest = bad, ty = NI1, a = lo, b = hi))
+      trapIf(c, NLocal(name = bad), msg, line)
+    } else {
+      val limit = if tn == "UInt" { 4294967295i64 } else { 255i64 }
+      trapIf(c, icmpV(c, IUgt, wide, NLocal(name = w), intLit(wide, limit)), msg, line)
+    }
+    return
+  }
+  if tn == "Long" {
+    val minLong = -9223372036854775807i64 - 1i64
+    val aNeg1 = icmpV(c, IEq, nty, a, intLit(nty, -1i64))
+    val bMin = icmpV(c, IEq, nty, b, intLit(nty, minLong))
+    val minByNeg1 = tmp(c)
+    c.insns.add(NAnd(dest = minByNeg1, ty = NI1, a = aNeg1, b = bMin))
+    trapIf(c, NLocal(name = minByNeg1), msg, line)
+  }
+  // Long and ULong: `a != 0` (and `a != -1`, whose quotient could itself overflow) and `r / a != b`.
+  val skip1 = icmpV(c, IEq, nty, a, intLit(nty, 0i64))
+  var skip = skip1
+  if tn == "Long" {
+    val skip2 = icmpV(c, IEq, nty, a, intLit(nty, -1i64))
+    val both = tmp(c)
+    c.insns.add(NOr(dest = both, ty = NI1, a = skip1, b = skip2))
+    skip = NLocal(name = both)
+  }
+  val chkL = newLabel(c, "ovf.chk")
+  val doneL = newLabel(c, "ovf.done")
+  c.insns.add(NCondBr(cond = skip, thenLabel = doneL, elseLabel = chkL))
+  startBlock(c, chkL)
+  val q = tmp(c)
+  c.insns.add(
+    if tn == "Long" { NSDiv(dest = q, ty = nty, a = r, b = a) } else { NUDiv(dest = q, ty = nty, a = r, b = a) }
+  )
+  trapIf(c, icmpV(c, INe, nty, NLocal(name = q), b), msg, line)
+  c.insns.add(NBr(label = doneL))
+  startBlock(c, doneL)
+}
+
+/// D163: `-x` on a checked type panics for the minimum value.
+func negOverflowCheck(c: in LCtx, ty: in Ty, nty: in NType, a: in NValue, line: in Int): Unit {
+  if not c.env.checkedArith {
+    return
+  }
+  val tn = match overflowTypeName(ty) { case Some(n) -> n; case None -> return }
+  if tn == "Int" {
+    trapIf(c, icmpV(c, IEq, nty, a, intLit(nty, -2147483648i64)), "arithmetic overflow: Int negation", line)
+  } else if tn == "Long" {
+    trapIf(
+      c,
+      icmpV(c, IEq, nty, a, intLit(nty, -9223372036854775807i64 - 1i64)),
+      "arithmetic overflow: Long negation",
+      line
+    )
+  }
+}
+
 func icmpPred(op: in IntrinsicOp, unsigned: in Bool): Option[ICmpPred] {
   match op {
     case IoEq -> Some(value = IEq)
@@ -789,15 +1017,18 @@ func lowerBinary(
   }
   val d = tmp(c)
   match op {
-    case IoAdd -> c.insns.add(
-      if flt { NFAdd(dest = d, ty = nty, a = a, b = b) } else { NAdd(dest = d, ty = nty, a = a, b = b) }
-    )
-    case IoSub -> c.insns.add(
-      if flt { NFSub(dest = d, ty = nty, a = a, b = b) } else { NSub(dest = d, ty = nty, a = a, b = b) }
-    )
-    case IoMul -> c.insns.add(
-      if flt { NFMul(dest = d, ty = nty, a = a, b = b) } else { NMul(dest = d, ty = nty, a = a, b = b) }
-    )
+    case IoAdd -> {
+      c.insns.add(if flt { NFAdd(dest = d, ty = nty, a = a, b = b) } else { NAdd(dest = d, ty = nty, a = a, b = b) })
+      overflowCheck(c, ty, nty, op, a, b, NLocal(name = d), line)
+    }
+    case IoSub -> {
+      c.insns.add(if flt { NFSub(dest = d, ty = nty, a = a, b = b) } else { NSub(dest = d, ty = nty, a = a, b = b) })
+      overflowCheck(c, ty, nty, op, a, b, NLocal(name = d), line)
+    }
+    case IoMul -> {
+      c.insns.add(if flt { NFMul(dest = d, ty = nty, a = a, b = b) } else { NMul(dest = d, ty = nty, a = a, b = b) })
+      overflowCheck(c, ty, nty, op, a, b, NLocal(name = d), line)
+    }
     case IoDiv -> {
       if flt {
         c.insns.add(NFDiv(dest = d, ty = nty, a = a, b = b))
@@ -822,10 +1053,11 @@ func lowerBinary(
   Val(ty = nty, value = NLocal(name = d))
 }
 
-func lowerUnary(c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue): Val {
+func lowerUnary(c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue, line: in Int): Val {
   val d = tmp(c)
   match op {
     case IoNeg -> {
+      negOverflowCheck(c, ty, nty, a, line)
       if isFloatTy(ty) {
         c.insns.add(NFNeg(dest = d, ty = nty, a = a))
       } else {
@@ -1565,6 +1797,15 @@ func stringLiteral(c: in LCtx, text: in String): Val {
   Val(ty = lyricStringNType(), value = NLocal(name = d))
 }
 
+/// The value of a floating-point literal in its type: a `Float` literal is the binary32 value
+/// nearest the written one (D155), which LLVM requires of a `float` constant.
+func floatLitValue(nt: in NType, v: in Double): Double {
+  match nt {
+    case NFloat -> Lex.float32LiteralValue(toString(v), v)
+    case _ -> v
+  }
+}
+
 func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
   match lit {
     case TLUnit -> unitVal()
@@ -1574,14 +1815,14 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
     case TLInt(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "an integer literal of type " + renderTy(e.ty))
       case Some(nt) -> if isFloatTy(e.ty) {
-        Val(ty = nt, value = NLitFloat(v = v.toDouble(), ty = nt))
+        Val(ty = nt, value = NLitFloat(v = floatLitValue(nt, v.toDouble()), ty = nt))
       } else {
         Val(ty = nt, value = NLitInt(v = wrapLit(v, nt), ty = nt))
       }
     }
     case TLFloat(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "a float literal of type " + renderTy(e.ty))
-      case Some(nt) -> Val(ty = nt, value = NLitFloat(v = v, ty = nt))
+      case Some(nt) -> Val(ty = nt, value = NLitFloat(v = floatLitValue(nt, v), ty = nt))
     }
   }
 }
@@ -1600,30 +1841,67 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       }
       match op {
-        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins)
+        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line)
         case _ -> ()
       }
       if ins.count == 2 {
-        val a = borrow(c, lowerExpr(c, ins[0]))
-        val b = borrow(c, lowerExpr(c, ins[1]))
+        val a0 = borrow(c, lowerExpr(c, ins[0]))
+        val b0 = borrow(c, lowerExpr(c, ins[1]))
+        // `String + x` and `x + String` concatenate the text of the scalar `x` (the surface
+        // converts it as `toString` would).
+        val textOf = match op { case IoAdd -> true; case _ -> false }
+        val a = if textOf and isStringN(b0.ty) and not isStringN(a0.ty) and isScalarN(a0.ty) {
+          borrow(c, scalarToString(c, ins[0].ty, a0))
+        } else {
+          a0
+        }
+        val b = if textOf and isStringN(a0.ty) and not isStringN(b0.ty) and isScalarN(b0.ty) {
+          borrow(c, scalarToString(c, ins[1].ty, b0))
+        } else {
+          b0
+        }
         if isStringN(a.ty) {
+          if not isStringN(b.ty) {
+            return unsupported(c, "a string operator with a " + renderTy(ins[1].ty) + " operand")
+          }
           return lowerStringBinary(c, op, a, b)
         }
         match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else if nTypeToIrString(a.ty) != nTypeToIrString(b.ty) {
+            unsupported(
+              c,
+              "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")"
+            )
           } else {
             lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
           }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else if ins.count == 1 {
+        // `-<integer literal>` is one literal of the result type: `-2147483648` negates a value
+        // that does not fit `Int`, and its operand and result types differ.
+        match op {
+          case IoNeg -> match ins[0].kind {
+            case XLit(TLInt(v)) -> match tyToN(c.env, e.ty) {
+              case Some(rt) -> if not isFloatTy(e.ty) and isIntegerN(rt) {
+                return Val(ty = rt, value = NLitInt(v = wrapLit(0i64 - v, rt), ty = rt))
+              }
+              case None -> ()
+            }
+            case _ -> ()
+          }
+          case _ -> ()
+        }
         val a = borrow(c, lowerExpr(c, ins[0]))
         match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else if not sameResultType(c, e.ty, nt) {
+            unsupported(c, "a unary operator whose result type differs from its operand's")
           } else {
-            lowerUnary(c, op, ins[0].ty, nt, a.value)
+            lowerUnary(c, op, ins[0].ty, nt, a.value, line)
           }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
@@ -2058,7 +2336,18 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
 /// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` (also spelled `<Type>.toString` for the
 /// method form) and `String.length`.
 /// Any other name is outside this slice.
-func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
+func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int): Val {
+  if name == "panic" and ins.count == 1 {
+    return lowerPanicCall(c, ins[0], line)
+  }
+  match lowerStringMethod(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
+  match lowerNumericConversion(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   if ins.count != 1 {
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
   }
@@ -2089,6 +2378,148 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
     return Val(ty = NI32, value = NLocal(name = d))
   }
   unsupported(c, "builtin " + name)
+}
+
+/// `panic(message)`: the message as a C string, the package label and the line, then no way on.
+func lowerPanicCall(c: in LCtx, msg: in TExpr, line: in Int): Val {
+  val m = borrow(c, lowerExpr(c, msg))
+  if not isStringN(m.ty) {
+    return unsupported(c, "a panic message that is no string")
+  }
+  val cs = callRt(c, "lyric_string_to_cstring", NPtr(pointee = NI8), arg1(lyricStringNType(), m.value))
+  val filePtr = cString(c, c.env.panicFile)
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NPtr(pointee = NI8), value = cs))
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = filePtr)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = line.toLong(), ty = NI32)))
+  c.insns.add(NCallVoid(fn = NGlobal(name = "lyric_panic_msg"), args = args))
+  c.insns.add(NUnreachable)
+  startBlock(c, newLabel(c, "dead"))
+  unitVal()
+}
+
+/// A `String` argument widened to the runtime's 64-bit index.
+func wideIndex(c: in LCtx, e: in TExpr): NValue {
+  val v = borrow(c, lowerExpr(c, e))
+  val d = tmp(c)
+  c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
+  NLocal(name = d)
+}
+
+/// The `String` methods that are one runtime call: the receiver is `ins[0]`.  A result `String`
+/// is owned by the caller; a predicate is an `i1`.  `indexOf` is left to the caller's imports
+/// (it is an `Option[Int]` or the raw index depending on them).
+func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if not Str.startsWith(name, "String.") or ins.count == 0 {
+    return None
+  }
+  val method = Str.substring(name, 7)
+  val sTy = lyricStringNType()
+  val n = ins.count
+  if (method == "trim" or method == "trimStart" or method == "trimEnd" or method == "toLower" or method == "toUpper") and n == 1 {
+    val fn = match method {
+      case "trim" -> "lyric_string_trim"
+      case "trimStart" -> "lyric_string_trim_start"
+      case "trimEnd" -> "lyric_string_trim_end"
+      case "toLower" -> "lyric_string_to_lower"
+      case _ -> "lyric_string_to_upper"
+    }
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    return Some(value = Val(ty = sTy, value = callRt(c, fn, sTy, arg1(sTy, r.value)), owned = true))
+  }
+  if method == "substring" and n == 3 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val start = wideIndex(c, ins[1])
+    val len = wideIndex(c, ins[2])
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = NI64, value = start))
+    args.add(NArg(ty = NI64, value = len))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_substring", sTy, args), owned = true))
+  }
+  if method == "substring" and n == 2 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val start = wideIndex(c, ins[1])
+    val total = callRt(c, "lyric_string_len", NI64, arg1(sTy, r.value))
+    val rest = tmp(c)
+    c.insns.add(NSub(dest = rest, ty = NI64, a = total, b = start))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = NI64, value = start))
+    args.add(NArg(ty = NI64, value = NLocal(name = rest)))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_substring", sTy, args), owned = true))
+  }
+  if method == "replace" and n == 3 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val a = borrow(c, lowerExpr(c, ins[1]))
+    val b = borrow(c, lowerExpr(c, ins[2]))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = sTy, value = a.value))
+    args.add(NArg(ty = sTy, value = b.value))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_replace", sTy, args), owned = true))
+  }
+  if method == "codeUnitAt" and n == 2 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val idx = wideIndex(c, ins[1])
+    val byte = callRt(c, "lyric_string_byte_at", NI8, arg2(sTy, r.value, NI64, idx))
+    val d = tmp(c)
+    c.insns.add(NZExt(dest = d, fromTy = NI8, value = byte, toTy = NI32))
+    return Some(value = Val(ty = NI32, value = NLocal(name = d)))
+  }
+  if (method == "startsWith" or method == "endsWith" or method == "contains") and n == 2 {
+    val fn = match method {
+      case "startsWith" -> "lyric_string_starts_with"
+      case "endsWith" -> "lyric_string_ends_with"
+      case _ -> "lyric_string_contains"
+    }
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val a = borrow(c, lowerExpr(c, ins[1]))
+    val raw = callRt(c, fn, NI32, arg2(sTy, r.value, sTy, a.value))
+    return Some(value = Val(ty = NI1, value = icmpV(c, INe, NI32, raw, intLit(NI32, 0i64))))
+  }
+  None
+}
+
+/// The numeric conversions between `Int`, `Long`, `Byte` and `Double` whose semantics do not depend
+/// on more than the source type (`UInt`, `ULong`, `Nat`, `Char` and `Float` sources stay on the AST
+/// path): widening is sign- or zero-extending by the source's signedness, narrowing truncates,
+/// `Double` to an integer is `fptosi`.
+func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if ins.count != 1 {
+    return None
+  }
+  val from = match Str.indexOf(name, ".") { case Some(i) -> Str.substring(name, 0, i); case None -> return None }
+  val to = match name {
+    case "Int.toLong" -> "Long"
+    case "Byte.toLong" -> "Long"
+    case "Int.toDouble" -> "Double"
+    case "Long.toDouble" -> "Double"
+    case "Long.toInt" -> "Int"
+    case "Byte.toInt" -> "Int"
+    case "Double.toInt" -> "Int"
+    case "Double.toLong" -> "Long"
+    case "Int.toByte" -> "Byte"
+    case "Long.toByte" -> "Byte"
+    case _ -> return None
+  }
+  val v = borrow(c, lowerExpr(c, ins[0]))
+  val target = match to { case "Long" -> NI64; case "Int" -> NI32; case "Byte" -> NI8; case _ -> NDouble }
+  val d = tmp(c)
+  if from == "Double" {
+    c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = target))
+  } else if to == "Double" {
+    c.insns.add(NSIToFP(dest = d, fromTy = v.ty, value = v.value, toTy = NDouble))
+  } else if bitsOf(target) > bitsOf(v.ty) {
+    if from == "Byte" {
+      c.insns.add(NZExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+    } else {
+      c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+    }
+  } else {
+    c.insns.add(NTrunc(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+  }
+  Some(value = Val(ty = target, value = NLocal(name = d)))
 }
 
 /// `+`, `==`, `!=` and the orderings on two borrowed strings.
@@ -2335,6 +2766,50 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   }
 }
 
+/// A range pattern with integer bounds on an integer scrutinee.
+func intRangeTest(c: in LCtx, lo: in TLit, hi: in TLit, inclusive: in Bool, scrut: in Val, sty: in Ty): Val {
+  match litValue(lo) {
+    case None -> unsupported(c, "a non-integer range pattern")
+    case Some(lv) -> match litValue(hi) {
+      case None -> unsupported(c, "a non-integer range pattern")
+      case Some(hv) -> {
+        val uns = isUnsignedTy(sty)
+        val geLo = tmp(c)
+        c.insns.add(
+          NICmp(
+            dest = geLo,
+            pred = if uns { IUge } else { ISge },
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        val cmpHi = tmp(c)
+        val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
+        c.insns.add(
+          NICmp(
+            dest = cmpHi,
+            pred = hiPred,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+      }
+    }
+  }
+}
+
+/// A range-pattern bound as a floating-point number.
+func floatBound(l: in TLit): Option[Double] {
+  match l {
+    case TLFloat(f) -> Some(value = f)
+    case TLInt(v) -> Some(value = v.toDouble())
+    case _ -> None
+  }
+}
+
 func litValue(l: in TLit): Option[Long] {
   match l {
     case TLInt(v) -> Some(value = v)
@@ -2397,7 +2872,15 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
       }
       case TLFloat(f) -> if isFloatTy(sty) {
         val d = tmp(c)
-        c.insns.add(NFCmp(dest = d, pred = FOeq, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = f, ty = scrut.ty)))
+        c.insns.add(
+          NFCmp(
+            dest = d,
+            pred = FOeq,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitFloat(v = floatLitValue(scrut.ty, f), ty = scrut.ty)
+          )
+        )
         Val(ty = NI1, value = NLocal(name = d))
       } else {
         unsupported(c, "a float pattern on " + renderTy(sty))
@@ -2413,36 +2896,38 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
         case None -> unsupported(c, "a literal pattern of this kind")
       }
     }
-    case TpRange(lo, hi, inclusive) -> match litValue(lo) {
-      case None -> unsupported(c, "a non-integer range pattern")
-      case Some(lv) -> match litValue(hi) {
-        case None -> unsupported(c, "a non-integer range pattern")
-        case Some(hv) -> {
-          val uns = isUnsignedTy(sty)
-          val geLo = tmp(c)
-          c.insns.add(
-            NICmp(
-              dest = geLo,
-              pred = if uns { IUge } else { ISge },
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+    case TpRange(lo, hi, inclusive) -> if isFloatTy(sty) {
+      match floatBound(lo) {
+        case None -> unsupported(c, "a range pattern with a bound that is no number")
+        case Some(lf) -> match floatBound(hi) {
+          case None -> unsupported(c, "a range pattern with a bound that is no number")
+          case Some(hf) -> {
+            val geLo = tmp(c)
+            c.insns.add(
+              NFCmp(
+                dest = geLo,
+                pred = FOge,
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, lf), ty = scrut.ty)
+              )
             )
-          )
-          val cmpHi = tmp(c)
-          val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
-          c.insns.add(
-            NICmp(
-              dest = cmpHi,
-              pred = hiPred,
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+            val cmpHi = tmp(c)
+            c.insns.add(
+              NFCmp(
+                dest = cmpHi,
+                pred = if inclusive { FOle } else { FOlt },
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, hf), ty = scrut.ty)
+              )
             )
-          )
-          andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+            andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+          }
         }
       }
+    } else {
+      intRangeTest(c, lo, hi, inclusive, scrut, sty)
     }
     case TpCtor(sym, _) -> match mapGet(c.env.enumCases, sym.id) {
       case Some(ordinal) -> {

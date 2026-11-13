@@ -13,6 +13,7 @@ package Lyric.Tir.Build
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
@@ -54,6 +55,9 @@ pub record BuildEnv {
   recvTy: List[Ty] = newList()
   /// The generic type or `impl` the member being built belongs to (empty or one entry).
   memberOwner: List[MemberOwner] = newList()
+  /// The locals the first alternative of an or-pattern bound: a later alternative's binding of
+  /// the same name is that local (every alternative binds the same names).
+  orBound: List[LocalDecl] = newList()
 }
 
 /// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
@@ -613,6 +617,67 @@ func patBinds(p: in TPat): Bool {
   }
 }
 
+/// The locals a built pattern declares, in order; an or-pattern's first alternative stands for all.
+func patDecls(p: in TPat, into: in List[LocalDecl]): Unit {
+  match p.kind {
+    case TpBind(d, inner) -> {
+      into.add(d)
+      match inner {
+        case Some(ip) -> patDecls(ip, into)
+        case None -> ()
+      }
+    }
+    case TpCtor(_, args) -> {
+      for a in args {
+        patDecls(a, into)
+      }
+    }
+    case TpRecord(_, fields) -> {
+      for f in fields {
+        patDecls(f.pat, into)
+      }
+    }
+    case TpTuple(elems) -> {
+      for a in elems {
+        patDecls(a, into)
+      }
+    }
+    case TpTypeTest(inner, _) -> patDecls(inner, into)
+    case TpOr(alts) -> {
+      if alts.count > 0 {
+        patDecls(alts[0], into)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func orBoundLocal(env: in BuildEnv, name: in String, ty: in Ty): Option[LocalDecl] {
+  for d in env.orBound {
+    if d.name == name and tyEq(d.ty, ty) {
+      return Some(value = d)
+    }
+  }
+  None
+}
+
+/// The type of the field `fname` of the record a pattern matches, as the checker gave it to
+/// the shorthand binding `Rec(fname)`.
+func shorthandFieldTy(env: in BuildEnv, p: in Pattern, fname: in String): Option[Ty] {
+  val raw = match mapGet(env.ctx.tbl.patTypes, p.nodeId) { case Some(t) -> t; case None -> return None }
+  match unrefine(raw) {
+    case TyUser(tid, _, targs) -> {
+      for fe in fieldsOfRecordInstantiated(env.ctx.tbl, tid, targs) {
+        if fe.name == fname {
+          return match tyOfType(env.ctx, fe.ty) { case Ok(t) -> Some(value = t); case Err(_) -> None }
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   val res: List[TPat] = newList()
   var ok = true
@@ -692,7 +757,7 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       // The name is bound before the sub-pattern, as the checker binds it, so a
       // sub-pattern binding the same name shadows it.
-      val d = declareLocal(env, name, ty, false)
+      val d = match orBoundLocal(env, name, ty) { case Some(x) -> x; case None -> declareLocal(env, name, ty, false) }
       var innerPat: Option[TPat] = None
       match inner {
         case Some(ip) -> match buildPat(env, ip) {
@@ -740,7 +805,17 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
               }
               case None -> return uncoveredPat(env, p, "a record pattern field the builder cannot place")
             }
-            case RPFShort(_, _) -> return uncoveredPat(env, p, "a shorthand record pattern field")
+            case RPFShort(fname, fsp) -> match recordFieldPos(env.ctx, sym, fname) {
+              case Some(ix) -> match shorthandFieldTy(env, p, fname) {
+                case Some(fty) -> {
+                  val d = match orBoundLocal(env, fname, fty) { case Some(x) -> x; case None -> declareLocal(env, fname, fty, false) }
+                  val bpat = TPat(id = freshNodeId(env), ty = fty, span = fsp, kind = TpBind(decl = d, inner = None))
+                  fps.add(TFieldPat(field = FieldRef(owner = sym, name = fname, index = ix), pat = bpat))
+                }
+                case None -> return uncoveredPat(env, p, "a shorthand record pattern field the builder cannot type")
+              }
+              case None -> return uncoveredPat(env, p, "a record pattern field the builder cannot place")
+            }
           }
         }
         Some(value = mkPat(p, ty, TpRecord(sym = sym, fields = fps)))
@@ -773,18 +848,48 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       )
     }
     case POr(alts) -> {
-      // Every alternative binds the same locals, and a local is declared once, so only
-      // alternatives that bind nothing (literals, constants, nullary cases) are built.
-      val built = match buildPats(env, alts) { case Some(x) -> x; case None -> return None }
-      for a in built {
-        if patBinds(a) {
-          return uncoveredPat(env, p, "an or-pattern that binds a name")
+      // Every alternative binds the same names: the first declares the locals and the others
+      // bind those same locals.
+      val built: List[TPat] = newList()
+      val outer: List[LocalDecl] = newList()
+      for d in env.orBound {
+        outer.add(d)
+      }
+      var failed = false
+      for a in alts {
+        match buildPat(env, a) {
+          case Some(t) -> {
+            built.add(t)
+            if built.count == 1 {
+              env.orBound.clear()
+              patDecls(t, env.orBound)
+              for d in outer {
+                env.orBound.add(d)
+              }
+            }
+          }
+          case None -> {
+            failed = true
+          }
         }
+      }
+      env.orBound.clear()
+      for d in outer {
+        env.orBound.add(d)
+      }
+      if failed {
+        return None
       }
       Some(value = mkPat(p, ty, TpOr(alts = built)))
     }
     case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
-    case PConstRef(_) -> uncoveredPat(env, p, "a constant pattern")
+    case PConstRef(_) -> match refSite(env.ctx, p.nodeId) {
+      case Some(r) -> {
+        noteGlobalSym(env, r.sym, ty)
+        Some(value = mkPat(p, ty, TpConst(sym = r.sym)))
+      }
+      case None -> uncoveredPat(env, p, "a constant pattern the checker did not resolve")
+    }
     case PError -> uncoveredPat(env, p, "an error pattern")
   }
 }
@@ -1421,11 +1526,13 @@ record FnCore {
   barrier: Option[TExpr] = None
 }
 
-/// `sigOnly` builds the signature half alone (symbol, type parameters, parameters, return type),
-/// leaving defaults, contracts and body unbuilt: the description of a member whose body does not build.
+/// `mode` 1 builds the signature half alone (symbol, type parameters, parameters, return type),
+/// leaving defaults, contracts and body unbuilt: the description of a member whose body does not
+/// build.  Mode 2 adds the parameters' defaults, each left out on its own when it does not build.
 func buildFnCore(
-  env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool, sigOnly: in Bool
+  env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, wantSym: in Bool, mode: in Int
 ): Option[FnCore] {
+  val sigOnly = mode != 0
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   val names = extractGenericNames(fn.generics)
   val sym = if env.symOverride.count > 0 { Some(value = env.symOverride[0]) } else { symTableFuncSymOf(tbl, fn) }
@@ -1492,13 +1599,15 @@ func buildFnCore(
   for p in fn.params {
     var dflt: Option[TExpr] = None
     match p.dflt {
-      case Some(dx) -> if not sigOnly {
+      case Some(dx) -> if mode != 1 {
         match buildExpr(env, dx) {
           case Some(t) -> {
             dflt = Some(value = t)
           }
           case None -> {
-            ok = false
+            if not sigOnly {
+              ok = false
+            }
           }
         }
       }
@@ -1563,7 +1672,7 @@ func buildFnCore(
     }
     // The body is the function's value: it meets the declared return type through a
     // conversion the types alone derive, or the build counts the one it cannot.
-    if not isUnitTy(ret) {
+    if not isUnitTy(ret) and not functionIsGenerator(fn) {
       match res {
         case Some(b) -> {
           res = coerceBranch(env, b, ret)
@@ -1612,7 +1721,7 @@ func buildFnCore(
 /// parameters to its symbol.  Contracts are built with the body: a clause the
 /// builder has no case for fails it like any other expression.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
-  match buildFnCore(env, fn, tbl, false, false) {
+  match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
     case None -> None
   }
@@ -1622,16 +1731,22 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
 /// parameters (their bounds are not converted yet), parameters with modes and
 /// defaults, return type, contracts as `preconds`/`postconds`, and the body.
 pub func buildFnDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
-  buildFnDeclWith(env, fn, tbl, false)
+  buildFnDeclWith(env, fn, tbl, 0)
 }
 
 /// A function's signature as a body-less `TFnDecl`: what describes a function whose body does not build.
 pub func buildFnSigDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
-  buildFnDeclWith(env, fn, tbl, true)
+  buildFnDeclWith(env, fn, tbl, 1)
 }
 
-func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, sigOnly: in Bool): Option[TFnDecl] {
-  match buildFnCore(env, fn, tbl, true, sigOnly) {
+/// A function's signature with the defaults of its parameters, as a body-less `TFnDecl`: the defaults a
+/// package interface carries.  A default that does not build is `None` on its own parameter.
+pub func buildFnDefaultsDecl(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TFnDecl] {
+  buildFnDeclWith(env, fn, tbl, 2)
+}
+
+func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable, mode: in Int): Option[TFnDecl] {
+  match buildFnCore(env, fn, tbl, true, mode) {
     case Some(c) -> {
       val tps: List[TTypeParam] = newList()
       for n in c.typeNames {
@@ -1651,7 +1766,8 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           body = c.body,
           span = fn.span,
           barrier = c.barrier,
-          ownerParamCount = ownerCount
+          ownerParamCount = ownerCount,
+          isGenerator = functionIsGenerator(fn)
         )
       )
     }
@@ -2138,7 +2254,11 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
         case Some(_) -> {
           score = score + 1
         }
-        case None -> match hostWidenKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
+        case None -> match hostWidenKind(argTys[i], p) {
+          case Some(_) -> ()
+          // Boxing and narrowing rank below every widening, as the host's overload resolution has it.
+          case None -> match hostBoxKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
+        }
       }
     }
     ps.add(p)
@@ -2267,7 +2387,13 @@ func buildExternCall(
     params.add(TParamTy(mode = TMIn, ty = want))
     val c = match hostWidenKind(built[i].ty, want) {
       case Some(k) -> if tyEq(built[i].ty, want) { built[i] } else { convertNode(env, built[i], want, k) }
-      case None -> match coerceArg(env, built[i], want) { case Some(x) -> x; case None -> return None }
+      case None -> match hostBoxKind(built[i].ty, want) {
+        case Some(k) -> convertNode(env, built[i], want, k)
+        case None -> match coerceArg(env, built[i], want) {
+          case Some(x) -> x
+          case None -> return None
+        }
+      }
     }
     targsOut.add(TArgIn(value = c))
     i = i + 1
@@ -2607,7 +2733,12 @@ func assignKindOf(op: in AssignOp): AssignKind {
 func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp, value: in Expr): Option[TExpr] {
   val place = match buildPlace(env, target) { case Some(p) -> p; case None -> return None }
   val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
-  val v = match coerceArg(env, vt, place.ty) { case Some(c) -> c; case None -> return None }
+  // `s += x` on a `String` takes any value, which is appended as its `toString`.
+  val appended = match op {
+    case AssPlus -> match place.ty { case TPrim(TPString) -> stringPart(env, vt); case _ -> vt }
+    case _ -> vt
+  }
+  val v = match coerceArg(env, appended, place.ty) { case Some(c) -> c; case None -> return None }
   Some(value = mkExpr(e, tyUnit(), XAssign(place = place, op = assignKindOf(op), value = v)))
 }
 
@@ -2687,7 +2818,13 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   match convertValue(env, t, pty) {
     case Some(c) -> Some(value = c)
     case None -> {
-      noteUncovered(env, "an argument conversion")
+      noteUncoveredAt(env, "an argument conversion", t.span)
+      env.errors.add(
+        "I0002: the builder has no case for an argument conversion from " + renderTy(t.ty) + " to " + renderTy(pty) + " at " +
+          toString(t.span.startPos.line) +
+          ":" +
+          toString(t.span.startPos.column)
+      )
       None
     }
   }
@@ -2795,7 +2932,11 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 
 /// The built-ins whose parameter is any `T`: no argument converts.
 func genericBuiltin(name: in String): Bool {
-  name == "println" or name == "print" or name == "toString" or name == "hashCode"
+  name == "println" or name == "print" or name == "toString" or name == "hashCode" or name == "default" or
+    Str.endsWith(name, ".wrappingAdd") or
+    Str.endsWith(name, ".wrappingSub") or
+    Str.endsWith(name, ".wrappingMul") or
+    Str.endsWith(name, ".wrappingNeg")
 }
 
 /// A primitive an implicit widening can change, or a refined number an unrefinement or
@@ -3159,10 +3300,17 @@ func recvIsProtected(env: in BuildEnv, t: in Type): Bool {
   }
 }
 
-/// A method call `recv.m(args)`: the receiver first, then the arguments placed by
-/// parameter, to the method the checker resolved (`Direct`, or `Interface` for an
-/// interface-typed receiver).  Only a receiver passed `in` is built; a mutating
-/// receiver would be a place argument, and an unknown mode is not guessed.
+func isMemberExpr(x: in Expr): Bool {
+  match x.kind {
+    case EMember(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// A method call `recv.m(args)` or a bare sibling call `m(args)` (on the enclosing `self`):
+/// the receiver first, then the arguments placed by parameter, to the method the checker
+/// resolved (`Direct`, or `Interface` for an interface-typed receiver).  A receiver passed
+/// `out` or `inout` is a place argument.
 func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
@@ -3172,15 +3320,21 @@ func buildMethodCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
-  val recvExpr = match fn.kind {
-    case EMember(r, _) -> r
-    case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
+  // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
+  // the enclosing method's own `self`.
+  val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
+  val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> fn }
+  if not bareSelf and not isMemberExpr(fn) {
+    return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
   var isEntry = false
   var isImplMember = false
+  var recvMode: Option[ParamMode] = None
   match site.sig.recvMode {
     case Some(PMIn) -> ()
-    case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
+    case Some(m) -> {
+      recvMode = Some(value = m)
+    }
     // An entry or `func` of a protected type declares no receiver: the protected value is
     // the receiver, passed `in` (a reference whose lock the backend takes).
     // An interface method is declared without a receiver too: the value it is called
@@ -3202,8 +3356,48 @@ func buildMethodCall(
       return None
     }
   }
-  val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
-  val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
+  // A receiver passed `out` or `inout` is a place, not a value.
+  var recvPlace: Option[TPlace] = None
+  val rt = if isSome(recvMode) {
+    if bareSelf {
+      match lookupLocal(env, "self") {
+        case Some(d) -> {
+          recvPlace = Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          TExpr(id = freshNodeId(env), ty = d.ty, span = fn.span, kind = XLocal(local = d.id))
+        }
+        case None -> return uncoveredExpr(env, e, "a bare method call outside a method")
+      }
+    } else {
+      match buildPlace(env, recvExpr) {
+        case Some(pl) -> {
+          recvPlace = Some(value = pl)
+          TExpr(id = freshNodeId(env), ty = pl.ty, span = recvExpr.span, kind = XLocal(local = LocalId(id = 0)))
+        }
+        case None -> return None
+      }
+    }
+  } else if bareSelf {
+    match lookupLocal(env, "self") {
+      case Some(d) -> TExpr(id = freshNodeId(env), ty = d.ty, span = fn.span, kind = XLocal(local = d.id))
+      case None -> return uncoveredExpr(env, e, "a bare method call outside a method")
+    }
+  } else {
+    match buildExpr(env, recvExpr) {
+      case Some(t) -> t
+      case None -> return None
+    }
+  }
+  val recv = if isSome(recvPlace) {
+    if not tyEq(rt.ty, declared) {
+      return uncoveredExpr(env, e, "a method call with a mutating receiver of another type")
+    }
+    rt
+  } else {
+    match coerceArg(env, rt, declared) {
+      case Some(c) -> c
+      case None -> return None
+    }
+  }
   val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
   val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
@@ -3212,7 +3406,10 @@ func buildMethodCall(
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
   var recvArg = recv
   val stmts: List[TStmt] = newList()
-  if pre.count > 0 and not isPlainArg(recvExpr) {
+  if pre.count > 0 and isSome(recvPlace) and not bareSelf and not isPlainArg(recvExpr) {
+    return uncoveredExpr(env, e, "a method call with a mutating receiver after hoisted arguments")
+  }
+  if pre.count > 0 and not isSome(recvPlace) and not bareSelf and not isPlainArg(recvExpr) {
     val d = declareLocal(env, "__recv" + toString(env.nextLocal[0] + 1), recv.ty, false)
     val bindPat = TPat(id = freshNodeId(env), ty = recv.ty, span = recv.span, kind = TpBind(decl = d, inner = None))
     stmts.add(TStmt(id = freshNodeId(env), span = recv.span, kind = TsLet(pat = bindPat, init = recv)))
@@ -3221,7 +3418,13 @@ func buildMethodCall(
   for st in pre {
     stmts.add(st)
   }
-  all.add(TArgIn(value = recvArg))
+  match recvPlace {
+    case Some(pl) -> match recvMode {
+      case Some(PMOut) -> all.add(TArgOut(place = pl))
+      case _ -> all.add(TArgInout(place = pl))
+    }
+    case None -> all.add(TArgIn(value = recvArg))
+  }
   for a in rest {
     all.add(a)
   }

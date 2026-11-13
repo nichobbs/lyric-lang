@@ -281,3 +281,63 @@ func noteName(tbl: in SymbolTable, names: in Map[Int, String], sym: in SymbolId)
     case None -> ()
   }
 }
+
+func declaresDefault(fn: in FunctionDecl): Bool {
+  for p in fn.params {
+    if isSome(p.dflt) {
+      return true
+    }
+  }
+  false
+}
+
+func noteDefaults(tbl: in SymbolTable, acc: in Map[String, Map[String, TExpr]], fd: in TFnDecl): Unit {
+  val byName: Map[String, TExpr] = newMap()
+  for p in fd.params {
+    match p.dflt {
+      case Some(d) -> if not byName.containsKey(p.local.name) { byName.add(p.local.name, d) }
+      case None -> ()
+    }
+  }
+  if byName.count == 0 {
+    return
+  }
+  match defPathKey(tbl, Some(value = fd.sym)) {
+    case Some(k) -> if not acc.containsKey(k) { acc.add(k, byName) }
+    case None -> ()
+  }
+}
+
+/// The default of every parameter, built for a package interface (docs/70 section 9.2): the parameters
+/// of a package's functions and of its methods that declare one, by the function's DefPath key and then the
+/// parameter's name.  A default is built from the package's own checker tables, so it is typed and its
+/// names are resolved; one that does not build is left acc and counted in no census (the consumer counts the
+/// call that needs it).
+pub func buildPackageDefaults(
+  ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
+): Map[String, Map[String, TExpr]] {
+  val acc: Map[String, Map[String, TExpr]] = newMap()
+  val counter: List[Int] = newList()
+  counter.add(firstSynthNodeId())
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if declaresDefault(decl) {
+        match buildFnDefaultsDecl(newBuildEnvSharing(ctx, counter), decl, tbl) {
+          case Some(fd) -> noteDefaults(tbl, acc, fd)
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  val pkgName = modulePathJoin(file.packageDecl.path.segments)
+  for site in memberSites(ctx, tbl, file) {
+    if declaresDefault(site.fn) {
+      match buildMemberDefaults(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {
+        case Some(fd) -> noteDefaults(tbl, acc, fd)
+        case None -> ()
+      }
+    }
+  }
+  acc
+}

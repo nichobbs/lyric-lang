@@ -1184,6 +1184,11 @@ func funcBodyContainsYield(fn: in FunctionDecl): Bool {
   }
 }
 
+/// Whether `fn` is a generator: its body yields.
+pub func functionIsGenerator(fn: in FunctionDecl): Bool {
+  funcBodyContainsYield(fn)
+}
+
 // `n` copies of `owner`, one per name: the binder of each type parameter.
 func ownersFor(names: in List[String], owner: in String): List[String] {
   val res: List[String] = newList()

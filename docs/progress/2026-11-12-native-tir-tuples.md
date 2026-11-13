@@ -3,5 +3,4 @@
 `Lyric.LlvmTir` lowers tuple construction, destructuring `let` and tuple patterns from TIR.
 Tuple layouts are registered on demand by the code generator: a lowering that finds one
 missing reports it and is run again (`lowerWithTuples`). `native-via-tir/tuples.l` runs both
-ways, pins the census at 6 of 6 and is clean under AddressSanitizer. Element access `t.0`
-waits for the builder.
+ways, pins the census at 6 of 6 and is clean under AddressSanitizer.

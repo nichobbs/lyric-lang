@@ -18418,6 +18418,8 @@ record TirUnitMaps {
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
+  /// D163: this unit's integer arithmetic panics on overflow.
+  checkedArith: Bool = false
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18440,7 +18442,12 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
   )
 }
 
-func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.TirUnitInput): TirUnitMaps {
+func tirUnitMaps(
+  ctx: in Ctx,
+  sigs: in Map[String, NFuncSig],
+  input: in LlvmTir.TirUnitInput,
+  invariantRecs: in Map[String, Bool],
+): TirUnitMaps {
   val fnNames: Map[Int, String] = newMap()
   // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code
   // generator keeps the layout and the lowering only reads it.  Heap records come with their
@@ -18457,7 +18464,8 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
-          case Some(sg) -> fnNames.add(id, sg.irName)
+          // An async callee returns a task the call site unwraps: its calls stay on the AST path.
+          case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
           case None -> ()
         }
         case None -> match Str.indexOf(key, "::") {
@@ -18469,7 +18477,10 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
               ()
             } else if not Str.contains(rest, "::") {
               match mapGet(ctx.recordDefs, pkg + "." + rest) {
-                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
+                // A record with an invariant is re-checked at public boundaries by the contract
+                // elaborator, whose asserts TIR does not carry yet (phase 3c): functions touching it
+                // stay on the AST path.
+                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -18536,7 +18547,15 @@ func tirUnitMaps(ctx: in Ctx, sigs: in Map[String, NFuncSig], input: in LlvmTir.
     }
     k = k + 1
   }
-  TirUnitMaps(fnNames = fnNames, recs = recs, unions = unions, cases = cases, enums = enums, enumCases = enumCases)
+  TirUnitMaps(
+    fnNames = fnNames,
+    recs = recs,
+    unions = unions,
+    cases = cases,
+    enums = enums,
+    enumCases = enumCases,
+    checkedArith = input.checkedArith
+  )
 }
 
 /// Lower `d`; tuples are synthesised records, so a lowering that finds a tuple layout missing
@@ -18556,7 +18575,8 @@ func lowerWithTuples(
       enums = maps.enums,
       enumCases = maps.enumCases,
       tuples = maps.tuples,
-      funcs = maps.funcs
+      funcs = maps.funcs,
+      checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
@@ -18608,6 +18628,10 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       }
     }
   }
+  if LlvmTir.tirSkipped(fn.name) {
+    census.fallbacks.add(fn.name + ": skipped by LYRIC_NATIVE_TIR_SKIP")
+    return ast
+  }
   match decl {
     case None -> {
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
@@ -18615,7 +18639,7 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
     }
     case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
-      if not fnNames.containsKey(d.sym.id) {
+      if not fnNames.containsKey(d.sym.id) and not d.isAsync {
         fnNames.add(d.sym.id, ast.name)
       }
       match lowerWithTuples(ctx, maps, d) {
@@ -18667,6 +18691,21 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
+  val invariantRecs: Map[String, Bool] = newMap()
+  for iu in units {
+    for rd in iu.records {
+      for m in rd.members {
+        match m {
+          case RMInvariant(_) -> {
+            if not invariantRecs.containsKey(iu.pkgName + "." + rd.name) {
+              invariantRecs.add(iu.pkgName + "." + rd.name, true)
+            }
+          }
+          case _ -> ()
+        }
+      }
+    }
+  }
   // Module-level `val`/`const` bindings across the whole bundle (#5977 part 2),
   // keyed BOTH by qualified name (`Pkg.name`) and bare name (`name`) — the same
   // two-part scheme `buildSigs` uses for functions (and `loadLocal` looks up
@@ -18919,7 +18958,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       ei = ei + 1
     }
     val tirMaps = if u.tir.count > 0 {
-      tirUnitMaps(ctx, sigs, u.tir[0])
+      tirUnitMaps(ctx, sigs, u.tir[0], invariantRecs)
     } else {
       TirUnitMaps(
         fnNames = newMap(),

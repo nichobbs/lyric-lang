@@ -778,6 +778,12 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which is not a host type"
           )
         }
+        case CvBoxToHost(host) -> {
+          expectTy(c, e.id, e.ty, TExtern(host = host), "convert-type", "box to host")
+          if tyEq(inner.ty, e.ty) {
+            report(c, e.id, "convert-type", "CvBoxToHost applied to a value already of the host type")
+          }
+        }
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))
         }
@@ -1081,7 +1087,9 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
   match f.body {
     case Some(b) -> {
       visitExpr(c, b)
-      branchTy(c, b.id, b, f.ret, "function body")
+      if not f.isGenerator {
+        branchTy(c, b.id, b, f.ret, "function body")
+      }
     }
     case None -> {
     }
