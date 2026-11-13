@@ -20535,6 +20535,17 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // `clear()` takes no argument, so it has no parameters to check, but it is still the stdlib
+      // collection's member the backends lower by name, not a host call (docs/70 section 6.3).
+      match memberRecvTy {
+        case Some(crt2) -> if memberName == "clear" and args.count == 0 {
+          match stdCollectionMemberResult(tbl, crt2, memberName, 0) {
+            case TyPrim(PtUnit) -> recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(crt2) + "." + memberName)
+            case _ -> ()
+          }
+        }
+        case None -> ()
+      }
       match directSig {
         case Some(_) -> ()
         case None -> match methodPick {

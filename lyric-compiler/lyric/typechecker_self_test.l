@@ -10,6 +10,7 @@ import Std.Testing
 import Std.Time as Time
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Resolve.{renumberNodeIds}
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
 import Lyric.Pipeline
@@ -12113,6 +12114,34 @@ func assertCollectionCallMismatch(params: in String, body: in String, needle: in
     Str.contains(diagMessageFor(cr, "T0043"), needle),
     what + ": names '" + needle + "': " + diagMessageFor(cr, "T0043")
   )
+}
+
+test "a stdlib collection's clear() is recorded as a built-in member, not left as a host call (D461)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int], m: in Map[Int, Int], s: in Set[Int]): Unit {\n  xs.clear()\n  m.clear()\n  s.clear()\n}\n"
+  val cr = checkWithImportedPackages(renumberNodeIds(parse(src).file).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  var lists = 0
+  var maps = 0
+  var sets = 0
+  for k in mapKeys(cr.symbols.builtinByNode) {
+    match mapGet(cr.symbols.builtinByNode, k) {
+      case Some(n) -> {
+        if n == "List.clear" {
+          lists = lists + 1
+        }
+        if n == "Map.clear" {
+          maps = maps + 1
+        }
+        if n == "Set.clear" {
+          sets = sets + 1
+        }
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(lists, 1, "List.clear")
+  assertEqualInt(maps, 1, "Map.clear")
+  assertEqualInt(sets, 1, "Set.clear")
 }
 
 test "List.add checks its argument against the element type (#7969)" {
