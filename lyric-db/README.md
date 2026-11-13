@@ -1,6 +1,6 @@
 # lyric-db
 
-**Stability:** `incomplete`
+**Stability:** `experimental`
 
 Driver-agnostic database access with typed rows, transactions, and pluggable backends.
 
