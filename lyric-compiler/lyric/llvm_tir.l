@@ -1841,7 +1841,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       }
       match op {
-        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins)
+        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line)
         case _ -> ()
       }
       if ins.count == 2 {
@@ -2336,7 +2336,18 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
 /// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` (also spelled `<Type>.toString` for the
 /// method form) and `String.length`.
 /// Any other name is outside this slice.
-func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
+func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int): Val {
+  if name == "panic" and ins.count == 1 {
+    return lowerPanicCall(c, ins[0], line)
+  }
+  match lowerStringMethod(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
+  match lowerNumericConversion(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   if ins.count != 1 {
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
   }
@@ -2367,6 +2378,148 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Val {
     return Val(ty = NI32, value = NLocal(name = d))
   }
   unsupported(c, "builtin " + name)
+}
+
+/// `panic(message)`: the message as a C string, the package label and the line, then no way on.
+func lowerPanicCall(c: in LCtx, msg: in TExpr, line: in Int): Val {
+  val m = borrow(c, lowerExpr(c, msg))
+  if not isStringN(m.ty) {
+    return unsupported(c, "a panic message that is no string")
+  }
+  val cs = callRt(c, "lyric_string_to_cstring", NPtr(pointee = NI8), arg1(lyricStringNType(), m.value))
+  val filePtr = cString(c, c.env.panicFile)
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NPtr(pointee = NI8), value = cs))
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = filePtr)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = line.toLong(), ty = NI32)))
+  c.insns.add(NCallVoid(fn = NGlobal(name = "lyric_panic_msg"), args = args))
+  c.insns.add(NUnreachable)
+  startBlock(c, newLabel(c, "dead"))
+  unitVal()
+}
+
+/// A `String` argument widened to the runtime's 64-bit index.
+func wideIndex(c: in LCtx, e: in TExpr): NValue {
+  val v = borrow(c, lowerExpr(c, e))
+  val d = tmp(c)
+  c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
+  NLocal(name = d)
+}
+
+/// The `String` methods that are one runtime call: the receiver is `ins[0]`.  A result `String`
+/// is owned by the caller; a predicate is an `i1`.  `indexOf` is left to the caller's imports
+/// (it is an `Option[Int]` or the raw index depending on them).
+func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if not Str.startsWith(name, "String.") or ins.count == 0 {
+    return None
+  }
+  val method = Str.substring(name, 7)
+  val sTy = lyricStringNType()
+  val n = ins.count
+  if (method == "trim" or method == "trimStart" or method == "trimEnd" or method == "toLower" or method == "toUpper") and n == 1 {
+    val fn = match method {
+      case "trim" -> "lyric_string_trim"
+      case "trimStart" -> "lyric_string_trim_start"
+      case "trimEnd" -> "lyric_string_trim_end"
+      case "toLower" -> "lyric_string_to_lower"
+      case _ -> "lyric_string_to_upper"
+    }
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    return Some(value = Val(ty = sTy, value = callRt(c, fn, sTy, arg1(sTy, r.value)), owned = true))
+  }
+  if method == "substring" and n == 3 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val start = wideIndex(c, ins[1])
+    val len = wideIndex(c, ins[2])
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = NI64, value = start))
+    args.add(NArg(ty = NI64, value = len))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_substring", sTy, args), owned = true))
+  }
+  if method == "substring" and n == 2 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val start = wideIndex(c, ins[1])
+    val total = callRt(c, "lyric_string_len", NI64, arg1(sTy, r.value))
+    val rest = tmp(c)
+    c.insns.add(NSub(dest = rest, ty = NI64, a = total, b = start))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = NI64, value = start))
+    args.add(NArg(ty = NI64, value = NLocal(name = rest)))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_substring", sTy, args), owned = true))
+  }
+  if method == "replace" and n == 3 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val a = borrow(c, lowerExpr(c, ins[1]))
+    val b = borrow(c, lowerExpr(c, ins[2]))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = sTy, value = r.value))
+    args.add(NArg(ty = sTy, value = a.value))
+    args.add(NArg(ty = sTy, value = b.value))
+    return Some(value = Val(ty = sTy, value = callRt(c, "lyric_string_replace", sTy, args), owned = true))
+  }
+  if method == "codeUnitAt" and n == 2 {
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val idx = wideIndex(c, ins[1])
+    val byte = callRt(c, "lyric_string_byte_at", NI8, arg2(sTy, r.value, NI64, idx))
+    val d = tmp(c)
+    c.insns.add(NZExt(dest = d, fromTy = NI8, value = byte, toTy = NI32))
+    return Some(value = Val(ty = NI32, value = NLocal(name = d)))
+  }
+  if (method == "startsWith" or method == "endsWith" or method == "contains") and n == 2 {
+    val fn = match method {
+      case "startsWith" -> "lyric_string_starts_with"
+      case "endsWith" -> "lyric_string_ends_with"
+      case _ -> "lyric_string_contains"
+    }
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val a = borrow(c, lowerExpr(c, ins[1]))
+    val raw = callRt(c, fn, NI32, arg2(sTy, r.value, sTy, a.value))
+    return Some(value = Val(ty = NI1, value = icmpV(c, INe, NI32, raw, intLit(NI32, 0i64))))
+  }
+  None
+}
+
+/// The numeric conversions between `Int`, `Long`, `Byte` and `Double` whose semantics do not depend
+/// on more than the source type (`UInt`, `ULong`, `Nat`, `Char` and `Float` sources stay on the AST
+/// path): widening is sign- or zero-extending by the source's signedness, narrowing truncates,
+/// `Double` to an integer is `fptosi`.
+func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if ins.count != 1 {
+    return None
+  }
+  val from = match Str.indexOf(name, ".") { case Some(i) -> Str.substring(name, 0, i); case None -> return None }
+  val to = match name {
+    case "Int.toLong" -> "Long"
+    case "Byte.toLong" -> "Long"
+    case "Int.toDouble" -> "Double"
+    case "Long.toDouble" -> "Double"
+    case "Long.toInt" -> "Int"
+    case "Byte.toInt" -> "Int"
+    case "Double.toInt" -> "Int"
+    case "Double.toLong" -> "Long"
+    case "Int.toByte" -> "Byte"
+    case "Long.toByte" -> "Byte"
+    case _ -> return None
+  }
+  val v = borrow(c, lowerExpr(c, ins[0]))
+  val target = match to { case "Long" -> NI64; case "Int" -> NI32; case "Byte" -> NI8; case _ -> NDouble }
+  val d = tmp(c)
+  if from == "Double" {
+    c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = target))
+  } else if to == "Double" {
+    c.insns.add(NSIToFP(dest = d, fromTy = v.ty, value = v.value, toTy = NDouble))
+  } else if bitsOf(target) > bitsOf(v.ty) {
+    if from == "Byte" {
+      c.insns.add(NZExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+    } else {
+      c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+    }
+  } else {
+    c.insns.add(NTrunc(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+  }
+  Some(value = Val(ty = target, value = NLocal(name = d)))
 }
 
 /// `+`, `==`, `!=` and the orderings on two borrowed strings.
