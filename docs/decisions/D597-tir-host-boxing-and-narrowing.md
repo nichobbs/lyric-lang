@@ -20,3 +20,5 @@ conversion, as the MSIL resolver specifies today. The verifier checks that a `Cv
 its operand is not already of it.
 
 D600's remark that narrowing "is not built and stays counted" no longer holds for the five types above.
+
+A `Unit` or `Never` operand is not boxed (it has no runtime value). Boxing and narrowing both score 0, so `f(Int16)` and `f(object)` tie for an `Int` argument; the tie is `an extern call with ambiguous host overloads` (counted), not a guess by declaration order.

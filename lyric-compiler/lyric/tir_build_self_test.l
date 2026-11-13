@@ -2092,6 +2092,8 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPString), obj)), "a String boxes to object")
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPInt), obj)), "an Int boxes to object")
   assertTrue(not isSome(hostBoxKind(obj, obj)), "object is not boxed to object")
+  assertTrue(not isSome(hostBoxKind(TPrim(kind = TPUnit), obj)), "Unit has no value to box")
+  assertTrue(not isSome(hostBoxKind(TNever, obj)), "Never has no value to box")
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPInt), hostTy("System.Int16"))), "an Int narrows to Int16")
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPLong), hostTy("System.UInt32"))), "a Long narrows to UInt32")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPString), hostTy("System.Int16"))), "a String is not an Int16")

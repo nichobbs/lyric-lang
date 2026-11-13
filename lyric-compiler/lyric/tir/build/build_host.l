@@ -63,7 +63,9 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         return None
       }
       if isHostObject(h.name) {
-        return Some(value = CvBoxToHost(host = h))
+        // A value with no runtime representation (`Unit`, `Never`) is not boxed.
+        val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
+        return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
       }
       match from {
         case TPrim(f) -> {
