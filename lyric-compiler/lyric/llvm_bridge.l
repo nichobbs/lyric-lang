@@ -1600,7 +1600,7 @@ pub func compileToNativeWithFeatures(
             worklist.add("Std.String")
           }
           toBundle.add(stdFormatted)
-          if opts.wantTir {
+          if LlvmTir.viaTirRequested() {
             tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
           }
           var fi = 0
@@ -3006,7 +3006,8 @@ func appendBundledUnits(
 /// The TIR of a bundled stdlib package for the `--via-tir` census: the package is checked
 /// against its import closure with numbered nodes and built, and its functions that TIR covers
 /// are lowered from it instead of from the AST.  Empty when the package does not check or build
-/// (it then stays on the AST path whole).
+/// (it then stays on the AST path whole, silently: the census does not report it, so a package
+/// missing from the bundled line is the place to look).
 func bundledTirOf(pkg: in String, f: in SourceFile, stdlib: in NativeStdlib): List[LlvmTir.TirUnitInput] {
   val none: List[LlvmTir.TirUnitInput] = newList()
   val visible = stdlibImportClosure(pkg, stdlib)

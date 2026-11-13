@@ -22,6 +22,7 @@ import Std.Collections
 import Std.Encoding as Encoding
 import Std.Environment as Environment
 import Std.String as Str
+import Lyric.Lexer as Lex
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.Symbols
@@ -372,6 +373,23 @@ func unitVal(): Val {
 func unsupported(c: in LCtx, why: in String): Val {
   c.problems.add(why)
   Val(ty = NI32, value = NUndef(ty = NI32))
+}
+
+/// Whether the type of an expression lowers to `nt`.
+func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
+  match tyToN(c.env, ty) {
+    case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
+    case None -> false
+  }
+}
+
+func isIntegerN(t: in NType): Bool {
+  match t {
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case _ -> false
+  }
 }
 
 /// An integer, boolean or floating-point value (what `scalarToString` formats).
@@ -1779,6 +1797,15 @@ func stringLiteral(c: in LCtx, text: in String): Val {
   Val(ty = lyricStringNType(), value = NLocal(name = d))
 }
 
+/// The value of a floating-point literal in its type: a `Float` literal is the binary32 value
+/// nearest the written one (D155), which LLVM requires of a `float` constant.
+func floatLitValue(nt: in NType, v: in Double): Double {
+  match nt {
+    case NFloat -> Lex.float32LiteralValue(toString(v), v)
+    case _ -> v
+  }
+}
+
 func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
   match lit {
     case TLUnit -> unitVal()
@@ -1788,14 +1815,14 @@ func lowerLit(c: in LCtx, e: in TExpr, lit: in TLit): Val {
     case TLInt(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "an integer literal of type " + renderTy(e.ty))
       case Some(nt) -> if isFloatTy(e.ty) {
-        Val(ty = nt, value = NLitFloat(v = v.toDouble(), ty = nt))
+        Val(ty = nt, value = NLitFloat(v = floatLitValue(nt, v.toDouble()), ty = nt))
       } else {
         Val(ty = nt, value = NLitInt(v = wrapLit(v, nt), ty = nt))
       }
     }
     case TLFloat(v) -> match tyToN(c.env, e.ty) {
       case None -> unsupported(c, "a float literal of type " + renderTy(e.ty))
-      case Some(nt) -> Val(ty = nt, value = NLitFloat(v = v, ty = nt))
+      case Some(nt) -> Val(ty = nt, value = NLitFloat(v = floatLitValue(nt, v), ty = nt))
     }
   }
 }
@@ -1842,16 +1869,37 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else if nTypeToIrString(a.ty) != nTypeToIrString(b.ty) {
+            unsupported(
+              c,
+              "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")"
+            )
           } else {
             lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
           }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
       } else if ins.count == 1 {
+        // `-<integer literal>` is one literal of the result type: `-2147483648` negates a value
+        // that does not fit `Int`, and its operand and result types differ.
+        match op {
+          case IoNeg -> match ins[0].kind {
+            case XLit(TLInt(v)) -> match tyToN(c.env, e.ty) {
+              case Some(rt) -> if not isFloatTy(e.ty) and isIntegerN(rt) {
+                return Val(ty = rt, value = NLitInt(v = wrapLit(0i64 - v, rt), ty = rt))
+              }
+              case None -> ()
+            }
+            case _ -> ()
+          }
+          case _ -> ()
+        }
         val a = borrow(c, lowerExpr(c, ins[0]))
         match tyToN(c.env, ins[0].ty) {
           case Some(nt) -> if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
+          } else if not sameResultType(c, e.ty, nt) {
+            unsupported(c, "a unary operator whose result type differs from its operand's")
           } else {
             lowerUnary(c, op, ins[0].ty, nt, a.value, line)
           }
@@ -2565,6 +2613,50 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   }
 }
 
+/// A range pattern with integer bounds on an integer scrutinee.
+func intRangeTest(c: in LCtx, lo: in TLit, hi: in TLit, inclusive: in Bool, scrut: in Val, sty: in Ty): Val {
+  match litValue(lo) {
+    case None -> unsupported(c, "a non-integer range pattern")
+    case Some(lv) -> match litValue(hi) {
+      case None -> unsupported(c, "a non-integer range pattern")
+      case Some(hv) -> {
+        val uns = isUnsignedTy(sty)
+        val geLo = tmp(c)
+        c.insns.add(
+          NICmp(
+            dest = geLo,
+            pred = if uns { IUge } else { ISge },
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        val cmpHi = tmp(c)
+        val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
+        c.insns.add(
+          NICmp(
+            dest = cmpHi,
+            pred = hiPred,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+          )
+        )
+        andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+      }
+    }
+  }
+}
+
+/// A range-pattern bound as a floating-point number.
+func floatBound(l: in TLit): Option[Double] {
+  match l {
+    case TLFloat(f) -> Some(value = f)
+    case TLInt(v) -> Some(value = v.toDouble())
+    case _ -> None
+  }
+}
+
 func litValue(l: in TLit): Option[Long] {
   match l {
     case TLInt(v) -> Some(value = v)
@@ -2627,7 +2719,15 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
       }
       case TLFloat(f) -> if isFloatTy(sty) {
         val d = tmp(c)
-        c.insns.add(NFCmp(dest = d, pred = FOeq, ty = scrut.ty, a = scrut.value, b = NLitFloat(v = f, ty = scrut.ty)))
+        c.insns.add(
+          NFCmp(
+            dest = d,
+            pred = FOeq,
+            ty = scrut.ty,
+            a = scrut.value,
+            b = NLitFloat(v = floatLitValue(scrut.ty, f), ty = scrut.ty)
+          )
+        )
         Val(ty = NI1, value = NLocal(name = d))
       } else {
         unsupported(c, "a float pattern on " + renderTy(sty))
@@ -2643,36 +2743,38 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
         case None -> unsupported(c, "a literal pattern of this kind")
       }
     }
-    case TpRange(lo, hi, inclusive) -> match litValue(lo) {
-      case None -> unsupported(c, "a non-integer range pattern")
-      case Some(lv) -> match litValue(hi) {
-        case None -> unsupported(c, "a non-integer range pattern")
-        case Some(hv) -> {
-          val uns = isUnsignedTy(sty)
-          val geLo = tmp(c)
-          c.insns.add(
-            NICmp(
-              dest = geLo,
-              pred = if uns { IUge } else { ISge },
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(lv, scrut.ty), ty = scrut.ty)
+    case TpRange(lo, hi, inclusive) -> if isFloatTy(sty) {
+      match floatBound(lo) {
+        case None -> unsupported(c, "a range pattern with a bound that is no number")
+        case Some(lf) -> match floatBound(hi) {
+          case None -> unsupported(c, "a range pattern with a bound that is no number")
+          case Some(hf) -> {
+            val geLo = tmp(c)
+            c.insns.add(
+              NFCmp(
+                dest = geLo,
+                pred = FOge,
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, lf), ty = scrut.ty)
+              )
             )
-          )
-          val cmpHi = tmp(c)
-          val hiPred = if inclusive { if uns { IUle } else { ISle } } else { if uns { IUlt } else { ISlt } }
-          c.insns.add(
-            NICmp(
-              dest = cmpHi,
-              pred = hiPred,
-              ty = scrut.ty,
-              a = scrut.value,
-              b = NLitInt(v = wrapLit(hv, scrut.ty), ty = scrut.ty)
+            val cmpHi = tmp(c)
+            c.insns.add(
+              NFCmp(
+                dest = cmpHi,
+                pred = if inclusive { FOle } else { FOlt },
+                ty = scrut.ty,
+                a = scrut.value,
+                b = NLitFloat(v = floatLitValue(scrut.ty, hf), ty = scrut.ty)
+              )
             )
-          )
-          andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+            andV(c, Val(ty = NI1, value = NLocal(name = geLo)), Val(ty = NI1, value = NLocal(name = cmpHi)))
+          }
         }
       }
+    } else {
+      intRangeTest(c, lo, hi, inclusive, scrut, sty)
     }
     case TpCtor(sym, _) -> match mapGet(c.env.enumCases, sym.id) {
       case Some(ordinal) -> {

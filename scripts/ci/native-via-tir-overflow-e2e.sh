@@ -36,6 +36,7 @@ cases=(
   "long_mul|Long|idL(4611686018427387904i64) * idL(2i64)|arithmetic overflow: Long multiplication"
   "uint_add|UInt|idU(4294967295u32) + idU(1u32)|arithmetic overflow: UInt addition"
   "uint_sub|UInt|idU(0u32) - idU(1u32)|arithmetic overflow: UInt subtraction"
+  "uint_mul|UInt|idU(65536u32) * idU(65536u32)|arithmetic overflow: UInt multiplication"
   "ulong_add|ULong|idUL(18446744073709551615u64) + idUL(1u64)|arithmetic overflow: ULong addition"
   "ulong_mul|ULong|idUL(9223372036854775808u64) * idUL(2u64)|arithmetic overflow: ULong multiplication"
 )
