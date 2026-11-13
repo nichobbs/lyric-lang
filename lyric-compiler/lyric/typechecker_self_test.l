@@ -9271,6 +9271,21 @@ test "a function value over an extern type whose name the use site reuses is T01
 // (T0129).  `case Some(i)` against an `Int`, or `case Ok(v)` against an
 // `Option`, used to type-check and then silently miscompile.
 // ─────────────────────────────────────────────────────────────────────────────
+test "a constructor pattern with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern with more sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, j) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k, j) against a one-field case: T0229")
+}
+
+test "a constructor pattern naming every field, with wildcards, is accepted" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, _) -> k; case B -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0229"), "A(k, _) names both fields")
+}
+
 test "a union-case pattern against a primitive scrutinee is T0129" {
   val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(n: in Int): Int { match n { case A(k) -> k; case _ -> 0 } }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0129"), "A(k) against Int: T0129")

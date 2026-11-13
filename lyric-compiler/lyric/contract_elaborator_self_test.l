@@ -1191,7 +1191,7 @@ test "an explicit-return result binding is annotated with the declared return ty
   assertEqual(letTypeHead(blk.statements[1]), "Option", "annot-return: trailing binding annotated")
   match blk.statements[0].kind {
     case SExpr(e) -> match e.kind {
-      case EIf(_, thenBranch, _) -> match thenBranch {
+      case EIf(_, thenBranch, _, _) -> match thenBranch {
         case EOBBlock(inner) -> {
           assertEqual(letName(inner.statements[0]), "__lyric_result_0", "annot-return: nested binding name")
           assertEqual(letTypeHead(inner.statements[0]), "Option", "annot-return: nested binding annotated")

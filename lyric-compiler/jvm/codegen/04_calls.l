@@ -100,7 +100,7 @@ func findExternTarget(decl: in FunctionDecl): Option[String] {
       val seg = ann.name.segments[n - 1]
       if seg == "externTarget" and ann.args.count > 0 {
         match ann.args[0] {
-          case ALiteral(av) -> {
+          case ALiteral(av, _) -> {
             match av {
               case AVString(s, _) -> return Some(value = s)
               case _ -> {

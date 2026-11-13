@@ -971,7 +971,7 @@ pub func hasTriviaInRange(ctx: in FmtCtx, lo: in Int, hi: in Int): Bool {
 @pure
 func harvestedItemOffset(h: in HarvestedItem): Int {
   match h {
-    case HiComment(_, o) -> o
+    case HiComment(_, o, _, _) -> o
     case HiBlank(o) -> o
   }
 }

@@ -175,7 +175,7 @@ func labelsExpr(diag: in List[Diagnostic], loops: in List[String], e: in Expr): 
       while i < segs.count {
         match segs[i] {
           case ISExpr(se) -> labelsExpr(diag, loops, se)
-          case ISText(_) -> ()
+          case ISText(_, _) -> ()
         }
         i = i + 1
       }

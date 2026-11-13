@@ -4673,7 +4673,7 @@ func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
       while i < segs.count {
         match segs[i] {
           case ISExpr(ex) -> collectRefNamesExpr(ex, acc)
-          case ISText(_) -> ()
+          case ISText(_, _) -> ()
         }
         i = i + 1
       }

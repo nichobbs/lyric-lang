@@ -706,29 +706,6 @@ func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   }
 }
 
-/// The sub-patterns of a case pattern, one per payload field. The checker accepts fewer
-/// sub-patterns than the case has fields and every backend binds the leading fields and
-/// ignores the rest, so the missing trailing ones are wildcards.
-func padCasePats(env: in BuildEnv, p: in Pattern, sym: in SymbolId, ts: in List[TPat]): List[TPat] {
-  val sg = match mapGet(env.syms, sym.id) {
-    case Some(entry) -> match entry.sig { case Some(x) -> x; case None -> return ts }
-    case None -> return ts
-  }
-  if ts.count >= sg.params.count {
-    return ts
-  }
-  val padded: List[TPat] = newList()
-  for t in ts {
-    padded.add(t)
-  }
-  var i = ts.count
-  while i < sg.params.count {
-    padded.add(TPat(id = freshNodeId(env), ty = sg.params[i].ty, span = p.span, kind = TpWild))
-    i = i + 1
-  }
-  padded
-}
-
 /// Build a pattern, declaring the locals it binds in the innermost scope.
 func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
   val ty = match patTy(env.ctx, p.nodeId) {
@@ -784,7 +761,7 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       case Some(sym) -> match buildPats(env, args) {
         case Some(ts) -> {
           noteCaseSym(env, sym)
-          Some(value = mkPat(p, ty, TpCtor(sym = sym, args = padCasePats(env, p, sym, ts))))
+          Some(value = mkPat(p, ty, TpCtor(sym = sym, args = ts)))
         }
         case None -> None
       }

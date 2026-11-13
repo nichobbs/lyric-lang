@@ -951,7 +951,7 @@ func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): B
               found = true
             }
           }
-          case ISText(_) -> {
+          case ISText(_, _) -> {
           }
         }
         i = i + 1

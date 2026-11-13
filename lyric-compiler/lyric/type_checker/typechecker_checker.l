@@ -1001,7 +1001,7 @@ func exprContains(e: in Expr, probe: in ExprProbe): Bool {
               found = true
             }
           }
-          case ISText(_) -> {
+          case ISText(_, _) -> {
           }
         }
         i = i + 1
@@ -3376,7 +3376,7 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
       while i < segs.count {
         match segs[i] {
           case ISExpr(se) -> checkExprSelfMembers(diag, ctx, se)
-          case ISText(_) -> {
+          case ISText(_, _) -> {
           }
         }
         i = i + 1
