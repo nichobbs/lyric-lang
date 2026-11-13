@@ -189,6 +189,16 @@ func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr]
   None
 }
 
+/// `uncoveredExpr` with the specifics of the site in the message (the kind `what` stays the census key).
+func uncoveredExprDetail(env: in BuildEnv, e: in Expr, what: in String, detail: in String): Option[TExpr] {
+  noteUncoveredAt(env, what, e.span)
+  env.errors.add(
+    "I0002: the builder has no case for " + what + " (" + detail + ") at " + toString(e.span.startPos.line) + ":" +
+      toString(e.span.startPos.column)
+  )
+  None
+}
+
 func uncoveredArgs(env: in BuildEnv, e: in Expr, what: in String): Option[List[TArg]] {
   val _ = uncoveredExpr(env, e, what)
   None
@@ -2352,7 +2362,22 @@ func buildExternCall(
   }
   val sig = match bestSig {
     case Some(c) -> c
-    case None -> return uncoveredExpr(env, e, "an extern call no host overload fits")
+    case None -> {
+      val tys: List[String] = newList()
+      for t in argTys {
+        tys.add(renderTy(t))
+      }
+      var shown = ""
+      for i in 0 ..< tys.count {
+        shown = shown + (if i > 0 { ", " } else { "" }) + tys[i]
+      }
+      return uncoveredExprDetail(
+        env,
+        e,
+        "an extern call no host overload fits",
+        site.hostType + "." + site.name + "(" + shown + ")"
+      )
+    }
   }
   if ambiguous {
     return uncoveredExpr(env, e, "an extern call with ambiguous host overloads")
@@ -2478,7 +2503,12 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
           )
         )
       )
-      case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+      case None -> uncoveredExprDetail(
+        env,
+        e,
+        "a member access that is not a record field",
+        renderTy(rt.ty) + "." + name
+      )
     }
   }
 }
@@ -2683,7 +2713,12 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       match fieldRefOf(env, rt.ty, name) {
         case Some(f) -> Some(value = TPlace(ty = pty, kind = PlField(recv = rt, field = f)))
         case None -> {
-          val _ = uncoveredExpr(env, target, "an assignment to a member that is not a record field")
+          val _ = uncoveredExprDetail(
+            env,
+            target,
+            "an assignment to a member that is not a record field",
+            renderTy(rt.ty) + "." + name
+          )
           None
         }
       }
