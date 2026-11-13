@@ -258,7 +258,7 @@ diff -u "$work/b_ast.out" "$work/b_tir.out"
 printf 'HELLO\ncde|fgh\nbonono\n65\ntrue\n5000000000\n1\n0.75\n' | diff -u - "$work/b_tir.out"
 grep -q 'bad: last' "$work/b_tir.err" || { echo "::error::the TIR build did not panic with the message"; cat "$work/b_tir.err"; exit 1; }
 grep -q 'bad: last' "$work/b_ast.err" || { echo "::error::the AST build did not panic with the message"; exit 1; }
-grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/b_census.txt" || {
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/b_census.txt" || {
   echo "::error::expected every function of builtins.l to be lowered from TIR"
   exit 1
 }
