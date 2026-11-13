@@ -2223,10 +2223,42 @@ record OverloadFit {
   score: Int
 }
 
+/// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
+/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match from {
+    case TExtern(f) -> match to {
+      case TExtern(t) -> {
+        if f.name == t.name or isHostObject(t.name) {
+          return None
+        }
+        match env.ctx.tbl.externIterResolver[0].resolveBases(f.name) {
+          case Some(bases) -> {
+            for b in bases {
+              if b == t.name {
+                return Some(value = CvBoxToHost(host = t))
+              }
+            }
+            None
+          }
+          case None -> None
+        }
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 /// The parameters of one overload as `Ty`s matched against the argument types, with
 /// the score of the match (2 per exact argument, 1 per widened one), or None when
 /// an argument does not fit.
-func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[Ty]): Option[OverloadFit] {
+func scoreOverload(
+  env: in BuildEnv, sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[Ty]
+): Option[OverloadFit] {
   val ps: List[Ty] = newList()
   var score = 0
   var i = 0
@@ -2243,8 +2275,17 @@ func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[
         }
         case None -> match hostWidenKind(argTys[i], p) {
           case Some(_) -> ()
-          // Boxing and narrowing rank below every widening, as the host's overload resolution has it.
-          case None -> match hostBoxKind(argTys[i], p) { case Some(_) -> (); case None -> return None }
+          // A host subtype passed as its supertype ranks as a widening; boxing and narrowing rank below
+          // every widening, as the host's overload resolution has it.
+          case None -> match hostUpcastKind(env, argTys[i], p) {
+            case Some(_) -> {
+              score = score + 1
+            }
+            case None -> match hostBoxKind(argTys[i], p) {
+              case Some(_) -> ()
+              case None -> return None
+            }
+          }
         }
       }
     }
@@ -2278,9 +2319,12 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
 func hostArgConv(env: in BuildEnv, arg: in TExpr, want: in Ty): Option[TExpr] {
   match hostWidenKind(arg.ty, want) {
     case Some(k) -> if tyEq(arg.ty, want) { Some(value = arg) } else { Some(value = convertNode(env, arg, want, k)) }
-    case None -> match hostBoxKind(arg.ty, want) {
+    case None -> match hostUpcastKind(env, arg.ty, want) {
       case Some(k) -> Some(value = convertNode(env, arg, want, k))
-      case None -> coerceArg(env, arg, want)
+      case None -> match hostBoxKind(arg.ty, want) {
+        case Some(k) -> Some(value = convertNode(env, arg, want, k))
+        case None -> coerceArg(env, arg, want)
+      }
     }
   }
 }
@@ -2337,7 +2381,7 @@ func buildExternCall(
   var ambiguous = false
   for c in cands {
     if c.params.count == argTys.count {
-      match scoreOverload(c, targs, argTys) {
+      match scoreOverload(env, c, targs, argTys) {
         case Some(fit) -> {
           val ps = fit.params
           val sc = fit.score

@@ -2116,6 +2116,14 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPInt), hostTy("System.Int16"))), "an Int narrows to Int16")
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPLong), hostTy("System.UInt32"))), "a Long narrows to UInt32")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPString), hostTy("System.Int16"))), "a String is not an Int16")
+  assertTrue(
+    isSome(hostBoxKind(TSlice(element = TPrim(kind = TPByte)), hostTy("an array, pointer or by-reference type"))),
+    "a Byte slice is a host array"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), hostTy("an array, pointer or by-reference type"))),
+    "an Int slice is not"
+  )
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPFloat), hostTy("System.Single"))), "a Float is a Single")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPDouble), hostTy("System.Single"))), "a Double is not a Single")
 }
@@ -2191,6 +2199,34 @@ test "a compound assignment to a host property is counted, not guessed (D598)" {
   val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length += 1\n}\n")
   assertTrue(st.env.errors.count > 0, "an I0002")
   assertTrue(st.env.errors[0].contains("a compound assignment"), st.env.errors[0])
+}
+
+test "a slice of Byte passed for a host byte array builds as a host call (D599)" {
+  val head = "package App\nextern type F = \"System.IO.File\"\n"
+  val st = buildFirstFnMsil(head + "func f(p: in String, b: in slice[Byte]): Unit {\n  F.WriteAllBytes(p, b)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 2, "two parameters")
+      assertTrue(tyEq(m.params[1].ty, hostTy("an array, pointer or by-reference type")), "over a host array")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a host value passed as its host supertype is converted, read from the metadata (D599)" {
+  val head = "package App\nextern type H = \"System.Net.Http.HttpClientHandler\"\nextern type C = \"System.Net.Http.HttpClient\"\n"
+  val st = buildFirstFnMsil(head + "func f(h: in H): C {\n  C.new(h)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> assertTrue(
+      tyEq(m.params[0].ty, hostTy("System.Net.Http.HttpMessageHandler")),
+      "over the base class"
+    )
+    case None -> assertTrue(false, "an extern call")
+  }
 }
 
 func hostTy(name: in String): Ty {
