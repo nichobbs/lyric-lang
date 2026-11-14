@@ -15,6 +15,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LYRIC="${1:-$REPO_ROOT/bin/lyric}"
+# The script builds from a temporary directory, so the binary must not be a relative path.
+LYRIC="$(cd "$(dirname "$LYRIC")" && pwd)/$(basename "$LYRIC")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export NuGetAudit=false
