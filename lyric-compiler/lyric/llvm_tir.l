@@ -297,6 +297,11 @@ pub record TirLowerEnv {
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
+  /// The protected types, keyed by symbol: a counted pointer to an object whose last field is
+  /// the mutex.  They have a type and readable, writable fields (an entry's body runs under the
+  /// lock the AST path's wrapper takes) but no construction, copy or pattern, which need the
+  /// mutex set up, so they are kept out of `recs`.
+  protRecs: Map[Int, TirRecLayout] = newMap()
   /// The parameter count of each declaration of the unit's own package, keyed by symbol: a call
   /// whose argument count differs names the wrong callee, which the lowering refuses.
   fnArity: Map[Int, Int] = newMap()
@@ -787,7 +792,7 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
           } else {
             match mapGet(env.ifaces, sym.id) {
               case Some(il) -> Some(value = il.boxTy)
-              case None -> None
+              case None -> match mapGet(env.protRecs, sym.id) { case Some(pl) -> Some(value = pl.ty); case None -> None }
             }
           }
         }
@@ -1610,6 +1615,15 @@ func isStructN(t: in NType): Bool {
 
 /// The layout of the record `sym`; a symbol the code generator did not register (a union case,
 /// a generic, a protected type) stays on the AST path.
+/// The layout of the object a field is read from or written to: a record, or a protected type
+/// (whose user fields come first, so a declared field index is the layout index).
+func fieldOwnerLayout(c: in LCtx, sym: in SymbolId): Option[TirRecLayout] {
+  match mapGet(c.env.protRecs, sym.id) {
+    case Some(p) -> Some(value = p)
+    case None -> recLayout(c, sym)
+  }
+}
+
 func recLayout(c: in LCtx, sym: in SymbolId): Option[TirRecLayout] {
   match mapGet(c.env.recs, sym.id) {
     case Some(r) -> Some(value = r)
@@ -1796,7 +1810,7 @@ func loadTupleElem(c: in LCtx, lay: in TirRecLayout, tuple: in NValue, i: in Int
 /// A field read: `extractvalue` out of a by-value record, a load through the field pointer
 /// of a heap one (the result is borrowed from the object).  A Unit field reads as Unit.
 func lowerField(c: in LCtx, recv: in TExpr, field: in FieldRef): Val {
-  match recLayout(c, field.owner) {
+  match fieldOwnerLayout(c, field.owner) {
     case None -> unitVal()
     case Some(lay) -> {
       val r = borrow(c, lowerExpr(c, recv))
@@ -2796,7 +2810,7 @@ func byRefArg(c: in LCtx, place: in TPlace): NArg {
 /// The address of field `field` of the heap record `recv` evaluates to, typed with the field's
 /// type.  The receiver is borrowed, so an owned temporary stays alive until the statement ends.
 func heapFieldPlace(c: in LCtx, recv: in TExpr, field: in FieldRef): Option[Val] {
-  match recLayout(c, field.owner) {
+  match fieldOwnerLayout(c, field.owner) {
     case None -> None
     case Some(lay) -> {
       if lay.byValue {

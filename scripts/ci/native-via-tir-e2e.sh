@@ -364,6 +364,25 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/me_tir.ll" lyric-rt/
 diff -u "$work/me_tir.out" "$work/me_asan.out"
 echo "methods under AddressSanitizer: clean"
 
+# Protected types (docs/70 phase 4a): an entry's or function's body reads and writes the object's
+# fields from TIR (the lock stays in the AST path's wrapper), then under AddressSanitizer.
+prsrc=scripts/ci/native-via-tir/protected.l
+"$lyric_bin" build --target native "$prsrc" -o "$work/pr_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$prsrc" -o "$work/pr_tir" 2> "$work/pr_census.txt" >/dev/null
+cat "$work/pr_census.txt"
+"$work/pr_ast" > "$work/pr_ast.out"
+"$work/pr_tir" > "$work/pr_tir.out"
+diff -u "$work/pr_ast.out" "$work/pr_tir.out"
+printf '3\n7\ntotal\ntotal=7\n7\n' | diff -u - "$work/pr_tir.out"
+grep -q '^native via-TIR: 4 of 5 functions lowered from TIR' "$work/pr_census.txt" || {
+  echo "::error::expected the four protected bodies of protected.l (not main, which constructs the type) to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/pr_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/pr_asan"
+"$work/pr_asan" > "$work/pr_asan.out"
+diff -u "$work/pr_tir.out" "$work/pr_asan.out"
+echo "protected types under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 

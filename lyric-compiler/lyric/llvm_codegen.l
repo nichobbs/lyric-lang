@@ -18424,6 +18424,7 @@ record TirUnitMaps {
   scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
   fnArity: Map[Int, Int] = newMap()
+  protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
   ifaceVts: Map[String, String] = newMap()
@@ -18518,6 +18519,7 @@ func tirUnitMaps(
   val caseKeys: List[String] = newList()
   val intrinsics: Map[Int, String] = newMap()
   val asyncFns: Map[Int, String] = newMap()
+  val protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
   // The interface, record and member lookups below read the DefPath keys that
   // `Lyric.Resolve.resolve_collect` writes (`Pkg::Type`, `Pkg::Type::method(P1)`,
   // `Pkg::Type::$impl(Iface)::method(P1)`); a change there changes these parsers.
@@ -18600,7 +18602,14 @@ func tirUnitMaps(
                 // A record with an invariant is re-checked at public boundaries by the contract
                 // elaborator, whose asserts TIR does not carry yet (phase 3c): functions touching it
                 // stay on the AST path.
-                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
+                case Some(ri) -> if ctx.protectedRecNames.containsKey(ri.irName) {
+                  if not invariantRecs.containsKey(pkg + "." + rest) {
+                    protRecs.add(
+                      id,
+                      LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
+                    )
+                  }
+                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -18764,6 +18773,7 @@ func tirUnitMaps(
     intrinsics = intrinsics,
     asyncFns = asyncFns,
     fnArity = declArity,
+    protRecs = protRecs,
     ifaces = ifaces,
     ifaceMethods = ifaceMethods,
     ifaceVts = ifaceVts,
@@ -18795,6 +18805,7 @@ func lowerWithTuples(
       scans = maps.scans,
       asyncFns = maps.asyncFns,
       fnArity = maps.fnArity,
+      protRecs = maps.protRecs,
       ifaces = maps.ifaces,
       ifaceMethods = maps.ifaceMethods,
       ifaceVts = maps.ifaceVts,
@@ -18848,6 +18859,13 @@ func lowerWithTuples(
   panic("unreachable")
 }
 
+func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
 func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
   if u.tir.count == 0 {
     return ast
@@ -18868,6 +18886,11 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
           case None -> match LlvmTir.tirTypeMember(key) {
             case None -> ()
             case Some(tm) -> {
+              // A protected entry or function is lowered as `Type.name.__inner`, its body without
+              // the lock the AST path's wrapper takes; a `when:` barrier keeps the AST path.
+              if parts.length == 3 and parts[2] == "__inner" and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity and not isSomeExpr(f.barrier) {
+                decl = Some(value = f)
+              }
               if isBodyMethodFn(fn) and parts.length == 2 and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity {
                 decl = Some(value = f)
               }
