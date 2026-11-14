@@ -159,6 +159,8 @@ if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
 fi
 gate_rc=0
 if [[ $i0003 -gt 0 || ${#unchecked[@]} -gt 0 ]]; then gate_rc=1; fi
+# A call that leaves out an argument another package's function or record declares (D482).
+bash "$REPO_ROOT/scripts/ci/tir-foreign-defaults-e2e.sh" "$LYRIC" || gate_rc=1
 
 if [[ $WIDE -eq 0 ]]; then exit $gate_rc; fi
 
