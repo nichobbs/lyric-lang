@@ -2467,6 +2467,9 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
   }
 }
 
+/// Whether a direct call passes another number of arguments than its callee declares.  The TIR
+/// builder can name the wrong callee when a record method and a dot-named function share a name
+/// (nichobbs/lyric-lang#9106); this guard keeps such a function on the AST path until it is fixed.
 func wrongArity(c: in LCtx, sym: in SymbolId, argc: in Int): Bool {
   match mapGet(c.env.fnArity, sym.id) {
     case Some(n) -> n != argc
