@@ -3982,7 +3982,7 @@ func buildForeignDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId
   }
   val rd = match readCarriedDefault(env.ctx.dep, env.ctx.depRead, key, p.name, env.ctx.tbl.interner) {
     case Some(x) -> x
-    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+    case None -> return buildForeignLiteralDefault(env, call, p, pty)
   }
   for en in rd.entries {
     if not env.syms.containsKey(en.sym.id) {
@@ -3995,6 +3995,59 @@ func buildForeignDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId
       case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
     }
     case None -> None
+  }
+}
+
+/// The default of a package no interface of the build carries (the standard library, which is
+/// loaded as source): when it is a plain literal its type is the literal's own, so it needs no
+/// checker table of the declaring package; the conversion to the parameter's type is the call's.
+/// Any other default is counted.
+func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedParam, pty: in Ty): Option[TExpr] {
+  val d = match p.dfltExpr {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  val natural: Option[Ty] = match d.kind {
+    case ELiteral(l) -> match l {
+      case LInt(_, sfx, _) -> match sfx {
+        case NoIntSuffix -> Some(value = tyInt())
+        case _ -> None
+      }
+      case LFloat(_, sfx, _) -> match sfx {
+        case NoFloatSuffix -> Some(
+          value = TPrim(
+            kind = TPDouble
+          )
+        )
+        case F64 -> Some(
+          value = TPrim(
+            kind = TPDouble
+          )
+        )
+        case _ -> None
+      }
+      case LChar(_) -> Some(value = TPrim(kind = TPChar))
+      case LString(_) -> Some(value = tyString())
+      case LTripleString(_) -> Some(value = tyString())
+      case LRawString(_) -> Some(value = tyString())
+      case LBool(_) -> Some(value = tyBool())
+      case LUnit -> Some(value = tyUnit())
+    }
+    case _ -> None
+  }
+  val lit = match d.kind {
+    case ELiteral(l) -> l
+    case _ -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  match natural {
+    case Some(nt) -> {
+      val t = TExpr(id = freshNodeId(env), ty = nt, span = call.span, kind = XLit(lit = litOf(lit)))
+      match coerceArg(env, t, pty) {
+        case Some(c) -> Some(value = c)
+        case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+      }
+    }
+    case None -> uncoveredExpr(env, call, "a default argument declared in another package")
   }
 }
 
