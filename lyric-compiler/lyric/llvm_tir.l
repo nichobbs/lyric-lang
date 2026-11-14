@@ -2858,6 +2858,8 @@ func emitSuspendPoint(c: in LCtx): Unit {
 }
 
 /// The coroutine prologue: id, frame allocation, handle, and the task this frame reports through.
+/// The labels and values are fixed names: one coroutine is assembled per function, and an async
+/// lambda (which would nest a second one) stays on the AST path.
 func emitCoroPrologue(c: in LCtx): Unit {
   val p8 = i8ptr()
   val idArgs: List[NArg] = newList()
