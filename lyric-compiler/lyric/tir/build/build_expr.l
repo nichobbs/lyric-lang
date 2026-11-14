@@ -59,6 +59,9 @@ pub record BuildEnv {
   /// The locals the first alternative of an or-pattern bound: a later alternative's binding of
   /// the same name is that local (every alternative binds the same names).
   orBound: List[LocalDecl] = newList()
+  /// The parameter types of the call being built (empty or one per parameter), when the checker left
+  /// the call's type arguments open and the type its context fixes gave them (`openCallArgs`).
+  ptyOverride: List[Ty] = newList()
 }
 
 /// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
@@ -3597,6 +3600,54 @@ func genericArgsFromCall(
   inferGenericArgsDeep(sig.generics, ps, ts)
 }
 
+/// The type of parameter `i` (`p`) of the call being built: the one the context fixed for a call
+/// with open type arguments, else the signature's.
+func paramTyAt(env: in BuildEnv, i: in Int, p: in ResolvedParam): Result[Ty, String] {
+  if i < env.ptyOverride.count {
+    Ok(value = env.ptyOverride[i])
+  } else {
+    tyOfType(env.ctx, p.ty)
+  }
+}
+
+/// Read the type arguments of the generic names `generics` off the signature type `t` and the
+/// type `ty` the call's context fixes for it, into `acc` (the first reading of a name stands).
+func unifyOpenArgs(t: in Type, ty: in Ty, generics: in List[String], acc: in Map[String, Ty]): Unit {
+  match t {
+    case TyParam(name, _) -> if generics.contains(name) and not acc.containsKey(name) { acc.add(name, ty) }
+    case TyUser(id, _, args) -> match ty {
+      case TNamed(s, targs) -> if s.id == id.id and args.count == targs.count {
+        var i = 0
+        while i < args.count {
+          unifyOpenArgs(args[i], targs[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case TExtern(h) -> if args.count == h.args.count {
+        var i = 0
+        while i < args.count {
+          unifyOpenArgs(args[i], h.args[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case TySlice(e) -> match ty { case TSlice(x) -> unifyOpenArgs(e, x, generics, acc); case _ -> () }
+    case TyNullable(inner) -> match ty { case TNullable(x) -> unifyOpenArgs(inner, x, generics, acc); case _ -> () }
+    case TyTuple(es) -> match ty {
+      case TTuple(xs) -> if es.count == xs.count {
+        var i = 0
+        while i < es.count {
+          unifyOpenArgs(es[i], xs[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 /// A call to a declared non-generic function.  Named arguments take their parameter's
 /// slot first and the positional ones fill the free slots in order, as the checker pairs
 /// them.  The arguments run in parameter order in TIR, so a call whose source order
@@ -3622,23 +3673,59 @@ func buildDirectCall(
     if checkerArgs.count != sig.generics.count {
       return uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
     }
+    var openMsg = ""
     for ta in checkerArgs {
       match tyOfType(env.ctx, ta) {
         case Ok(t) -> tyArgs.add(t)
         case Err(msg) -> {
-          env.errors.add(msg)
-          return None
+          if openMsg == "" {
+            openMsg = msg
+          }
         }
       }
     }
-    val ps: List[ResolvedParam] = newList()
-    for p in sig.params {
-      ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
+    if openMsg != "" {
+      // The checker left a type argument open and the call's context fixed its type (an argument
+      // `newList()` of a `List[Int]` parameter): read the arguments off that type, and the
+      // parameters as the signature gives them under those arguments.
+      val acc: Map[String, Ty] = newMap()
+      unifyOpenArgs(sig.returnTy, ty, sig.generics, acc)
+      tyArgs = newList()
+      for g in sig.generics {
+        match mapGet(acc, g) {
+          case Some(t) -> tyArgs.add(t)
+          case None -> {
+            env.errors.add(openMsg)
+            return None
+          }
+        }
+      }
+      val pctx = newTyConvCtx(env.ctx.tbl)
+      for o in sig.genericOwners {
+        tyConvBind(pctx, o, sym, sig.generics)
+      }
+      for p in sig.params {
+        match tyOfType(pctx, p.ty) {
+          case Ok(pt) -> env.ptyOverride.add(substOwnerArgs(pt, sym, tyArgs))
+          case Err(msg) -> {
+            env.errors.add(msg)
+            env.ptyOverride.clear()
+            return None
+          }
+        }
+      }
+    } else {
+      val ps: List[ResolvedParam] = newList()
+      for p in sig.params {
+        ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
+      }
+      callSig = sig.copy(params = ps)
     }
-    callSig = sig.copy(params = ps)
   }
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, sym, callSig, args, pre) {
+  val builtArgs = buildCallArgs(env, e, sym, callSig, args, pre)
+  env.ptyOverride.clear()
+  match builtArgs {
     case Some(targs) -> {
       noteFuncSym(env, sym, sig, None, None, TSkFunc)
       Some(
@@ -3930,14 +4017,19 @@ func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[
 /// (`DepDefaults`, D482), re-numbered into this package's symbols; one with no carried default
 /// (a restored package whose interface does not record it) has no case yet.
 func buildDefaultArg(
-  env: in BuildEnv, call: in Expr, callee: in SymbolId, origin: in String, p: in ResolvedParam
+  env: in BuildEnv,
+  call: in Expr,
+  callee: in SymbolId,
+  origin: in String,
+  p: in ResolvedParam,
+  index: in Int,
 ): Option[TExpr] {
   val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
   if origin != "" and origin != here {
-    return buildForeignDefaultArg(env, call, callee, p)
+    return buildForeignDefaultArg(env, call, callee, p, index)
   }
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
-  val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val pty = match paramTyAt(env, index, p) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
   val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
@@ -3974,8 +4066,10 @@ func buildDefaultArg(
 
 /// A default declared in another package: the carried expression, its declarations added to
 /// this body's, placed at the call and converted to the parameter's type.
-func buildForeignDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId, p: in ResolvedParam): Option[TExpr] {
-  val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+func buildForeignDefaultArg(
+  env: in BuildEnv, call: in Expr, callee: in SymbolId, p: in ResolvedParam, index: in Int
+): Option[TExpr] {
+  val pty = match paramTyAt(env, index, p) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val key = match symTableDefPathKeyOf(env.ctx.tbl, callee) {
     case Some(k) -> k
     case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
@@ -4141,7 +4235,7 @@ func buildCallArgs(
     match slots[i] {
       case None -> {
         if p.hasDefault {
-          match buildDefaultArg(env, e, callee, sig.originPackage, p) {
+          match buildDefaultArg(env, e, callee, sig.originPackage, p, i) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {
               ok = false
@@ -4153,7 +4247,7 @@ func buildCallArgs(
         }
       }
       case Some(x) -> match p.mode {
-        case PMIn -> match tyOfType(env.ctx, p.ty) {
+        case PMIn -> match paramTyAt(env, i, p) {
           case Err(msg) -> {
             env.errors.add(msg)
             ok = false
