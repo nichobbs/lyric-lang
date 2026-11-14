@@ -137,6 +137,28 @@ func main(): Int {
 }
 LYRIC
 
+# A record method beside a dot-named function of another arity (#9106, #8098): each call takes its own.
+check method_beside_dot_named 174 <<'LYRIC'
+package Shapes4
+import Std.Core
+
+record Oe {
+  n: Int
+  func m(self: in Oe, x: in Int, y: in Int): Int {
+    80 + x + y
+  }
+}
+
+func Oe.m(o: in Oe, x: in Int): Int {
+  90 + x
+}
+
+func main(): Int {
+  val e = Oe(n = 0)
+  e.m(1) + e.m(1, 2)
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
