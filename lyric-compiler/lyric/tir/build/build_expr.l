@@ -3047,7 +3047,7 @@ func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
 /// the types a conversion could not take.
 func renderTyNamed(env: in BuildEnv, t: in Ty): String {
   val raw = renderTy(t)
-  var out = ""
+  var res = ""
   var i = 0
   while i < raw.length {
     val c = raw.substring(i, 1)
@@ -3071,20 +3071,20 @@ func renderTyNamed(env: in BuildEnv, t: in Ty): String {
       val named = if digits > 0 { symTableDefPathKeyOf(env.ctx.tbl, SymbolId(id = v)) } else { None }
       match named {
         case Some(k) -> {
-          out = out + k
+          res = res + k
           i = j
         }
         case None -> {
-          out = out + c
+          res = res + c
           i = i + 1
         }
       }
     } else {
-      out = out + c
+      res = res + c
       i = i + 1
     }
   }
-  out
+  res
 }
 
 /// An argument as the parameter `pty` takes it: as is, converted by a node of its own,
