@@ -5991,8 +5991,9 @@ func recordMethodCalleeNode(
       val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
       val owner = dotNamedOwnerName(unrefine(recvTy))
       var target: Option[SymbolId] = None
+      // The dot-named function whose declaration is at the signature's span.
       if owner.length > 0 {
-        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, false) {
           case Some(dp) -> {
             target = Some(value = internDefPathKey(tbl.interner, dp))
           }
@@ -6006,6 +6007,20 @@ func recordMethodCalleeNode(
         case Some(_) -> ()
         case None -> {
           target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span, owner)
+        }
+      }
+      // A dependency's dot-named function has no declaration at the signature's span here: it is the
+      // one same-named function of its package with the signature's parameter count.  Tried last, so a
+      // method of another arity beside a dot-named function (#9106) is never taken for it.
+      match target {
+        case Some(_) -> ()
+        case None -> if owner.length > 0 {
+          match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+            case Some(dp) -> {
+              target = Some(value = internDefPathKey(tbl.interner, dp))
+            }
+            case None -> ()
+          }
         }
       }
       match target {
