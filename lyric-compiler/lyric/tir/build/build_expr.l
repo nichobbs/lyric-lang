@@ -2321,7 +2321,7 @@ func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
 }
 
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+/// parameter, a `String` for a `CharSequence` one), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   match taskAsHostTask(from, to) {
     case Some(k) -> return Some(value = k)
@@ -2347,6 +2347,27 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
           }
           case None -> None
         }
+      }
+      case _ -> None
+    }
+    case TPrim(TPString) -> match to {
+      case TExtern(t) -> {
+        if isHostObject(t.name) {
+          return None
+        }
+        for hostString in ["System.String", "java.lang.String"] {
+          match env.ctx.tbl.externIterResolver[0].resolveBases(hostString) {
+            case Some(bases) -> {
+              for b in bases {
+                if b == t.name {
+                  return Some(value = CvBoxToHost(host = t))
+                }
+              }
+            }
+            case None -> ()
+          }
+        }
+        None
       }
       case _ -> None
     }
