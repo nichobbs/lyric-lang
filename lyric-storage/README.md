@@ -1,6 +1,6 @@
 # lyric-storage
 
-**Stability:** `incomplete`
+**Stability:** `experimental`
 
 Object and file storage with pluggable backend support.
 

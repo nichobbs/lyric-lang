@@ -1,6 +1,6 @@
 # lyric-jobs
 
-**Stability:** `incomplete`
+**Stability:** `experimental`
 
 Background job scheduling behind a `JobScheduler` interface, with an in-process reference backend.
 

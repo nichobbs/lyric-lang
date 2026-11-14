@@ -1,6 +1,6 @@
 # lyric-mq
 
-**Stability:** `incomplete`
+**Stability:** `experimental`
 
 Transport-agnostic message queue with pluggable broker backends.
 

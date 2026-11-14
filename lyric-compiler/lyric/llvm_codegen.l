@@ -17511,7 +17511,7 @@ func exprContainsYieldNative(e: in Expr): Bool {
               found = true
             }
           }
-          case ISText(_) -> {
+          case ISText(_, _) -> {
           }
         }
         i = i + 1

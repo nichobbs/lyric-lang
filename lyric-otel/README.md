@@ -1,6 +1,6 @@
 # lyric-otel
 
-**Stability:** `incomplete`
+**Stability:** `experimental`
 
 OpenTelemetry instrumentation for [Lyric](https://github.com/nichobbs/lyric-lang):
 span/metric recording plus OTLP/HTTP export, and three reusable `pub aspect`

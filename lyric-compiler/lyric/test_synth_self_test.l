@@ -769,7 +769,7 @@ func testDoctestsKeepTheFileLinesAndImports(): Unit {
   assertEqual(lines[2], "import Std.String as Str", "the file's own import is not repeated")
   assertEqual(lines[8], "pub func double(x: in Int): Int { x * 2 }", "the file's lines do not move")
   match synthesizeFor(combined, None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
-    case Synthesised(_, n, _) -> assertEqualInt(n, 1, "the doctest is a test of the module")
+    case Synthesised(_, n, _, _) -> assertEqualInt(n, 1, "the doctest is a test of the module")
     case _ -> panic("expected the file with its doctests to synthesise:\n" + combined)
   }
 }

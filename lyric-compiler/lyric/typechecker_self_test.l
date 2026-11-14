@@ -10,6 +10,7 @@ import Std.Testing
 import Std.Time as Time
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Resolve.{renumberNodeIds}
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
 import Lyric.Pipeline
@@ -9271,6 +9272,36 @@ test "a function value over an extern type whose name the use site reuses is T01
 // (T0129).  `case Some(i)` against an `Int`, or `case Ok(v)` against an
 // `Option`, used to type-check and then silently miscompile.
 // ─────────────────────────────────────────────────────────────────────────────
+test "a constructor pattern with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern with more sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, j) -> k; case B -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "A(k, j) against a one-field case: T0229")
+}
+
+test "a constructor pattern in a val with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(u: in U): Int {\n  val A(k) = u\n  k\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "val A(k) against a two-field case: T0229")
+}
+
+test "a constructor pattern in a for with fewer sub-patterns than the case has fields is T0229" {
+  val src = "package P\nunion U { case A(n: Int, m: Int) }\nfunc f(us: in slice[U]): Int {\n  var t = 0\n  for A(k) in us {\n    t = t + k\n  }\n  t\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "for A(k) over two-field cases: T0229")
+}
+
+test "an enum case written with parentheses and a sub-pattern is T0229" {
+  val src = "package P\nenum Color { case Red; case Blue }\nfunc f(c: in Color): Int { match c { case Red(x) -> 1; case Blue -> 0 } }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0229"), "Red(x) against a field-less enum case: T0229")
+}
+
+test "a constructor pattern naming every field, with wildcards, is accepted" {
+  val src = "package P\nunion U { case A(n: Int, m: Int); case B }\nfunc f(u: in U): Int { match u { case A(k, _) -> k; case B -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0229"), "A(k, _) names both fields")
+}
+
 test "a union-case pattern against a primitive scrutinee is T0129" {
   val src = "package P\nunion U { case A(n: Int); case B }\nfunc f(n: in Int): Int { match n { case A(k) -> k; case _ -> 0 } }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0129"), "A(k) against Int: T0129")
@@ -12083,6 +12114,34 @@ func assertCollectionCallMismatch(params: in String, body: in String, needle: in
     Str.contains(diagMessageFor(cr, "T0043"), needle),
     what + ": names '" + needle + "': " + diagMessageFor(cr, "T0043")
   )
+}
+
+test "a stdlib collection's clear() is recorded as a built-in member, not left as a host call (D461)" {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int], m: in Map[Int, Int], s: in Set[Int]): Unit {\n  xs.clear()\n  m.clear()\n  s.clear()\n}\n"
+  val cr = checkWithImportedPackages(renumberNodeIds(parse(src).file).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  var lists = 0
+  var maps = 0
+  var sets = 0
+  for k in mapKeys(cr.symbols.builtinByNode) {
+    match mapGet(cr.symbols.builtinByNode, k) {
+      case Some(n) -> {
+        if n == "List.clear" {
+          lists = lists + 1
+        }
+        if n == "Map.clear" {
+          maps = maps + 1
+        }
+        if n == "Set.clear" {
+          sets = sets + 1
+        }
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(lists, 1, "List.clear")
+  assertEqualInt(maps, 1, "Map.clear")
+  assertEqualInt(sets, 1, "Set.clear")
 }
 
 test "List.add checks its argument against the element type (#7969)" {

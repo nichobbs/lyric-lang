@@ -487,14 +487,14 @@ This matrix summarises which backends are real on which target; each library's R
 |---|---|---|---|---|
 | lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
 | lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
-| lyric-otel | incomplete | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
-| lyric-mq | incomplete | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | D056, D552 |
+| lyric-otel | experimental | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
+| lyric-mq | experimental | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | D056, D552 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
-| lyric-storage | incomplete | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | D056, D552 |
+| lyric-storage | experimental | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | D056, D552 |
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
-| lyric-jobs | incomplete | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
+| lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
 | lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
@@ -502,7 +502,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-validation | stable | stable | stable | — |
 | lyric-testing | stable | stable | — | — |
 | lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
-| lyric-db | incomplete | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056 |
+| lyric-db | experimental | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056 |
 | lyric-health | stable | stable | stable | D057 |
 | lyric-web | experimental | stable | stable | D057 |
 | lyric-logging | stable | stable | stable (suite in CI) | D054 |

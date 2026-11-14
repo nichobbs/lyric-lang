@@ -20,7 +20,7 @@
 [package]
 name        = "Lyric.OTel"
 version     = "0.2.0"
-stability = "incomplete"
+stability = "experimental"
 description = "OpenTelemetry instrumentation (OTLP/HTTP export + aspect templates) for Lyric."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"

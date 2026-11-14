@@ -1,0 +1,7 @@
+[package]
+name = "reject-ctor-pattern-for"
+version = "0.1.0"
+[project]
+name = "RejectCtorPatternFor"
+[project.packages]
+"App" = "app"
