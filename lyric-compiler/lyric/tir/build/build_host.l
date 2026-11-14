@@ -57,6 +57,15 @@ func isNarrowHostInt(name: in String): Bool {
     name == "System.UInt64"
 }
 
+/// An element type whose array is the host's own array: bytes and host (extern) values.
+func isHostArrayElement(el: in Ty): Bool {
+  match el {
+    case TPrim(TPByte) -> true
+    case TExtern(_) -> true
+    case _ -> false
+  }
+}
+
 /// The conversions a Lyric value takes into a host parameter the language does not widen to: boxing to
 /// `object` (any value), narrowing an `Int` or `Long` to a smaller host integer (range checked, as the MSIL
 /// resolver scores it), and a `Float` as the host's `Single`.  The operand keeps its Lyric type and the node has
@@ -72,12 +81,12 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
         return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
       }
-      // A slice or `array[N, T]` passed for a host array: the representation is the host's (the checker
-      // types a host array result as a slice of its element, D359; the signature keeps no element type).
+      // A slice or `array[N, T]` of bytes or of host values passed for a host array: the elements keep the host's
+      // representation (the signature keeps no element type, so any other element is not claimed).
       if h.name == hostArrayName() {
         return match from {
-          case TSlice(_) -> Some(value = CvBoxToHost(host = h))
-          case TArray(_, _) -> Some(value = CvBoxToHost(host = h))
+          case TSlice(el) -> if isHostArrayElement(el) { Some(value = CvBoxToHost(host = h)) } else { None }
+          case TArray(_, el) -> if isHostArrayElement(el) { Some(value = CvBoxToHost(host = h)) } else { None }
           case _ -> None
         }
       }

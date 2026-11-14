@@ -2155,6 +2155,15 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), hostTy("an array, pointer or by-reference type"))),
     "an Int slice is not"
   )
+  assertTrue(
+    isSome(
+      hostBoxKind(
+        TSlice(element = TExtern(host = HostTypeRef(name = "java.lang.Object", args = newList()))),
+        hostTy("an array, pointer or by-reference type")
+      )
+    ),
+    "a slice of host values is a host array"
+  )
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPFloat), hostTy("System.Single"))), "a Float is a Single")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPDouble), hostTy("System.Single"))), "a Double is not a Single")
 }
