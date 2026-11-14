@@ -18544,6 +18544,34 @@ func tirUnitMaps(
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
+      case Some(key) -> match LlvmTir.tirTypeMember(key) {
+        case None -> ()
+        case Some(tm) -> {
+          // A method declared in a record's body is lifted to `Record.name`; when a top-level
+          // function of that name sits beside it, the body method owns the `@m` symbol.
+          val twin = tm.pkg + "." + tm.owner + "." + tm.name + "@m/"
+          val plain = tm.pkg + "." + tm.owner + "." + tm.name + "/"
+          var hasTwin = false
+          for sk in mapKeys(sigs) {
+            if Str.startsWith(sk, twin) {
+              hasTwin = true
+            }
+          }
+          for sk in mapKeys(sigs) {
+            if Str.startsWith(sk, if hasTwin { twin } else { plain }) {
+              match mapGet(sigs, sk) {
+                case Some(sg) -> if not sg.isAsync and not fnNames.containsKey(id) { fnNames.add(id, sg.irName) }
+                case None -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> {
           if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity" or n.name == "newMap") {
@@ -18823,14 +18851,22 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
   val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
-  // An `impl` method is named `Target.Iface.name` on the AST path.
+  // An `impl` method is named `Target.Iface.name` on the AST path, a method declared in a
+  // record's body `Record.name`.
   val parts = Str.split(fn.name, ".")
   for f in input.pkg.funcs {
     match mapGet(input.names, f.sym.id) {
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case None -> match LlvmTir.tirImplMember(key) {
-          case None -> ()
+          case None -> match LlvmTir.tirTypeMember(key) {
+            case None -> ()
+            case Some(tm) -> {
+              if isBodyMethodFn(fn) and parts.length == 2 and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity {
+                decl = Some(value = f)
+              }
+            }
+          }
           case Some(im) -> {
             if parts.length == 3 and im.pkg == u.pkgName and im.owner == parts[0] and im.iface == parts[1] and im.name == parts[2] and f.params.count == arity {
               decl = Some(value = f)

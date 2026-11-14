@@ -345,6 +345,25 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/i_tir.ll" lyric-rt/b
 diff -u "$work/i_tir.out" "$work/i_asan.out"
 echo "interfaces under AddressSanitizer: clean"
 
+# Methods declared in a record's body (docs/70 phase 4a): the receiver is the first parameter and
+# direct calls lower from TIR too, then under AddressSanitizer.
+mesrc=scripts/ci/native-via-tir/methods.l
+"$lyric_bin" build --target native "$mesrc" -o "$work/me_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$mesrc" -o "$work/me_tir" 2> "$work/me_census.txt" >/dev/null
+cat "$work/me_census.txt"
+"$work/me_ast" > "$work/me_ast.out"
+"$work/me_tir" > "$work/me_tir.out"
+diff -u "$work/me_ast.out" "$work/me_tir.out"
+printf '5\nc=5\n13\nc=7\n5\n20\n' | diff -u - "$work/me_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/me_census.txt" || {
+  echo "::error::expected every function of methods.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/me_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/me_asan"
+"$work/me_asan" > "$work/me_asan.out"
+diff -u "$work/me_tir.out" "$work/me_asan.out"
+echo "methods under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 

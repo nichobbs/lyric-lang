@@ -166,6 +166,38 @@ pub func tirImplMember(key: in String): Option[TirImplMember] {
   }
 }
 
+/// A method declared in a type's body, `Pkg::Type::name(P1)` (docs/70 §4.2): the package, the type
+/// and the method's name (`iface` is empty); None for any other key, an `impl` method's included.
+pub func tirTypeMember(key: in String): Option[TirImplMember] {
+  match Str.indexOf(key, "::") {
+    case None -> None
+    case Some(sep) -> {
+      val rest = Str.substring(key, sep + 2)
+      match Str.indexOf(rest, "(") {
+        case None -> None
+        case Some(open) -> {
+          val head = Str.substring(rest, 0, open)
+          if Str.contains(head, "$impl") or not Str.endsWith(rest, ")") {
+            return None
+          }
+          match Str.indexOf(head, "::") {
+            case None -> None
+            case Some(m) -> {
+              val name = Str.substring(head, m + 2)
+              if Str.contains(name, "::") {
+                return None
+              }
+              Some(
+                value = TirImplMember(pkg = Str.substring(key, 0, sep), owner = Str.substring(head, 0, m), iface = "", name = name)
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /// What came of lowering a unit's functions from TIR: how many were lowered, and
 /// the reason each of the others stayed on the AST path.
 pub record TirCensus {
