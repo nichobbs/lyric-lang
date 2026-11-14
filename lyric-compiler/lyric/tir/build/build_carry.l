@@ -33,9 +33,9 @@ pub func registerInterface(dep: in DepDefaults, pkg: in String, bytes: in slice[
   dep.ifaces.add(pkg, bytes)
 }
 
-/// The package a DefPath key (`pkg|segments`) belongs to.
+/// The package a DefPath key (`Pkg::segments`) belongs to.
 func keyPackage(key: in String): String {
-  match key.indexOf("|") {
+  match key.indexOf("::") {
     case Some(i) -> key.substring(0, i)
     case None -> ""
   }
