@@ -2083,7 +2083,7 @@ func buildDistinctFactory(
   val mname = match fn.kind {
     case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
       match recv.kind {
-        case EPath(path) -> if path.segments.count == 1 { m } else { return None }
+        case EPath(path) -> if path.segments.count >= 1 { m } else { return None }
         case _ -> return None
       }
     } else {
@@ -2224,18 +2224,28 @@ record OverloadFit {
   score: Int
 }
 
-/// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
-func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
-  // A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`.
+/// A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`: passing the handle
+/// where the host's non-generic `Task` is expected changes no representation.
+func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TNamed(f, _) -> match to {
       case TExtern(t) -> if symbolIdEq(f, builtinTaskTypeId()) and t.name == "System.Threading.Tasks.Task" {
-        return Some(value = CvBoxToHost(host = t))
+        Some(value = CvBoxToHost(host = t))
+      } else {
+        None
       }
-      case _ -> ()
+      case _ -> None
     }
-    case _ -> ()
+    case _ -> None
+  }
+}
+
+/// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
+/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  match taskAsHostTask(from, to) {
+    case Some(k) -> return Some(value = k)
+    case None -> ()
   }
   if env.ctx.tbl.externIterResolver.count == 0 {
     return None
@@ -3024,7 +3034,10 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
-      case None -> retypeConstruct(env, t, ty)
+      case None -> match taskAsHostTask(t.ty, ty) {
+        case Some(k) -> Some(value = convertNode(env, t, ty, k))
+        case None -> retypeConstruct(env, t, ty)
+      }
     }
   }
 }
