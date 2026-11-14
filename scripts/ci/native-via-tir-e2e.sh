@@ -276,8 +276,8 @@ cat "$work/l_census.txt"
 "$work/l_ast" > "$work/l_ast.out"
 "$work/l_tir" > "$work/l_tir.out"
 diff -u "$work/l_ast.out" "$work/l_tir.out"
-printf '10\n14\n55\na,b,\n6\nwYz3\n0\n144\n' | diff -u - "$work/l_tir.out"
-grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/l_census.txt" || {
+printf '10\n14\n55\na,b,\n6\nwYz3\n0\n144\n3102111\n' | diff -u - "$work/l_tir.out"
+grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/l_census.txt" || {
   echo "::error::expected every function of lists.l to be lowered from TIR"
   exit 1
 }

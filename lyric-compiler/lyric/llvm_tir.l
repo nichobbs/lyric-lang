@@ -289,6 +289,11 @@ pub record TirLowerEnv {
   /// found missing.
   tasks: Map[String, NType] = newMap()
   needTasks: List[TirListNeed] = newList()
+  /// The code generator's list scan functions (`indexOf`, `lastIndexOf` and `remove` of an
+  /// element equal to a value), keyed `<kind>|<renderTy of the element>`, and the ones a lowering
+  /// found missing.
+  scans: Map[String, String] = newMap()
+  needScans: List[TirScanNeed] = newList()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
@@ -356,6 +361,14 @@ pub record TirIfaceLayout {
 pub record TirIfaceMethodRef {
   ifaceId: Int
   slot: Int
+}
+
+/// A list scan the lowering needs: its key in `TirLowerEnv.scans`, the kind (`indexOf`,
+/// `lastIndexOf` or `remove`) and the element type the code generator synthesises it for.
+pub record TirScanNeed {
+  key: String
+  kind: String
+  elemTy: NType
 }
 
 /// A closure environment the lowering built: the struct a closure object is allocated as (the
@@ -428,6 +441,7 @@ pub record TirFallback {
   needLists: List[TirListNeed] = newList()
   needMaps: List[TirMapNeed] = newList()
   needTasks: List[TirListNeed] = newList()
+  needScans: List[TirScanNeed] = newList()
 }
 
 pub record TirLowered {
@@ -2297,7 +2311,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       }
       match op {
-        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line)
+        case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line, e.ty)
         case _ -> ()
       }
       if ins.count == 2 {
@@ -2852,11 +2866,15 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
 /// The compiler's named built-ins (`IoBuiltin`): `println`, `print`, `toString` (also spelled `<Type>.toString` for the
 /// method form) and `String.length`.
 /// Any other name is outside this slice.
-func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int): Val {
+func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int, rty: in Ty): Val {
   if name == "panic" and ins.count == 1 {
     return lowerPanicCall(c, ins[0], line)
   }
   match lowerCollectionBuiltin(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
+  match lowerListScan(c, name, ins, rty) {
     case Some(v) -> return v
     case None -> ()
   }
@@ -3311,6 +3329,80 @@ func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in
     }
   }
   newListOf(c, e.ty)
+}
+
+/// The scan function the code generator synthesised for `kind` over `elem`; one it has not
+/// registered is recorded in `env.needScans` (once) and reads as unsupported for this attempt.
+func scanFnOf(c: in LCtx, kind: in String, elem: in Ty, elemN: in NType): Option[String] {
+  val key = kind + "|" + renderTy(elem)
+  match mapGet(c.env.scans, key) {
+    case Some(f) -> Some(value = f)
+    case None -> {
+      var seen = false
+      for n in c.env.needScans {
+        if n.key == key {
+          seen = true
+        }
+      }
+      if not seen {
+        c.env.needScans.add(TirScanNeed(key = key, kind = kind, elemTy = elemN))
+      }
+      None
+    }
+  }
+}
+
+/// `contains`, `indexOf`, `lastIndexOf` and `remove` of a value on a list or slice of scalars or
+/// strings: the code generator's scan function compares each element with the value under the
+/// element type's `==` (the text of a `String`).  Other element types keep the AST path.
+func lowerListScan(c: in LCtx, name: in String, ins: in List[TExpr], rty: in Ty): Option[Val] {
+  if ins.count != 2 or not isListTy(ins[0].ty) {
+    return None
+  }
+  val kind = if name == "List.contains" or name == "List.indexOf" {
+    "indexOf"
+  } else if name == "List.lastIndexOf" {
+    "lastIndexOf"
+  } else if name == "List.remove" {
+    "remove"
+  } else {
+    return None
+  }
+  val el = match listElemTy(ins[0].ty) { case Some(x) -> x; case None -> return None }
+  val elN = match tyToN(c.env, el) { case Some(x) -> x; case None -> return None }
+  if not (isScalarN(elN) or isStringN(elN)) or not tyLowers(c.env, ins[0].ty) {
+    return None
+  }
+  val wantInt = name == "List.indexOf" or name == "List.lastIndexOf"
+  if wantInt {
+    match rty {
+      case TPrim(TPInt) -> ()
+      case _ -> return Some(value = unsupported(c, "a list " + name + " result of " + renderTy(rty)))
+    }
+  }
+  val fn = match scanFnOf(c, kind, el, elN) {
+    case Some(f) -> f
+    case None -> return Some(value = unsupported(c, "a list scan that is not registered yet"))
+  }
+  val l = borrow(c, lowerExpr(c, ins[0]))
+  val needle = borrow(c, lowerExpr(c, ins[1]))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+  args.add(NArg(ty = NI64, value = slotOf(c, needle)))
+  val d = tmp(c)
+  if kind == "remove" {
+    c.insns.add(NCall(dest = d, retTy = NI1, fn = NGlobal(name = fn), args = args))
+    return Some(value = Val(ty = NI1, value = NLocal(name = d)))
+  }
+  c.insns.add(NCall(dest = d, retTy = NI64, fn = NGlobal(name = fn), args = args))
+  if name == "List.contains" {
+    val hit = tmp(c)
+    c.insns.add(NICmp(dest = hit, pred = ISge, ty = NI64, a = NLocal(name = d), b = NLitInt(v = 0i64, ty = NI64)))
+    return Some(value = Val(ty = NI1, value = NLocal(name = hit)))
+  }
+  val n = tmp(c)
+  c.insns.add(NTrunc(dest = n, fromTy = NI64, value = NLocal(name = d), toTy = NI32))
+  Some(value = Val(ty = NI32, value = NLocal(name = n)))
 }
 
 /// The list and slice members that are one kernel call; the receiver is `ins[0]`.
@@ -4590,7 +4682,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         needFuncs = env.needFuncs,
         needLists = env.needLists,
         needMaps = env.needMaps,
-        needTasks = env.needTasks
+        needTasks = env.needTasks,
+        needScans = env.needScans
       )
     )
   }
