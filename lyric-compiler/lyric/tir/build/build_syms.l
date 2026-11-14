@@ -129,6 +129,11 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
       case None -> ()
     }
   }
+  for fd in ownOpaqueFields(tbl, sid) {
+    if fd.isMutable and not names.containsKey(fd.name) {
+      names.add(fd.name, true)
+    }
+  }
   for pf in protectedFieldsOf(tbl, sid) {
     if pf.mutable and not names.containsKey(pf.name) {
       names.add(pf.name, true)
