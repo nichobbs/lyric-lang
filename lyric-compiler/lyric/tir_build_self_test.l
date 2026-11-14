@@ -1185,6 +1185,11 @@ test "an opaque type with no fields is constructed with no arguments (D462)" {
   assertBuildsAndVerifies(pb, 1, "mk")
 }
 
+test "the value of a distinct type is its unwrapped underlying value (D463)" {
+  val pb = packageOf("package App\ntype Age = Int\nfunc raw(a: in Age): Int {\n  a.value\n}\n")
+  assertBuildsAndVerifies(pb, 1, "raw")
+}
+
 test "a field of a generic opaque type is read at the receiver's arguments (D592)" {
   val pb = packageOf("package App\nopaque type Box[T] {\n  v: T\n}\nfunc g(b: in Box[Int]): Int {\n  b.v\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.v")

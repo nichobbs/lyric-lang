@@ -2647,15 +2647,62 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
             )
           )
         )
-        case None -> uncoveredExprDetail(
-          env,
-          e,
-          "a member access that is not a record field",
-          renderTy(rt.ty) + "." + name
-        )
+        case None -> match buildAccessorCall(env, e, ty, rt, name) {
+          case Some(x) -> Some(value = x)
+          case None -> uncoveredExprDetail(
+            env,
+            e,
+            "a member access that is not a record field",
+            renderTy(rt.ty) + "." + name
+          )
+        }
       }
     }
   }
+}
+
+/// The member forms that read a value through no field: `d.value` of a distinct type is the
+/// value unwrapped, and `o.isSome` / `o.isNone` / `r.isOk` / `r.isErr` on a `Std.Core` `Option`
+/// or `Result` is the call of the module's function of that name, recorded by the checker
+/// under the member's node (D463).
+func buildAccessorCall(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  match rt.ty {
+    case TNamed(did, targs) -> if name == "value" and targs.count == 0 {
+      val isDistinct = match symbolOfDefId(tbl, did) {
+        case Some(s) -> match s.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+        case None -> false
+      }
+      if isDistinct {
+        return Some(value = mkExpr(e, ty, XConvert(kind = CvUnwrapDistinct(sym = did), inner = rt)))
+      }
+    }
+    case _ -> ()
+  }
+  match mapGet(tbl.callSigByNode, e.nodeId) {
+    case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
+      case Some(sym) -> match mapGet(tbl.genericArgsByNode, e.nodeId) {
+        case Some(cargs) -> {
+          val tyArgs: List[Ty] = newList()
+          for ta in cargs {
+            match tyOfType(env.ctx, ta) {
+              case Ok(t) -> tyArgs.add(t)
+              case Err(msg) -> {
+                env.errors.add(msg)
+                return None
+              }
+            }
+          }
+          noteFuncSym(env, sym, sig, None, None, TSkFunc)
+          return Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = inArgs(singleTExpr(rt)))))
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  None
 }
 
 func singleTExpr(t: in TExpr): List[TExpr] {

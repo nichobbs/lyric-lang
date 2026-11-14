@@ -3422,6 +3422,48 @@ func monadAccessorType(tbl: in SymbolTable, recvRaw: in Type, name: in String): 
   }
 }
 
+// The bare `o.isSome` / `o.isNone` / `r.isOk` / `r.isErr` on the real `Std.Core` `Option` and
+// `Result` is the call of that module's function of the same name.  Record the function and
+// the receiver's type arguments under the member's `NodeId`, so the builder makes the call
+// (D463); no `Call` node exists for the property form.
+func recordMonadAccessorCallee(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recvRaw: in Type,
+  name: in String,
+  node: in Int,
+): Unit {
+  if node <= 0 or not (name == "isOk" or name == "isErr" or name == "isSome" or name == "isNone") {
+    return
+  }
+  match monadAccessorType(tbl, recvRaw, name) {
+    case Some(_) -> ()
+    case None -> return
+  }
+  val targs = match unrefine(recvRaw) {
+    case TyUser(_, _, a) -> a
+    case _ -> return
+  }
+  match mapGet(sigs, name) {
+    case Some(sig) -> {
+      if sig.originPackage != "Std.Core" or sig.generics.count != targs.count {
+        return
+      }
+      match symTableFuncDefPathKey(tbl, sig, name, true) {
+        case Some(dp) -> {
+          recordCalleeNode(tbl, dp, sig, node)
+          if tbl.genericArgsByNode.containsKey(node) {
+            tbl.genericArgsByNode.remove(node)
+          }
+          tbl.genericArgsByNode.add(node, targs)
+        }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+}
+
 // True for the six reserved bare-member accessor names `monadAccessorType`
 // grants a real type to on the genuine `Std.Core.Result`/`Option` (#6630).
 func isReservedMonadAccessorName(name: in String): Bool {
@@ -21495,6 +21537,7 @@ func inferExprCore(
       }
       checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
+      recordMonadAccessorCallee(tbl, sigs, rt, name, e.nodeId)
       val readTy = match memberTy {
         case TyError(_) -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
         case _ -> memberTy
