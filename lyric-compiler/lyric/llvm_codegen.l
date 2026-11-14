@@ -18516,6 +18516,31 @@ func tirUnitMaps(
   val caseKeys: List[String] = newList()
   val intrinsics: Map[Int, String] = newMap()
   val asyncFns: Map[Int, String] = newMap()
+  // The interface, record and member lookups below read the DefPath keys that
+  // `Lyric.Resolve.resolve_collect` writes (`Pkg::Type`, `Pkg::Type::method(P1)`,
+  // `Pkg::Type::$impl(Iface)::method(P1)`); a change there changes these parsers.
+  // An `impl` method's IR name is the AST path's synthetic one, `Target.Iface.name`, in a table
+  // keyed by its arity with the receiver.  The arity is not in the DefPath key's type list the
+  // same way, so the name is matched against every arity the table holds.
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirImplMember(key) {
+        case None -> ()
+        case Some(im) -> {
+          val prefix = im.pkg + "." + im.owner + "." + im.iface + "." + im.name + "/"
+          for sk in mapKeys(sigs) {
+            if Str.startsWith(sk, prefix) {
+              match mapGet(sigs, sk) {
+                case Some(sg) -> if not sg.isAsync and not fnNames.containsKey(id) { fnNames.add(id, sg.irName) }
+                case None -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
@@ -18798,11 +18823,20 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
   val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
+  // An `impl` method is named `Target.Iface.name` on the AST path.
+  val parts = Str.split(fn.name, ".")
   for f in input.pkg.funcs {
     match mapGet(input.names, f.sym.id) {
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
-        case None -> ()
+        case None -> match LlvmTir.tirImplMember(key) {
+          case None -> ()
+          case Some(im) -> {
+            if parts.length == 3 and im.pkg == u.pkgName and im.owner == parts[0] and im.iface == parts[1] and im.name == parts[2] and f.params.count == arity {
+              decl = Some(value = f)
+            }
+          }
+        }
         case Some(n) -> {
           if n.pkg == u.pkgName and n.name == fn.name and n.arity == arity {
             decl = Some(value = f)
