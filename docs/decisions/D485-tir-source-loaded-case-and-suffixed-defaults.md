@@ -22,5 +22,5 @@ package" (22 sites in the stdlib-tests census).
 ## Results
 
 `tir-builder-shapes-e2e.sh` gains `stdlib_case_defaults` (`TlsServerConfig(identity = id)` leaning on `Tls12` and `None`,
-built with `--verify-ir` and run). The foreign-default kind over stdlib-tests fell from 22 to 6 before the suffix rule; I0003
+built with `--verify-ir` and run). The foreign-default kind over stdlib-tests fell from 22 to 0 (bodies built 1213 -> 1222 of 1260); I0003
 stays 0.
