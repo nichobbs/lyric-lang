@@ -18421,6 +18421,7 @@ record TirUnitMaps {
   lists: Map[String, NType] = newMap()
   maps: Map[String, NType] = newMap()
   tasks: Map[String, NType] = newMap()
+  scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
   fnArity: Map[Int, Int] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
@@ -18791,6 +18792,7 @@ func lowerWithTuples(
       lists = maps.lists,
       maps = maps.maps,
       tasks = maps.tasks,
+      scans = maps.scans,
       asyncFns = maps.asyncFns,
       fnArity = maps.fnArity,
       ifaces = maps.ifaces,
@@ -18802,7 +18804,7 @@ func lowerWithTuples(
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0) or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0 and f.needScans.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18828,6 +18830,16 @@ func lowerWithTuples(
         }
         for n in f.needTasks {
           maps.tasks.add(n.key, taskNType(ctx, n.elemTy))
+        }
+        for n in f.needScans {
+          val scanName = if n.kind == "remove" {
+            ensureListRemoveValue(ctx, n.elemTy)
+          } else if n.kind == "lastIndexOf" {
+            ensureListLastIndexOf(ctx, n.elemTy)
+          } else {
+            ensureListIndexOf(ctx, n.elemTy)
+          }
+          maps.scans.add(n.key, scanName)
         }
         attempt = attempt + 1
       }

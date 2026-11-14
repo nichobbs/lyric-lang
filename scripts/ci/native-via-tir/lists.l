@@ -88,6 +88,24 @@ func combine(): Int {
   sum(b) * 10 + b.length
 }
 
+func search(): Int {
+  val xs: List[String] = ["a", "b", "c", "b"]
+  val gone = xs.remove("b")
+  var r = 0
+  if xs.contains("c") {
+    r = r + 1
+  }
+  if not xs.contains("zz") {
+    r = r + 10
+  }
+  r = r + xs.indexOf("c") * 100
+  r = r + xs.lastIndexOf("b") * 1000
+  if gone {
+    r = r + 100000
+  }
+  r + xs.count * 1000000
+}
+
 func main(): Unit {
   val lit: slice[Int] = [1, 2, 3, 4]
   println(toString(sum(lit)))
@@ -99,4 +117,5 @@ func main(): Unit {
   println(edit())
   println(toString(clearIt()))
   println(toString(combine()))
+  println(toString(search()))
 }
