@@ -2405,6 +2405,17 @@ pub func pipeCheckFront(
     if gateTo(sink, opts.pkgLabel, opts.filePaths, IfaceBuild.outcomeDiagnostics(outcome, tcRes.file)) {
       return None
     }
+  } else if (verifyIr or opts.wantTir) and not IfaceBuild.isExecutable(tcRes.file) {
+    // A build that only checks (the census, a TIR build) still gives the packages checked after
+    // this one the defaults its interface carries (D482); nothing is reported or written.
+    match IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets) {
+      case IfaceBuild.IOBuilt(b) -> TirBuild.registerInterface(
+        opts.depDefaults,
+        modulePathJoin(tcRes.file.packageDecl.path.segments),
+        b.bytes
+      )
+      case _ -> ()
+    }
   }
   // Bound to an annotated local: the stage-0 seed compiler that builds this
   // package cannot infer `mapKeys`'s type arguments from a restored
