@@ -123,6 +123,49 @@ pub func tirTopLevelFn(key: in String): Option[TirFnName] {
   }
 }
 
+/// An `impl` method's DefPath key, `Pkg::Target::$impl(Iface)::name(P1,P2)` (docs/70 §4.2): the
+/// package, the target type, the interface and the method's name; None for any other key.
+pub record TirImplMember {
+  pkg: String
+  owner: String
+  iface: String
+  name: String
+}
+
+pub func tirImplMember(key: in String): Option[TirImplMember] {
+  match Str.indexOf(key, "::") {
+    case None -> None
+    case Some(sep) -> {
+      val rest = Str.substring(key, sep + 2)
+      match Str.indexOf(rest, "::$impl(") {
+        case None -> None
+        case Some(m) -> {
+          val owner = Str.substring(rest, 0, m)
+          val tail = Str.substring(rest, m + 8)
+          match Str.indexOf(tail, ")::") {
+            case None -> None
+            case Some(close) -> {
+              val iface = Str.substring(tail, 0, close)
+              val fnPart = Str.substring(tail, close + 3)
+              match Str.indexOf(fnPart, "(") {
+                case None -> None
+                case Some(open) -> Some(
+                  value = TirImplMember(
+                    pkg = Str.substring(key, 0, sep),
+                    owner = owner,
+                    iface = iface,
+                    name = Str.substring(fnPart, 0, open)
+                  )
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /// What came of lowering a unit's functions from TIR: how many were lowered, and
 /// the reason each of the others stayed on the AST path.
 pub record TirCensus {
