@@ -202,6 +202,23 @@ func loadCases(ctx: in TyConvCtx): Unit {
   }
 }
 
+/// The payload-free case `name` of the union or enum `parent`, when it has one.
+func nullaryCaseOf(env: in BuildEnv, parent: in SymbolId, name: in String): Option[SymbolId] {
+  loadCases(env.ctx)
+  for s in env.ctx.tbl.symbols {
+    match s.kind {
+      case DKUnionCase(pid, uc) -> if pid.id == parent.id and uc.name == name and uc.fields.count == 0 {
+        return caseSymbolId(env.ctx.tbl, s, pid, uc.name)
+      }
+      case DKEnumCase(pid, ec) -> if pid.id == parent.id and ec.name == name {
+        return caseSymbolId(env.ctx.tbl, s, pid, ec.name)
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 /// The result type of a case of the union or enum `parent` with `n` type parameters.
 func caseResultTy(parent: in SymbolId, n: in Int): Ty {
   val args: List[Ty] = newList()

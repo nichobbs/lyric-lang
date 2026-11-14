@@ -159,6 +159,32 @@ func main(): Int {
 }
 LYRIC
 
+# Defaults a source-loaded package declares as a bare case (`Tls12`, `None`): each is the case of the
+# field's own union or enum (D485).
+check stdlib_case_defaults 0 <<'LYRIC'
+package Shapes7
+import Std.Core
+import Std.Tls
+
+func minOf(c: in TlsServerConfig): Int {
+  match c.minVersion {
+    case Tls12 -> 0
+    case Tls13 -> 1
+  }
+}
+
+func main(): Int {
+  match Identity.fromPem("a", "b") {
+    case Ok(id) -> {
+      val c = TlsServerConfig(identity = id)
+      val none = match c.clientCa { case None -> 0; case Some(_) -> 1 }
+      minOf(c) + none
+    }
+    case Err(_) -> 0
+  }
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
