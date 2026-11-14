@@ -1166,6 +1166,13 @@ test "a Long argument to a host Double parameter is widened at the boundary (D60
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
 }
 
+test "a var field of an opaque type is assignable after the type is constructed in another body (D464)" {
+  val pb = packageOf(
+    "package App\nopaque type Clock {\n  var now: Long\n}\nfunc mk(): Clock {\n  Clock(now = 0)\n}\nfunc tick(c: inout Clock): Unit {\n  c.now = c.now + 1\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "mk and tick")
+}
+
 test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
