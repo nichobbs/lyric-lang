@@ -64,7 +64,11 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   `Lyric.Flags.Flipt` and `Lyric.Aws.SigV4`
   (docs/progress/2026-11-13-ecosystem-tls-and-second-wave.md). Then `Lyric.Net`, the one socket and
   TLS kernel behind the TCP clients, and `Lyric.Cache.Memcached`
-  (docs/progress/2026-11-13-ecosystem-net-and-memcached.md).
+  (docs/progress/2026-11-13-ecosystem-net-and-memcached.md). Then the S3 and
+  SQS backends verified against AWS Emulator, `Lyric.Aws.Credentials`,
+  `Lyric.Jobs.Hangfire`, heart-beats and reconnecting in the ActiveMQ and
+  RabbitMQ clients, and the first packages on `--target native`
+  (docs/progress/2026-11-14-ecosystem-aws-hangfire-recovery-native.md).
 
 ## 4. Open questions
 
