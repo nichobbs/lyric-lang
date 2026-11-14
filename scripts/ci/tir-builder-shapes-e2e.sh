@@ -66,6 +66,25 @@ func main(): Int {
 }
 LYRIC
 
+# Calls with open type arguments inside a call with open type arguments (each takes its own parameter types).
+check nested_open_calls 2 <<'LYRIC'
+package Shapes5
+import Std.Core
+import Std.Collections
+
+func both[T](a: in List[T], b: in List[T]): List[T] {
+  val r: List[T] = newList()
+  r
+}
+
+func main(): Int {
+  val xs: List[Int] = both(both(newList(), newList()), both(newList(), newList()))
+  xs.add(1)
+  xs.add(2)
+  xs.count
+}
+LYRIC
+
 check branches_that_leave 3 <<'LYRIC'
 package Shapes2
 import Std.Core

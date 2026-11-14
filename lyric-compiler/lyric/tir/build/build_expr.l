@@ -59,9 +59,6 @@ pub record BuildEnv {
   /// The locals the first alternative of an or-pattern bound: a later alternative's binding of
   /// the same name is that local (every alternative binds the same names).
   orBound: List[LocalDecl] = newList()
-  /// The parameter types of the call being built (empty or one per parameter), when the checker left
-  /// the call's type arguments open and the type its context fixes gave them (`openCallArgs`).
-  ptyOverride: List[Ty] = newList()
 }
 
 /// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
@@ -412,6 +409,8 @@ func branchNeverCompletes(b: in ExprOrBlock): Bool {
 
 /// Whether the source expression `e` is a `match` or `if` whose every branch leaves, or a block
 /// that ends in a statement that does: the checker records no join type for it.
+/// A `break` or `continue` counts as leaving the branch: it leaves the enclosing loop body, so control
+/// does not reach the end of the branch (a loop's own statements are not inspected).
 func exprNeverCompletes(e: in Expr): Bool {
   match e.kind {
     case EMatch(_, arms) -> {
@@ -3672,10 +3671,11 @@ func genericArgsFromCall(
 }
 
 /// The type of parameter `i` (`p`) of the call being built: the one the context fixed for a call
-/// with open type arguments, else the signature's.
-func paramTyAt(env: in BuildEnv, i: in Int, p: in ResolvedParam): Result[Ty, String] {
-  if i < env.ptyOverride.count {
-    Ok(value = env.ptyOverride[i])
+/// with open type arguments (`ptys`, one per parameter, empty for a call with none), else the
+/// signature's.
+func paramTyAt(env: in BuildEnv, ptys: in List[Ty], i: in Int, p: in ResolvedParam): Result[Ty, String] {
+  if i < ptys.count {
+    Ok(value = ptys[i])
   } else {
     tyOfType(env.ctx, p.ty)
   }
@@ -3733,6 +3733,7 @@ func buildDirectCall(
 ): Option[TExpr] {
   var tyArgs: List[Ty] = newList()
   var callSig = sig
+  val ptys: List[Ty] = newList()
   if sig.generics.count > 0 {
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
@@ -3777,10 +3778,9 @@ func buildDirectCall(
       }
       for p in sig.params {
         match tyOfType(pctx, p.ty) {
-          case Ok(pt) -> env.ptyOverride.add(substOwnerArgs(pt, sym, tyArgs))
+          case Ok(pt) -> ptys.add(substOwnerArgs(pt, sym, tyArgs))
           case Err(msg) -> {
             env.errors.add(msg)
-            env.ptyOverride.clear()
             return None
           }
         }
@@ -3794,9 +3794,7 @@ func buildDirectCall(
     }
   }
   val pre: List[TStmt] = newList()
-  val builtArgs = buildCallArgs(env, e, sym, callSig, args, pre)
-  env.ptyOverride.clear()
-  match builtArgs {
+  match buildCallArgs(env, e, sym, callSig, ptys, args, pre) {
     case Some(targs) -> {
       noteFuncSym(env, sym, sig, None, None, TSkFunc)
       Some(
@@ -3918,7 +3916,10 @@ func buildMethodCall(
   }
   val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
-  val rest = match buildCallArgs(env, e, sym, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
+  val rest = match buildCallArgs(env, e, sym, inst.sig, newList(), args, pre) {
+    case Some(a) -> a
+    case None -> return None
+  }
   val all: List[TArg] = newList()
   // The receiver is evaluated before any argument: when arguments were hoisted ahead of
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
@@ -3977,7 +3978,7 @@ func buildConstructCall(
   args: in List[CallArg],
 ): Option[TExpr] {
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, sym, sig, args, pre) {
+  match buildCallArgs(env, e, sym, sig, newList(), args, pre) {
     case Some(targs) -> {
       val fields: List[TExpr] = newList()
       for a in targs {
@@ -4093,14 +4094,21 @@ func buildDefaultArg(
   callee: in SymbolId,
   origin: in String,
   p: in ResolvedParam,
+  ptys: in List[Ty],
   index: in Int,
 ): Option[TExpr] {
   val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
   if origin != "" and origin != here {
-    return buildForeignDefaultArg(env, call, callee, p, index)
+    return buildForeignDefaultArg(env, call, callee, p, ptys, index)
   }
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
-  val pty = match paramTyAt(env, index, p) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val pty = match paramTyAt(env, ptys, index, p) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
   val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
   val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
@@ -4138,9 +4146,20 @@ func buildDefaultArg(
 /// A default declared in another package: the carried expression, its declarations added to
 /// this body's, placed at the call and converted to the parameter's type.
 func buildForeignDefaultArg(
-  env: in BuildEnv, call: in Expr, callee: in SymbolId, p: in ResolvedParam, index: in Int
+  env: in BuildEnv,
+  call: in Expr,
+  callee: in SymbolId,
+  p: in ResolvedParam,
+  ptys: in List[Ty],
+  index: in Int,
 ): Option[TExpr] {
-  val pty = match paramTyAt(env, index, p) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val pty = match paramTyAt(env, ptys, index, p) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
   val key = match symTableDefPathKeyOf(env.ctx.tbl, callee) {
     case Some(k) -> k
     case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
@@ -4237,6 +4256,7 @@ func buildCallArgs(
   e: in Expr,
   callee: in SymbolId,
   sig: in ResolvedSignature,
+  ptys: in List[Ty],
   args: in List[CallArg],
   pre: in List[TStmt],
 ): Option[List[TArg]] {
@@ -4306,7 +4326,7 @@ func buildCallArgs(
     match slots[i] {
       case None -> {
         if p.hasDefault {
-          match buildDefaultArg(env, e, callee, sig.originPackage, p, i) {
+          match buildDefaultArg(env, e, callee, sig.originPackage, p, ptys, i) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {
               ok = false
@@ -4318,7 +4338,7 @@ func buildCallArgs(
         }
       }
       case Some(x) -> match p.mode {
-        case PMIn -> match paramTyAt(env, i, p) {
+        case PMIn -> match paramTyAt(env, ptys, i, p) {
           case Err(msg) -> {
             env.errors.add(msg)
             ok = false
