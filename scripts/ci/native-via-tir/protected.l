@@ -1,6 +1,7 @@
 //! protected.l - protected types lowered from TIR (docs/70 phase 4a, D520): an entry or function's
 //! body (without the lock the AST path's wrapper takes) reads and writes the object's fields; the
-//! wrapper, construction (so `main`) and entries with a `when:` barrier stay on the AST path.
+//! wrapper and entries with a `when:` barrier stay on the AST path; construction (`main`) is lowered,
+//! with the mutex the object's last field holds.
 //! `native-via-tir-e2e.sh` runs it both ways and under AddressSanitizer.
 package ProtectedViaTir
 

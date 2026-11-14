@@ -72,10 +72,28 @@ func snapshots(): String {
   acc
 }
 
+func loopConcat(): String {
+  val ss: List[String] = ["a", "b", "c"]
+  var i = 0
+  while i < ss.count {
+    ss[i] += "!"
+    i = i + 1
+  }
+  val m: Map[String, String] = newMap()
+  m.add("k", "v")
+  var j = 0
+  while j < 3 {
+    m["k"] += "x"
+    j = j + 1
+  }
+  ss[0] + ss[1] + ss[2] + m["k"]
+}
+
 func main(): Unit {
   println(toString(vecTotal(vecs())))
   println(toString(literal()))
   println(toString(table()))
   println(toString(bumps()))
   println(snapshots())
+  println(loopConcat())
 }

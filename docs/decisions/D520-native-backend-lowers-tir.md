@@ -222,3 +222,9 @@ and still holds generics and un-elaborated contracts.
 - **`mapKeys` and `mapValues`** are the runtime's snapshots (`lyric_map_keys`, `lyric_map_values`), registered as intrinsics like `newList`, so a call with its type arguments lowers without waiting for generic monomorphisation.
 - **The call-arity guard is deleted** (`TirLowerEnv.fnArity`): the builder names the declaration the checker resolved for a method call (D484), so a record method beside a dot-named function of another arity is no longer given the wrong callee (#9106).
 - `scripts/ci/native-via-tir/arrays.l` and `elems.l` run both ways and under AddressSanitizer; the e2e script also requires an out-of-range index to panic with the same message on both paths.
+
+## Slice 27: protected construction
+
+- A construction of a protected type lowers from TIR: the user fields are evaluated in order, the heap object is allocated with the destructor the code generator's layout names (which tears the mutex down), the fields are stored, and the runtime-sized mutex buffer (`lyric_mutex_size`, `lyric_alloc`, `lyric_mutex_init`) is stored in the layout's last field, as `lowerProtectedConstructArgs` does on the AST path. A function that builds a protected object (`protected.l`'s `main`) no longer stays on the AST path: 5 of 5 functions lower.
+- Entries with a `when:` barrier or a contract, generic protected types and protected types with an invariant keep the AST path (the first two wait for 3c, the last is the invariant asserts TIR does not carry yet).
+- `arrays.l` gains a nested element passed `inout` (`inc(g[1][2])`) and a by-value record holding an array built from a call; `elems.l` gains `String` compound assignment on list and map elements inside loops (review suggestions on #9114).
