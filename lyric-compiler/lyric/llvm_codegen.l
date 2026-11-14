@@ -18423,7 +18423,6 @@ record TirUnitMaps {
   tasks: Map[String, NType] = newMap()
   scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
-  fnArity: Map[Int, Int] = newMap()
   protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
@@ -18570,6 +18569,9 @@ func tirUnitMaps(
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> {
           if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity" or n.name == "newMap") {
+            intrinsics.add(id, n.name)
+          }
+          if n.pkg == "Std.Collections" and (n.name == "mapKeys" or n.name == "mapValues") {
             intrinsics.add(id, n.name)
           }
         }
@@ -18772,7 +18774,6 @@ func tirUnitMaps(
     enumCases = enumCases,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
-    fnArity = declArity,
     protRecs = protRecs,
     ifaces = ifaces,
     ifaceMethods = ifaceMethods,
@@ -18804,7 +18805,6 @@ func lowerWithTuples(
       tasks = maps.tasks,
       scans = maps.scans,
       asyncFns = maps.asyncFns,
-      fnArity = maps.fnArity,
       protRecs = maps.protRecs,
       ifaces = maps.ifaces,
       ifaceMethods = maps.ifaceMethods,

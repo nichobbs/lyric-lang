@@ -302,9 +302,6 @@ pub record TirLowerEnv {
   /// lock the AST path's wrapper takes) but no construction, copy or pattern, which need the
   /// mutex set up, so they are kept out of `recs`.
   protRecs: Map[Int, TirRecLayout] = newMap()
-  /// The parameter count of each declaration of the unit's own package, keyed by symbol: a call
-  /// whose argument count differs names the wrong callee, which the lowering refuses.
-  fnArity: Map[Int, Int] = newMap()
   /// The non-generic interfaces, keyed by the interface's symbol; each interface method's place
   /// in one, keyed by the method's symbol; and the vtable constant of a record that implements
   /// an interface, keyed `<record symbol>|<interface symbol>`.
@@ -801,6 +798,7 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
       None
     }
     case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
+    case TArray(len, el) -> arrayType(env, len, el)
     case TFunc(_, _, _) -> funcType(env, t)
     case TSlice(_) -> listType(env, t)
     case TExtern(h) -> if h.name == "lyric.native.NativePtr`1" {
@@ -811,6 +809,35 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
       listType(env, t)
     }
     case _ -> None
+  }
+}
+
+/// An element type an inline array holds: by-value scalars, records and unions, and arrays of
+/// those.  Mirrors `isByValueFieldNType` in llvm_codegen.l, which decides the same question when
+/// it lays out a record.
+func inlineElemN(t: in NType): Bool {
+  match t {
+    case NArray(e, _) -> inlineElemN(e)
+    case NI1 -> true
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case NFloat -> true
+    case NDouble -> true
+    case NStruct(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// `array[N, T]` with a known length and an element held by value: the inline LLVM array
+/// `[N x T]`.  An array of references is a `List` on this backend, and a copy of it is a copy of
+/// the storage, a step the checker records at its own sites and the TIR does not carry, so it
+/// stays on the AST path.
+func arrayType(env: in TirLowerEnv, len: in ArrayLen, el: in Ty): Option[NType] {
+  val n = match len { case ALKnown(k) -> k; case _ -> return None }
+  match tyToN(env, el) {
+    case Some(en) -> if inlineElemN(en) { Some(value = NArray(elem = en, size = n)) } else { None }
+    case None -> None
   }
 }
 
@@ -895,7 +922,7 @@ func newMapOf(c: in LCtx, t: in Ty): Val {
   val mt = match tyToN(c.env, t) { case Some(x) -> x; case None -> return unsupported(c, "a map of " + renderTy(t)) }
   val kv = match mapKeyVal(c, t) { case Some(x) -> x; case None -> return unsupported(c, "a map of " + renderTy(t)) }
   val keyFlag = if isStringN(kv[0]) { 1i64 } else { 0i64 }
-  val valFlag = if isRefN(kv[1]) { 1i64 } else { 0i64 }
+  val valFlag = elemFlag(kv[1]).toLong()
   val raw = callRt(
     c,
     "lyric_map_new",
@@ -956,6 +983,11 @@ func lowerMapIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val
   }
   val m = borrow(c, lowerExpr(c, recv))
   val k = borrow(c, lowerExpr(c, idx))
+  mapGetOrPanic(c, m, k, kv[1], line)
+}
+
+/// The value under key `k` of the map `m`, borrowed from it; panics when the key is absent.
+func mapGetOrPanic(c: in LCtx, m: in Val, k: in Val, valTy: in NType, line: in Int): Val {
   val outSlot = "mapidx.out." + toString(c.ticker.count + 1)
   c.ticker.add(0)
   c.allocas.add(NAlloca(dest = outSlot, ty = NI64))
@@ -969,21 +1001,58 @@ func lowerMapIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val
   trapIf(c, NLocal(name = miss), "map key not found (use mapGet for an Option result)", line)
   val raw = tmp(c)
   c.insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
-  fromSlot(c, NLocal(name = raw), kv[1])
+  fromSlot(c, NLocal(name = raw), valTy)
 }
 
-/// `m[k] = v`: the kernel retains the new value and releases the old one.
-func lowerMapSet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr): Val {
-  match op {
-    case AkSet -> ()
-    case _ -> return unsupported(c, "a compound assignment to a map element")
+/// The value `cur op rhs` for a compound assignment to an element of type `placeTy`: a scalar
+/// through the operator, a `String` by concatenation (a fresh owned string).
+func compoundElem(
+  c: in LCtx, op: in AssignKind, placeTy: in Ty, nt: in NType, cur: in Val, rhs: in Val, line: in Int
+): Option[Val] {
+  if isStringN(nt) {
+    match op {
+      case AkAdd -> return Some(value = lowerStringBinary(c, IoAdd, cur, borrow(c, rhs)))
+      case _ -> {
+        c.problems.add("a compound assignment on a String element")
+        return None
+      }
+    }
   }
+  if not isScalarN(nt) {
+    c.problems.add("a compound assignment on an element of type " + renderTy(placeTy))
+    return None
+  }
+  match assignOp(op) {
+    case Some(iop) -> Some(value = lowerBinary(c, iop, placeTy, nt, cur.value, rhs.value, line))
+    case None -> None
+  }
+}
+
+/// `m[k] = v` and `m[k] op= v`: the kernel retains the new value and releases the old one.  A
+/// compound assignment reads the current value first (the key must be present), after the
+/// right-hand side is evaluated.
+func lowerMapSet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr): Val {
   if not tyLowers(c.env, recv.ty) {
     return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
   }
   val m = borrow(c, lowerExpr(c, recv))
   val k = borrow(c, lowerExpr(c, idx))
-  val v = borrow(c, lowerExpr(c, value))
+  val line = idx.span.startPos.line
+  val v = match op {
+    case AkSet -> borrow(c, lowerExpr(c, value))
+    case _ -> {
+      val kv = match mapKeyVal(c, recv.ty) {
+        case Some(x) -> x
+        case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+      }
+      val rhs = lowerExpr(c, value)
+      val cur = mapGetOrPanic(c, m, k, kv[1], line)
+      match compoundElem(c, op, value.ty, kv[1], cur, rhs, line) {
+        case Some(nv) -> borrow(c, nv)
+        case None -> return unitVal()
+      }
+    }
+  }
   val args: List[NArg] = newList()
   args.add(NArg(ty = i8ptr(), value = listAsI8(c, m)))
   args.add(NArg(ty = NI64, value = slotOf(c, k)))
@@ -1051,8 +1120,55 @@ func tyLowers(env: in TirLowerEnv, t: in Ty): Bool {
 func listElemOk(nt: in NType): Bool {
   match nt {
     case NVoid -> false
-    case _ -> isScalarN(nt) or isRefN(nt)
+    case _ -> isScalarN(nt) or isRefN(nt) or isAggN(nt)
   }
+}
+
+/// A by-value record, union or array: held in a list or map slot as a counted box (a
+/// 64-bit slot holds a pointer to the header followed by the value), copied in and out.
+func isAggN(t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> true
+    case NArray(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// The element flag the list and map kernels dispatch on: 1 for a counted element (a reference,
+/// or the box of a by-value aggregate), 0 for a scalar.
+func elemFlag(t: in NType): Int {
+  if isRefN(t) or isAggN(t) {
+    1
+  } else {
+    0
+  }
+}
+
+func boxFields(t: in NType): List[NType] {
+  val f: List[NType] = newList()
+  addArcHeader(f)
+  f.add(t)
+  f
+}
+
+/// The box a by-value aggregate `t` occupies in a slot: the layout of `__box<T>` in the code
+/// generator (the header, then the value), as a literal struct so the lowering needs no
+/// registered type.
+func boxPtrTy(t: in NType): NType {
+  NPtr(pointee = NLitStruct(fields = boxFields(t)))
+}
+
+/// A new box (count 1) holding `v`.
+func boxAgg(c: in LCtx, v: in Val): NValue {
+  val st = NLitStruct(fields = boxFields(v.ty))
+  val obj = allocObject(c, boxPtrTy(v.ty), st, "")
+  val ix: List[NArg] = newList()
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  val p = tmp(c)
+  c.insns.add(NGEP(dest = p, ty = st, ptr = obj, indices = ix))
+  c.insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = p)))
+  obj
 }
 
 /// The list type of `t` (see `listElemTy`).  A list type the code generator has not registered
@@ -1862,7 +1978,7 @@ func lowerInterp(c: in LCtx, parts: in List[TExpr]): Val {
 }
 
 /// `s[i]` on a string: the runtime decodes the scalar value starting at byte offset `i`.
-/// Other indexing (lists, maps, arrays, slices) stays on the AST path.
+/// Lists, maps and inline arrays index through their own lowering; other indexing stays on the AST path.
 func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind, line: in Int): Val {
   match how {
     case IkString -> {
@@ -1876,7 +1992,8 @@ func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind, li
     case IkList -> lowerListIndex(c, recv, idx)
     case IkSlice -> lowerListIndex(c, recv, idx)
     case IkMap -> lowerMapIndex(c, recv, idx, line)
-    case _ -> unsupported(c, "indexing a value that is not a string or a list")
+    case IkArray -> lowerArrayIndex(c, recv, idx, line)
+    case _ -> unsupported(c, "indexing a value that is not a string, a list, a map or an array")
   }
 }
 
@@ -2412,9 +2529,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       }
       match mapGet(c.env.fnNames, sym.id) {
         case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
-        case Some(irName) -> if wrongArity(c, sym, args.count) {
-          unsupported(c, "a call whose argument count differs from its callee's parameter count")
-        } else {
+        case Some(irName) -> {
           if c.coro and isCoroLeaf(irName) {
             return unsupported(c, "a coroutine calling " + irName)
           }
@@ -2478,16 +2593,6 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       lowerIfaceCall(c, e, method, args)
     }
     case _ -> unsupported(c, "a call through " + calleeKind(callee))
-  }
-}
-
-/// Whether a direct call passes another number of arguments than its callee declares.  The TIR
-/// builder can name the wrong callee when a record method and a dot-named function share a name
-/// (nichobbs/lyric-lang#9106); this guard keeps such a function on the AST path until it is fixed.
-func wrongArity(c: in LCtx, sym: in SymbolId, argc: in Int): Bool {
-  match mapGet(c.env.fnArity, sym.id) {
-    case Some(n) -> n != argc
-    case None -> false
   }
 }
 
@@ -2800,8 +2905,18 @@ func byRefArg(c: in LCtx, place: in TPlace): NArg {
       case Some(fp) -> NArg(ty = NPtr(pointee = fp.ty), value = fp.value)
       case None -> none
     }
+    case PlIndex(recv, idx, how) -> match how {
+      case IkArray -> match arrayElemPlace(c, recv, idx, idx.span.startPos.line) {
+        case Some(p) -> NArg(ty = NPtr(pointee = p.ty), value = p.value)
+        case None -> none
+      }
+      case _ -> {
+        c.problems.add("a by-reference argument that is not a local, a record field or an array element")
+        none
+      }
+    }
     case _ -> {
-      c.problems.add("a by-reference argument that is not a local or a record field")
+      c.problems.add("a by-reference argument that is not a local, a record field or an array element")
       none
     }
   }
@@ -2911,6 +3026,19 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
   }
   val arg = ins[0]
+  if name == "array.length" {
+    val n = match arg.ty {
+      case TArray(len, _) -> match len { case ALKnown(k) -> Some(value = k); case _ -> None }
+      case _ -> None
+    }
+    match n {
+      case Some(k) -> {
+        discard(c, lowerExpr(c, arg))
+        return Val(ty = NI32, value = NLitInt(v = k.toLong(), ty = NI32))
+      }
+      case None -> return unsupported(c, "the length of " + renderTy(arg.ty))
+    }
+  }
   if name == "println" or name == "print" {
     val a = borrow(c, lowerExpr(c, arg))
     val text = if isStringN(a.ty) { a } else { borrow(c, scalarToString(c, arg.ty, a)) }
@@ -3255,9 +3383,37 @@ func slotOf(c: in LCtx, v: in Val): NValue {
     case NI32 -> c.insns.add(NSExt(dest = d, fromTy = NI32, value = v.value, toTy = NI64))
     case NI8 -> c.insns.add(NZExt(dest = d, fromTy = NI8, value = v.value, toTy = NI64))
     case NI1 -> c.insns.add(NZExt(dest = d, fromTy = NI1, value = v.value, toTy = NI64))
+    case NStruct(_, _) -> return slotOfAgg(c, v)
+    case NArray(_, _) -> return slotOfAgg(c, v)
     case _ -> c.insns.add(NPtrToInt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
   }
   NLocal(name = d)
+}
+
+/// The slot of a by-value aggregate: a new box.  The container retains it, so this code's own
+/// count is released when the statement ends.
+func slotOfAgg(c: in LCtx, v: in Val): NValue {
+  val box = boxAgg(c, v)
+  val bt = boxPtrTy(v.ty)
+  c.temps[c.temps.count - 1].add(Val(ty = bt, value = box, owned = true))
+  val d = tmp(c)
+  c.insns.add(NPtrToInt(dest = d, fromTy = bt, value = box, toTy = NI64))
+  NLocal(name = d)
+}
+
+/// A by-value aggregate read out of its box: a copy, so nothing borrows from the container.
+func fromBoxSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
+  val bt = boxPtrTy(nt)
+  val box = tmp(c)
+  c.insns.add(NIntToPtr(dest = box, fromTy = NI64, value = slot, toTy = bt))
+  val ix: List[NArg] = newList()
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  val p = tmp(c)
+  c.insns.add(NGEP(dest = p, ty = NLitStruct(fields = boxFields(nt)), ptr = NLocal(name = box), indices = ix))
+  val d = tmp(c)
+  c.insns.add(NLoad(dest = d, ty = nt, ptr = NLocal(name = p)))
+  Val(ty = nt, value = NLocal(name = d))
 }
 
 /// The element a slot holds; a reference is borrowed from the list (the kernel's get does not
@@ -3275,6 +3431,8 @@ func fromSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
     case NI32 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI32))
     case NI8 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI8))
     case NI1 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI1))
+    case NStruct(_, _) -> return fromBoxSlot(c, slot, nt)
+    case NArray(_, _) -> return fromBoxSlot(c, slot, nt)
     case _ -> c.insns.add(NIntToPtr(dest = d, fromTy = NI64, value = slot, toTy = nt))
   }
   Val(ty = nt, value = NLocal(name = d))
@@ -3299,7 +3457,7 @@ func listElemN(c: in LCtx, t: in Ty): Option[NType] {
 func newListOf(c: in LCtx, t: in Ty): Val {
   val lt = match tyToN(c.env, t) { case Some(x) -> x; case None -> return unsupported(c, "a list of " + renderTy(t)) }
   val el = match listElemN(c, t) { case Some(x) -> x; case None -> return unsupported(c, "a list of " + renderTy(t)) }
-  val flag = if isRefN(el) { 1i64 } else { 0i64 }
+  val flag = elemFlag(el).toLong()
   val raw = callRt(c, "lyric_list_new", i8ptr(), arg1(NI32, NLitInt(v = flag, ty = NI32)))
   val d = tmp(c)
   c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = lt))
@@ -3317,6 +3475,13 @@ func pushOnto(c: in LCtx, l: in Val, x: in TExpr): Unit {
 
 /// `[a, b, c]` as a list or slice.
 func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
+  match e.ty {
+    case TArray(_, _) -> match tyToN(c.env, e.ty) {
+      case Some(nt) -> return lowerArrayLit(c, nt, elems)
+      case None -> return unsupported(c, "a literal of " + renderTy(e.ty))
+    }
+    case _ -> ()
+  }
   val l = newListOf(c, e.ty)
   // A failed lowering of the list type is reported in `c.problems` and yields a placeholder that
   // is not a reference: there is nothing to push onto.
@@ -3329,10 +3494,36 @@ func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
   l
 }
 
+/// `mapKeys(m)` and `mapValues(m)`: a fresh list of the map's keys or values, in the runtime's
+/// slot order, whose elements the list retains as the map does.
+func lowerMapSnapshot(c: in LCtx, e: in TExpr, name: in String, arg: in TArg): Val {
+  val mExpr = match arg { case TArgIn(v) -> v; case _ -> return unsupported(c, "an out argument of " + name) }
+  if not isMapTy(mExpr.ty) or not tyLowers(c.env, mExpr.ty) {
+    return unsupported(c, name + " of " + renderTy(mExpr.ty))
+  }
+  val lt = match tyToN(c.env, e.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "a list of " + renderTy(e.ty))
+  }
+  val m = borrow(c, lowerExpr(c, mExpr))
+  val raw = callRt(
+    c,
+    if name == "mapKeys" { "lyric_map_keys" } else { "lyric_map_values" },
+    i8ptr(),
+    arg1(i8ptr(), listAsI8(c, m))
+  )
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = lt))
+  Val(ty = lt, value = NLocal(name = d), owned = true)
+}
+
 /// `newList()` and `newListWithCapacity(n)`.
 func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in List[TArg]): Val {
   if name == "newMap" and isMapTy(e.ty) {
     return newMapOf(c, e.ty)
+  }
+  if (name == "mapKeys" or name == "mapValues") and isListTy(e.ty) and args.count == 1 {
+    return lowerMapSnapshot(c, e, name, args[0])
   }
   if not isListTy(e.ty) {
     return unsupported(c, name + " producing " + renderTy(e.ty))
@@ -3504,6 +3695,12 @@ func lowerPanicCall(c: in LCtx, msg: in TExpr, line: in Int): Val {
   if not isStringN(m.ty) {
     return unsupported(c, "a panic message that is no string")
   }
+  panicWithString(c, m, line)
+  unitVal()
+}
+
+/// Panic with the message in `m` (a `String`), then start a block nothing reaches.
+func panicWithString(c: in LCtx, m: in Val, line: in Int): Unit {
   val cs = callRt(c, "lyric_string_to_cstring", NPtr(pointee = NI8), arg1(lyricStringNType(), m.value))
   val filePtr = cString(c, c.env.panicFile)
   val args: List[NArg] = newList()
@@ -3513,7 +3710,256 @@ func lowerPanicCall(c: in LCtx, msg: in TExpr, line: in Int): Val {
   c.insns.add(NCallVoid(fn = NGlobal(name = "lyric_panic_msg"), args = args))
   c.insns.add(NUnreachable)
   startBlock(c, newLabel(c, "dead"))
-  unitVal()
+}
+
+/// `panic("index <i> out of range for array[<n>]")`.  The message's temporaries live on this
+/// path only, which never returns, so their statement scope is dropped without a release.
+func arrayOobPanic(c: in LCtx, iv: in NValue, n: in Int, line: in Int): Unit {
+  pushTemps(c)
+  val head = stringLiteral(c, "index ")
+  val idx = borrow(c, scalarToString(c, TPrim(kind = TPInt), Val(ty = NI32, value = iv)))
+  val joined = borrow(c, lowerStringBinary(c, IoAdd, head, idx))
+  val tail = stringLiteral(c, " out of range for array[" + toString(n) + "]")
+  val msg = borrow(c, lowerStringBinary(c, IoAdd, joined, tail))
+  panicWithString(c, msg, line)
+  c.temps.removeAt(c.temps.count - 1)
+}
+
+/// The `i32` index of an access to an `array[n, _]`, panicking when it is outside `0 ..< n`.
+func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option[NValue] {
+  val v = borrow(c, lowerExpr(c, idx))
+  match v.ty {
+    case NI32 -> ()
+    case _ -> {
+      c.problems.add("an array index of type " + renderTy(idx.ty))
+      return None
+    }
+  }
+  val ok = tmp(c)
+  c.insns.add(NICmp(dest = ok, pred = IUlt, ty = NI32, a = v.value, b = NLitInt(v = n.toLong(), ty = NI32)))
+  val okL = newLabel(c, "arr.in")
+  val badL = newLabel(c, "arr.oob")
+  c.insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = okL, elseLabel = badL))
+  startBlock(c, badL)
+  arrayOobPanic(c, v.value, n, line)
+  c.insns.add(NBr(label = okL))
+  startBlock(c, okL)
+  Some(value = v.value)
+}
+
+/// `&arr[idx]` for the inline array at `base`.
+func arrayElemPtr(c: in LCtx, arrTy: in NType, base: in NValue, idx: in NValue): NValue {
+  val d = tmp(c)
+  val ix: List[NArg] = newList()
+  ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  ix.add(NArg(ty = NI32, value = idx))
+  c.insns.add(NGEP(dest = d, ty = arrTy, ptr = base, indices = ix))
+  NLocal(name = d)
+}
+
+/// The address of the array storage `e` denotes, when it is a place: a local's slot, a field of
+/// a heap record, a field of a by-value record in a place, or an element of an inline array in a
+/// place.  None for anything else (a call result), which is read as a value.
+func arrayPlaceAddr(c: in LCtx, e: in TExpr): Option[NValue] {
+  match e.kind {
+    case XLocal(id) -> match mapGet(c.slots, id.id) {
+      case Some(slot) -> Some(value = NLocal(name = slot.ptr))
+      case None -> None
+    }
+    case XField(recv, field) -> match fieldOwnerLayout(c, field.owner) {
+      case None -> None
+      case Some(lay) -> {
+        if field.index < 0 or field.index >= lay.fieldTys.count {
+          return None
+        }
+        if lay.byValue {
+          match arrayPlaceAddr(c, recv) {
+            case None -> None
+            case Some(base) -> {
+              val d = tmp(c)
+              val ix: List[NArg] = newList()
+              ix.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+              ix.add(NArg(ty = NI32, value = NLitInt(v = field.index.toLong(), ty = NI32)))
+              c.insns.add(NGEP(dest = d, ty = lay.ty, ptr = base, indices = ix))
+              Some(value = NLocal(name = d))
+            }
+          }
+        } else {
+          match heapFieldPlace(c, recv, field) {
+            case Some(fp) -> Some(value = fp.value)
+            case None -> None
+          }
+        }
+      }
+    }
+    case XIndex(recv, idx, how) -> match how {
+      case IkArray -> match arrayElemPlace(c, recv, idx, e.span.startPos.line) {
+        case Some(p) -> Some(value = p.value)
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// The address of element `idx` of the array `recv` denotes, typed with the element's type: the
+/// array is addressed in place when it is one, and is otherwise a stack copy of its value.
+func arrayElemPlace(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Option[Val] {
+  val arrTy = match tyToN(c.env, recv.ty) {
+    case Some(t) -> t
+    case None -> {
+      c.problems.add("indexing " + renderTy(recv.ty))
+      return None
+    }
+  }
+  val el = match arrTy {
+    case NArray(e, _) -> e
+    case _ -> {
+      c.problems.add("an array index on " + renderTy(recv.ty))
+      return None
+    }
+  }
+  val n = match arrTy { case NArray(_, k) -> k; case _ -> 0 }
+  val base = match arrayPlaceAddr(c, recv) {
+    case Some(a) -> a
+    case None -> {
+      val v = lowerExpr(c, recv)
+      val name = "arr.tmp" + toString(c.ticker.count + 1)
+      c.ticker.add(0)
+      c.allocas.add(NAlloca(dest = name, ty = arrTy))
+      c.insns.add(NStore(ty = arrTy, value = v.value, ptr = NLocal(name = name)))
+      NLocal(name = name)
+    }
+  }
+  match arrayIndexValue(c, idx, n, line) {
+    case None -> None
+    case Some(i) -> Some(value = Val(ty = el, value = arrayElemPtr(c, arrTy, base, i)))
+  }
+}
+
+/// `a[i]` on an inline array: the element is read through its address, never by loading the
+/// whole array.
+func lowerArrayIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val {
+  match arrayElemPlace(c, recv, idx, line) {
+    case None -> unitVal()
+    case Some(p) -> {
+      val d = tmp(c)
+      c.insns.add(NLoad(dest = d, ty = p.ty, ptr = p.value))
+      Val(ty = p.ty, value = NLocal(name = d))
+    }
+  }
+}
+
+/// `a[i] = v` and `a[i] op= v` on an inline array.  The right-hand side is evaluated after the
+/// index and before the element is read.
+func lowerArraySet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr, line: in Int): Val {
+  match arrayElemPlace(c, recv, idx, line) {
+    case None -> unitVal()
+    case Some(p) -> match p.value {
+      case NLocal(name) -> assignSlot(c, Slot(ptr = name, ty = p.ty), elemTyOf(recv.ty), op, value)
+      case _ -> unsupported(c, "an assignment to an array element")
+    }
+  }
+}
+
+func elemTyOf(t: in Ty): Ty {
+  match t {
+    case TArray(_, e) -> e
+    case _ -> t
+  }
+}
+
+/// `[a, b, c]` against an inline array type: an `insertvalue` chain.
+func lowerArrayLit(c: in LCtx, arrTy: in NType, elems: in List[TExpr]): Val {
+  val el = match arrTy { case NArray(e, _) -> e; case _ -> return unsupported(c, "an array literal") }
+  val n = match arrTy { case NArray(_, k) -> k; case _ -> 0 }
+  if elems.count != n {
+    return unsupported(c, "an array literal of " + toString(elems.count) + " elements for length " + toString(n))
+  }
+  var agg: NValue = NUndef(ty = arrTy)
+  var i = 0
+  while i < n {
+    val v = lowerExpr(c, elems[i])
+    if nTypeToIrString(v.ty) != nTypeToIrString(el) {
+      return unsupported(c, "an array literal element of type " + renderTy(elems[i].ty))
+    }
+    val d = tmp(c)
+    c.insns.add(NInsertValue(dest = d, aggTy = arrTy, agg = agg, elemTy = el, elem = v.value, index = i))
+    agg = NLocal(name = d)
+    i = i + 1
+  }
+  Val(ty = arrTy, value = agg)
+}
+
+/// The zero value of `var a: array[N, T]` without an initializer: every element zero, which is
+/// the checker's zero value only for scalar elements.
+func arrayZeroOk(t: in NType): Bool {
+  match t {
+    case NArray(e, _) -> isScalarN(e) or arrayZeroOk(e)
+    case _ -> false
+  }
+}
+
+/// `for x in a` on an inline array: the loop runs over a stack copy, so the body cannot change
+/// what it iterates.
+func lowerForArray(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr, body: in TExpr): Unit {
+  val arrTy = match tyToN(c.env, iter.ty) {
+    case Some(t) -> t
+    case None -> {
+      c.problems.add("a for over " + renderTy(iter.ty))
+      return
+    }
+  }
+  val el = match arrTy {
+    case NArray(e, _) -> e
+    case _ -> {
+      c.problems.add("a for over " + renderTy(iter.ty))
+      return
+    }
+  }
+  val n = match arrTy { case NArray(_, k) -> k; case _ -> 0 }
+  val v = lowerExpr(c, iter)
+  val copyName = "for" + toString(c.ticker.count + 1) + ".arr"
+  c.ticker.add(0)
+  c.allocas.add(NAlloca(dest = copyName, ty = arrTy))
+  c.insns.add(NStore(ty = arrTy, value = v.value, ptr = NLocal(name = copyName)))
+  val slotName = "for" + toString(c.ticker.count + 1) + ".i"
+  c.ticker.add(0)
+  c.allocas.add(NAlloca(dest = slotName, ty = NI32))
+  c.insns.add(NStore(ty = NI32, value = NLitInt(v = 0i64, ty = NI32), ptr = NLocal(name = slotName)))
+  val condL = newLabel(c, "for.cond")
+  val bodyL = newLabel(c, "for.body")
+  val stepL = newLabel(c, "for.step")
+  val endL = newLabel(c, "for.end")
+  c.insns.add(NBr(label = condL))
+  startBlock(c, condL)
+  val cur = tmp(c)
+  c.insns.add(NLoad(dest = cur, ty = NI32, ptr = NLocal(name = slotName)))
+  val ok = tmp(c)
+  c.insns.add(NICmp(dest = ok, pred = ISlt, ty = NI32, a = NLocal(name = cur), b = NLitInt(v = n.toLong(), ty = NI32)))
+  c.insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = bodyL, elseLabel = endL))
+  startBlock(c, bodyL)
+  val depth = c.refScopes.count
+  val tdepth = c.temps.count
+  pushRefScope(c)
+  val ptr = arrayElemPtr(c, arrTy, NLocal(name = copyName), NLocal(name = cur))
+  val ev = tmp(c)
+  c.insns.add(NLoad(dest = ev, ty = el, ptr = ptr))
+  patBind(c, pat, Val(ty = el, value = NLocal(name = ev)))
+  c.loops.add(LoopLabels(label = label, breakL = endL, contL = stepL, scopeDepth = depth, tempDepth = tdepth))
+  discard(c, lowerExpr(c, body))
+  c.loops.removeAt(c.loops.count - 1)
+  popRefScope(c)
+  c.insns.add(NBr(label = stepL))
+  startBlock(c, stepL)
+  val at = tmp(c)
+  c.insns.add(NLoad(dest = at, ty = NI32, ptr = NLocal(name = slotName)))
+  val next = tmp(c)
+  c.insns.add(NAdd(dest = next, ty = NI32, a = NLocal(name = at), b = NLitInt(v = 1i64, ty = NI32)))
+  c.insns.add(NStore(ty = NI32, value = NLocal(name = next), ptr = NLocal(name = slotName)))
+  c.insns.add(NBr(label = condL))
+  startBlock(c, endL)
 }
 
 /// A `String` argument widened to the runtime's 64-bit index.
@@ -3999,18 +4445,30 @@ func assignSlot(c: in LCtx, slot: in Slot, placeTy: in Ty, op: in AssignKind, va
   unitVal()
 }
 
-/// `xs[i] = v` on a `List`; the kernel retains the new element and releases the old one.
+/// `xs[i] = v` and `xs[i] op= v` on a `List`; the kernel retains the new element and releases
+/// the old one.  A compound assignment evaluates the right-hand side, then reads the element.
 func lowerListSet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr): Val {
-  match op {
-    case AkSet -> ()
-    case _ -> return unsupported(c, "a compound assignment to a list element")
-  }
   if not tyLowers(c.env, recv.ty) {
     return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
   }
   val l = borrow(c, lowerExpr(c, recv))
   val i = wideIndex(c, idx)
-  val v = borrow(c, lowerExpr(c, value))
+  val v = match op {
+    case AkSet -> borrow(c, lowerExpr(c, value))
+    case _ -> {
+      val el = match listElemN(c, recv.ty) {
+        case Some(x) -> x
+        case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+      }
+      val rhs = lowerExpr(c, value)
+      val slot = callRt(c, "lyric_list_get", NI64, arg2(i8ptr(), listAsI8(c, l), NI64, i))
+      val cur = fromSlot(c, slot, el)
+      match compoundElem(c, op, value.ty, el, cur, rhs, idx.span.startPos.line) {
+        case Some(nv) -> borrow(c, nv)
+        case None -> return unitVal()
+      }
+    }
+  }
   val args: List[NArg] = newList()
   args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
   args.add(NArg(ty = NI64, value = i))
@@ -4041,6 +4499,7 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
     case PlIndex(recv, idx, how) -> match how {
       case IkList -> lowerListSet(c, recv, idx, op, value)
       case IkMap -> lowerMapSet(c, recv, idx, op, value)
+      case IkArray -> lowerArraySet(c, recv, idx, op, value, idx.span.startPos.line)
       case _ -> unsupported(c, "an assignment to an element or global")
     }
     case _ -> unsupported(c, "an assignment to an element or global")
@@ -4467,7 +4926,10 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
         }
       }
     }
-    case _ -> lowerForList(c, label, pat, iter, body)
+    case _ -> match iter.ty {
+      case TArray(_, _) -> lowerForArray(c, label, pat, iter, body)
+      case _ -> lowerForList(c, label, pat, iter, body)
+    }
   }
 }
 
@@ -4535,7 +4997,15 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
       case Some(slot) -> {
         val v = match init {
           case Some(x) -> own(c, lowerExpr(c, x))
-          case None -> Val(ty = slot.ty, value = zeroOf(slot.ty))
+          case None -> match slot.ty {
+            case NArray(_, _) -> {
+              if not arrayZeroOk(slot.ty) {
+                c.problems.add("the zero value of " + renderTy(decl.ty))
+              }
+              Val(ty = slot.ty, value = NZeroInit(ty = slot.ty))
+            }
+            case _ -> Val(ty = slot.ty, value = zeroOf(slot.ty))
+          }
         }
         c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
         trackRef(c, slot)
