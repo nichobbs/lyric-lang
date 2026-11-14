@@ -18422,6 +18422,7 @@ record TirUnitMaps {
   maps: Map[String, NType] = newMap()
   tasks: Map[String, NType] = newMap()
   asyncFns: Map[Int, String] = newMap()
+  fnArity: Map[Int, Int] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
   ifaceVts: Map[String, String] = newMap()
@@ -18761,6 +18762,7 @@ func tirUnitMaps(
     enumCases = enumCases,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
+    fnArity = declArity,
     ifaces = ifaces,
     ifaceMethods = ifaceMethods,
     ifaceVts = ifaceVts,
@@ -18790,6 +18792,7 @@ func lowerWithTuples(
       maps = maps.maps,
       tasks = maps.tasks,
       asyncFns = maps.asyncFns,
+      fnArity = maps.fnArity,
       ifaces = maps.ifaces,
       ifaceMethods = maps.ifaceMethods,
       ifaceVts = maps.ifaceVts,

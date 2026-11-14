@@ -292,6 +292,9 @@ pub record TirLowerEnv {
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
+  /// The parameter count of each declaration of the unit's own package, keyed by symbol: a call
+  /// whose argument count differs names the wrong callee, which the lowering refuses.
+  fnArity: Map[Int, Int] = newMap()
   /// The non-generic interfaces, keyed by the interface's symbol; each interface method's place
   /// in one, keyed by the method's symbol; and the vtable constant of a record that implements
   /// an interface, keyed `<record symbol>|<interface symbol>`.
@@ -2381,7 +2384,9 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       }
       match mapGet(c.env.fnNames, sym.id) {
         case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
-        case Some(irName) -> {
+        case Some(irName) -> if wrongArity(c, sym, args.count) {
+          unsupported(c, "a call whose argument count differs from its callee's parameter count")
+        } else {
           if c.coro and isCoroLeaf(irName) {
             return unsupported(c, "a coroutine calling " + irName)
           }
@@ -2445,6 +2450,13 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       lowerIfaceCall(c, e, method, args)
     }
     case _ -> unsupported(c, "a call through " + calleeKind(callee))
+  }
+}
+
+func wrongArity(c: in LCtx, sym: in SymbolId, argc: in Int): Bool {
+  match mapGet(c.env.fnArity, sym.id) {
+    case Some(n) -> n != argc
+    case None -> false
   }
 }
 
