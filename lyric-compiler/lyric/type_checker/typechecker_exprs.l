@@ -3897,6 +3897,18 @@ pub func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs
   result
 }
 
+// The fields of the record `tid` at the type arguments `targs`, with the record's own
+// parameters replaced and every other type parameter left as it is (D465).
+func fieldsOfRecordSubstituted(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
+  val raw = fieldsOfRecord(tbl, tid)
+  val gnames = recordGenericNamesOf(tbl, tid)
+  val result: List[FieldEntry] = newList()
+  for f in raw {
+    result.add(FieldEntry(name = f.name, ty = substituteTyParams(f.ty, gnames, targs), isMutable = f.isMutable))
+  }
+  result
+}
+
 // The type parameter of the enclosing generic that field `name` of the record
 // instance `recv` has, when the record declares the field as its own type
 // parameter and the instance is at one of `genericNames`; `TyError` otherwise.
@@ -5572,7 +5584,9 @@ func recordCtorSigNode(
       // A generic record's fields are instantiated at the result type's arguments.
       val fes = match unrefine(resultTy) {
         case TyUser(_, _, targs) -> if rd.generics.isSome() {
-          fieldsOfRecordInstantiated(tbl, id, targs)
+          // Not `fieldsOfRecordInstantiated`: it erases type parameters, and a field of the
+          // enclosing generic's own parameter (`One(v = x)` in `f[T]`) must keep its binder.
+          fieldsOfRecordSubstituted(tbl, id, targs)
         } else {
           fieldsOfRecord(tbl, id)
         }

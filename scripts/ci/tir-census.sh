@@ -16,6 +16,9 @@
 # end; it is listed as UNCHECKED and fails the run (as the I0001 census does,
 # D386), so a file the census cannot judge is a hole in it, not a pass.
 #
+# A program whose path or name says jvm (lyric-compiler/jvm/, *_jvm_self_test.l, *_jvm_tests.l) is
+# built with --target jvm (D466); the JVM build prints the same census lines.
+#
 # With --wide the census also covers the compiler (its manifest), the ecosystem
 # library manifests (dotnet) and the *self_test*.l programs under lyric-compiler/,
 # and reports I0002/I0003 per area and per kind with a sample site.  The wide
@@ -55,6 +58,16 @@ for f in "${FILES[@]}"; do
   [[ $skip -eq 0 ]] && filtered+=("$f")
 done
 FILES=("${filtered[@]}")
+
+# The target a program is built for (D466): a JVM-targeted program (its path or name says jvm)
+# names JDK externs the dotnet resolver cannot see, so it is built with --target jvm, whose
+# checker reports the same census.  Everything else is built for dotnet.
+target_of() {
+  case "$1" in
+    lyric-compiler/jvm/*|*_jvm_self_test*.l|*_jvm_tests.l|*jvm_self_test*.l) echo jvm ;;
+    *) echo dotnet ;;
+  esac
+}
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -135,7 +148,7 @@ run_cached() {
 cd "$REPO_ROOT"
 for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
-  "$LYRIC" build --verify-ir "$f" -o "$OUT/out.dll" >"$log" 2>&1
+  "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/out.dll" >"$log" 2>&1
   rc=$?
   if ! grep -q '^TIR build census' "$log" && [[ $rc -ne 0 ]]; then unchecked+=("$f"); fi
   absorb_log stdlib-tests "$f" "$log" "$rc"
@@ -221,7 +234,7 @@ fi
 if [[ "$AREAS" == *" self-tests "* ]]; then
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
-  run_cached "st-$f" 600 "$LYRIC" build --verify-ir "$f" -o "$OUT/st.dll"
+  run_cached "st-$f" 600 "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/st.dll"
   if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-0}" == 1 ]]; then
     # A program that imports compiler packages builds only through `lyric test`, which
     # links them as restored dependencies; the census line is the same.  The tests run too.
