@@ -18516,6 +18516,9 @@ func tirUnitMaps(
   val caseKeys: List[String] = newList()
   val intrinsics: Map[Int, String] = newMap()
   val asyncFns: Map[Int, String] = newMap()
+  // The interface, record and member lookups below read the DefPath keys that
+  // `Lyric.Resolve.resolve_collect` writes (`Pkg::Type`, `Pkg::Type::method(P1)`,
+  // `Pkg::Type::$impl(Iface)::method(P1)`); a change there changes these parsers.
   // An `impl` method's IR name is the AST path's synthetic one, `Target.Iface.name`, in a table
   // keyed by its arity with the receiver.  The arity is not in the DefPath key's type list the
   // same way, so the name is matched against every arity the table holds.
