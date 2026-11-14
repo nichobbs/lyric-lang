@@ -9,3 +9,7 @@ The wide census built every self-test and stdlib test for dotnet. 26 self-tests 
 ## Decision
 
 `scripts/ci/tir-census.sh` builds a program whose path or name says jvm (`lyric-compiler/jvm/`, `*_jvm_self_test*.l`, `*_jvm_tests.l`) with `--target jvm`. The JVM build prints the same `TIR build census` and `I0003 census` lines (checked on `closure_jvm_self_test.l`: 7 of 7 bodies built, 0 I0003, where the dotnet build failed on every JDK extern), so `absorb_log` is unchanged. The builder still resolves host members through the metadata the checker recorded for the target; a JVM resolver inside the builder is a phase 3c question. A state directory kept by `TIR_CENSUS_STATE` from before this change must be discarded (the key does not include the target).
+
+## Consequence found by the change
+
+Building `http_server_jvm_tests.l` for the JVM surfaced a real I0003 that no dotnet build can show: `Std.HttpServer::nextContext` calls a JDK generic member whose erased result is `java.lang.Object` (`BlockingQueue<HttpExchange>.take()`) and the call node was typed `HttpExchange`, so `call-result-type` failed. `hostResultIsCallType` now takes an `Object` result typed as another host class: the call keeps the host type and a `CvFromHost` conversion gives the checker's type.
