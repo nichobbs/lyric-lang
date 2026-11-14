@@ -18418,6 +18418,8 @@ record TirUnitMaps {
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
+  lists: Map[String, NType] = newMap()
+  intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
 }
@@ -18459,6 +18461,20 @@ func tirUnitMaps(
   val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
+  val intrinsics: Map[Int, String] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
+        case Some(n) -> {
+          if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity") {
+            intrinsics.add(id, n.name)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
@@ -18554,6 +18570,7 @@ func tirUnitMaps(
     cases = cases,
     enums = enums,
     enumCases = enumCases,
+    intrinsics = intrinsics,
     checkedArith = input.checkedArith
   )
 }
@@ -18576,12 +18593,14 @@ func lowerWithTuples(
       enumCases = maps.enumCases,
       tuples = maps.tuples,
       funcs = maps.funcs,
+      lists = maps.lists,
+      intrinsics = maps.intrinsics,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0) or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18598,6 +18617,9 @@ func lowerWithTuples(
         }
         for n in f.needFuncs {
           maps.funcs.add(n.key, closureNType(ctx, n.paramTys, n.retTy))
+        }
+        for n in f.needLists {
+          maps.lists.add(n.key, listNType(ctx, n.elemTy))
         }
         attempt = attempt + 1
       }
