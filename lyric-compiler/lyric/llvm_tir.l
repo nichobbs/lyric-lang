@@ -1006,7 +1006,9 @@ func mapGetOrPanic(c: in LCtx, m: in Val, k: in Val, valTy: in NType, line: in I
 
 /// The value `cur op rhs` for a compound assignment to an element of type `placeTy`: a scalar
 /// through the operator, a `String` by concatenation (a fresh owned string).
-func compoundElem(c: in LCtx, op: in AssignKind, placeTy: in Ty, nt: in NType, cur: in Val, rhs: in Val, line: in Int): Option[Val] {
+func compoundElem(
+  c: in LCtx, op: in AssignKind, placeTy: in Ty, nt: in NType, cur: in Val, rhs: in Val, line: in Int
+): Option[Val] {
   if isStringN(nt) {
     match op {
       case AkAdd -> return Some(value = lowerStringBinary(c, IoAdd, cur, borrow(c, rhs)))
@@ -1135,7 +1137,11 @@ func isAggN(t: in NType): Bool {
 /// The element flag the list and map kernels dispatch on: 1 for a counted element (a reference,
 /// or the box of a by-value aggregate), 0 for a scalar.
 func elemFlag(t: in NType): Int {
-  if isRefN(t) or isAggN(t) { 1 } else { 0 }
+  if isRefN(t) or isAggN(t) {
+    1
+  } else {
+    0
+  }
 }
 
 func boxFields(t: in NType): List[NType] {
@@ -3021,7 +3027,10 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   }
   val arg = ins[0]
   if name == "array.length" {
-    val n = match arg.ty { case TArray(len, _) -> match len { case ALKnown(k) -> Some(value = k); case _ -> None }; case _ -> None }
+    val n = match arg.ty {
+      case TArray(len, _) -> match len { case ALKnown(k) -> Some(value = k); case _ -> None }
+      case _ -> None
+    }
     match n {
       case Some(k) -> {
         discard(c, lowerExpr(c, arg))
@@ -3492,7 +3501,10 @@ func lowerMapSnapshot(c: in LCtx, e: in TExpr, name: in String, arg: in TArg): V
   if not isMapTy(mExpr.ty) or not tyLowers(c.env, mExpr.ty) {
     return unsupported(c, name + " of " + renderTy(mExpr.ty))
   }
-  val lt = match tyToN(c.env, e.ty) { case Some(x) -> x; case None -> return unsupported(c, "a list of " + renderTy(e.ty)) }
+  val lt = match tyToN(c.env, e.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "a list of " + renderTy(e.ty))
+  }
   val m = borrow(c, lowerExpr(c, mExpr))
   val raw = callRt(
     c,
@@ -3899,7 +3911,13 @@ func lowerForArray(c: in LCtx, label: in Option[String], pat: in TPat, iter: in 
       return
     }
   }
-  val el = match arrTy { case NArray(e, _) -> e; case _ -> { c.problems.add("a for over " + renderTy(iter.ty)); return } }
+  val el = match arrTy {
+    case NArray(e, _) -> e
+    case _ -> {
+      c.problems.add("a for over " + renderTy(iter.ty))
+      return
+    }
+  }
   val n = match arrTy { case NArray(_, k) -> k; case _ -> 0 }
   val v = lowerExpr(c, iter)
   val copyName = "for" + toString(c.ticker.count + 1) + ".arr"

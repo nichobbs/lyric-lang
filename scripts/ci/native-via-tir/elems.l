@@ -62,14 +62,14 @@ func bumps(): Int {
 func snapshots(): String {
   val m: Map[String, Int] = newMap()
   m.add("only", 4)
-  var out = ""
+  var acc = ""
   for k in mapKeys(m) {
-    out = out + k
+    acc = acc + k
   }
   for v in mapValues(m) {
-    out = out + toString(v)
+    acc = acc + toString(v)
   }
-  out
+  acc
 }
 
 func main(): Unit {
