@@ -267,6 +267,25 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/b_tir.ll" lyric-rt/b
 diff -u "$work/b_tir.out" "$work/b_asan.out"
 echo "builtins under AddressSanitizer: clean"
 
+# Lists and slices (docs/70 phase 4a): literals, newList, add/removeAt/clear, indexing, element
+# assignment and `for` over scalar and reference elements from TIR, then under AddressSanitizer.
+lsrc=scripts/ci/native-via-tir/lists.l
+"$lyric_bin" build --target native "$lsrc" -o "$work/l_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$lsrc" -o "$work/l_tir" 2> "$work/l_census.txt" >/dev/null
+cat "$work/l_census.txt"
+"$work/l_ast" > "$work/l_ast.out"
+"$work/l_tir" > "$work/l_tir.out"
+diff -u "$work/l_ast.out" "$work/l_tir.out"
+printf '10\n14\n55\na,b,\n6\nwYz3\n0\n144\n' | diff -u - "$work/l_tir.out"
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/l_census.txt" || {
+  echo "::error::expected every function of lists.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/l_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/l_asan"
+"$work/l_asan" > "$work/l_asan.out"
+diff -u "$work/l_tir.out" "$work/l_asan.out"
+echo "lists under AddressSanitizer: clean"
+
 # A call to an async function stays on the AST path: only `twice` lowers from TIR.
 asrc=scripts/ci/native-via-tir/async.l
 "$lyric_bin" build --target native "$asrc" -o "$work/a_ast" >/dev/null
