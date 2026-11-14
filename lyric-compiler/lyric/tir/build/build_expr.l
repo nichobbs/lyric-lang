@@ -2786,7 +2786,9 @@ func buildAccessorCall(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr, na
             }
           }
           noteFuncSym(env, sym, sig, None, None, TSkFunc)
-          return Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = inArgs(singleTExpr(rt)))))
+          return Some(
+            value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = inArgs(singleTExpr(rt))))
+          )
         }
         case None -> ()
       }
