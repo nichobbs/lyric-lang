@@ -11,6 +11,7 @@ import Lyric.Symbols
 import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.Tir
+import Lyric.Iface
 
 /// A function body the builder could not build (an I0002 site): its name, its symbol when
 /// the checker has one, and the reasons.
@@ -291,11 +292,27 @@ func declaresDefault(fn: in FunctionDecl): Bool {
   false
 }
 
-func noteDefaults(tbl: in SymbolTable, acc: in Map[String, Map[String, TExpr]], fd: in TFnDecl): Unit {
-  val byName: Map[String, TExpr] = newMap()
+func entriesOf(env: in BuildEnv): List[TSymEntry] {
+  val es: List[TSymEntry] = newList()
+  for k in mapKeys(env.syms) {
+    match mapGet(env.syms, k) {
+      case Some(e) -> es.add(e)
+      case None -> ()
+    }
+  }
+  es
+}
+
+func noteDefaults(
+  tbl: in SymbolTable, acc: in Map[String, Map[String, IfDefault]], env: in BuildEnv, fd: in TFnDecl
+): Unit {
+  val byName: Map[String, IfDefault] = newMap()
+  val es = entriesOf(env)
   for p in fd.params {
     match p.dflt {
-      case Some(d) -> if not byName.containsKey(p.local.name) { byName.add(p.local.name, d) }
+      case Some(d) -> if not byName.containsKey(p.local.name) {
+        byName.add(p.local.name, IfDefault(expr = d, entries = es))
+      }
       case None -> ()
     }
   }
@@ -308,33 +325,88 @@ func noteDefaults(tbl: in SymbolTable, acc: in Map[String, Map[String, TExpr]], 
   }
 }
 
-/// The default of every parameter, built for a package interface (docs/70 section 9.2): the parameters
-/// of a package's functions and of its methods that declare one, by the function's DefPath key and then the
-/// parameter's name.  A default is built from the package's own checker tables, so it is typed and its
-/// names are resolved; one that does not build is left acc and counted in no census (the consumer counts the
-/// call that needs it).
-pub func buildPackageDefaults(
-  ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
-): Map[String, Map[String, TExpr]] {
-  val acc: Map[String, Map[String, TExpr]] = newMap()
-  val counter: List[Int] = newList()
-  counter.add(firstSynthNodeId())
-  for it in file.items {
-    match it.kind {
-      case IFunc(decl) -> if declaresDefault(decl) {
-        match buildFnDefaultsDecl(newBuildEnvSharing(ctx, counter), decl, tbl) {
-          case Some(fd) -> noteDefaults(tbl, acc, fd)
+/// The defaults of the fields of the non-generic record `decl`, by the record's DefPath key
+/// and then the field's name: a construction that leaves a field out takes its default.
+func noteFieldDefaults(
+  ctx: in TyConvCtx,
+  tbl: in SymbolTable,
+  pkg: in String,
+  counter: in List[Int],
+  acc: in Map[String, Map[String, IfDefault]],
+  decl: in RecordDecl,
+): Unit {
+  if decl.generics.isSome() {
+    return
+  }
+  val built: List[IfDefault] = newList()
+  val names: List[String] = newList()
+  val env = newBuildEnvSharing(ctx, counter)
+  pushScope(env)
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> match fd.dflt {
+        case Some(dx) -> match buildExpr(env, dx) {
+          case Some(t) -> {
+            names.add(fd.name)
+            built.add(IfDefault(expr = t, entries = newList()))
+          }
           case None -> ()
         }
+        case None -> ()
       }
       case _ -> ()
     }
   }
+  if names.count == 0 {
+    return
+  }
+  val es = entriesOf(env)
+  val byName: Map[String, IfDefault] = newMap()
+  var i = 0
+  while i < names.count {
+    if not byName.containsKey(names[i]) {
+      byName.add(names[i], IfDefault(expr = built[i].expr, entries = es))
+    }
+    i = i + 1
+  }
+  match defPathKey(tbl, Some(value = symTableTypeSymbolId(tbl, pkg, decl.name))) {
+    case Some(k) -> if not acc.containsKey(k) { acc.add(k, byName) }
+    case None -> ()
+  }
+}
+
+/// The default of every parameter and record field that declares one, built for a package
+/// interface (docs/70 section 9.2, D482): the parameters of a package's functions and of its
+/// methods, by the function's DefPath key and then the parameter's name, and the fields of its
+/// non-generic records, by the record's key and the field's name, each with the declarations it
+/// names.  A default is built from the package's own checker tables, so it is typed and its names
+/// are resolved; one that does not build is left out and counted in no census (the consumer counts
+/// the call that needs it).
+pub func buildPackageDefaults(
+  ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
+): Map[String, Map[String, IfDefault]] {
+  val acc: Map[String, Map[String, IfDefault]] = newMap()
+  val counter: List[Int] = newList()
+  counter.add(firstSynthNodeId())
   val pkgName = modulePathJoin(file.packageDecl.path.segments)
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if declaresDefault(decl) {
+        val env = newBuildEnvSharing(ctx, counter)
+        match buildFnDefaultsDecl(env, decl, tbl) {
+          case Some(fd) -> noteDefaults(tbl, acc, env, fd)
+          case None -> ()
+        }
+      }
+      case IRecord(decl) -> noteFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
+      case _ -> ()
+    }
+  }
   for site in memberSites(ctx, tbl, file) {
     if declaresDefault(site.fn) {
-      match buildMemberDefaults(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {
-        case Some(fd) -> noteDefaults(tbl, acc, fd)
+      val env = newBuildEnvSharing(ctx, counter)
+      match buildMemberDefaults(env, tbl, pkgName, site) {
+        case Some(fd) -> noteDefaults(tbl, acc, env, fd)
         case None -> ()
       }
     }

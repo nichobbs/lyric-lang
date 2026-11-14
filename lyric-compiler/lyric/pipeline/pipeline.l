@@ -126,6 +126,12 @@ pub record MiddleEndOptions {
   /// check has no errors.
   wantTir: Bool = false
   tirOut: List[TirBuild.PackageBuild] = newList()
+  /// The interfaces of the packages this build was checked against (docs/70 section 6.3, D482): each
+  /// package that builds an interface registers it here, and a package checked after it reads
+  /// the defaults it carries for a call that leaves out an argument the first declares; a build
+  /// registers its restored dependencies' too.  A build shares one store among the options of its
+  /// packages.
+  depDefaults: TirBuild.DepDefaults = TirBuild.newDepDefaults()
   tcFatal: Bool
   tcReport: Bool
   pkgLabel: String
@@ -1781,8 +1787,10 @@ func errorCount(ds: in List[Diagnostic]): Int {
 /// checker recorded no usable type for (docs/70 §12.2, D360).  Printed to
 /// stderr as `I0002 census [<package>]: <n> of <m> expressions`, then the
 /// first few messages.
-func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckResult): Unit {
-  val ctx = TirBuild.newTyConvCtx(tcRes.symbols)
+func pipeReportTirCensus(
+  label: in String, file: in SourceFile, tcRes: in CheckResult, dep: in TirBuild.DepDefaults
+): Unit {
+  val ctx = TirBuild.newTyConvCtxWith(tcRes.symbols, dep)
   val ids = TirBuild.exprNodeIds(file)
   val bad = TirBuild.exprTypeCensus(ctx, ids)
   Console.error("I0002 census [" + label + "]: " + toString(bad.count) + " of " + toString(ids.count) + " expressions")
@@ -2260,6 +2268,11 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
   acc
 }
 
+/// An empty store of carried defaults for a build to share among its packages' options.
+pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
+  TirBuild.newDepDefaults()
+}
+
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
 /// check, with its diagnostics sent to `sink`.  None after an error.
 /// `lyric prove` runs exactly this, so it rejects what a build rejects up to
@@ -2288,11 +2301,19 @@ pub func pipeCheckFront(
     opts.externIterResolver
   )
   if verifyIr and errorCount(tcRes.diagnostics) == 0 {
-    pipeReportTirCensus(opts.pkgLabel, file0, tcRes)
+    pipeReportTirCensus(opts.pkgLabel, file0, tcRes, opts.depDefaults)
   }
   if opts.wantTir and errorCount(tcRes.diagnostics) == 0 {
-    opts.tirOut.add(TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, opts.pkgLabel))
+    opts.tirOut.add(
+      TirBuild.buildPackage(
+        TirBuild.newTyConvCtxWith(tcRes.symbols, opts.depDefaults),
+        tcRes.symbols,
+        file0,
+        opts.pkgLabel
+      )
+    )
   }
+
   if opts.tcFatal {
     if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None
@@ -2373,8 +2394,27 @@ pub func pipeCheckFront(
     // exists so the format does not change when they do.
     val outcome = IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets)
     opts.interfaceOut.add(outcome)
+    match outcome {
+      case IfaceBuild.IOBuilt(b) -> TirBuild.registerInterface(
+        opts.depDefaults,
+        modulePathJoin(tcRes.file.packageDecl.path.segments),
+        b.bytes
+      )
+      case _ -> ()
+    }
     if gateTo(sink, opts.pkgLabel, opts.filePaths, IfaceBuild.outcomeDiagnostics(outcome, tcRes.file)) {
       return None
+    }
+  } else if (verifyIr or opts.wantTir) and not IfaceBuild.isExecutable(tcRes.file) {
+    // A build that only checks (the census, a TIR build) still gives the packages checked after
+    // this one the defaults its interface carries (D482); nothing is reported or written.
+    match IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets) {
+      case IfaceBuild.IOBuilt(b) -> TirBuild.registerInterface(
+        opts.depDefaults,
+        modulePathJoin(tcRes.file.packageDecl.path.segments),
+        b.bytes
+      )
+      case _ -> ()
     }
   }
   // Bound to an annotated local: the stage-0 seed compiler that builds this
