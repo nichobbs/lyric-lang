@@ -383,6 +383,79 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/pr_tir.ll" lyric-rt/
 diff -u "$work/pr_tir.out" "$work/pr_asan.out"
 echo "protected types under AddressSanitizer: clean"
 
+# By-value elements and compound element assignment (docs/70 phase 4a): a by-value record in a list
+# or map is a counted box copied in and out, `xs[i] += v` and `m[k] += v`, and the `mapKeys` and
+# `mapValues` snapshots, from TIR, then under AddressSanitizer (a leaked or doubly released box
+# fails the run).
+esrc=scripts/ci/native-via-tir/elems.l
+"$lyric_bin" build --target native "$esrc" -o "$work/e_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
+cat "$work/e_census.txt"
+"$work/e_ast" > "$work/e_ast.out"
+"$work/e_tir" > "$work/e_tir.out"
+diff -u "$work/e_ast.out" "$work/e_tir.out"
+printf '37\n4\n27\n32\nonly4\n' | diff -u - "$work/e_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/e_census.txt" || {
+  echo "::error::expected every function of elems.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/e_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/e_asan"
+"$work/e_asan" > "$work/e_asan.out"
+diff -u "$work/e_tir.out" "$work/e_asan.out"
+echo "by-value elements under AddressSanitizer: clean"
+
+# Inline arrays (docs/70 phase 4a): element reads and writes through the element's address,
+# compound assignment, nested arrays, arrays in by-value and heap records, `for`, `.length` and an
+# array of by-value records from TIR; an out-of-range index panics with the AST path's message.
+arrsrc=scripts/ci/native-via-tir/arrays.l
+"$lyric_bin" build --target native "$arrsrc" -o "$work/ar_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$arrsrc" -o "$work/ar_tir" 2> "$work/ar_census.txt" >/dev/null
+cat "$work/ar_census.txt"
+"$work/ar_ast" > "$work/ar_ast.out"
+"$work/ar_tir" > "$work/ar_tir.out"
+diff -u "$work/ar_ast.out" "$work/ar_tir.out"
+printf '14\n9\n3\n2\n21\n10\n5\n21\n9\n' | diff -u - "$work/ar_tir.out"
+if grep -q '^  fallback:' "$work/ar_census.txt"; then
+  echo "::error::arrays.l has a TIR fallback"
+  exit 1
+fi
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/ar_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/ar_asan"
+"$work/ar_asan" > "$work/ar_asan.out"
+diff -u "$work/ar_tir.out" "$work/ar_asan.out"
+echo "arrays under AddressSanitizer: clean"
+cat > "$work/oob.l" <<'LYRICSRC'
+package OobViaTir
+
+func get(a: in array[3, Int], i: in Int): Int {
+  a[i]
+}
+
+func main(): Unit {
+  println(toString(get([1, 2, 3], 2)))
+  println(toString(get([1, 2, 3], 3)))
+}
+LYRICSRC
+"$lyric_bin" build --target native "$work/oob.l" -o "$work/oob_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$work/oob.l" -o "$work/oob_tir" 2> "$work/oob_census.txt" >/dev/null
+if grep -q '^  fallback:' "$work/oob_census.txt"; then
+  cat "$work/oob_census.txt"
+  echo "::error::the out-of-range program has a TIR fallback"
+  exit 1
+fi
+for which in ast tir; do
+  if "$work/oob_$which" > "$work/oob_$which.out" 2> "$work/oob_$which.err"; then
+    echo "::error::the $which build did not panic on an out-of-range index"
+    exit 1
+  fi
+  grep -q 'index 3 out of range for array\[3\]' "$work/oob_$which.err" || {
+    echo "::error::the $which panic lacks the index message"
+    cat "$work/oob_$which.err"
+    exit 1
+  }
+done
+diff -u "$work/oob_ast.out" "$work/oob_tir.out"
+echo "arrays: ok"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 
