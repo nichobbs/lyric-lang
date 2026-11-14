@@ -18422,6 +18422,7 @@ record TirUnitMaps {
   maps: Map[String, NType] = newMap()
   tasks: Map[String, NType] = newMap()
   asyncFns: Map[Int, String] = newMap()
+  fnArity: Map[Int, Int] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
   ifaceVts: Map[String, String] = newMap()
@@ -18519,22 +18520,41 @@ func tirUnitMaps(
   // The interface, record and member lookups below read the DefPath keys that
   // `Lyric.Resolve.resolve_collect` writes (`Pkg::Type`, `Pkg::Type::method(P1)`,
   // `Pkg::Type::$impl(Iface)::method(P1)`); a change there changes these parsers.
-  // An `impl` method's IR name is the AST path's synthetic one, `Target.Iface.name`, in a table
-  // keyed by its arity with the receiver.  The arity is not in the DefPath key's type list the
-  // same way, so the name is matched against every arity the table holds.
+  // A member's IR name is the AST path's: `Target.Iface.name` for an `impl` method and
+  // `Record.name` for a method of a record's body, in a table keyed by the arity with the
+  // receiver, which is the declaration's own parameter count.  A body method owns the `@m`
+  // twin when a top-level function of the same dotted name and arity sits beside it.
+  val declArity: Map[Int, Int] = newMap()
+  for f in input.pkg.funcs {
+    declArity.add(f.sym.id, f.params.count)
+  }
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
-      case Some(key) -> match LlvmTir.tirImplMember(key) {
+      case Some(key) -> match mapGet(declArity, id) {
         case None -> ()
-        case Some(im) -> {
-          val prefix = im.pkg + "." + im.owner + "." + im.iface + "." + im.name + "/"
-          for sk in mapKeys(sigs) {
-            if Str.startsWith(sk, prefix) {
-              match mapGet(sigs, sk) {
-                case Some(sg) -> if not sg.isAsync and not fnNames.containsKey(id) { fnNames.add(id, sg.irName) }
-                case None -> ()
+        case Some(ar) -> {
+          var sigKey = ""
+          match LlvmTir.tirImplMember(key) {
+            case Some(im) -> {
+              sigKey = im.pkg + "." + im.owner + "." + im.iface + "." + im.name + "/" + ar.toString()
+            }
+            case None -> match LlvmTir.tirTypeMember(key) {
+              case Some(tm) -> {
+                val twinKey = tm.pkg + "." + tm.owner + "." + tm.name + "@m/" + ar.toString()
+                sigKey = if sigs.containsKey(twinKey) {
+                  twinKey
+                } else {
+                  tm.pkg + "." + tm.owner + "." + tm.name + "/" + ar.toString()
+                }
               }
+              case None -> ()
+            }
+          }
+          if sigKey.length > 0 {
+            match mapGet(sigs, sigKey) {
+              case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
+              case None -> ()
             }
           }
         }
@@ -18742,6 +18762,7 @@ func tirUnitMaps(
     enumCases = enumCases,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
+    fnArity = declArity,
     ifaces = ifaces,
     ifaceMethods = ifaceMethods,
     ifaceVts = ifaceVts,
@@ -18771,6 +18792,7 @@ func lowerWithTuples(
       maps = maps.maps,
       tasks = maps.tasks,
       asyncFns = maps.asyncFns,
+      fnArity = maps.fnArity,
       ifaces = maps.ifaces,
       ifaceMethods = maps.ifaceMethods,
       ifaceVts = maps.ifaceVts,
@@ -18823,14 +18845,22 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
   val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
-  // An `impl` method is named `Target.Iface.name` on the AST path.
+  // An `impl` method is named `Target.Iface.name` on the AST path, a method declared in a
+  // record's body `Record.name`.
   val parts = Str.split(fn.name, ".")
   for f in input.pkg.funcs {
     match mapGet(input.names, f.sym.id) {
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case None -> match LlvmTir.tirImplMember(key) {
-          case None -> ()
+          case None -> match LlvmTir.tirTypeMember(key) {
+            case None -> ()
+            case Some(tm) -> {
+              if isBodyMethodFn(fn) and parts.length == 2 and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity {
+                decl = Some(value = f)
+              }
+            }
+          }
           case Some(im) -> {
             if parts.length == 3 and im.pkg == u.pkgName and im.owner == parts[0] and im.iface == parts[1] and im.name == parts[2] and f.params.count == arity {
               decl = Some(value = f)
