@@ -18422,9 +18422,59 @@ record TirUnitMaps {
   maps: Map[String, NType] = newMap()
   tasks: Map[String, NType] = newMap()
   asyncFns: Map[Int, String] = newMap()
+  ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
+  ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
+  ifaceVts: Map[String, String] = newMap()
   intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
+}
+
+/// An interface as the TIR lowering reads it: the box and vtable types the code generator chose
+/// and, per method, the erased call's types and whether it is a plain method.
+func tirIfaceLayout(info: in NIfaceInfo): LlvmTir.TirIfaceLayout {
+  val ms: List[LlvmTir.TirIfaceMethod] = newList()
+  var i = 0
+  while i < info.methodNames.count {
+    var plain = not info.methodRetIsSelf[i]
+    match info.methodAsyncElem[i] {
+      case Some(_) -> {
+        plain = false
+      }
+      case None -> ()
+    }
+    for b in info.methodParamIsSelf[i] {
+      if b {
+        plain = false
+      }
+    }
+    for b in info.methodParamByRef[i] {
+      if b {
+        plain = false
+      }
+    }
+    for b in info.methodParamSelfByRef[i] {
+      if b {
+        plain = false
+      }
+    }
+    ms.add(
+      LlvmTir.TirIfaceMethod(
+        name = info.methodNames[i],
+        paramTys = info.methodParamTys[i],
+        retTy = info.methodRetTys[i],
+        plain = plain
+      )
+    )
+    i = i + 1
+  }
+  LlvmTir.TirIfaceLayout(
+    boxTy = ifaceBoxPtrType(info),
+    structTy = ifaceBoxStructType(info),
+    vtTy = ifaceVtStructType(info),
+    dtor = ifaceBoxDtorName(info),
+    methods = ms
+  )
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18571,6 +18621,93 @@ func tirUnitMaps(
     }
     k = k + 1
   }
+  // Non-generic interfaces (`Pkg::Name`), the heap records that may implement them and each
+  // interface method's slot (`Pkg::Iface::method(...)`), then the vtable constant per pair.
+  val ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
+  val ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
+  val ifaceVts: Map[String, String] = newMap()
+  val ifaceIdByName: Map[String, Int] = newMap()
+  val ifaceInfoById: Map[Int, NIfaceInfo] = newMap()
+  val recIrById: Map[Int, String] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match Str.indexOf(key, "::") {
+        case None -> ()
+        case Some(sep) -> {
+          val pkg = Str.substring(key, 0, sep)
+          val rest = Str.substring(key, sep + 2)
+          if not Str.contains(rest, "(") and not Str.contains(rest, "::") {
+            match mapGet(ctx.ifaceInfos, pkg + "." + rest) {
+              case Some(info) -> {
+                ifaces.add(id, tirIfaceLayout(info))
+                ifaceIdByName.add(pkg + "." + rest, id)
+                ifaceInfoById.add(id, info)
+              }
+              case None -> match mapGet(ctx.recordDefs, pkg + "." + rest) {
+                case Some(ri) -> match mapGet(recs, id) {
+                  case Some(lay) -> if not lay.byValue { recIrById.add(id, ri.irName) }
+                  case None -> ()
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match Str.indexOf(key, "::") {
+        case None -> ()
+        case Some(sep) -> {
+          val pkg = Str.substring(key, 0, sep)
+          val rest = Str.substring(key, sep + 2)
+          if Str.contains(rest, "(") {
+            match Str.indexOf(rest, "::") {
+              case None -> ()
+              case Some(m) -> {
+                val owner = Str.substring(rest, 0, m)
+                val after = Str.substring(rest, m + 2)
+                match Str.indexOf(after, "(") {
+                  case None -> ()
+                  case Some(open) -> match mapGet(ifaceIdByName, pkg + "." + owner) {
+                    case Some(ifaceId) -> match mapGet(ifaceInfoById, ifaceId) {
+                      case Some(info) -> {
+                        val slot = ifaceMethodSlot(info, Str.substring(after, 0, open))
+                        if slot >= 0 {
+                          ifaceMethods.add(id, LlvmTir.TirIfaceMethodRef(ifaceId = ifaceId, slot = slot))
+                        }
+                      }
+                      case None -> ()
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for rid in mapKeys(recIrById) {
+    match mapGet(recIrById, rid) {
+      case None -> ()
+      case Some(rir) -> {
+        for iid in mapKeys(ifaceInfoById) {
+          match mapGet(ifaceInfoById, iid) {
+            case None -> ()
+            case Some(info) -> if ctx.ifaceVtables.containsKey(rir + "|" + info.key) {
+              ifaceVts.add(rid.toString() + "|" + iid.toString(), ifaceVtableGlobalName(rir, info))
+            }
+          }
+        }
+      }
+    }
+  }
   TirUnitMaps(
     fnNames = fnNames,
     recs = recs,
@@ -18580,6 +18717,9 @@ func tirUnitMaps(
     enumCases = enumCases,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
+    ifaces = ifaces,
+    ifaceMethods = ifaceMethods,
+    ifaceVts = ifaceVts,
     checkedArith = input.checkedArith
   )
 }
@@ -18606,6 +18746,9 @@ func lowerWithTuples(
       maps = maps.maps,
       tasks = maps.tasks,
       asyncFns = maps.asyncFns,
+      ifaces = maps.ifaces,
+      ifaceMethods = maps.ifaceMethods,
+      ifaceVts = maps.ifaceVts,
       intrinsics = maps.intrinsics,
       checkedArith = maps.checkedArith
     )

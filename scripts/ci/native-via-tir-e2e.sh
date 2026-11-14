@@ -325,6 +325,26 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/a_tir.ll" lyric-rt/b
 diff -u "$work/a_tir.out" "$work/a_asan.out"
 echo "async under AddressSanitizer: clean"
 
+# Interfaces (docs/70 phase 4a): a heap record used as an interface and calls through the box,
+# from TIR, then under AddressSanitizer.  The impl methods and `pick` (a branch conversion the TIR
+# builder does not build yet) stay on the AST path: 3 of 10 lower.
+isrc=scripts/ci/native-via-tir/ifaces.l
+"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
+cat "$work/i_census.txt"
+"$work/i_ast" > "$work/i_ast.out"
+"$work/i_tir" > "$work/i_tir.out"
+diff -u "$work/i_ast.out" "$work/i_tir.out"
+printf 'rect r=6/18\nsquare 4=16/48\nrect big=20/60\nsquare 6=36/108\n24\n' | diff -u - "$work/i_tir.out"
+grep -q '^native via-TIR: 3 of 10 functions lowered from TIR' "$work/i_census.txt" || {
+  echo "::error::expected describe, total and main of ifaces.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/i_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/i_asan"
+"$work/i_asan" > "$work/i_asan.out"
+diff -u "$work/i_tir.out" "$work/i_asan.out"
+echo "interfaces under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 

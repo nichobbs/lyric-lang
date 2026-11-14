@@ -217,6 +217,12 @@ pub record TirLowerEnv {
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
+  /// The non-generic interfaces, keyed by the interface's symbol; each interface method's place
+  /// in one, keyed by the method's symbol; and the vtable constant of a record that implements
+  /// an interface, keyed `<record symbol>|<interface symbol>`.
+  ifaces: Map[Int, TirIfaceLayout] = newMap()
+  ifaceMethods: Map[Int, TirIfaceMethodRef] = newMap()
+  ifaceVts: Map[String, String] = newMap()
   /// The stdlib functions the code generator implements itself (`newList`,
   /// `newListWithCapacity`), keyed by the callee's symbol, valued by name.
   intrinsics: Map[Int, String] = newMap()
@@ -247,6 +253,31 @@ pub record TirMapNeed {
   key: String
   keyTy: NType
   valTy: NType
+}
+
+/// One method of an interface as the code generator laid it out: its vtable slot, the types of
+/// the erased call (receiver aside) and whether it is a plain method (no `Self`, no by-reference
+/// parameter, not async), the only kind this lowering dispatches.
+pub record TirIfaceMethod {
+  name: String
+  paramTys: List[NType]
+  retTy: NType
+  plain: Bool
+}
+
+/// An interface as the code generator laid it out: the heap box pointer (`{ header, obj,
+/// vtable* }`), its struct, the vtable struct, the box destructor and the methods in slot order.
+pub record TirIfaceLayout {
+  boxTy: NType
+  structTy: NType
+  vtTy: NType
+  dtor: String
+  methods: List[TirIfaceMethod]
+}
+
+pub record TirIfaceMethodRef {
+  ifaceId: Int
+  slot: Int
 }
 
 /// A closure environment the lowering built: the struct a closure object is allocated as (the
@@ -659,7 +690,14 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
         case Some(r) -> Some(value = r.ty)
         case None -> match mapGet(env.unions, sym.id) {
           case Some(u) -> Some(value = u.ty)
-          case None -> if env.enums.containsKey(sym.id) { Some(value = NI32) } else { None }
+          case None -> if env.enums.containsKey(sym.id) {
+            Some(value = NI32)
+          } else {
+            match mapGet(env.ifaces, sym.id) {
+              case Some(il) -> Some(value = il.boxTy)
+              case None -> None
+            }
+          }
         }
       }
     } else {
@@ -2326,6 +2364,11 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       }
     }
     case Indirect(fnValue) -> lowerIndirect(c, e, fnValue, args)
+    case Interface(_, ifaceArgs, method, targs) -> if ifaceArgs.count > 0 or targs.count > 0 {
+      unsupported(c, "a generic interface method")
+    } else {
+      lowerIfaceCall(c, e, method, args)
+    }
     case _ -> unsupported(c, "a call through " + calleeKind(callee))
   }
 }
@@ -2815,6 +2858,8 @@ func emitSuspendPoint(c: in LCtx): Unit {
 }
 
 /// The coroutine prologue: id, frame allocation, handle, and the task this frame reports through.
+/// The labels and values are fixed names: one coroutine is assembled per function, and an async
+/// lambda (which would nest a second one) stays on the AST path.
 func emitCoroPrologue(c: in LCtx): Unit {
   val p8 = i8ptr()
   val idArgs: List[NArg] = newList()
@@ -3446,6 +3491,143 @@ func calleeKind(k: in Callee): String {
   }
 }
 
+/// A heap record used as an interface it implements: a box holding the (retained) object and
+/// the record's vtable for the interface.  The box is owned by the caller.
+func lowerUpcast(c: in LCtx, e: in TExpr, iface: in SymbolId, inner: in TExpr): Val {
+  val il = match mapGet(c.env.ifaces, iface.id) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "an upcast to " + renderTy(e.ty))
+  }
+  val recId = match inner.ty {
+    case TNamed(sym, targs) -> if targs.count == 0 {
+      sym.id
+    } else {
+      return unsupported(c, "an upcast of " + renderTy(inner.ty))
+    }
+    case _ -> return unsupported(c, "an upcast of " + renderTy(inner.ty))
+  }
+  val vt = match mapGet(c.env.ifaceVts, toString(recId) + "|" + toString(iface.id)) {
+    case Some(g) -> g
+    case None -> return unsupported(c, "an upcast of " + renderTy(inner.ty) + " to " + renderTy(e.ty))
+  }
+  val v = borrow(c, lowerExpr(c, inner))
+  if not isRefN(v.ty) {
+    return unsupported(c, "an upcast of a by-value record")
+  }
+  val box = allocObject(c, il.boxTy, il.structTy, il.dtor)
+  val objI8 = tmp(c)
+  c.insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = i8ptr()))
+  callRtVoid(c, "lyric_retain", arg1(i8ptr(), NLocal(name = objI8)))
+  val objSlot = tmp(c)
+  val oi: List[NArg] = newList()
+  oi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  oi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  c.insns.add(NGEP(dest = objSlot, ty = il.structTy, ptr = box, indices = oi))
+  c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = objI8), ptr = NLocal(name = objSlot)))
+  val vtSlot = tmp(c)
+  val vi: List[NArg] = newList()
+  vi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  vi.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
+  c.insns.add(NGEP(dest = vtSlot, ty = il.structTy, ptr = box, indices = vi))
+  c.insns.add(NStore(ty = NPtr(pointee = il.vtTy), value = NGlobal(name = vt), ptr = NLocal(name = vtSlot)))
+  Val(ty = il.boxTy, value = box, owned = true)
+}
+
+/// A call of a plain interface method: the erased object and the vtable come out of the box, the
+/// vtable slot holds the method, which takes the object as `i8*` and then the arguments.
+func lowerIfaceCall(c: in LCtx, e: in TExpr, method: in SymbolId, args: in List[TArg]): Val {
+  val mr = match mapGet(c.env.ifaceMethods, method.id) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "an interface method with no slot")
+  }
+  val il = match mapGet(c.env.ifaces, mr.ifaceId) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "an interface with no layout")
+  }
+  val m = il.methods[mr.slot]
+  if not m.plain {
+    return unsupported(c, "the interface method " + m.name)
+  }
+  if args.count != m.paramTys.count + 1 {
+    return unsupported(c, "the interface method " + m.name + " with " + toString(args.count) + " arguments")
+  }
+  val vals: List[Val] = newList()
+  for a in args {
+    match a {
+      case TArgIn(v) -> vals.add(borrow(c, lowerExpr(c, v)))
+      case _ -> {
+        c.problems.add("an out argument of an interface method")
+        return unitVal()
+      }
+    }
+  }
+  val recv = vals[0]
+  if nTypeToIrString(recv.ty) != nTypeToIrString(il.boxTy) {
+    return unsupported(c, "an interface call on a value that is not the interface box")
+  }
+  var i = 0
+  while i < m.paramTys.count {
+    if nTypeToIrString(vals[i + 1].ty) != nTypeToIrString(m.paramTys[i]) {
+      return unsupported(c, "an interface argument of another type than the vtable slot's")
+    }
+    i = i + 1
+  }
+  val objSlot = tmp(c)
+  val oi: List[NArg] = newList()
+  oi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  oi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  c.insns.add(NGEP(dest = objSlot, ty = il.structTy, ptr = recv.value, indices = oi))
+  val obj = tmp(c)
+  c.insns.add(NLoad(dest = obj, ty = i8ptr(), ptr = NLocal(name = objSlot)))
+  val vtSlot = tmp(c)
+  val vi: List[NArg] = newList()
+  vi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  vi.add(NArg(ty = NI32, value = NLitInt(v = 4i64, ty = NI32)))
+  c.insns.add(NGEP(dest = vtSlot, ty = il.structTy, ptr = recv.value, indices = vi))
+  val vtPtrTy = NPtr(pointee = il.vtTy)
+  val vtbl = tmp(c)
+  c.insns.add(NLoad(dest = vtbl, ty = vtPtrTy, ptr = NLocal(name = vtSlot)))
+  val fnSlot = tmp(c)
+  val mi: List[NArg] = newList()
+  mi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  mi.add(NArg(ty = NI32, value = NLitInt(v = mr.slot.toLong(), ty = NI32)))
+  c.insns.add(NGEP(dest = fnSlot, ty = il.vtTy, ptr = NLocal(name = vtbl), indices = mi))
+  val fnRaw = tmp(c)
+  c.insns.add(NLoad(dest = fnRaw, ty = i8ptr(), ptr = NLocal(name = fnSlot)))
+  val fnParamTys: List[NType] = newList()
+  fnParamTys.add(i8ptr())
+  for pt in m.paramTys {
+    fnParamTys.add(pt)
+  }
+  val fnTyped = tmp(c)
+  c.insns.add(
+    NBitcast(
+      dest = fnTyped,
+      fromTy = i8ptr(),
+      value = NLocal(name = fnRaw),
+      toTy = NFnPtr(params = fnParamTys, ret = m.retTy)
+    )
+  )
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = i8ptr(), value = NLocal(name = obj)))
+  var k = 1
+  while k < vals.count {
+    callArgs.add(NArg(ty = vals[k].ty, value = vals[k].value))
+    k = k + 1
+  }
+  match m.retTy {
+    case NVoid -> {
+      c.insns.add(NCallVoid(fn = NLocal(name = fnTyped), args = callArgs))
+      unitVal()
+    }
+    case rt -> {
+      val d = tmp(c)
+      c.insns.add(NCall(dest = d, retTy = rt, fn = NLocal(name = fnTyped), args = callArgs))
+      Val(ty = rt, value = NLocal(name = d), owned = isRefN(rt))
+    }
+  }
+}
+
 func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): Val {
   match kind {
     case CvUnrefine -> lowerExpr(c, inner)
@@ -3456,6 +3638,7 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
         case None -> unsupported(c, "a conversion from Never to " + renderTy(e.ty))
       }
     }
+    case CvUpcast(iface) -> lowerUpcast(c, e, iface, inner)
     case CvWiden(_) -> {
       val v = lowerExpr(c, inner)
       match tyToN(c.env, e.ty) {
