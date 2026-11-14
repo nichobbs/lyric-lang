@@ -18420,6 +18420,8 @@ record TirUnitMaps {
   funcs: Map[String, NType] = newMap()
   lists: Map[String, NType] = newMap()
   maps: Map[String, NType] = newMap()
+  tasks: Map[String, NType] = newMap()
+  asyncFns: Map[Int, String] = newMap()
   intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
@@ -18463,6 +18465,7 @@ func tirUnitMaps(
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
   val intrinsics: Map[Int, String] = newMap()
+  val asyncFns: Map[Int, String] = newMap()
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
@@ -18481,8 +18484,12 @@ func tirUnitMaps(
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
-          // An async callee returns a task the call site unwraps: its calls stay on the AST path.
-          case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
+          // An async callee returns a task the call site unwraps: it has its own table.
+          case Some(sg) -> if sg.isAsync {
+            asyncFns.add(id, sg.irName)
+          } else {
+            fnNames.add(id, sg.irName)
+          }
           case None -> ()
         }
         case None -> match Str.indexOf(key, "::") {
@@ -18572,6 +18579,7 @@ func tirUnitMaps(
     enums = enums,
     enumCases = enumCases,
     intrinsics = intrinsics,
+    asyncFns = asyncFns,
     checkedArith = input.checkedArith
   )
 }
@@ -18596,13 +18604,15 @@ func lowerWithTuples(
       funcs = maps.funcs,
       lists = maps.lists,
       maps = maps.maps,
+      tasks = maps.tasks,
+      asyncFns = maps.asyncFns,
       intrinsics = maps.intrinsics,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0) or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18625,6 +18635,9 @@ func lowerWithTuples(
         }
         for n in f.needMaps {
           maps.maps.add(n.key, mapNType(ctx, n.keyTy, n.valTy))
+        }
+        for n in f.needTasks {
+          maps.tasks.add(n.key, taskNType(ctx, n.elemTy))
         }
         attempt = attempt + 1
       }
@@ -18666,7 +18679,11 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
     }
     case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
-      if not fnNames.containsKey(d.sym.id) and not d.isAsync {
+      if d.isAsync {
+        if not maps.asyncFns.containsKey(d.sym.id) {
+          maps.asyncFns.add(d.sym.id, ast.name)
+        }
+      } else if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
       match lowerWithTuples(ctx, maps, d) {
