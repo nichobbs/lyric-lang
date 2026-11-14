@@ -203,6 +203,14 @@ pub record TirLowerEnv {
   /// type, and the ones a lowering found missing (see `tuples`).
   funcs: Map[String, NType] = newMap()
   needFuncs: List[TirFuncNeed] = newList()
+  /// The list types (`List[T]` and `slice[T]` share one runtime representation) the code
+  /// generator has registered, keyed by `renderTy` of the element type, and the ones a lowering
+  /// found missing (see `tuples`).
+  lists: Map[String, NType] = newMap()
+  /// The stdlib functions the code generator implements itself (`newList`,
+  /// `newListWithCapacity`), keyed by the callee's symbol, valued by name.
+  intrinsics: Map[Int, String] = newMap()
+  needLists: List[TirListNeed] = newList()
   /// See `TirUnitInput.checkedArith`.  The contract elaborator's overflow pass rewrites the AST
   /// the TIR is built from, so the lowering emits the same checks itself.
   checkedArith: Bool = false
@@ -214,6 +222,13 @@ pub record TirFuncNeed {
   key: String
   paramTys: List[NType]
   retTy: NType
+}
+
+/// A list element type the lowering needs a list type for: its key in `TirLowerEnv.lists` and
+/// the element type the code generator registers the list from.
+pub record TirListNeed {
+  key: String
+  elemTy: NType
 }
 
 /// A closure environment the lowering built: the struct a closure object is allocated as (the
@@ -282,6 +297,8 @@ pub record TirFallback {
   needTuples: List[TirTupleNeed] = newList()
   /// The same for closure types.
   needFuncs: List[TirFuncNeed] = newList()
+  /// The same for list types.
+  needLists: List[TirListNeed] = newList()
 }
 
 pub record TirLowered {
@@ -619,7 +636,73 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
     }
     case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
     case TFunc(_, _, _) -> funcType(env, t)
+    case TSlice(_) -> listType(env, t)
+    case TExtern(_) -> listType(env, t)
     case _ -> None
+  }
+}
+
+/// The element type of a `slice[T]` or a stdlib `List[T]` (the host type the checker gives
+/// `List` on this target); None for anything else.
+func listElemTy(t: in Ty): Option[Ty] {
+  match t {
+    case TSlice(e) -> Some(value = e)
+    case TExtern(h) -> if h.args.count == 1 and h.name == "System.Collections.Generic.List`1" {
+      Some(value = h.args[0])
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+func isListTy(t: in Ty): Bool {
+  match listElemTy(t) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func tyLowers(env: in TirLowerEnv, t: in Ty): Bool {
+  match tyToN(env, t) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// Elements the list kernels store in a 64-bit slot: scalars and reference-counted values
+/// (the container retains the latter).  By-value aggregates are boxed by the AST path and
+/// stay there.
+func listElemOk(nt: in NType): Bool {
+  match nt {
+    case NVoid -> false
+    case _ -> isScalarN(nt) or isRefN(nt)
+  }
+}
+
+/// The list type of `t` (see `listElemTy`).  A list type the code generator has not registered
+/// is recorded in `env.needLists` (once) and reads as unsupported for this attempt.
+func listType(env: in TirLowerEnv, t: in Ty): Option[NType] {
+  val el = match listElemTy(t) { case Some(x) -> x; case None -> return None }
+  val en = match tyToN(env, el) { case Some(x) -> x; case None -> return None }
+  if not listElemOk(en) {
+    return None
+  }
+  val key = renderTy(el)
+  match mapGet(env.lists, key) {
+    case Some(nt) -> Some(value = nt)
+    case None -> {
+      var seen = false
+      for n in env.needLists {
+        if n.key == key {
+          seen = true
+        }
+      }
+      if not seen {
+        env.needLists.add(TirListNeed(key = key, elemTy = en))
+      }
+      None
+    }
   }
 }
 
@@ -1140,6 +1223,7 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XField(recv, field) -> lowerField(c, recv, field)
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
     case XTuple(elems) -> lowerTuple(c, e, elems)
+    case XListLit(elems) -> lowerListLit(c, e, elems)
     case XLambda(params, captures, body) -> lowerLambda(c, e, params, captures, body)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
   }
@@ -1403,8 +1487,21 @@ func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind): V
       val ch = callRt(c, "lyric_string_char_at", NI32, arg2(lyricStringNType(), r.value, NI64, NLocal(name = wide)))
       Val(ty = NI32, value = ch)
     }
-    case _ -> unsupported(c, "indexing a value that is not a string")
+    case IkList -> lowerListIndex(c, recv, idx)
+    case IkSlice -> lowerListIndex(c, recv, idx)
+    case _ -> unsupported(c, "indexing a value that is not a string or a list")
   }
+}
+
+func lowerListIndex(c: in LCtx, recv: in TExpr, idx: in TExpr): Val {
+  val el = match listElemN(c, recv.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+  }
+  val l = borrow(c, lowerExpr(c, recv))
+  val i = wideIndex(c, idx)
+  val slot = callRt(c, "lyric_list_get", NI64, arg2(i8ptr(), listAsI8(c, l), NI64, i))
+  fromSlot(c, slot, el)
 }
 
 /// A pointer into a union object: field `idx` of `structTy` (the discriminant or the payload
@@ -1910,6 +2007,10 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       }
     }
     case Direct(sym, targs) -> {
+      match mapGet(c.env.intrinsics, sym.id) {
+        case Some(name) -> return lowerCollectionIntrinsic(c, e, name, args)
+        case None -> ()
+      }
       if targs.count > 0 {
         return unsupported(c, "a generic call")
       }
@@ -2340,6 +2441,10 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   if name == "panic" and ins.count == 1 {
     return lowerPanicCall(c, ins[0], line)
   }
+  match lowerCollectionBuiltin(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   match lowerStringMethod(c, name, ins) {
     case Some(v) -> return v
     case None -> ()
@@ -2378,6 +2483,185 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return Val(ty = NI32, value = NLocal(name = d))
   }
   unsupported(c, "builtin " + name)
+}
+
+/// A value in the 64-bit slot the list kernels store (the AST path's `slotOfVal`): integers
+/// widen, floats keep their bits, references are pointers.
+func slotOf(c: in LCtx, v: in Val): NValue {
+  val d = tmp(c)
+  match v.ty {
+    case NI64 -> return v.value
+    case NDouble -> c.insns.add(NBitcast(dest = d, fromTy = NDouble, value = v.value, toTy = NI64))
+    case NFloat -> {
+      val bits = tmp(c)
+      c.insns.add(NBitcast(dest = bits, fromTy = NFloat, value = v.value, toTy = NI32))
+      c.insns.add(NZExt(dest = d, fromTy = NI32, value = NLocal(name = bits), toTy = NI64))
+    }
+    case NI32 -> c.insns.add(NSExt(dest = d, fromTy = NI32, value = v.value, toTy = NI64))
+    case NI8 -> c.insns.add(NZExt(dest = d, fromTy = NI8, value = v.value, toTy = NI64))
+    case NI1 -> c.insns.add(NZExt(dest = d, fromTy = NI1, value = v.value, toTy = NI64))
+    case _ -> c.insns.add(NPtrToInt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
+  }
+  NLocal(name = d)
+}
+
+/// The element a slot holds; a reference is borrowed from the list (the kernel's get does not
+/// retain).
+func fromSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
+  val d = tmp(c)
+  match nt {
+    case NI64 -> return Val(ty = nt, value = slot)
+    case NDouble -> c.insns.add(NBitcast(dest = d, fromTy = NI64, value = slot, toTy = NDouble))
+    case NFloat -> {
+      val bits = tmp(c)
+      c.insns.add(NTrunc(dest = bits, fromTy = NI64, value = slot, toTy = NI32))
+      c.insns.add(NBitcast(dest = d, fromTy = NI32, value = NLocal(name = bits), toTy = NFloat))
+    }
+    case NI32 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI32))
+    case NI8 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI8))
+    case NI1 -> c.insns.add(NTrunc(dest = d, fromTy = NI64, value = slot, toTy = NI1))
+    case _ -> c.insns.add(NIntToPtr(dest = d, fromTy = NI64, value = slot, toTy = nt))
+  }
+  Val(ty = nt, value = NLocal(name = d))
+}
+
+/// A list value as the `i8*` the kernels take.
+func listAsI8(c: in LCtx, v: in Val): NValue {
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = v.ty, value = v.value, toTy = i8ptr()))
+  NLocal(name = d)
+}
+
+/// The element type of the list or slice `t`, lowered.
+func listElemN(c: in LCtx, t: in Ty): Option[NType] {
+  match listElemTy(t) {
+    case Some(el) -> tyToN(c.env, el)
+    case None -> None
+  }
+}
+
+/// An empty list of type `t`; the caller owns it.
+func newListOf(c: in LCtx, t: in Ty): Val {
+  val lt = match tyToN(c.env, t) { case Some(x) -> x; case None -> return unsupported(c, "a list of " + renderTy(t)) }
+  val el = match listElemN(c, t) { case Some(x) -> x; case None -> return unsupported(c, "a list of " + renderTy(t)) }
+  val flag = if isRefN(el) { 1i64 } else { 0i64 }
+  val raw = callRt(c, "lyric_list_new", i8ptr(), arg1(NI32, NLitInt(v = flag, ty = NI32)))
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = lt))
+  Val(ty = lt, value = NLocal(name = d), owned = true)
+}
+
+/// Push `x` (borrowed; the kernel retains a reference element) onto the list `l`.
+func pushOnto(c: in LCtx, l: in Val, x: in TExpr): Unit {
+  val v = borrow(c, lowerExpr(c, x))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+  args.add(NArg(ty = NI64, value = slotOf(c, v)))
+  callRtVoid(c, "lyric_list_push", args)
+}
+
+/// `[a, b, c]` as a list or slice.
+func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
+  val l = newListOf(c, e.ty)
+  if not isRefN(l.ty) {
+    return l
+  }
+  for x in elems {
+    pushOnto(c, l, x)
+  }
+  l
+}
+
+/// `newList()` and `newListWithCapacity(n)`.
+func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in List[TArg]): Val {
+  if not isListTy(e.ty) {
+    return unsupported(c, name + " producing " + renderTy(e.ty))
+  }
+  for a in args {
+    match a {
+      case TArgIn(v) -> discard(c, lowerExpr(c, v))
+      case _ -> {
+        c.problems.add("an out argument of " + name)
+      }
+    }
+  }
+  newListOf(c, e.ty)
+}
+
+/// The list and slice members that are one kernel call; the receiver is `ins[0]`.
+func lowerCollectionBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if ins.count == 0 or not isListTy(ins[0].ty) {
+    return None
+  }
+  val recvTy = ins[0].ty
+  val isLen = (name == "slice.length" or name == "List.count") and ins.count == 1
+  val isAdd = name == "List.add" and ins.count == 2
+  val isInsert = name == "List.add" and ins.count == 3
+  val isRemoveAt = name == "List.removeAt" and ins.count == 2
+  val isClear = name == "List.clear" and ins.count == 1
+  val isCopy = (name == "List.toArray" or name == "slice.toList") and ins.count == 1
+  val isSlice = name == "slice.slice" and ins.count == 3
+  val isConcat = name == "slice.concat" and ins.count == 2
+  val isAppend = name == "slice.append" and ins.count == 2
+  if not (isLen or isAdd or isInsert or isRemoveAt or isClear or isCopy or isSlice or isConcat or isAppend) {
+    return None
+  }
+  if not tyLowers(c.env, recvTy) {
+    return None
+  }
+  val l = borrow(c, lowerExpr(c, ins[0]))
+  if isLen {
+    val n = callRt(c, "lyric_list_len", NI64, arg1(i8ptr(), listAsI8(c, l)))
+    val d = tmp(c)
+    c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
+    return Some(value = Val(ty = NI32, value = NLocal(name = d)))
+  }
+  if isAdd {
+    pushOnto(c, l, ins[1])
+    return Some(value = unitVal())
+  }
+  if isInsert {
+    val idx = wideIndex(c, ins[1])
+    val v = borrow(c, lowerExpr(c, ins[2]))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+    args.add(NArg(ty = NI64, value = idx))
+    args.add(NArg(ty = NI64, value = slotOf(c, v)))
+    callRtVoid(c, "lyric_list_insert", args)
+    return Some(value = unitVal())
+  }
+  if isRemoveAt {
+    val idx = wideIndex(c, ins[1])
+    callRtVoid(c, "lyric_list_remove_at", arg2(i8ptr(), listAsI8(c, l), NI64, idx))
+    return Some(value = unitVal())
+  }
+  if isClear {
+    callRtVoid(c, "lyric_list_clear", arg1(i8ptr(), listAsI8(c, l)))
+    return Some(value = unitVal())
+  }
+  // The combinators return a fresh list (a reference element is retained by it) of the same
+  // representation, so the result keeps the receiver's type.
+  var raw: NValue = NLocal(name = "")
+  if isCopy {
+    raw = callRt(c, "lyric_list_copy", i8ptr(), arg1(i8ptr(), listAsI8(c, l)))
+  } else if isSlice {
+    val from = wideIndex(c, ins[1])
+    val to = wideIndex(c, ins[2])
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+    args.add(NArg(ty = NI64, value = from))
+    args.add(NArg(ty = NI64, value = to))
+    raw = callRt(c, "lyric_list_slice", i8ptr(), args)
+  } else if isConcat {
+    val other = borrow(c, lowerExpr(c, ins[1]))
+    raw = callRt(c, "lyric_list_concat", i8ptr(), arg2(i8ptr(), listAsI8(c, l), i8ptr(), listAsI8(c, other)))
+  } else {
+    val v = borrow(c, lowerExpr(c, ins[1]))
+    raw = callRt(c, "lyric_list_append", i8ptr(), arg2(i8ptr(), listAsI8(c, l), NI64, slotOf(c, v)))
+  }
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = l.ty))
+  Some(value = Val(ty = l.ty, value = NLocal(name = d), owned = true))
 }
 
 /// `panic(message)`: the message as a C string, the package label and the line, then no way on.
@@ -2743,6 +3027,26 @@ func assignSlot(c: in LCtx, slot: in Slot, placeTy: in Ty, op: in AssignKind, va
   unitVal()
 }
 
+/// `xs[i] = v` on a `List`; the kernel retains the new element and releases the old one.
+func lowerListSet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr): Val {
+  match op {
+    case AkSet -> ()
+    case _ -> return unsupported(c, "a compound assignment to a list element")
+  }
+  if not tyLowers(c.env, recv.ty) {
+    return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
+  }
+  val l = borrow(c, lowerExpr(c, recv))
+  val i = wideIndex(c, idx)
+  val v = borrow(c, lowerExpr(c, value))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+  args.add(NArg(ty = NI64, value = i))
+  args.add(NArg(ty = NI64, value = slotOf(c, v)))
+  callRtVoid(c, "lyric_list_set", args)
+  unitVal()
+}
+
 func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExpr): Val {
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
@@ -2761,6 +3065,10 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
         )
         case _ -> unsupported(c, "an assignment to a field")
       }
+    }
+    case PlIndex(recv, idx, how) -> match how {
+      case IkList -> lowerListSet(c, recv, idx, op, value)
+      case _ -> unsupported(c, "an assignment to an element or global")
     }
     case _ -> unsupported(c, "an assignment to an element or global")
   }
@@ -3186,10 +3494,57 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
         }
       }
     }
-    case _ -> {
+    case _ -> lowerForList(c, label, pat, iter, body)
+  }
+}
+
+/// `for x in list`: the list is held for the loop, the length is read each iteration and an
+/// element is retained for the body (a body that removes it cannot free what it still reads).
+func lowerForList(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr, body: in TExpr): Unit {
+  val el = match listElemN(c, iter.ty) {
+    case Some(x) -> x
+    case None -> {
       c.problems.add("a for over " + renderTy(iter.ty))
+      return
     }
   }
+  val l = borrow(c, lowerExpr(c, iter))
+  val lp = listAsI8(c, l)
+  val slotName = "for" + toString(c.ticker.count + 1) + ".i"
+  c.ticker.add(0)
+  c.allocas.add(NAlloca(dest = slotName, ty = NI64))
+  c.insns.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = slotName)))
+  val condL = newLabel(c, "for.cond")
+  val bodyL = newLabel(c, "for.body")
+  val stepL = newLabel(c, "for.step")
+  val endL = newLabel(c, "for.end")
+  c.insns.add(NBr(label = condL))
+  startBlock(c, condL)
+  val cur = tmp(c)
+  c.insns.add(NLoad(dest = cur, ty = NI64, ptr = NLocal(name = slotName)))
+  val n = callRt(c, "lyric_list_len", NI64, arg1(i8ptr(), lp))
+  val ok = tmp(c)
+  c.insns.add(NICmp(dest = ok, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = n))
+  c.insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = bodyL, elseLabel = endL))
+  startBlock(c, bodyL)
+  val depth = c.refScopes.count
+  val tdepth = c.temps.count
+  pushRefScope(c)
+  val slot = callRt(c, "lyric_list_get", NI64, arg2(i8ptr(), lp, NI64, NLocal(name = cur)))
+  patBindOwned(c, pat, fromSlot(c, slot, el))
+  c.loops.add(LoopLabels(label = label, breakL = endL, contL = stepL, scopeDepth = depth, tempDepth = tdepth))
+  discard(c, lowerExpr(c, body))
+  c.loops.removeAt(c.loops.count - 1)
+  popRefScope(c)
+  c.insns.add(NBr(label = stepL))
+  startBlock(c, stepL)
+  val at = tmp(c)
+  c.insns.add(NLoad(dest = at, ty = NI64, ptr = NLocal(name = slotName)))
+  val next = tmp(c)
+  c.insns.add(NAdd(dest = next, ty = NI64, a = NLocal(name = at), b = NLitInt(v = 1i64, ty = NI64)))
+  c.insns.add(NStore(ty = NI64, value = NLocal(name = next), ptr = NLocal(name = slotName)))
+  c.insns.add(NBr(label = condL))
+  startBlock(c, endL)
 }
 
 func lowerStmt(c: in LCtx, s: in TStmt): Unit {
@@ -3355,7 +3710,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         sym = f.sym,
         reason = f.reason,
         needTuples = env.needTuples,
-        needFuncs = env.needFuncs
+        needFuncs = env.needFuncs,
+        needLists = env.needLists
       )
     )
   }
