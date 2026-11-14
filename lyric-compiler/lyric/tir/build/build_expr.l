@@ -4236,6 +4236,21 @@ func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedP
     case ELiteral(l) -> match l {
       case LInt(_, sfx, _) -> match sfx {
         case NoIntSuffix -> Some(value = tyInt())
+        case I32 -> Some(value = tyInt())
+        case I64 -> Some(
+          value = TPrim(kind = TPLong)
+        )
+        case U8 -> Some(
+          value = TPrim(kind = TPByte)
+        )
+        case U32 -> Some(
+          value = TPrim(kind = TPUInt)
+        )
+        case U64 -> Some(
+          value = TPrim(
+            kind = TPULong
+          )
+        )
         case _ -> None
       }
       case LFloat(_, sfx, _) -> match sfx {
