@@ -1173,6 +1173,18 @@ test "a field of an opaque type is readable in its own package (D592)" {
   assertBuildsAndVerifies(pb, 1, "Id.label")
 }
 
+test "an opaque type is constructed by its fields inside its own package (D462)" {
+  val pb = packageOf(
+    "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc mk(n: in Int): Id {\n  Id(n = n, label = \"x\")\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "mk")
+}
+
+test "an opaque type with no fields is constructed with no arguments (D462)" {
+  val pb = packageOf("package App\nopaque type Handle {\n}\nfunc mk(): Handle {\n  Handle()\n}\n")
+  assertBuildsAndVerifies(pb, 1, "mk")
+}
+
 test "a field of a generic opaque type is read at the receiver's arguments (D592)" {
   val pb = packageOf("package App\nopaque type Box[T] {\n  v: T\n}\nfunc g(b: in Box[Int]): Int {\n  b.v\n}\n")
   assertBuildsAndVerifies(pb, 1, "Box.v")

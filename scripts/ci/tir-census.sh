@@ -22,6 +22,11 @@
 # census only counts: it never gates, because phase 3a has not driven those
 # areas to zero yet (docs/70 §13); the standard-library gate above is unchanged.
 #
+# TIR_CENSUS_STATE=<dir> makes the wide census resumable: each build's log and exit code
+# are kept under <dir>, and a rerun with the same <dir> reuses the ones already there, so a
+# run killed part-way (the self-tests area takes hours) continues instead of restarting.
+# Delete <dir> (or use a new one) after rebuilding ./bin/lyric.
+#
 # Usage: tir-census.sh [path/to/lyric] [--wide] [file.l ...]
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -112,6 +117,21 @@ absorb_log() {
   done < <(grep -E '^  no builder case: ' "$log" || true)
 }
 
+# Runs one wide-census build into $log, or reuses the kept result (see TIR_CENSUS_STATE).
+# Sets rc.  Usage: run_cached <key> <timeout> <command...>
+run_cached() {
+  local key="$1" tmo="$2"; shift 2
+  local keep=""
+  if [[ -n "${TIR_CENSUS_STATE:-}" ]]; then
+    mkdir -p "$TIR_CENSUS_STATE"
+    keep="$TIR_CENSUS_STATE/$(tr '/ ' '__' <<<"$key")"
+    if [[ -f "$keep.rc" ]]; then cp "$keep.log" "$log"; rc="$(cat "$keep.rc")"; return 0; fi
+  fi
+  rc=0
+  timeout "$tmo" "$@" >"$log" 2>&1 || rc=$?
+  if [[ -n "$keep" ]]; then cp "$log" "$keep.log"; echo "$rc" >"$keep.rc"; fi
+}
+
 cd "$REPO_ROOT"
 for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
@@ -189,8 +209,7 @@ for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.
   dir="$(dirname "$manifest")"
   [[ "$dir" == "lyric-compiler/lyric" || "$dir" == lyric-compiler/* ]] && continue
   is_native_only "$dir" && continue
-  rc=0
-  timeout 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet >"$log" 2>&1 || rc=$?
+  run_cached "eco-$manifest" 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet
   absorb_log ecosystem "$manifest" "$log" "$rc"
 done
 fi
@@ -198,13 +217,11 @@ fi
 if [[ "$AREAS" == *" self-tests "* ]]; then
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
-  rc=0
-  timeout 600 "$LYRIC" build --verify-ir "$f" -o "$OUT/st.dll" >"$log" 2>&1 || rc=$?
+  run_cached "st-$f" 600 "$LYRIC" build --verify-ir "$f" -o "$OUT/st.dll"
   if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-0}" == 1 ]]; then
     # A program that imports compiler packages builds only through `lyric test`, which
     # links them as restored dependencies; the census line is the same.  The tests run too.
-    rc=0
-    LYRIC_VERIFY_IR=1 timeout 600 "$LYRIC" test --target dotnet "$f" >"$log" 2>&1 || rc=$?
+    run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 "$LYRIC" test --target dotnet "$f"
   fi
   absorb_log self-tests "$f" "$log" "$rc"
 done < <(find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort)
