@@ -286,6 +286,25 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/l_tir.ll" lyric-rt/b
 diff -u "$work/l_tir.out" "$work/l_asan.out"
 echo "lists under AddressSanitizer: clean"
 
+# Maps (docs/70 phase 4a): newMap, add, containsKey, remove, count, `m[k]` and `m[k] = v` from TIR,
+# then under AddressSanitizer.
+msrc=scripts/ci/native-via-tir/maps.l
+"$lyric_bin" build --target native "$msrc" -o "$work/m_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$msrc" -o "$work/m_tir" 2> "$work/m_census.txt" >/dev/null
+cat "$work/m_census.txt"
+"$work/m_ast" > "$work/m_ast.out"
+"$work/m_tir" > "$work/m_tir.out"
+diff -u "$work/m_ast.out" "$work/m_tir.out"
+printf '3213\ntwo:20\nthree:30\nnone\n2\n' | diff -u - "$work/m_tir.out"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/m_census.txt" || {
+  echo "::error::expected every function of maps.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/m_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/m_asan"
+"$work/m_asan" > "$work/m_asan.out"
+diff -u "$work/m_tir.out" "$work/m_asan.out"
+echo "maps under AddressSanitizer: clean"
+
 # A call to an async function stays on the AST path: only `twice` lowers from TIR.
 asrc=scripts/ci/native-via-tir/async.l
 "$lyric_bin" build --target native "$asrc" -o "$work/a_ast" >/dev/null

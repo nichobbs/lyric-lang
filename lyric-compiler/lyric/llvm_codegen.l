@@ -18419,6 +18419,7 @@ record TirUnitMaps {
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
   lists: Map[String, NType] = newMap()
+  maps: Map[String, NType] = newMap()
   intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
@@ -18467,7 +18468,7 @@ func tirUnitMaps(
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> {
-          if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity") {
+          if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity" or n.name == "newMap") {
             intrinsics.add(id, n.name)
           }
         }
@@ -18594,13 +18595,14 @@ func lowerWithTuples(
       tuples = maps.tuples,
       funcs = maps.funcs,
       lists = maps.lists,
+      maps = maps.maps,
       intrinsics = maps.intrinsics,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0) or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18620,6 +18622,9 @@ func lowerWithTuples(
         }
         for n in f.needLists {
           maps.lists.add(n.key, listNType(ctx, n.elemTy))
+        }
+        for n in f.needMaps {
+          maps.maps.add(n.key, mapNType(ctx, n.keyTy, n.valTy))
         }
         attempt = attempt + 1
       }

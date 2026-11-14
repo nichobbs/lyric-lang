@@ -166,3 +166,9 @@ and still holds generics and un-elaborated contracts.
 - Ownership: a list is a reference value, owned when it is a call or constructor result. Elements read from a list are borrowed (the kernel's `get` does not retain). A `for` over a list holds the list for the loop and retains each element for the body (bound as an owned, scope-tracked local), so a body that removes the element cannot free what it still reads; `break` and `continue` release it through the loop's recorded scope depth.
 - Not covered: compound assignment to an element (`xs[i] += 1`), `List.contains`/`indexOf`/`remove` (they need the element's equality), `Map`/`Set`, arrays, generic code (phase 3c).
 - `scripts/ci/native-via-tir/lists.l` is run by `native-via-tir-e2e.sh` (output equal to the AST build's and clean under AddressSanitizer).
+
+## Slice 19: `Map[K, V]` and `NativePtr[T]` types
+
+- `Map[K, V]` with a `String` or scalar key and a scalar or reference value lowers to the runtime's `LyricMap`: `newMap`, `add`, `containsKey`, `remove`, `count`, `m[k]` (a panic with the AST path's message when the key is absent) and `m[k] = v` (the kernel retains the new value and releases the old). The map type is registered on demand like lists (`needMaps`); a `String` key sets the key flag and a reference value the value flag, as the AST path does. Structured keys (unions, records, arrays) keep the AST path's synthesised equality and stay there. `Set` has no native lowering on either path.
+- `NativePtr[T]` is a raw pointer, not counted: its type lowers when `T` is a scalar or another raw pointer, so kernel `extern func`s that take and return such pointers (the largest group of bundled-stdlib fallbacks after generics and contracts) can lower. A pointer to a record or union keeps its AST-path form.
+- `scripts/ci/native-via-tir/maps.l` is run by `native-via-tir-e2e.sh` (output equal to the AST build's and clean under AddressSanitizer).

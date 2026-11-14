@@ -207,6 +207,9 @@ pub record TirLowerEnv {
   /// generator has registered, keyed by `renderTy` of the element type, and the ones a lowering
   /// found missing (see `tuples`).
   lists: Map[String, NType] = newMap()
+  /// The map types, keyed by `renderTy` of the key and value types joined by `|`.
+  maps: Map[String, NType] = newMap()
+  needMaps: List[TirMapNeed] = newList()
   /// The stdlib functions the code generator implements itself (`newList`,
   /// `newListWithCapacity`), keyed by the callee's symbol, valued by name.
   intrinsics: Map[Int, String] = newMap()
@@ -229,6 +232,14 @@ pub record TirFuncNeed {
 pub record TirListNeed {
   key: String
   elemTy: NType
+}
+
+/// A map type the lowering needs: its key in `TirLowerEnv.maps` and the key and value types the
+/// code generator registers it from.
+pub record TirMapNeed {
+  key: String
+  keyTy: NType
+  valTy: NType
 }
 
 /// A closure environment the lowering built: the struct a closure object is allocated as (the
@@ -299,6 +310,7 @@ pub record TirFallback {
   needFuncs: List[TirFuncNeed] = newList()
   /// The same for list types.
   needLists: List[TirListNeed] = newList()
+  needMaps: List[TirMapNeed] = newList()
 }
 
 pub record TirLowered {
@@ -637,9 +649,193 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
     case TTuple(_) -> match tupleLayout(env, t) { case Some(lay) -> Some(value = lay.ty); case None -> None }
     case TFunc(_, _, _) -> funcType(env, t)
     case TSlice(_) -> listType(env, t)
-    case TExtern(_) -> listType(env, t)
+    case TExtern(h) -> if h.name == "lyric.native.NativePtr`1" {
+      nativePtrType(env, h)
+    } else if h.name == "System.Collections.Generic.Dictionary`2" {
+      mapType(env, h)
+    } else {
+      listType(env, t)
+    }
     case _ -> None
   }
+}
+
+/// `NativePtr[T]`: a raw pointer to `T`, not counted.  The pointee is a scalar or another raw
+/// pointer; a pointer to a record or union keeps its AST-path form.
+func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
+  if h.args.count != 1 {
+    return None
+  }
+  match tyToN(env, h.args[0]) {
+    case Some(inner) -> match inner {
+      case NVoid -> None
+      case NPtr(_) -> if isRefN(inner) { None } else { Some(value = NPtr(pointee = inner)) }
+      case _ -> if isScalarN(inner) { Some(value = NPtr(pointee = inner)) } else { None }
+    }
+    case None -> None
+  }
+}
+
+/// A `Map[K, V]`: a `String` or scalar key and a scalar or reference value.  A map type the code
+/// generator has not registered is recorded in `env.needMaps` (once) and reads as unsupported for
+/// this attempt.
+func mapType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
+  if h.args.count != 2 {
+    return None
+  }
+  val kn = match tyToN(env, h.args[0]) { case Some(x) -> x; case None -> return None }
+  val vn = match tyToN(env, h.args[1]) { case Some(x) -> x; case None -> return None }
+  if not (isStringN(kn) or isScalarN(kn)) or not listElemOk(vn) {
+    return None
+  }
+  val key = renderTy(h.args[0]) + "|" + renderTy(h.args[1])
+  match mapGet(env.maps, key) {
+    case Some(nt) -> Some(value = nt)
+    case None -> {
+      var seen = false
+      for n in env.needMaps {
+        if n.key == key {
+          seen = true
+        }
+      }
+      if not seen {
+        env.needMaps.add(TirMapNeed(key = key, keyTy = kn, valTy = vn))
+      }
+      None
+    }
+  }
+}
+
+func isMapTy(t: in Ty): Bool {
+  match t {
+    case TExtern(h) -> h.name == "System.Collections.Generic.Dictionary`2" and h.args.count == 2
+    case _ -> false
+  }
+}
+
+func mapKeyVal(c: in LCtx, t: in Ty): Option[List[NType]] {
+  match t {
+    case TExtern(h) -> if h.args.count == 2 {
+      match tyToN(c.env, h.args[0]) {
+        case Some(k) -> match tyToN(c.env, h.args[1]) {
+          case Some(v) -> {
+            val xs: List[NType] = newList()
+            xs.add(k)
+            xs.add(v)
+            Some(value = xs)
+          }
+          case None -> None
+        }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// An empty map of type `t`; the caller owns it.  A `String` key sets the key flag, a scalar
+/// does not.
+func newMapOf(c: in LCtx, t: in Ty): Val {
+  val mt = match tyToN(c.env, t) { case Some(x) -> x; case None -> return unsupported(c, "a map of " + renderTy(t)) }
+  val kv = match mapKeyVal(c, t) { case Some(x) -> x; case None -> return unsupported(c, "a map of " + renderTy(t)) }
+  val keyFlag = if isStringN(kv[0]) { 1i64 } else { 0i64 }
+  val valFlag = if isRefN(kv[1]) { 1i64 } else { 0i64 }
+  val raw = callRt(
+    c,
+    "lyric_map_new",
+    i8ptr(),
+    arg2(NI32, NLitInt(v = keyFlag, ty = NI32), NI32, NLitInt(v = valFlag, ty = NI32))
+  )
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = mt))
+  Val(ty = mt, value = NLocal(name = d), owned = true)
+}
+
+/// The `Map` members that are one kernel call; the receiver is `ins[0]`.
+func lowerMapBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  if ins.count == 0 or not isMapTy(ins[0].ty) or not tyLowers(c.env, ins[0].ty) {
+    return None
+  }
+  val isAdd = name == "Map.add" and ins.count == 3
+  val isHas = name == "Map.containsKey" and ins.count == 2
+  val isRemove = name == "Map.remove" and ins.count == 2
+  val isCount = name == "Map.count" and ins.count == 1
+  if not (isAdd or isHas or isRemove or isCount) {
+    return None
+  }
+  val m = borrow(c, lowerExpr(c, ins[0]))
+  val mp = listAsI8(c, m)
+  if isCount {
+    val n = callRt(c, "lyric_map_len", NI64, arg1(i8ptr(), mp))
+    val d = tmp(c)
+    c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
+    return Some(value = Val(ty = NI32, value = NLocal(name = d)))
+  }
+  val k = borrow(c, lowerExpr(c, ins[1]))
+  if isAdd {
+    val v = borrow(c, lowerExpr(c, ins[2]))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = i8ptr(), value = mp))
+    args.add(NArg(ty = NI64, value = slotOf(c, k)))
+    args.add(NArg(ty = NI64, value = slotOf(c, v)))
+    callRtVoid(c, "lyric_map_set", args)
+    return Some(value = unitVal())
+  }
+  val r = callRt(
+    c,
+    if isHas { "lyric_map_contains" } else { "lyric_map_remove" },
+    NI32,
+    arg2(i8ptr(), mp, NI64, slotOf(c, k))
+  )
+  val b = tmp(c)
+  c.insns.add(NICmp(dest = b, pred = INe, ty = NI32, a = r, b = NLitInt(v = 0i64, ty = NI32)))
+  Some(value = Val(ty = NI1, value = NLocal(name = b)))
+}
+
+/// `m[k]`: panics when the key is absent.
+func lowerMapIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val {
+  val kv = match mapKeyVal(c, recv.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+  }
+  val m = borrow(c, lowerExpr(c, recv))
+  val k = borrow(c, lowerExpr(c, idx))
+  val outSlot = "mapidx.out." + toString(c.ticker.count + 1)
+  c.ticker.add(0)
+  c.allocas.add(NAlloca(dest = outSlot, ty = NI64))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, m)))
+  args.add(NArg(ty = NI64, value = slotOf(c, k)))
+  args.add(NArg(ty = NPtr(pointee = NI64), value = NLocal(name = outSlot)))
+  val found = callRt(c, "lyric_map_get", NI32, args)
+  val miss = tmp(c)
+  c.insns.add(NICmp(dest = miss, pred = IEq, ty = NI32, a = found, b = NLitInt(v = 0i64, ty = NI32)))
+  trapIf(c, NLocal(name = miss), "map key not found (use mapGet for an Option result)", line)
+  val raw = tmp(c)
+  c.insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
+  fromSlot(c, NLocal(name = raw), kv[1])
+}
+
+/// `m[k] = v`: the kernel retains the new value and releases the old one.
+func lowerMapSet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr): Val {
+  match op {
+    case AkSet -> ()
+    case _ -> return unsupported(c, "a compound assignment to a map element")
+  }
+  if not tyLowers(c.env, recv.ty) {
+    return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
+  }
+  val m = borrow(c, lowerExpr(c, recv))
+  val k = borrow(c, lowerExpr(c, idx))
+  val v = borrow(c, lowerExpr(c, value))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, m)))
+  args.add(NArg(ty = NI64, value = slotOf(c, k)))
+  args.add(NArg(ty = NI64, value = slotOf(c, v)))
+  callRtVoid(c, "lyric_map_set", args)
+  unitVal()
 }
 
 /// The element type of a `slice[T]` or a stdlib `List[T]` (the host type the checker gives
@@ -1218,7 +1414,7 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XAssign(place, op, value) -> lowerAssign(c, place, op, value)
     case XMatch(scrut, arms, exhaustive) -> lowerMatch(c, e, scrut, arms, exhaustive)
     case XInterp(parts) -> lowerInterp(c, parts)
-    case XIndex(recv, idx, how) -> lowerIndex(c, recv, idx, how)
+    case XIndex(recv, idx, how) -> lowerIndex(c, recv, idx, how, e.span.startPos.line)
     case XConstruct(sym, fields) -> lowerConstruct(c, sym, fields)
     case XField(recv, field) -> lowerField(c, recv, field)
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
@@ -1477,7 +1673,7 @@ func lowerInterp(c: in LCtx, parts: in List[TExpr]): Val {
 
 /// `s[i]` on a string: the runtime decodes the scalar value starting at byte offset `i`.
 /// Other indexing (lists, maps, arrays, slices) stays on the AST path.
-func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind): Val {
+func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind, line: in Int): Val {
   match how {
     case IkString -> {
       val r = borrow(c, lowerExpr(c, recv))
@@ -1489,6 +1685,7 @@ func lowerIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, how: in IndexKind): V
     }
     case IkList -> lowerListIndex(c, recv, idx)
     case IkSlice -> lowerListIndex(c, recv, idx)
+    case IkMap -> lowerMapIndex(c, recv, idx, line)
     case _ -> unsupported(c, "indexing a value that is not a string or a list")
   }
 }
@@ -2445,6 +2642,10 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     case Some(v) -> return v
     case None -> ()
   }
+  match lowerMapBuiltin(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   match lowerStringMethod(c, name, ins) {
     case Some(v) -> return v
     case None -> ()
@@ -2574,6 +2775,9 @@ func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
 
 /// `newList()` and `newListWithCapacity(n)`.
 func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in List[TArg]): Val {
+  if name == "newMap" and isMapTy(e.ty) {
+    return newMapOf(c, e.ty)
+  }
   if not isListTy(e.ty) {
     return unsupported(c, name + " producing " + renderTy(e.ty))
   }
@@ -3068,6 +3272,7 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
     }
     case PlIndex(recv, idx, how) -> match how {
       case IkList -> lowerListSet(c, recv, idx, op, value)
+      case IkMap -> lowerMapSet(c, recv, idx, op, value)
       case _ -> unsupported(c, "an assignment to an element or global")
     }
     case _ -> unsupported(c, "an assignment to an element or global")
@@ -3711,7 +3916,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         reason = f.reason,
         needTuples = env.needTuples,
         needFuncs = env.needFuncs,
-        needLists = env.needLists
+        needLists = env.needLists,
+        needMaps = env.needMaps
       )
     )
   }
