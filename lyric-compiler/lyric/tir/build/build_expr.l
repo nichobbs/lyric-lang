@@ -1511,11 +1511,23 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
 func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+  // The annotation is the type the initializer's position gives it, for an expression the checker
+  // left with an open type argument (`val xs: List[K] = newListWithCapacity(n)`).
+  val wanted: Option[Ty] = match ann {
+    case Some(te) -> match annotatedTy(env, te) {
+      case Some(w) -> Some(value = w)
+      case None -> return None
+    }
+    case None -> None
+  }
+  match wanted {
+    case Some(w) -> settleHole(env, init, w)
+    case None -> ()
+  }
   val t = match buildExpr(env, init) { case Some(x) -> x; case None -> return None }
-  match ann {
+  match wanted {
     case None -> Some(value = t)
-    case Some(te) -> {
-      val want = match annotatedTy(env, te) { case Some(w) -> w; case None -> return None }
+    case Some(want) -> {
       match convertValue(env, t, want) {
         case Some(c) -> Some(value = c)
         case None -> {
