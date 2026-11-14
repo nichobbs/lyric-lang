@@ -1883,7 +1883,8 @@ func constructProtected(c: in LCtx, lay: in TirRecLayout, fields: in List[TExpr]
   if fields.count + 1 != lay.fieldTys.count {
     return unsupported(
       c,
-      "a protected construction with " + toString(fields.count) + " fields for a layout of " + toString(lay.fieldTys.count)
+      "a protected construction with " + toString(fields.count) + " fields for a layout of " +
+        toString(lay.fieldTys.count)
     )
   }
   val vals: List[Val] = newList()
