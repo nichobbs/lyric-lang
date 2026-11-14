@@ -1823,7 +1823,7 @@ func pipeReportTirCensus(
   }
   pipeReportVerifyCensus(label, built.pkg, tcRes.symbols)
   var k = 0
-  while k < built.firstErrors.count and k < 8 {
+  while k < built.firstErrors.count and k < 60 {
     Console.error("  first error: " + built.firstErrors[k])
     k = k + 1
   }
