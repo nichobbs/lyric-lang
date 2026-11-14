@@ -2227,6 +2227,16 @@ record OverloadFit {
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
 /// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  // A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`.
+  match from {
+    case TNamed(f, _) -> match to {
+      case TExtern(t) -> if symbolIdEq(f, builtinTaskTypeId()) and t.name == "System.Threading.Tasks.Task" {
+        return Some(value = CvBoxToHost(host = t))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   if env.ctx.tbl.externIterResolver.count == 0 {
     return None
   }
@@ -3014,8 +3024,43 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
-      case None -> None
+      case None -> retypeConstruct(env, t, ty)
     }
+  }
+}
+
+/// A union-case construction used at the same union with other type arguments (`Some(value = x)`
+/// of an `Option[Sub]` where an `Option[Iface]` is expected, `None` of any `Option`): the case
+/// is built again at the arguments of `ty`, each field converted to its type there.  None for a
+/// value that is not a construction, or whose fields do not convert.
+func retypeConstruct(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  match t.kind {
+    case XConstruct(sym, fields) -> {
+      val parent = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+      val haveArgs = match t.ty { case TNamed(_, a) -> a; case _ -> return None }
+      val wantParent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+      val want = match ty { case TNamed(_, a) -> a; case _ -> return None }
+      if parent.id != wantParent.id or haveArgs.count != want.count or want.count == 0 {
+        return None
+      }
+      val en = match mapGet(env.syms, sym.id) { case Some(e) -> e; case None -> return None }
+      val sig = match en.sig { case Some(s) -> s; case None -> return None }
+      if sig.params.count != fields.count {
+        return None
+      }
+      val nf: List[TExpr] = newList()
+      var i = 0
+      while i < fields.count {
+        val target = substOwnerArgs(sig.params[i].ty, parent, want)
+        match convertValue(env, fields[i], target) {
+          case Some(c) -> nf.add(c)
+          case None -> return None
+        }
+        i = i + 1
+      }
+      Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XConstruct(sym = sym, fields = nf)))
+    }
+    case _ -> None
   }
 }
 
@@ -3192,8 +3237,8 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case TNever -> return Some(value = t)
     case _ -> ()
   }
-  match convKindOf(t.ty, ty) {
-    case Some(k) -> Some(value = convertNode(env, t, ty, k))
+  match convertValue(env, t, ty) {
+    case Some(c) -> Some(value = c)
     case None -> {
       noteUncoveredAt(env, "a branch conversion", t.span)
       env.errors.add(

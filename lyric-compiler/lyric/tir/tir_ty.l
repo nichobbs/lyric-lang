@@ -317,3 +317,42 @@ pub func renderTy(t: in Ty): String {
     }
   }
 }
+
+/// `t` with the type parameters of `owner` replaced by `args` (by index): a case's field types
+/// read at the arguments of the union a construction is converted to.
+pub func substOwnerArgs(t: in Ty, owner: in SymbolId, args: in List[Ty]): Ty {
+  match t {
+    case TPrim(_) -> t
+    case TTuple(xs) -> TTuple(elems = substOwnerArgsList(xs, owner, args))
+    case TNullable(i) -> TNullable(inner = substOwnerArgs(i, owner, args))
+    case TFunc(ps, r, asy) -> {
+      val res: List[TParamTy] = newList()
+      for p in ps {
+        res.add(TParamTy(mode = p.mode, ty = substOwnerArgs(p.ty, owner, args)))
+      }
+      TFunc(params = res, ret = substOwnerArgs(r, owner, args), isAsync = asy)
+    }
+    case TArray(len, e) -> TArray(len = len, element = substOwnerArgs(e, owner, args))
+    case TSlice(e) -> TSlice(element = substOwnerArgs(e, owner, args))
+    case TNamed(s, xs) -> TNamed(sym = s, args = substOwnerArgsList(xs, owner, args))
+    case TParam(o, i) -> if symbolIdEq(o, owner) and i >= 0 and i < args.count { args[i] } else { t }
+    case TRefined(u, lo, hi, inc) -> TRefined(
+      underlying = substOwnerArgs(u, owner, args),
+      lo = lo,
+      hi = hi,
+      hiInclusive = inc
+    )
+    case TLen(_) -> t
+    case TNever -> t
+    case TException -> t
+    case TExtern(h) -> TExtern(host = HostTypeRef(name = h.name, args = substOwnerArgsList(h.args, owner, args)))
+  }
+}
+
+pub func substOwnerArgsList(xs: in List[Ty], owner: in SymbolId, args: in List[Ty]): List[Ty] {
+  val res: List[Ty] = newList()
+  for x in xs {
+    res.add(substOwnerArgs(x, owner, args))
+  }
+  res
+}
