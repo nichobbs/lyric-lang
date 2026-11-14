@@ -10,16 +10,16 @@ ref record Counter {
   var n: Int
   label: String
 
-  func bump(by: in Int): Int {
+  func bump(self: in Counter, by: in Int): Int {
     self.n = self.n + by
     self.n
   }
 
-  func show(): String {
+  func show(self: in Counter): String {
     self.label + "=" + toString(self.n)
   }
 
-  func twice(): Int {
+  func twice(self: in Counter): Int {
     self.bump(1) + self.bump(1)
   }
 }
@@ -28,11 +28,11 @@ record Pt {
   x: Int
   y: Int
 
-  func sum(): Int {
+  func sum(self: in Pt): Int {
     self.x + self.y
   }
 
-  func scaled(k: in Int): Pt {
+  func scaled(self: in Pt, k: in Int): Pt {
     Pt(x = self.x * k, y = self.y * k)
   }
 }
