@@ -384,6 +384,57 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
   }
 }
 
+/// Whether control never reaches the end of the block `b`.
+func blockNeverCompletes(b: in Block): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  statementNeverCompletes(b.statements[b.statements.count - 1])
+}
+
+func statementNeverCompletes(s: in Statement): Bool {
+  match s.kind {
+    case SReturn(_) -> true
+    case SThrow(_) -> true
+    case SBreak(_) -> true
+    case SContinue(_) -> true
+    case SExpr(x) -> exprNeverCompletes(x)
+    case _ -> false
+  }
+}
+
+func branchNeverCompletes(b: in ExprOrBlock): Bool {
+  match b {
+    case EOBExpr(x) -> exprNeverCompletes(x)
+    case EOBBlock(bl) -> blockNeverCompletes(bl)
+  }
+}
+
+/// Whether the source expression `e` is a `match` or `if` whose every branch leaves, or a block
+/// that ends in a statement that does: the checker records no join type for it.
+func exprNeverCompletes(e: in Expr): Bool {
+  match e.kind {
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      for arm in arms {
+        if not branchNeverCompletes(arm.body) {
+          return false
+        }
+      }
+      true
+    }
+    case EIf(_, thenBranch, elseBranch, _) -> match elseBranch {
+      case Some(x) -> branchNeverCompletes(thenBranch) and
+        branchNeverCompletes(x)
+      case None -> false
+    }
+    case EBlock(bl) -> blockNeverCompletes(bl)
+    case _ -> false
+  }
+}
+
 /// Build the expression `e`, or `None` after recording why in `env.errors`.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
@@ -391,8 +442,14 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
       case None -> {
-        env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-        return None
+        // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
+        // join type to record: it never completes.
+        if exprNeverCompletes(e) {
+          TirT.TNever
+        } else {
+          env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+          return None
+        }
       }
     }
   }
