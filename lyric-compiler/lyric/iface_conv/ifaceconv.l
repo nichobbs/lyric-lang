@@ -35,7 +35,7 @@ pub ref record BuildCtx {
   owners: Map[String, Int]
   /// The built default of each parameter that declares one, by the function's DefPath key and then the
   /// parameter's name (`Lyric.Tir.Build.buildPackageDefaults`).
-  var defaults: Map[String, Map[String, TExpr]]
+  var defaults: Map[String, Map[String, IfDefault]]
 }
 
 pub func newBuildCtx(tbl: in SymbolTable, pkg: in String): BuildCtx {

@@ -33,6 +33,7 @@ import Lyric.PluginExpand as PluginExpand
 import Lyric.AliasRewriter as Aliases
 import Lyric.Pipeline
 import Lyric.IfaceBuild as IfaceBuild
+import Lyric.Tir.Build as TirBuild
 import Msil.Lowering
 import Msil.MetadataReader as Mdr
 import Msil.Codegen
@@ -953,6 +954,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val perPkgChecked: List[SourceFile] = newList()
   val perPkgIface: List[List[IfaceBuild.IfaceOutcome]] = newList()
   val perPkgNames: List[String] = newList()
+  val projDepDefaults = pipeNewDepDefaults()
+  registerRestoredInterfaces(projDepDefaults, restoredArtifacts)
   // Every package sees the same registered set (#7583): build it, and its
   // flat item view, once rather than per package.
   val importedPkgs = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
@@ -1068,7 +1071,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       interfaceTargets = dotnetTarget(),
       interfaceOut = projIfaceOut,
       weaveTemplates = allTemplates,
-      weaveTypeIndex = Some(value = weaveTypeIndex)
+      weaveTypeIndex = Some(value = weaveTypeIndex),
+      depDefaults = projDepDefaults
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
@@ -1678,6 +1682,33 @@ pub func checkSourceTypesForFeatures(
   located
 }
 
+/// Make the package interfaces the restored dependencies embed (`Lyric.Interface.<Pkg>`
+/// resources, docs/70 §9.6) readable to the packages checked against them: a call that leaves out
+/// an argument a restored package declares takes the default its interface carries (D482).  An
+/// assembly that cannot be read, or carries none, contributes nothing: the call is then counted.
+func registerRestoredInterfaces(store: in TirBuild.DepDefaults, restoredArtifacts: in List[SynthesisedArtifact]) {
+  val prefix = "Lyric.Interface."
+  for ra in restoredArtifacts {
+    match Mdr.openResourceImage(ra.dllPath) {
+      case Some(ri) -> {
+        for name in Mdr.resourceNamesIn(ri) {
+          if name.length >= prefix.length and name.substring(0, prefix.length) == prefix {
+            match Mdr.tryReadResourceIn(ri, name) {
+              case Some(bytes) -> TirBuild.registerInterface(
+                store,
+                name.substring(prefix.length, name.length - prefix.length),
+                bytes
+              )
+              case None -> ()
+            }
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
 // The middle-end options a dotnet build checks a package with, as far as the
 // passes up to the mode check read them.
 func checkOptions(
@@ -2032,11 +2063,13 @@ pub func checkProjectTypes(
         hostIterDlls.add(ra.dllPath)
       }
       val hostIterIx = newMsilHostIterIndex(hostIterDlls)
+      val checkDepDefaults = pipeNewDepDefaults()
+      registerRestoredInterfaces(checkDepDefaults, restoredArtifacts)
       for pp in fe.parsedPkgs {
         val _ = pipeCheckFront(
           pp.file,
           importedPkgs,
-          checkOptions(pp.label, pp.files, pp.ioForbiddenReason, msilIterResolver(hostIterIx)),
+          checkOptions(pp.label, pp.files, pp.ioForbiddenReason, msilIterResolver(hostIterIx)).copy(depDefaults = checkDepDefaults),
           collectDiagnostics(located)
         )
       }

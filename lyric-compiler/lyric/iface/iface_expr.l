@@ -456,3 +456,169 @@ pub func paramDefaultOf(i: in Iface, fnKey: in String, name: in String): Option[
   }
   None
 }
+
+// ── Declarations a default names (D482) ──────────────────────────────────────
+func entryKindCode(k: in TSymKind): Int {
+  match k {
+    case TSkFunc -> 0
+    case TSkType -> 1
+    case TSkCase -> 2
+    case TSkVal -> 3
+    case TSkConst -> 4
+    case TSkInterfaceMethod -> 5
+    case TSkEntry -> 6
+  }
+}
+
+func entryKindOf(c: in Int): TSymKind {
+  match c {
+    case 1 -> TSkType
+    case 2 -> TSkCase
+    case 3 -> TSkVal
+    case 4 -> TSkConst
+    case 5 -> TSkInterfaceMethod
+    case 6 -> TSkEntry
+    case _ -> TSkFunc
+  }
+}
+
+func entryModeCode(m: in TMode): Int {
+  match m {
+    case TMIn -> 0
+    case TMOut -> 1
+    case TMInout -> 2
+  }
+}
+
+func putEntry(w: in IfaceWriter, it: in DefPathInterner, e: in TSymEntry) {
+  putSym(w, it, e.sym)
+  putU(w, entryKindCode(e.kind))
+  putU(w, e.typeParamCount)
+  match e.sig {
+    case Some(s) -> {
+      putBool(w, true)
+      putU(w, s.typeParamCount)
+      putU(w, s.params.count)
+      for p in s.params {
+        putU(w, entryModeCode(p.mode))
+        putTy(w, it, p.ty)
+      }
+      putTy(w, it, s.ret)
+      putBool(w, s.isAsync)
+    }
+    case None -> putBool(w, false)
+  }
+  putU(w, e.fields.count)
+  for f in e.fields {
+    putStr(w, f.name)
+    putTy(w, it, f.ty)
+    putBool(w, f.mutable)
+  }
+  match e.ty {
+    case Some(t) -> {
+      putBool(w, true)
+      putTy(w, it, t)
+    }
+    case None -> putBool(w, false)
+  }
+  putBool(w, e.mutable)
+}
+
+func readEntry(r: in IfaceReader, it: in DefPathInterner): TSymEntry {
+  val sym = readSym(r, it)
+  val kind = entryKindOf(readU(r))
+  val tpc = readU(r)
+  var sig: Option[TSig] = None
+  if readBool(r) {
+    val stpc = readU(r)
+    val n = readCount(r)
+    val ps: List[TParamTy] = newList()
+    var i = 0
+    while i < n and not r.failed {
+      val mc = readU(r)
+      val m = if mc == 1 { TMOut } else if mc == 2 { TMInout } else { TMIn }
+      ps.add(TParamTy(mode = m, ty = readTy(r, it)))
+      i = i + 1
+    }
+    val ret = readTy(r, it)
+    sig = Some(value = TSig(typeParamCount = stpc, params = ps, ret = ret, isAsync = readBool(r)))
+  }
+  val nf = readCount(r)
+  val fs: List[TFieldSig] = newList()
+  var j = 0
+  while j < nf and not r.failed {
+    val nm = readStr(r)
+    val fty = readTy(r, it)
+    fs.add(TFieldSig(name = nm, ty = fty, mutable = readBool(r)))
+    j = j + 1
+  }
+  var ty: Option[Ty] = None
+  if readBool(r) {
+    ty = Some(value = readTy(r, it))
+  }
+  TSymEntry(sym = sym, kind = kind, typeParamCount = tpc, sig = sig, fields = fs, ty = ty, mutable = readBool(r))
+}
+
+/// The declarations a default names, written after the default.
+pub func putEntries(w: in IfaceWriter, it: in DefPathInterner, es: in List[TSymEntry]) {
+  putU(w, es.count)
+  for e in es {
+    putEntry(w, it, e)
+  }
+}
+
+pub func readEntries(r: in IfaceReader, it: in DefPathInterner): List[TSymEntry] {
+  val n = readCount(r)
+  val es: List[TSymEntry] = newList()
+  var i = 0
+  while i < n and not r.failed {
+    es.add(readEntry(r, it))
+    i = i + 1
+  }
+  es
+}
+
+/// The default of field `name` of the record declared at the DefPath key `recKey` in `i`, with the
+/// declarations it names.
+pub func fieldDefaultOf(i: in Iface, recKey: in String, name: in String): Option[IfDefault] {
+  for d in i.decls {
+    if defPathKey(d.path) == recKey {
+      match d.detail {
+        case IfDRecord(_, fs) -> {
+          for f in fs {
+            if f.name == name {
+              match f.dflt {
+                case Some(x) -> return Some(value = IfDefault(expr = x, entries = f.dfltEntries))
+                case None -> return None
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
+/// `paramDefaultOf` with the declarations the default names.
+pub func paramDefaultWithEntries(i: in Iface, fnKey: in String, name: in String): Option[IfDefault] {
+  for d in i.decls {
+    if defPathKey(d.path) == fnKey {
+      match d.detail {
+        case IfDFunc(_, ps, _, _, _, _) -> {
+          for p in ps {
+            if p.name == name {
+              match p.dflt {
+                case Some(x) -> return Some(value = IfDefault(expr = x, entries = p.dfltEntries))
+                case None -> return None
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}

@@ -21,6 +21,7 @@ import Lyric.Parser as Px
 import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
+import Lyric.Iface
 
 /// The builder's state for one function: the lexical scopes of locals, the
 /// next local number, the I0002 messages, and the kinds it has no case for.
@@ -3484,7 +3485,7 @@ func buildDirectCall(
     callSig = sig.copy(params = ps)
   }
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, callSig, args, pre) {
+  match buildCallArgs(env, e, sym, callSig, args, pre) {
     case Some(targs) -> {
       noteFuncSym(env, sym, sig, None, None, TSkFunc)
       Some(
@@ -3606,7 +3607,7 @@ func buildMethodCall(
   }
   val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
-  val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
+  val rest = match buildCallArgs(env, e, sym, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
   // The receiver is evaluated before any argument: when arguments were hoisted ahead of
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
@@ -3665,7 +3666,7 @@ func buildConstructCall(
   args: in List[CallArg],
 ): Option[TExpr] {
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, sig, args, pre) {
+  match buildCallArgs(env, e, sym, sig, args, pre) {
     case Some(targs) -> {
       val fields: List[TExpr] = newList()
       for a in targs {
@@ -3771,19 +3772,18 @@ func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[
 
 /// The argument for a parameter the call leaves out: its declared default, placed at
 /// the call under fresh node ids (the declaration's own nodes stay the parameter's).
-/// The default is built from the checker's record of the declaration's own package, so
-/// a default declared in another package has no case yet, and neither has one from a
-/// restored package.
-func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in ResolvedParam): Option[TExpr] {
+/// A default of the checked package is built from the checker's record of its nodes.  One
+/// declared in another package of the build is read from the defaults that package carried
+/// (`DepDefaults`, D482), re-numbered into this package's symbols; one with no carried default
+/// (a restored package whose interface does not record it) has no case yet.
+func buildDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId, origin: in String, p: in ResolvedParam): Option[TExpr] {
+  val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
+  if origin != "" and origin != here {
+    return buildForeignDefaultArg(env, call, callee, p)
+  }
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
   val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
-  if not simple {
-    val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
-    if origin != "" and origin != here {
-      return uncoveredExpr(env, call, "a default argument declared in another package")
-    }
-  }
   val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
     case ELiteral(_) -> buildExpr(env, d)
@@ -3817,6 +3817,32 @@ func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in R
   }
 }
 
+/// A default declared in another package: the carried expression, its declarations added to
+/// this body's, placed at the call and converted to the parameter's type.
+func buildForeignDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId, p: in ResolvedParam): Option[TExpr] {
+  val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  val key = match symTableDefPathKeyOf(env.ctx.tbl, callee) {
+    case Some(k) -> k
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  val rd = match readCarriedDefault(env.ctx.dep, env.ctx.depRead, key, p.name, env.ctx.tbl.interner) {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  for en in rd.entries {
+    if not env.syms.containsKey(en.sym.id) {
+      env.syms.add(en.sym.id, en)
+    }
+  }
+  match refreshDefaultIds(env, rd.expr, call.span) {
+    case Some(t1) -> match coerceArg(env, t1, pty) {
+      case Some(c) -> Some(value = c)
+      case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+    }
+    case None -> None
+  }
+}
+
 /// An argument bound to a temporary, with its position in the source.
 record OrderedStmt {
   order: Int
@@ -3834,7 +3860,7 @@ func withPrelude(env: in BuildEnv, e: in Expr, pre: in List[TStmt], call: in TEx
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(
-  env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg], pre: in List[TStmt]
+  env: in BuildEnv, e: in Expr, callee: in SymbolId, sig: in ResolvedSignature, args: in List[CallArg], pre: in List[TStmt]
 ): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
@@ -3902,7 +3928,7 @@ func buildCallArgs(
     match slots[i] {
       case None -> {
         if p.hasDefault {
-          match buildDefaultArg(env, e, sig.originPackage, p) {
+          match buildDefaultArg(env, e, callee, sig.originPackage, p) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {
               ok = false

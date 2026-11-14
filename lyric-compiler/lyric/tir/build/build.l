@@ -17,6 +17,7 @@ import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.ContractElaborator
+import Lyric.Iface
 
 /// What type conversion needs beyond the type: the checker's table for
 /// extern types, and the binders of the generic parameters in scope.  A
@@ -33,10 +34,20 @@ pub record TyConvCtx {
   /// (`loadCases`); `casesLoaded` is a one-element flag.
   cases: Map[Int, Symbol] = newMap()
   casesLoaded: List[Bool] = newList()
+  /// The defaults of the packages of the build checked before this one (D482), for a call
+  /// that leaves out an argument whose default another package declares.
+  dep: DepDefaults = newDepDefaults()
+  /// The interfaces of `dep` read so far, by package, in this table's numbering.
+  depRead: Map[String, Iface] = newMap()
 }
 
 pub func newTyConvCtx(tbl: in SymbolTable): TyConvCtx {
   TyConvCtx(tbl = tbl, ownerSyms = newMap(), ownerParams = newMap(), selfIface = None)
+}
+
+/// A context whose calls read cross-package defaults from `dep`.
+pub func newTyConvCtxWith(tbl: in SymbolTable, dep: in DepDefaults): TyConvCtx {
+  TyConvCtx(tbl = tbl, ownerSyms = newMap(), ownerParams = newMap(), selfIface = None, dep = dep)
 }
 
 /// Register the binder `key`: declared by `sym` with parameters `names`.

@@ -99,6 +99,14 @@ func putFields(w: in IfaceWriter, it: in DefPathInterner, fs: in List[IfField]) 
     putTy(w, it, f.ty)
     putBool(w, f.mutable)
     putBool(w, f.hasDefault)
+    match f.dflt {
+      case Some(d) -> {
+        putBool(w, true)
+        putExpr(w, it, d)
+        putEntries(w, it, f.dfltEntries)
+      }
+      case None -> putBool(w, false)
+    }
   }
 }
 
@@ -110,7 +118,14 @@ func readFields(r: in IfaceReader, it: in DefPathInterner): List[IfField] {
     val name = readStr(r)
     val ty = readTy(r, it)
     val mutable = readBool(r)
-    res.add(IfField(name = name, ty = ty, mutable = mutable, hasDefault = readBool(r)))
+    val hasDefault = readBool(r)
+    var dflt: Option[TExpr] = None
+    var es: List[TSymEntry] = newList()
+    if readBool(r) {
+      dflt = Some(value = readExpr(r, it))
+      es = readEntries(r, it)
+    }
+    res.add(IfField(name = name, ty = ty, mutable = mutable, hasDefault = hasDefault, dflt = dflt, dfltEntries = es))
     k = k + 1
   }
   res
@@ -132,6 +147,7 @@ func putDetail(w: in IfaceWriter, it: in DefPathInterner, d: in IfDetail) {
           case Some(d) -> {
             putBool(w, true)
             putExpr(w, it, d)
+            putEntries(w, it, p.dfltEntries)
           }
           case None -> putBool(w, false)
         }
@@ -196,9 +212,14 @@ func readDetail(r: in IfaceReader, it: in DefPathInterner): IfDetail {
         val mc = readU(r)
         val ty = readTy(r, it)
         val hasDefault = readBool(r)
-        val dflt: Option[TExpr] = if readBool(r) { Some(value = readExpr(r, it)) } else { None }
+        var dflt: Option[TExpr] = None
+        var des: List[TSymEntry] = newList()
+        if readBool(r) {
+          dflt = Some(value = readExpr(r, it))
+          des = readEntries(r, it)
+        }
         match modeOfCode(mc) {
-          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault, dflt = dflt))
+          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault, dflt = dflt, dfltEntries = des))
           case None -> readFail(r, "unknown parameter mode " + toString(mc))
         }
         k = k + 1
