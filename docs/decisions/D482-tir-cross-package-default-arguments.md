@@ -41,6 +41,11 @@ named and positional arguments) with `--verify-ir` and runs it.
 
 ## Not covered
 
+Tracked on #8613 (phase 3a):
+
+- A generic record's field defaults (`noteFieldDefaults` skips them).
+- A decode failure of a carried interface (an older format) is counted as `a default argument declared in another package`, the same as a package with no interface; the store is keyed by package name, so a project package and a restored dependency of one name would replace each other's interface.
+
 The 12 sites left are defaults declared in stdlib packages (`Std.Plugin`, `Std.PluginCatalogue`): the stdlib is source-loaded
 in these builds, so no interface of it is registered. The JVM and native bridges do not register interfaces yet, so their
 cross-package defaults stay counted. Both are the next slices of this work, not accepted gaps.
