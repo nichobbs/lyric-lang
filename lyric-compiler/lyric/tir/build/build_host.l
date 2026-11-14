@@ -72,11 +72,12 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
         return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
       }
-      // A `slice[Byte]` or `array[N, Byte]` passed for a host byte array: the representation is the host's.
+      // A slice or `array[N, T]` passed for a host array: the representation is the host's (the checker
+      // types a host array result as a slice of its element, D359; the signature keeps no element type).
       if h.name == hostArrayName() {
         return match from {
-          case TSlice(TPrim(TPByte)) -> Some(value = CvBoxToHost(host = h))
-          case TArray(_, TPrim(TPByte)) -> Some(value = CvBoxToHost(host = h))
+          case TSlice(_) -> Some(value = CvBoxToHost(host = h))
+          case TArray(_, _) -> Some(value = CvBoxToHost(host = h))
           case _ -> None
         }
       }
