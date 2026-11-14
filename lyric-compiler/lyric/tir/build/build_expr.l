@@ -2433,6 +2433,17 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
     val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
     return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
   }
+  // The checker settles a host result at the supertype the context expects (`JString.valueOf(x)` returned as
+  // a `CharSequence`): the call keeps the host's result type and an upcast gives the checker's.
+  if not tyEq(ret, ty) {
+    match hostUpcastKind(env, ret, ty) {
+      case Some(k) -> {
+        val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+        return mkExpr(e, ty, XConvert(kind = k, inner = c))
+      }
+      case None -> ()
+    }
+  }
   mkExpr(e, ty, call)
 }
 
