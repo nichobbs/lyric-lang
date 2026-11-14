@@ -2069,7 +2069,9 @@ pub func checkProjectTypes(
         val _ = pipeCheckFront(
           pp.file,
           importedPkgs,
-          checkOptions(pp.label, pp.files, pp.ioForbiddenReason, msilIterResolver(hostIterIx)).copy(depDefaults = checkDepDefaults),
+          checkOptions(pp.label, pp.files, pp.ioForbiddenReason, msilIterResolver(hostIterIx)).copy(
+            depDefaults = checkDepDefaults
+          ),
           collectDiagnostics(located)
         )
       }

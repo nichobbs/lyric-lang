@@ -303,7 +303,9 @@ func entriesOf(env: in BuildEnv): List[TSymEntry] {
   es
 }
 
-func noteDefaults(tbl: in SymbolTable, acc: in Map[String, Map[String, IfDefault]], env: in BuildEnv, fd: in TFnDecl): Unit {
+func noteDefaults(
+  tbl: in SymbolTable, acc: in Map[String, Map[String, IfDefault]], env: in BuildEnv, fd: in TFnDecl
+): Unit {
   val byName: Map[String, IfDefault] = newMap()
   val es = entriesOf(env)
   for p in fd.params {
@@ -380,7 +382,9 @@ func noteFieldDefaults(
 /// names.  A default is built from the package's own checker tables, so it is typed and its names
 /// are resolved; one that does not build is left out and counted in no census (the consumer counts
 /// the call that needs it).
-pub func buildPackageDefaults(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): Map[String, Map[String, IfDefault]] {
+pub func buildPackageDefaults(
+  ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
+): Map[String, Map[String, IfDefault]] {
   val acc: Map[String, Map[String, IfDefault]] = newMap()
   val counter: List[Int] = newList()
   counter.add(firstSynthNodeId())

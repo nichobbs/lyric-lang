@@ -219,7 +219,9 @@ func readDetail(r: in IfaceReader, it: in DefPathInterner): IfDetail {
           des = readEntries(r, it)
         }
         match modeOfCode(mc) {
-          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault, dflt = dflt, dfltEntries = des))
+          case Some(m) -> ps.add(
+            IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault, dflt = dflt, dfltEntries = des)
+          )
           case None -> readFail(r, "unknown parameter mode " + toString(mc))
         }
         k = k + 1

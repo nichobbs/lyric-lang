@@ -64,7 +64,11 @@ func readDepIface(
 /// numbered with `it`, with the declarations it names: None when no interface of the build
 /// carries it.
 pub func readCarriedDefault(
-  dep: in DepDefaults, cache: in Map[String, Iface], key: in String, name: in String, it: in DefPathInterner
+  dep: in DepDefaults,
+  cache: in Map[String, Iface],
+  key: in String,
+  name: in String,
+  it: in DefPathInterner,
 ): Option[IfDefault] {
   val i = match readDepIface(dep, cache, keyPackage(key), it) { case Some(x) -> x; case None -> return None }
   match paramDefaultWithEntries(i, key, name) {

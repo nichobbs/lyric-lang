@@ -3776,7 +3776,9 @@ func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[
 /// declared in another package of the build is read from the defaults that package carried
 /// (`DepDefaults`, D482), re-numbered into this package's symbols; one with no carried default
 /// (a restored package whose interface does not record it) has no case yet.
-func buildDefaultArg(env: in BuildEnv, call: in Expr, callee: in SymbolId, origin: in String, p: in ResolvedParam): Option[TExpr] {
+func buildDefaultArg(
+  env: in BuildEnv, call: in Expr, callee: in SymbolId, origin: in String, p: in ResolvedParam
+): Option[TExpr] {
   val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
   if origin != "" and origin != here {
     return buildForeignDefaultArg(env, call, callee, p)
@@ -3860,7 +3862,12 @@ func withPrelude(env: in BuildEnv, e: in Expr, pre: in List[TStmt], call: in TEx
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(
-  env: in BuildEnv, e: in Expr, callee: in SymbolId, sig: in ResolvedSignature, args: in List[CallArg], pre: in List[TStmt]
+  env: in BuildEnv,
+  e: in Expr,
+  callee: in SymbolId,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  pre: in List[TStmt],
 ): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
