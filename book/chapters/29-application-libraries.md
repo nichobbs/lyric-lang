@@ -439,28 +439,55 @@ presigned PUT), `Mq.ActiveMq.Extras` (topics, send options, selectors),
 (queue management, FIFO, redrive), `Flags.Flipt.Extras` (evaluation for an
 entity and context).
 
-| Package | Interface | Backend | .NET | JVM | Implementation |
-|---|---|---|---|---|---|
-| `Lyric.Storage.S3` | `Storage.StorageBucket` | Amazon S3 and S3-compatible stores | real | real | pure Lyric: AWS Signature V4 over `Std.Http`, no SDK |
-| `Lyric.Storage.AzureBlob` | `Storage.StorageBucket` | Azure Blob Storage | real | real | pure Lyric: Shared Key and service SAS over `Std.Http` |
-| `Lyric.Storage.Gcs` | `Storage.StorageBucket` | Google Cloud Storage | implemented, not yet verified with a real key | implemented, not yet verified with a real key | pure Lyric: XML API with HMAC keys (`GOOG4-HMAC-SHA256`) |
-| `Lyric.Jobs.Quartz` | `Jobs.JobScheduler` | Quartz 2.5 (RAM job store) | not supported (`F0054`) | real | Quartz through Maven and auto-FFI |
-| `Lyric.Jobs.QuartzNet` | `Jobs.JobScheduler` | Quartz.NET 3 (RAM job store) | real | not supported (`F0054`) | Quartz.NET through NuGet and auto-FFI; same API as `Lyric.Jobs.Quartz` |
-| `Lyric.Redis` | none (client) | Redis 6 and later | real | real | pure Lyric: RESP2 and RESP3 over TCP or TLS |
-| `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | on `Lyric.Redis` |
-| `Lyric.Cache.Memcached` | `Cache.CacheStore` | memcached 1.6.10 and later | real | real | pure Lyric: meta protocol on `Lyric.Net`; `clear()` replaces a per-store generation |
-| `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | on `Lyric.Redis`; every read-modify-write is one script |
-| `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | pure Lyric: STOMP 1.2 over TCP or TLS |
-| `Lyric.Mq.RabbitMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | RabbitMQ 3.12 and 4.0 | real | real | pure Lyric: AMQP 0-9-1 over TCP or TLS |
-| `Lyric.Mq.Sqs` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Amazon SQS | real against ElasticMQ; not yet run against AWS | real against ElasticMQ; not yet run against AWS | pure Lyric: AWS JSON 1.0 over `Std.Http`, SigV4 |
-| `Lyric.Flags.Flipt` | `Flags.FlagStore` | Flipt v1 | real | real | pure Lyric: Flipt REST over `Std.Http` |
-| `Lyric.Net` | none (shared TCP and TLS client) | TCP, TLS | real | real | the one socket kernel behind the Redis, memcached, ActiveMQ and RabbitMQ clients |
-| `Lyric.Aws.SigV4` | none (shared signing) | AWS Signature V4 | real | real | pure Lyric; used by the S3, SQS and GCS packages |
+| Package | Interface | Backend | .NET | JVM | Native | Implementation |
+|---|---|---|---|---|---|---|
+| `Lyric.Storage.S3` | `Storage.StorageBucket` | Amazon S3 and S3-compatible stores | real; verified against MinIO and AWS Emulator | real; verified against MinIO and AWS Emulator | no (#9089, #9090) | pure Lyric: AWS Signature V4 over `Std.Http`, no SDK; credential chain and retries from `Lyric.Aws.Credentials` |
+| `Lyric.Storage.AzureBlob` | `Storage.StorageBucket` | Azure Blob Storage | real | real | no | pure Lyric: Shared Key and service SAS over `Std.Http` |
+| `Lyric.Storage.Gcs` | `Storage.StorageBucket` | Google Cloud Storage | implemented, not yet verified with a real key | implemented, not yet verified with a real key | no | pure Lyric: XML API with HMAC keys (`GOOG4-HMAC-SHA256`) |
+| `Lyric.Jobs.Quartz` | `Jobs.JobScheduler` | Quartz 2.5 (RAM job store) | not supported (`F0054`) | real | no | Quartz through Maven and auto-FFI |
+| `Lyric.Jobs.QuartzNet` | `Jobs.JobScheduler` | Quartz.NET 3 (RAM job store) | real | not supported (`F0054`) | no | Quartz.NET through NuGet and auto-FFI; same API as `Lyric.Jobs.Quartz` |
+| `Lyric.Jobs.Hangfire` | `Jobs.JobScheduler` | Hangfire 1.8 (in-memory or PostgreSQL storage) | real | not supported (`F0054`) | no | Hangfire through NuGet and auto-FFI; jobs survive a restart on the PostgreSQL storage |
+| `Lyric.Redis` | none (client) | Redis 6 and later | real | real | real | pure Lyric: RESP2 and RESP3 over TCP or TLS |
+| `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | no | on `Lyric.Redis` |
+| `Lyric.Cache.Memcached` | `Cache.CacheStore` | memcached 1.6.10 and later | real | real | no | pure Lyric: meta protocol on `Lyric.Net`; `clear()` replaces a per-store generation |
+| `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | no | on `Lyric.Redis`; every read-modify-write is one script |
+| `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | no | pure Lyric: STOMP 1.2 over TCP or TLS |
+| `Lyric.Mq.RabbitMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | RabbitMQ 3.12 and 4.0 | real | real | no | pure Lyric: AMQP 0-9-1 over TCP or TLS |
+| `Lyric.Mq.Sqs` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Amazon SQS | real; verified against ElasticMQ and AWS Emulator, not yet against AWS | real; verified against ElasticMQ and AWS Emulator, not yet against AWS | no (#9090) | pure Lyric: AWS JSON 1.0 over `Std.Http`, SigV4; credential chain and retries from `Lyric.Aws.Credentials` |
+| `Lyric.Flags.Flipt` | `Flags.FlagStore` | Flipt v1 | real | real | no | pure Lyric: Flipt REST over `Std.Http` |
+| `Lyric.Net` | none (shared TCP and TLS client) | TCP, TLS | real | real | real | the one socket kernel behind the Redis, memcached, ActiveMQ and RabbitMQ clients |
+| `Lyric.Aws.SigV4` | none (shared signing) | AWS Signature V4 | real | real | real | pure Lyric; used by the S3, SQS and GCS packages |
+| `Lyric.Aws.Credentials` | none (shared credential providers and retry policy) | environment, shared config and credentials files, `credential_process`, container endpoint, IMDSv2, web identity | real | real | no | pure Lyric; the default chain in the SDK's order with a refreshing cache, and the standard retry policy |
 
 The TCP clients (Redis, memcached, ActiveMQ, RabbitMQ) take `rediss://`,
 `memcached+tls://`, `stomp+ssl://` and `amqps://` URLs. They verify the server against the system trust store by
 default and accept a custom CA, a client certificate and a minimum TLS version,
-with the same two-key rule as `Std.Http` for skipping verification.
+with the same two-key rule as `Std.Http` for skipping verification. The S3
+and SQS clients take a custom CA too (`withCaCertificate`), for a store behind
+a private certificate authority.
+
+The ActiveMQ and RabbitMQ clients send heart-beats and reconnect by
+themselves after a lost connection, restoring the subscription or consumer
+(and, for RabbitMQ, the topology they declared). What they will not do is
+guess: a publish made while disconnected fails at once as not sent, a publish
+that was in flight when the connection dropped reports that its outcome is
+unknown and is never sent again, and an `ack` for a delivery from the lost
+connection is an error, since the broker redelivers that message. Both are on
+by default and can be turned off.
+
+The AWS backends resolve credentials through `Lyric.Aws.Credentials`: the
+environment, the shared `config` and `credentials` files (with `AWS_PROFILE`
+and `credential_process`), the container endpoint, IMDSv2 and web identity, in
+the SDK's order, cached and refreshed before they expire. Requests are retried
+with jittered backoff when that is safe: throttling and a connection that
+never opened always, a 5xx or a timeout only for idempotent requests, so a
+send to a standard SQS queue is not repeated after an unknown outcome.
+
+`Lyric.Net`, `Lyric.Redis` and `Lyric.Aws.SigV4` also build for `--target
+native` (Linux; OpenSSL 3 at run time for TLS). The HTTP backends and the
+packages that need a conformance suite do not yet: `Std.Xml` and request
+timeouts in `Std.Http` do not work on native, and `lyric-testing` does not
+build there (#9089, #9090).
 
 Two things differ between backends of one interface and are worth reading in
 the package README before choosing: what `nack` without requeue does (ActiveMQ
@@ -471,7 +498,9 @@ timed-out or cancelled attempt is recorded when the handler returns.
 
 All of these are `experimental` and versioned independently of the compiler.
 Their CI runs the conformance suites against a real Redis, ActiveMQ, RabbitMQ,
-memcached, MinIO, Azurite, ElasticMQ and Flipt on both targets. Until the interface
+memcached, MinIO, Azurite, ElasticMQ, Flipt and PostgreSQL on both targets, and
+runs the S3 and SQS backends a second time against AWS Emulator, which
+verifies their request signatures. Until the interface
 packages they need are in a release, the repository builds against a pinned
 `lyric-lang` commit and resolves the interfaces through
 `[workspace.overrides]`; its README has the setup. Each package README lists
@@ -494,7 +523,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
-| lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
+| lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet`, Hangfire in `Lyric.Jobs.Hangfire` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
 | lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
