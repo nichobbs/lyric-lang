@@ -1173,6 +1173,13 @@ test "a var field of an opaque type is assignable after the type is constructed 
   assertBuildsAndVerifies(pb, 2, "mk and tick")
 }
 
+test "a generic record is constructed at the enclosing function's own type parameter (D465)" {
+  val pb = packageOf(
+    "package App\nrecord One[T] {\n  v: T\n}\nfunc wrap[U](x: in U): One[U] {\n  One(v = x)\n}\nfunc wrapped[U](x: in U): One[U] {\n  val r: One[U] = One(v = x)\n  r\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "wrap and wrapped")
+}
+
 test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
