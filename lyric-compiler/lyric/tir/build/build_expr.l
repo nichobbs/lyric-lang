@@ -3043,6 +3043,50 @@ func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   }
 }
 
+/// `renderTy` with each declaration `#<id>` spelled by its DefPath key, for a message that names
+/// the types a conversion could not take.
+func renderTyNamed(env: in BuildEnv, t: in Ty): String {
+  val raw = renderTy(t)
+  var out = ""
+  var i = 0
+  while i < raw.length {
+    val c = raw.substring(i, 1)
+    if c == "#" {
+      var j = i + 1
+      var v = 0
+      var digits = 0
+      var more = true
+      while more and j < raw.length {
+        match "0123456789".indexOf(raw.substring(j, 1)) {
+          case Some(dv) -> {
+            v = v * 10 + dv
+            digits = digits + 1
+            j = j + 1
+          }
+          case None -> {
+            more = false
+          }
+        }
+      }
+      val named = if digits > 0 { symTableDefPathKeyOf(env.ctx.tbl, SymbolId(id = v)) } else { None }
+      match named {
+        case Some(k) -> {
+          out = out + k
+          i = j
+        }
+        case None -> {
+          out = out + c
+          i = i + 1
+        }
+      }
+    } else {
+      out = out + c
+      i = i + 1
+    }
+  }
+  out
+}
+
 /// An argument as the parameter `pty` takes it: as is, converted by a node of its own,
 /// or not at all (counted), never converted by guessing.
 func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
@@ -3051,7 +3095,9 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
     case None -> {
       noteUncoveredAt(env, "an argument conversion", t.span)
       env.errors.add(
-        "I0002: the builder has no case for an argument conversion from " + renderTy(t.ty) + " to " + renderTy(pty) + " at " +
+        "I0002: the builder has no case for an argument conversion from " + renderTyNamed(env, t.ty) + " to " +
+          renderTyNamed(env, pty) +
+          " at " +
           toString(t.span.startPos.line) +
           ":" +
           toString(t.span.startPos.column)
@@ -3151,7 +3197,9 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case None -> {
       noteUncoveredAt(env, "a branch conversion", t.span)
       env.errors.add(
-        "I0002: the builder has no case for a branch conversion from " + renderTy(t.ty) + " to " + renderTy(ty) + " at " +
+        "I0002: the builder has no case for a branch conversion from " + renderTyNamed(env, t.ty) + " to " +
+          renderTyNamed(env, ty) +
+          " at " +
           toString(t.span.startPos.line) +
           ":" +
           toString(t.span.startPos.column)

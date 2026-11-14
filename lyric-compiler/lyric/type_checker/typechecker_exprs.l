@@ -26016,6 +26016,12 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         // name and arity.
         name = segs[0] + "." + member
         allowArity = true
+      } else if segs.count >= 2 and startsUppercase(segs[segs.count - 1]) {
+        // `Pkg.Type.f(x)` and `Alias.Type.f(x)`: the same dot-named function written through
+        // its package.  The table lookup below matches by name, arity and signature, so a
+        // path that names no such function records nothing.
+        name = segs[segs.count - 1] + "." + member
+        allowArity = true
       } else {
         return
       }
