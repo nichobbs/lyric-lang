@@ -2260,7 +2260,7 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
 /// A host result the checker types as a Lyric type without checking it (D359): an array as
 /// a slice, a possibly null string as `String?`, a host enum as `Int`, the host's 32-bit and
 /// 64-bit floating point types as `Float` and `Double`, a host task as the built-in `Task[T]`, an
-/// erased generic's `Object` result as the host class it is instantiated at.
+/// erased generic's `Object` result as the type it is instantiated at (a host class, `String`, `Long`).
 /// The call then has the host type and a `CvFromHost` conversion to the checker's type.
 pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
   match host {
@@ -2276,8 +2276,13 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
-        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float"
-        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double"
+        case TPrim(TPString) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPBool) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float" or n == "java.lang.Object" or
+          n == "System.Object"
+        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double" or n == "java.lang.Object" or
+          n == "System.Object"
         case TPrim(TPInt) -> n != "an array, pointer or by-reference type" and n != "System.String" and
           n != "java.lang.String"
         case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
