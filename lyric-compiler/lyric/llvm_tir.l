@@ -2764,6 +2764,8 @@ func pushOnto(c: in LCtx, l: in Val, x: in TExpr): Unit {
 /// `[a, b, c]` as a list or slice.
 func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
   val l = newListOf(c, e.ty)
+  // A failed lowering of the list type is reported in `c.problems` and yields a placeholder that
+  // is not a reference: there is nothing to push onto.
   if not isRefN(l.ty) {
     return l
   }
