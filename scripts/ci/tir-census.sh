@@ -16,11 +16,19 @@
 # end; it is listed as UNCHECKED and fails the run (as the I0001 census does,
 # D386), so a file the census cannot judge is a hole in it, not a pass.
 #
+# A program whose path or name says jvm (lyric-compiler/jvm/, *_jvm_self_test.l, *_jvm_tests.l) is
+# built with --target jvm (D466); the JVM build prints the same census lines.
+#
 # With --wide the census also covers the compiler (its manifest), the ecosystem
 # library manifests (dotnet) and the *self_test*.l programs under lyric-compiler/,
 # and reports I0002/I0003 per area and per kind with a sample site.  The wide
 # census only counts: it never gates, because phase 3a has not driven those
 # areas to zero yet (docs/70 §13); the standard-library gate above is unchanged.
+#
+# TIR_CENSUS_STATE=<dir> makes the wide census resumable: each build's log and exit code
+# are kept under <dir>, and a rerun with the same <dir> reuses the ones already there, so a
+# run killed part-way (the self-tests area takes hours) continues instead of restarting.
+# Delete <dir> (or use a new one) after rebuilding ./bin/lyric.
 #
 # Usage: tir-census.sh [path/to/lyric] [--wide] [file.l ...]
 # ---------------------------------------------------------------------------
@@ -50,6 +58,16 @@ for f in "${FILES[@]}"; do
   [[ $skip -eq 0 ]] && filtered+=("$f")
 done
 FILES=("${filtered[@]}")
+
+# The target a program is built for (D466): a JVM-targeted program (its path or name says jvm)
+# names JDK externs the dotnet resolver cannot see, so it is built with --target jvm, whose
+# checker reports the same census.  Everything else is built for dotnet.
+target_of() {
+  case "$1" in
+    lyric-compiler/jvm/*|*_jvm_self_test*.l|*_jvm_tests.l|*jvm_self_test*.l) echo jvm ;;
+    *) echo dotnet ;;
+  esac
+}
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
@@ -112,10 +130,25 @@ absorb_log() {
   done < <(grep -E '^  no builder case: ' "$log" || true)
 }
 
+# Runs one wide-census build into $log, or reuses the kept result (see TIR_CENSUS_STATE).
+# Sets rc.  Usage: run_cached <key> <timeout> <command...>
+run_cached() {
+  local key="$1" tmo="$2"; shift 2
+  local keep=""
+  if [[ -n "${TIR_CENSUS_STATE:-}" ]]; then
+    mkdir -p "$TIR_CENSUS_STATE"
+    keep="$TIR_CENSUS_STATE/$(tr '/ ' '__' <<<"$key")"
+    if [[ -f "$keep.rc" ]]; then cp "$keep.log" "$log"; rc="$(cat "$keep.rc")"; return 0; fi
+  fi
+  rc=0
+  timeout "$tmo" "$@" >"$log" 2>&1 || rc=$?
+  if [[ -n "$keep" ]]; then cp "$log" "$keep.log"; echo "$rc" >"$keep.rc"; fi
+}
+
 cd "$REPO_ROOT"
 for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
-  "$LYRIC" build --verify-ir "$f" -o "$OUT/out.dll" >"$log" 2>&1
+  "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/out.dll" >"$log" 2>&1
   rc=$?
   if ! grep -q '^TIR build census' "$log" && [[ $rc -ne 0 ]]; then unchecked+=("$f"); fi
   absorb_log stdlib-tests "$f" "$log" "$rc"
@@ -139,6 +172,10 @@ if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
 fi
 gate_rc=0
 if [[ $i0003 -gt 0 || ${#unchecked[@]} -gt 0 ]]; then gate_rc=1; fi
+# A call that leaves out an argument another package's function or record declares (D482).
+bash "$REPO_ROOT/scripts/ci/tir-foreign-defaults-e2e.sh" "$LYRIC" || gate_rc=1
+# Source shapes the builder must build (D483).
+bash "$REPO_ROOT/scripts/ci/tir-builder-shapes-e2e.sh" "$LYRIC" || gate_rc=1
 
 if [[ $WIDE -eq 0 ]]; then exit $gate_rc; fi
 
@@ -189,8 +226,7 @@ for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.
   dir="$(dirname "$manifest")"
   [[ "$dir" == "lyric-compiler/lyric" || "$dir" == lyric-compiler/* ]] && continue
   is_native_only "$dir" && continue
-  rc=0
-  timeout 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet >"$log" 2>&1 || rc=$?
+  run_cached "eco-$manifest" 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet
   absorb_log ecosystem "$manifest" "$log" "$rc"
 done
 fi
@@ -198,13 +234,11 @@ fi
 if [[ "$AREAS" == *" self-tests "* ]]; then
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
-  rc=0
-  timeout 600 "$LYRIC" build --verify-ir "$f" -o "$OUT/st.dll" >"$log" 2>&1 || rc=$?
+  run_cached "st-$f" 600 "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/st.dll"
   if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-0}" == 1 ]]; then
     # A program that imports compiler packages builds only through `lyric test`, which
     # links them as restored dependencies; the census line is the same.  The tests run too.
-    rc=0
-    LYRIC_VERIFY_IR=1 timeout 600 "$LYRIC" test --target dotnet "$f" >"$log" 2>&1 || rc=$?
+    run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 "$LYRIC" test --target dotnet "$f"
   fi
   absorb_log self-tests "$f" "$log" "$rc"
 done < <(find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort)

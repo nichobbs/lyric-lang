@@ -1166,11 +1166,56 @@ test "a Long argument to a host Double parameter is widened at the boundary (D60
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
 }
 
+test "a var field of an opaque type is assignable after the type is constructed in another body (D464)" {
+  val pb = packageOf(
+    "package App\nopaque type Clock {\n  var now: Long\n}\nfunc mk(): Clock {\n  Clock(now = 0)\n}\nfunc tick(c: inout Clock): Unit {\n  c.now = c.now + 1\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "mk and tick")
+}
+
+test "a generic record is constructed at the enclosing function's own type parameter (D465)" {
+  val pb = packageOf(
+    "package App\nrecord One[T] {\n  v: T\n}\nfunc wrap[U](x: in U): One[U] {\n  One(v = x)\n}\nfunc wrapped[U](x: in U): One[U] {\n  val r: One[U] = One(v = x)\n  r\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "wrap and wrapped")
+}
+
+test "a bare read of a value-generic parameter is an XValueParam of type Int (D469)" {
+  val pb = packageOf(
+    "package App\nfunc size[N: Nat](a: in array[N, Int]): Int {\n  N\n}\nfunc twice[T, N: Nat](a: in array[N, T]): Int {\n  N + N\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "size and twice")
+}
+
+test "a protected type member reads the owner's value-generic parameter (D469)" {
+  val pb = packageOf(
+    "package App\nprotected type Ring[N: Nat] {\n  var buf: array[N, Int]\n  var next: Int = 0\n  func capacity(): Int = N\n  entry push(v: in Int): Unit {\n    buf[next] = v\n    next = (next + 1) % N\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "capacity and push")
+}
+
 test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
   )
   assertBuildsAndVerifies(pb, 1, "Id.label")
+}
+
+test "an opaque type is constructed by its fields inside its own package (D462)" {
+  val pb = packageOf(
+    "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc mk(n: in Int): Id {\n  Id(n = n, label = \"x\")\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 1, "mk")
+}
+
+test "an opaque type with no fields is constructed with no arguments (D462)" {
+  val pb = packageOf("package App\nopaque type Handle {\n}\nfunc mk(): Handle {\n  Handle()\n}\n")
+  assertBuildsAndVerifies(pb, 1, "mk")
+}
+
+test "the value of a distinct type is its unwrapped underlying value (D463)" {
+  val pb = packageOf("package App\ntype Age = Int\nfunc raw(a: in Age): Int {\n  a.value\n}\n")
+  assertBuildsAndVerifies(pb, 1, "raw")
 }
 
 test "a field of a generic opaque type is read at the receiver's arguments (D592)" {
@@ -2123,6 +2168,15 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
   assertTrue(
     not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), hostTy("an array, pointer or by-reference type"))),
     "an Int slice is not"
+  )
+  assertTrue(
+    isSome(
+      hostBoxKind(
+        TSlice(element = TExtern(host = HostTypeRef(name = "java.lang.Object", args = newList()))),
+        hostTy("an array, pointer or by-reference type")
+      )
+    ),
+    "a slice of host values is a host array"
   )
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPFloat), hostTy("System.Single"))), "a Float is a Single")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPDouble), hostTy("System.Single"))), "a Double is not a Single")

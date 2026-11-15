@@ -21,6 +21,7 @@ import Lyric.Parser as Px
 import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
+import Lyric.Iface
 
 /// The builder's state for one function: the lexical scopes of locals, the
 /// next local number, the I0002 messages, and the kinds it has no case for.
@@ -58,6 +59,17 @@ pub record BuildEnv {
   /// The locals the first alternative of an or-pattern bound: a later alternative's binding of
   /// the same name is that local (every alternative binds the same names).
   orBound: List[LocalDecl] = newList()
+  /// The value-generic parameters of the function being built (owner's first), by name: a bare
+  /// read of one is an `XValueParam` (D469).
+  valueParams: List[ValueParamRef] = newList()
+}
+
+/// A value-generic parameter a body may read by name: its position among the member's type
+/// parameters (the owner's first) and the symbol that binds them.
+pub record ValueParamRef {
+  name: String
+  owner: SymbolId
+  index: Int
 }
 
 /// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
@@ -66,6 +78,8 @@ pub record MemberOwner {
   key: String
   sym: SymbolId
   names: List[String]
+  /// Which of `names` are value-generic parameters (`N: Nat`).
+  valueNames: List[String] = newList()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -352,6 +366,25 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
   }
 }
 
+/// A bare read of a value-generic parameter of the function being built (`N` of `N: Nat`): an
+/// `Int` constant in the body (docs/01), `XValueParam` in the TIR (D469).
+func valueParamRead(env: in BuildEnv, e: in Expr): Option[TExpr] {
+  match e.kind {
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return None
+      }
+      for v in env.valueParams {
+        if v.name == p.segments[0] {
+          return Some(value = mkExpr(e, tyInt(), XValueParam(owner = v.owner, index = v.index)))
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 /// A name the checker resolved to a declaration: a value, constant, function value
 /// or nullary case.
 func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
@@ -374,9 +407,65 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
       }
       match bare {
         case Some(bf) -> Some(value = mkExpr(e, ty, XField(recv = bf.recv, field = bf.field)))
-        case None -> uncoveredExpr(env, e, "a name that is not a local")
+        case None -> match valueParamRead(env, e) {
+          case Some(v) -> Some(value = v)
+          case None -> uncoveredExpr(env, e, "a name that is not a local")
+        }
       }
     }
+  }
+}
+
+/// Whether control never reaches the end of the block `b`.
+func blockNeverCompletes(b: in Block): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  statementNeverCompletes(b.statements[b.statements.count - 1])
+}
+
+func statementNeverCompletes(s: in Statement): Bool {
+  match s.kind {
+    case SReturn(_) -> true
+    case SThrow(_) -> true
+    case SBreak(_) -> true
+    case SContinue(_) -> true
+    case SExpr(x) -> exprNeverCompletes(x)
+    case _ -> false
+  }
+}
+
+func branchNeverCompletes(b: in ExprOrBlock): Bool {
+  match b {
+    case EOBExpr(x) -> exprNeverCompletes(x)
+    case EOBBlock(bl) -> blockNeverCompletes(bl)
+  }
+}
+
+/// Whether the source expression `e` is a `match` or `if` whose every branch leaves, or a block
+/// that ends in a statement that does: the checker records no join type for it.
+/// A `break` or `continue` counts as leaving the branch: it leaves the enclosing loop body, so control
+/// does not reach the end of the branch (a loop's own statements are not inspected).
+func exprNeverCompletes(e: in Expr): Bool {
+  match e.kind {
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      for arm in arms {
+        if not branchNeverCompletes(arm.body) {
+          return false
+        }
+      }
+      true
+    }
+    case EIf(_, thenBranch, elseBranch, _) -> match elseBranch {
+      case Some(x) -> branchNeverCompletes(thenBranch) and
+        branchNeverCompletes(x)
+      case None -> false
+    }
+    case EBlock(bl) -> blockNeverCompletes(bl)
+    case _ -> false
   }
 }
 
@@ -387,8 +476,14 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
       case None -> {
-        env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-        return None
+        // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
+        // join type to record: it never completes.
+        if exprNeverCompletes(e) {
+          TirT.TNever
+        } else {
+          env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+          return None
+        }
       }
     }
   }
@@ -1450,11 +1545,23 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
 func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+  // The annotation is the type the initializer's position gives it, for an expression the checker
+  // left with an open type argument (`val xs: List[K] = newListWithCapacity(n)`).
+  val wanted: Option[Ty] = match ann {
+    case Some(te) -> match annotatedTy(env, te) {
+      case Some(w) -> Some(value = w)
+      case None -> return None
+    }
+    case None -> None
+  }
+  match wanted {
+    case Some(w) -> settleHole(env, init, w)
+    case None -> ()
+  }
   val t = match buildExpr(env, init) { case Some(x) -> x; case None -> return None }
-  match ann {
+  match wanted {
     case None -> Some(value = t)
-    case Some(te) -> {
-      val want = match annotatedTy(env, te) { case Some(w) -> w; case None -> return None }
+    case Some(want) -> {
       match convertValue(env, t, want) {
         case Some(c) -> Some(value = c)
         case None -> {
@@ -1576,6 +1683,25 @@ func buildFnCore(
   pushScope(env)
   env.generics.clear()
   env.generics.add(gc)
+  env.valueParams.clear()
+  match sym {
+    case Some(sy) -> {
+      val values = valueGenericNames(fn.generics)
+      if env.memberOwner.count > 0 {
+        for v in env.memberOwner[0].valueNames {
+          values.add(v)
+        }
+      }
+      var k = 0
+      while k < allNames.count {
+        if values.contains(allNames[k]) {
+          env.valueParams.add(ValueParamRef(name = allNames[k], owner = sy, index = k))
+        }
+        k = k + 1
+      }
+    }
+    case None -> ()
+  }
   val diag: List[Diagnostic] = newList()
   var ok = true
   val params: List[TParamDecl] = newList()
@@ -1736,8 +1862,16 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
   match buildFnCore(env, fn, tbl, true, mode) {
     case Some(c) -> {
       val tps: List[TTypeParam] = newList()
+      val values = valueGenericNames(fn.generics)
+      if env.memberOwner.count > 0 {
+        for v in env.memberOwner[0].valueNames {
+          values.add(v)
+        }
+      }
       for n in c.typeNames {
-        tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
+        tps.add(
+          TTypeParam(name = n, bounds = newList(), valueTy = if values.contains(n) { Some(value = tyInt()) } else { None })
+        )
       }
       val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
       val ownerCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
@@ -2082,7 +2216,7 @@ func buildDistinctFactory(
   val mname = match fn.kind {
     case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
       match recv.kind {
-        case EPath(path) -> if path.segments.count == 1 { m } else { return None }
+        case EPath(path) -> if path.segments.count >= 1 { m } else { return None }
         case _ -> return None
       }
     } else {
@@ -2187,7 +2321,8 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
 
 /// A host result the checker types as a Lyric type without checking it (D359): an array as
 /// a slice, a possibly null string as `String?`, a host enum as `Int`, the host's 32-bit and
-/// 64-bit floating point types as `Float` and `Double`, a host task as the built-in `Task[T]`.
+/// 64-bit floating point types as `Float` and `Double`, a host task as the built-in `Task[T]`, an
+/// erased generic's `Object` result as the type it is instantiated at (a host class, `String`, `Long`).
 /// The call then has the host type and a `CvFromHost` conversion to the checker's type.
 pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
   match host {
@@ -2200,8 +2335,16 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
           case TPrim(TPString) -> n == "System.String" or n == "java.lang.String"
           case _ -> false
         }
-        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float"
-        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double"
+        // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
+        // is the host class the checker instantiated it at.
+        case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
+        case TPrim(TPString) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPBool) -> n == "java.lang.Object" or n == "System.Object"
+        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float" or n == "java.lang.Object" or
+          n == "System.Object"
+        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double" or n == "java.lang.Object" or
+          n == "System.Object"
         case TPrim(TPInt) -> n != "an array, pointer or by-reference type" and n != "System.String" and
           n != "java.lang.String"
         case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
@@ -2223,9 +2366,29 @@ record OverloadFit {
   score: Int
 }
 
+/// A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`: passing the handle
+/// where the host's non-generic `Task` is expected changes no representation.
+func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
+  match from {
+    case TNamed(f, _) -> match to {
+      case TExtern(t) -> if symbolIdEq(f, builtinTaskTypeId()) and t.name == "System.Threading.Tasks.Task" {
+        Some(value = CvBoxToHost(host = t))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+/// parameter, a `String` for a `CharSequence` one), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  match taskAsHostTask(from, to) {
+    case Some(k) -> return Some(value = k)
+    case None -> ()
+  }
   if env.ctx.tbl.externIterResolver.count == 0 {
     return None
   }
@@ -2246,6 +2409,27 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
           }
           case None -> None
         }
+      }
+      case _ -> None
+    }
+    case TPrim(TPString) -> match to {
+      case TExtern(t) -> {
+        if isHostObject(t.name) {
+          return None
+        }
+        for hostString in ["System.String", "java.lang.String"] {
+          match env.ctx.tbl.externIterResolver[0].resolveBases(hostString) {
+            case Some(bases) -> {
+              for b in bases {
+                if b == t.name {
+                  return Some(value = CvBoxToHost(host = t))
+                }
+              }
+            }
+            case None -> ()
+          }
+        }
+        None
       }
       case _ -> None
     }
@@ -2310,6 +2494,17 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
   if hostResultIsCallType(ret, ty) {
     val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
     return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
+  }
+  // The checker settles a host result at the supertype the context expects (`JString.valueOf(x)` returned as
+  // a `CharSequence`): the call keeps the host's result type and an upcast gives the checker's.
+  if not tyEq(ret, ty) {
+    match hostUpcastKind(env, ret, ty) {
+      case Some(k) -> {
+        val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+        return mkExpr(e, ty, XConvert(kind = k, inner = c))
+      }
+      case None -> ()
+    }
   }
   mkExpr(e, ty, call)
 }
@@ -2646,15 +2841,64 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
             )
           )
         )
-        case None -> uncoveredExprDetail(
-          env,
-          e,
-          "a member access that is not a record field",
-          renderTy(rt.ty) + "." + name
-        )
+        case None -> match buildAccessorCall(env, e, ty, rt, name) {
+          case Some(x) -> Some(value = x)
+          case None -> uncoveredExprDetail(
+            env,
+            e,
+            "a member access that is not a record field",
+            renderTy(rt.ty) + "." + name
+          )
+        }
       }
     }
   }
+}
+
+/// The member forms that read a value through no field: `d.value` of a distinct type is the
+/// value unwrapped, and `o.isSome` / `o.isNone` / `r.isOk` / `r.isErr` on a `Std.Core` `Option`
+/// or `Result` is the call of the module's function of that name, recorded by the checker
+/// under the member's node (D463).
+func buildAccessorCall(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  match rt.ty {
+    case TNamed(did, targs) -> if name == "value" and targs.count == 0 {
+      val isDistinct = match symbolOfDefId(tbl, did) {
+        case Some(s) -> match s.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+        case None -> false
+      }
+      if isDistinct {
+        return Some(value = mkExpr(e, ty, XConvert(kind = CvUnwrapDistinct(sym = did), inner = rt)))
+      }
+    }
+    case _ -> ()
+  }
+  match mapGet(tbl.callSigByNode, e.nodeId) {
+    case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
+      case Some(sym) -> match mapGet(tbl.genericArgsByNode, e.nodeId) {
+        case Some(cargs) -> {
+          val tyArgs: List[Ty] = newList()
+          for ta in cargs {
+            match tyOfType(env.ctx, ta) {
+              case Ok(t) -> tyArgs.add(t)
+              case Err(msg) -> {
+                env.errors.add(msg)
+                return None
+              }
+            }
+          }
+          noteFuncSym(env, sym, sig, None, None, TSkFunc)
+          return Some(
+            value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = tyArgs), args = inArgs(singleTExpr(rt))))
+          )
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  None
 }
 
 func singleTExpr(t: in TExpr): List[TExpr] {
@@ -2966,8 +3210,46 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
-      case None -> None
+      case None -> match taskAsHostTask(t.ty, ty) {
+        case Some(k) -> Some(value = convertNode(env, t, ty, k))
+        case None -> retypeConstruct(env, t, ty)
+      }
     }
+  }
+}
+
+/// A union-case construction used at the same union with other type arguments (`Some(value = x)`
+/// of an `Option[Sub]` where an `Option[Iface]` is expected, `None` of any `Option`): the case
+/// is built again at the arguments of `ty`, each field converted to its type there.  None for a
+/// value that is not a construction, or whose fields do not convert.
+func retypeConstruct(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  match t.kind {
+    case XConstruct(sym, fields) -> {
+      val parent = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+      val haveArgs = match t.ty { case TNamed(_, a) -> a; case _ -> return None }
+      val wantParent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+      val want = match ty { case TNamed(_, a) -> a; case _ -> return None }
+      if parent.id != wantParent.id or haveArgs.count != want.count or want.count == 0 {
+        return None
+      }
+      val en = match mapGet(env.syms, sym.id) { case Some(e) -> e; case None -> return None }
+      val sig = match en.sig { case Some(s) -> s; case None -> return None }
+      if sig.params.count != fields.count {
+        return None
+      }
+      val nf: List[TExpr] = newList()
+      var i = 0
+      while i < fields.count {
+        val target = substOwnerArgs(sig.params[i].ty, parent, want)
+        match convertValue(env, fields[i], target) {
+          case Some(c) -> nf.add(c)
+          case None -> return None
+        }
+        i = i + 1
+      }
+      Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XConstruct(sym = sym, fields = nf)))
+    }
+    case _ -> None
   }
 }
 
@@ -2995,6 +3277,50 @@ func upcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   }
 }
 
+/// `renderTy` with each declaration `#<id>` spelled by its DefPath key, for a message that names
+/// the types a conversion could not take.
+func renderTyNamed(env: in BuildEnv, t: in Ty): String {
+  val raw = renderTy(t)
+  var res = ""
+  var i = 0
+  while i < raw.length {
+    val c = raw.substring(i, 1)
+    if c == "#" {
+      var j = i + 1
+      var v = 0
+      var digits = 0
+      var more = true
+      while more and j < raw.length {
+        match "0123456789".indexOf(raw.substring(j, 1)) {
+          case Some(dv) -> {
+            v = v * 10 + dv
+            digits = digits + 1
+            j = j + 1
+          }
+          case None -> {
+            more = false
+          }
+        }
+      }
+      val named = if digits > 0 { symTableDefPathKeyOf(env.ctx.tbl, SymbolId(id = v)) } else { None }
+      match named {
+        case Some(k) -> {
+          res = res + k
+          i = j
+        }
+        case None -> {
+          res = res + c
+          i = i + 1
+        }
+      }
+    } else {
+      res = res + c
+      i = i + 1
+    }
+  }
+  res
+}
+
 /// An argument as the parameter `pty` takes it: as is, converted by a node of its own,
 /// or not at all (counted), never converted by guessing.
 func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
@@ -3003,7 +3329,9 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
     case None -> {
       noteUncoveredAt(env, "an argument conversion", t.span)
       env.errors.add(
-        "I0002: the builder has no case for an argument conversion from " + renderTy(t.ty) + " to " + renderTy(pty) + " at " +
+        "I0002: the builder has no case for an argument conversion from " + renderTyNamed(env, t.ty) + " to " +
+          renderTyNamed(env, pty) +
+          " at " +
           toString(t.span.startPos.line) +
           ":" +
           toString(t.span.startPos.column)
@@ -3098,12 +3426,14 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case TNever -> return Some(value = t)
     case _ -> ()
   }
-  match convKindOf(t.ty, ty) {
-    case Some(k) -> Some(value = convertNode(env, t, ty, k))
+  match convertValue(env, t, ty) {
+    case Some(c) -> Some(value = c)
     case None -> {
       noteUncoveredAt(env, "a branch conversion", t.span)
       env.errors.add(
-        "I0002: the builder has no case for a branch conversion from " + renderTy(t.ty) + " to " + renderTy(ty) + " at " +
+        "I0002: the builder has no case for a branch conversion from " + renderTyNamed(env, t.ty) + " to " +
+          renderTyNamed(env, ty) +
+          " at " +
           toString(t.span.startPos.line) +
           ":" +
           toString(t.span.startPos.column)
@@ -3443,6 +3773,55 @@ func genericArgsFromCall(
   inferGenericArgsDeep(sig.generics, ps, ts)
 }
 
+/// The type of parameter `i` (`p`) of the call being built: the one the context fixed for a call
+/// with open type arguments (`ptys`, one per parameter, empty for a call with none), else the
+/// signature's.
+func paramTyAt(env: in BuildEnv, ptys: in List[Ty], i: in Int, p: in ResolvedParam): Result[Ty, String] {
+  if i < ptys.count {
+    Ok(value = ptys[i])
+  } else {
+    tyOfType(env.ctx, p.ty)
+  }
+}
+
+/// Read the type arguments of the generic names `generics` off the signature type `t` and the
+/// type `ty` the call's context fixes for it, into `acc` (the first reading of a name stands).
+func unifyOpenArgs(t: in Type, ty: in Ty, generics: in List[String], acc: in Map[String, Ty]): Unit {
+  match t {
+    case TyParam(name, _) -> if generics.contains(name) and not acc.containsKey(name) { acc.add(name, ty) }
+    case TyUser(id, _, args) -> match ty {
+      case TNamed(s, targs) -> if s.id == id.id and args.count == targs.count {
+        var i = 0
+        while i < args.count {
+          unifyOpenArgs(args[i], targs[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case TExtern(h) -> if args.count == h.args.count {
+        var i = 0
+        while i < args.count {
+          unifyOpenArgs(args[i], h.args[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case TySlice(e) -> match ty { case TSlice(x) -> unifyOpenArgs(e, x, generics, acc); case _ -> () }
+    case TyNullable(inner) -> match ty { case TNullable(x) -> unifyOpenArgs(inner, x, generics, acc); case _ -> () }
+    case TyTuple(es) -> match ty {
+      case TTuple(xs) -> if es.count == xs.count {
+        var i = 0
+        while i < es.count {
+          unifyOpenArgs(es[i], xs[i], generics, acc)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 /// A call to a declared non-generic function.  Named arguments take their parameter's
 /// slot first and the positional ones fill the free slots in order, as the checker pairs
 /// them.  The arguments run in parameter order in TIR, so a call whose source order
@@ -3457,6 +3836,7 @@ func buildDirectCall(
 ): Option[TExpr] {
   var tyArgs: List[Ty] = newList()
   var callSig = sig
+  val ptys: List[Ty] = newList()
   if sig.generics.count > 0 {
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
@@ -3468,23 +3848,56 @@ func buildDirectCall(
     if checkerArgs.count != sig.generics.count {
       return uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
     }
+    var openMsg = ""
     for ta in checkerArgs {
       match tyOfType(env.ctx, ta) {
         case Ok(t) -> tyArgs.add(t)
         case Err(msg) -> {
-          env.errors.add(msg)
-          return None
+          if openMsg == "" {
+            openMsg = msg
+          }
         }
       }
     }
-    val ps: List[ResolvedParam] = newList()
-    for p in sig.params {
-      ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
+    if openMsg != "" {
+      // The checker left a type argument open and the call's context fixed its type (an argument
+      // `newList()` of a `List[Int]` parameter): read the arguments off that type, and the
+      // parameters as the signature gives them under those arguments.
+      val acc: Map[String, Ty] = newMap()
+      unifyOpenArgs(sig.returnTy, ty, sig.generics, acc)
+      tyArgs = newList()
+      for g in sig.generics {
+        match mapGet(acc, g) {
+          case Some(t) -> tyArgs.add(t)
+          case None -> {
+            env.errors.add(openMsg)
+            return None
+          }
+        }
+      }
+      val pctx = newTyConvCtx(env.ctx.tbl)
+      for o in sig.genericOwners {
+        tyConvBind(pctx, o, sym, sig.generics)
+      }
+      for p in sig.params {
+        match tyOfType(pctx, p.ty) {
+          case Ok(pt) -> ptys.add(substOwnerArgs(pt, sym, tyArgs))
+          case Err(msg) -> {
+            env.errors.add(msg)
+            return None
+          }
+        }
+      }
+    } else {
+      val ps: List[ResolvedParam] = newList()
+      for p in sig.params {
+        ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
+      }
+      callSig = sig.copy(params = ps)
     }
-    callSig = sig.copy(params = ps)
   }
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, callSig, args, pre) {
+  match buildCallArgs(env, e, sym, callSig, ptys, args, pre) {
     case Some(targs) -> {
       noteFuncSym(env, sym, sig, None, None, TSkFunc)
       Some(
@@ -3606,7 +4019,10 @@ func buildMethodCall(
   }
   val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
   val pre: List[TStmt] = newList()
-  val rest = match buildCallArgs(env, e, inst.sig, args, pre) { case Some(a) -> a; case None -> return None }
+  val rest = match buildCallArgs(env, e, sym, inst.sig, newList(), args, pre) {
+    case Some(a) -> a
+    case None -> return None
+  }
   val all: List[TArg] = newList()
   // The receiver is evaluated before any argument: when arguments were hoisted ahead of
   // the call, a receiver that is not a literal or a name is hoisted ahead of them.
@@ -3665,7 +4081,7 @@ func buildConstructCall(
   args: in List[CallArg],
 ): Option[TExpr] {
   val pre: List[TStmt] = newList()
-  match buildCallArgs(env, e, sig, args, pre) {
+  match buildCallArgs(env, e, sym, sig, newList(), args, pre) {
     case Some(targs) -> {
       val fields: List[TExpr] = newList()
       for a in targs {
@@ -3771,19 +4187,32 @@ func noteUncoveredAtSpan(env: in BuildEnv, at: in Span, why: in String): Option[
 
 /// The argument for a parameter the call leaves out: its declared default, placed at
 /// the call under fresh node ids (the declaration's own nodes stay the parameter's).
-/// The default is built from the checker's record of the declaration's own package, so
-/// a default declared in another package has no case yet, and neither has one from a
-/// restored package.
-func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in ResolvedParam): Option[TExpr] {
+/// A default of the checked package is built from the checker's record of its nodes.  One
+/// declared in another package of the build is read from the defaults that package carried
+/// (`DepDefaults`, D482), re-numbered into this package's symbols; one with no carried default
+/// (a restored package whose interface does not record it) has no case yet.
+func buildDefaultArg(
+  env: in BuildEnv,
+  call: in Expr,
+  callee: in SymbolId,
+  origin: in String,
+  p: in ResolvedParam,
+  ptys: in List[Ty],
+  index: in Int,
+): Option[TExpr] {
+  val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
+  if origin != "" and origin != here {
+    return buildForeignDefaultArg(env, call, callee, p, ptys, index)
+  }
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
-  val pty = match tyOfType(env.ctx, p.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
-  val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
-  if not simple {
-    val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
-    if origin != "" and origin != here {
-      return uncoveredExpr(env, call, "a default argument declared in another package")
+  val pty = match paramTyAt(env, ptys, index, p) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
     }
   }
+  val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
   val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
   val built = match d.kind {
     case ELiteral(_) -> buildExpr(env, d)
@@ -3817,6 +4246,137 @@ func buildDefaultArg(env: in BuildEnv, call: in Expr, origin: in String, p: in R
   }
 }
 
+/// A default declared in another package: the carried expression, its declarations added to
+/// this body's, placed at the call and converted to the parameter's type.
+func buildForeignDefaultArg(
+  env: in BuildEnv,
+  call: in Expr,
+  callee: in SymbolId,
+  p: in ResolvedParam,
+  ptys: in List[Ty],
+  index: in Int,
+): Option[TExpr] {
+  val pty = match paramTyAt(env, ptys, index, p) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
+  val key = match symTableDefPathKeyOf(env.ctx.tbl, callee) {
+    case Some(k) -> k
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  val rd = match readCarriedDefault(env.ctx.dep, env.ctx.depRead, key, p.name, env.ctx.tbl.interner) {
+    case Some(x) -> x
+    case None -> return buildForeignLiteralDefault(env, call, p, pty)
+  }
+  for en in rd.entries {
+    if not env.syms.containsKey(en.sym.id) {
+      env.syms.add(en.sym.id, en)
+    }
+  }
+  match refreshDefaultIds(env, rd.expr, call.span) {
+    case Some(t1) -> match coerceArg(env, t1, pty) {
+      case Some(c) -> Some(value = c)
+      case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+    }
+    case None -> None
+  }
+}
+
+/// The default of a package no interface of the build carries (the standard library, which is
+/// loaded as source): when it is a plain literal its type is the literal's own, so it needs no
+/// checker table of the declaring package; the conversion to the parameter's type is the call's.
+/// Any other default is counted.
+func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedParam, pty: in Ty): Option[TExpr] {
+  val d = match p.dfltExpr {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  val natural: Option[Ty] = match d.kind {
+    case ELiteral(l) -> match l {
+      case LInt(_, sfx, _) -> match sfx {
+        case NoIntSuffix -> Some(value = tyInt())
+        case I32 -> Some(value = tyInt())
+        case I64 -> Some(
+          value = TPrim(kind = TPLong)
+        )
+        case U8 -> Some(
+          value = TPrim(kind = TPByte)
+        )
+        case U32 -> Some(
+          value = TPrim(kind = TPUInt)
+        )
+        case U64 -> Some(
+          value = TPrim(
+            kind = TPULong
+          )
+        )
+        case _ -> None
+      }
+      case LFloat(_, sfx, _) -> match sfx {
+        case NoFloatSuffix -> Some(
+          value = TPrim(
+            kind = TPDouble
+          )
+        )
+        case F64 -> Some(
+          value = TPrim(
+            kind = TPDouble
+          )
+        )
+        case _ -> None
+      }
+      case LChar(_) -> Some(value = TPrim(kind = TPChar))
+      case LString(_) -> Some(value = tyString())
+      case LTripleString(_) -> Some(value = tyString())
+      case LRawString(_) -> Some(value = tyString())
+      case LBool(_) -> Some(value = tyBool())
+      case LUnit -> Some(value = tyUnit())
+    }
+    case _ -> None
+  }
+  val lit = match d.kind { case ELiteral(l) -> l; case _ -> return buildForeignCaseDefault(env, call, d, pty) }
+  match natural {
+    case Some(nt) -> {
+      val t = TExpr(id = freshNodeId(env), ty = nt, span = call.span, kind = XLit(lit = litOf(lit)))
+      match coerceArg(env, t, pty) {
+        case Some(c) -> Some(value = c)
+        case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+      }
+    }
+    case None -> uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+}
+
+/// A source-loaded default that is a bare payload-free case (`None`, `Tls12`): the case of the
+/// parameter's own union or enum, constructed at the parameter's type.  Any other shape is counted.
+func buildForeignCaseDefault(env: in BuildEnv, call: in Expr, d: in Expr, pty: in Ty): Option[TExpr] {
+  val name = match d.kind { case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }; case _ -> "" }
+  val parent = match pty { case TNamed(sym, _) -> Some(value = sym); case _ -> None }
+  if name != "" {
+    match parent {
+      case Some(par) -> match nullaryCaseOf(env, par, name) {
+        case Some(cs) -> {
+          noteCaseSym(env, cs)
+          return Some(
+            value = TExpr(
+              id = freshNodeId(env),
+              ty = pty,
+              span = call.span,
+              kind = XConstruct(sym = cs, fields = newList())
+            )
+          )
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  uncoveredExpr(env, call, "a default argument declared in another package")
+}
+
 /// An argument bound to a temporary, with its position in the source.
 record OrderedStmt {
   order: Int
@@ -3834,7 +4394,13 @@ func withPrelude(env: in BuildEnv, e: in Expr, pre: in List[TStmt], call: in TEx
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(
-  env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg], pre: in List[TStmt]
+  env: in BuildEnv,
+  e: in Expr,
+  callee: in SymbolId,
+  sig: in ResolvedSignature,
+  ptys: in List[Ty],
+  args: in List[CallArg],
+  pre: in List[TStmt],
 ): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
@@ -3902,7 +4468,7 @@ func buildCallArgs(
     match slots[i] {
       case None -> {
         if p.hasDefault {
-          match buildDefaultArg(env, e, sig.originPackage, p) {
+          match buildDefaultArg(env, e, callee, sig.originPackage, p, ptys, i) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {
               ok = false
@@ -3914,7 +4480,7 @@ func buildCallArgs(
         }
       }
       case Some(x) -> match p.mode {
-        case PMIn -> match tyOfType(env.ctx, p.ty) {
+        case PMIn -> match paramTyAt(env, ptys, i, p) {
           case Err(msg) -> {
             env.errors.add(msg)
             ok = false

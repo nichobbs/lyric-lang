@@ -268,7 +268,7 @@ test "a different declaration changes the hash" {
 }
 
 test "the dump is canonical text" {
-  val expected = "interface Shapes (format 4)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
+  val expected = "interface Shapes (format 5)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
     "annotations: pure\n" +
     "reexports: Std.Collections, Std.Json\n" +
     "built against (2):\n" +
@@ -716,6 +716,97 @@ test "a default is found by the function's key and the parameter's name, before 
         case Ok(back) -> match paramDefaultOf(back, "T::X", "p0") {
           case Some(d) -> assertEqual(exprText(other, d), "{3 : Int}", "decoded default")
           case None -> assertTrue(false, "decoded: p0 has a default")
+        }
+      }
+    }
+  }
+}
+
+test "the declarations a default names, and a record field's default, survive a round trip in the reader's numbering" {
+  val it = newDefPathInterner()
+  val callee = internDefPath(it, typeDefPath("Other", "make"))
+  val ps: List[TParamTy] = newList()
+  ps.add(TParamTy(mode = TMIn, ty = TPrim(kind = TPInt)))
+  val entry = TSymEntry(
+    sym = callee,
+    kind = TSkFunc,
+    typeParamCount = 0,
+    sig = Some(value = TSig(typeParamCount = 0, params = ps, ret = TPrim(kind = TPString), isAsync = false)),
+    fields = newList(),
+    ty = None,
+    mutable = false
+  )
+  val rec = TSymEntry(
+    sym = internDefPath(it, typeDefPath("Other", "Box")),
+    kind = TSkType,
+    typeParamCount = 0,
+    sig = None,
+    fields = [TFieldSig(name = "v", ty = TPrim(kind = TPInt), mutable = true)],
+    ty = None,
+    mutable = false
+  )
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = intLit(1i64)))
+  val call = node(TPrim(kind = TPString), XCall(callee = Direct(sym = callee, typeArgs = newList()), args = args))
+  val fnParams: List[IfParam] = newList()
+  fnParams.add(
+    IfParam(
+      name = "p0",
+      mode = TMIn,
+      ty = TPrim(kind = TPString),
+      hasDefault = true,
+      dflt = Some(value = call),
+      dfltEntries = [entry, rec]
+    )
+  )
+  val fn = IfDFunc(
+    typeParams = newList(),
+    params = fnParams,
+    ret = TPrim(kind = TPUnit),
+    isAsync = false,
+    isAxiom = false,
+    isPure = false
+  )
+  val fields: List[IfField] = newList()
+  fields.add(
+    IfField(
+      name = "label",
+      ty = TPrim(kind = TPString),
+      mutable = false,
+      hasDefault = true,
+      dflt = Some(value = call),
+      dfltEntries = [entry]
+    )
+  )
+  val decls: List[IfDecl] = newList()
+  decls.add(declWith("T", "X", IfKFunc, fn))
+  decls.add(declWith("T", "Rec", IfKRecord, IfDRecord(typeParams = newList(), fields = fields)))
+  val iface = Iface(header = header("T"), decls = decls, reexports = newList())
+  match encodeIface(iface, it) {
+    case Err(e) -> assertTrue(false, e)
+    case Ok(bytes) -> {
+      val other = newDefPathInterner()
+      val _ = internDefPath(other, typeDefPath("Unrelated", "first"))
+      match decodeIface(bytes, other) {
+        case Err(e) -> assertTrue(false, e)
+        case Ok(back) -> {
+          match paramDefaultWithEntries(back, "T::X", "p0") {
+            case Some(d) -> {
+              assertEqual(toString(d.entries.count), "2", "the parameter default's declarations")
+              match defPathKeyOf(other, d.entries[0].sym) {
+                case Some(k) -> assertEqual(k, "Other::make", "the callee is numbered by the reader")
+                case None -> assertTrue(false, "the callee has a key")
+              }
+              assertTrue(isSome(d.entries[0].sig), "the callee's signature is carried")
+              assertEqual(toString(d.entries[1].fields.count), "1", "the record entry's fields")
+            }
+            case None -> assertTrue(false, "decoded: p0 has a default")
+          }
+          match fieldDefaultOf(back, "T::Rec", "label") {
+            case Some(d) -> assertEqual(toString(d.entries.count), "1", "the field default's declarations")
+            case None -> assertTrue(false, "decoded: the field has a default")
+          }
+          assertFalse(isSome(fieldDefaultOf(back, "T::Rec", "nope")), "no such field")
         }
       }
     }

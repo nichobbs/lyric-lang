@@ -52,6 +52,8 @@ record Ctx {
   syms: Map[Int, TSymEntry]
   fnSym: SymbolId
   tpCount: Int
+  /// The `valueTy` of each generic parameter of the function being verified, in order.
+  valueTys: List[Option[Ty]]
   locals: Map[Int, LocalDecl]
   /// Locals whose scope is open: a binding leaves it when its block, arm,
   /// loop, closure or quantifier ends, while `locals` keeps the declaration.
@@ -707,6 +709,26 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       case None -> {
       }
     }
+    case XValueParam(owner, index) -> {
+      if not symbolIdEq(owner, c.fnSym) or index < 0 or index >= c.valueTys.count {
+        report(
+          c,
+          e.id,
+          "value-param",
+          "value parameter " + toString(index) + " is not a parameter of the function being verified"
+        )
+      } else {
+        match c.valueTys[index] {
+          case Some(t) -> expectTy(c, e.id, e.ty, t, "value-param", "value parameter " + toString(index))
+          case None -> report(
+            c,
+            e.id,
+            "value-param",
+            "generic parameter " + toString(index) + " is a type parameter, not a value parameter"
+          )
+        }
+      }
+    }
     case XGlobal(sym, targs) -> {
       requireSym(c, e.id, sym, "global")
       for t in targs {
@@ -1045,6 +1067,14 @@ func checkConstruct(c: in Ctx, e: in TExpr, sym: in SymbolId, fields: in List[TE
   }
 }
 
+func valueTysOf(tps: in List[TTypeParam]): List[Option[Ty]] {
+  val res: List[Option[Ty]] = newList()
+  for p in tps {
+    res.add(p.valueTy)
+  }
+  res
+}
+
 func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
   val c = Ctx(
     diags = shared.diags,
@@ -1053,6 +1083,7 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
     syms = shared.syms,
     fnSym = f.sym,
     tpCount = f.typeParams.count,
+    valueTys = valueTysOf(f.typeParams),
     locals = newMap(),
     live = newMap(),
     scopeIds = newList(),
@@ -1113,6 +1144,7 @@ pub func verifyPackage(pkg: in TPackage, deps: in List[TSymEntry]): List[VerifyD
     syms = syms,
     fnSym = SymbolId(id = 0),
     tpCount = 0,
+    valueTys = newList(),
     locals = newMap(),
     live = newMap(),
     scopeIds = newList(),

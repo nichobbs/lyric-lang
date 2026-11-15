@@ -128,7 +128,7 @@ LYRIC
   }
   ok=1
   for want in \
-    "interface Lib (format 4)" \
+    "interface Lib (format 5)" \
     "pub record Lib::Point(x: Int, y: Int = <default>)" \
     "pub union case Lib::Shape::Circle(radius: Int)" \
     "pub distinct Lib::Age = Int range 0 ..= 150" \

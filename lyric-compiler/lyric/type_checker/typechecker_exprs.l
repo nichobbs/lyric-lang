@@ -3422,6 +3422,48 @@ func monadAccessorType(tbl: in SymbolTable, recvRaw: in Type, name: in String): 
   }
 }
 
+// The bare `o.isSome` / `o.isNone` / `r.isOk` / `r.isErr` on the real `Std.Core` `Option` and
+// `Result` is the call of that module's function of the same name.  Record the function and
+// the receiver's type arguments under the member's `NodeId`, so the builder makes the call
+// (D463); no `Call` node exists for the property form.
+func recordMonadAccessorCallee(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recvRaw: in Type,
+  name: in String,
+  node: in Int,
+): Unit {
+  if node <= 0 or not (name == "isOk" or name == "isErr" or name == "isSome" or name == "isNone") {
+    return
+  }
+  match monadAccessorType(tbl, recvRaw, name) {
+    case Some(_) -> ()
+    case None -> return
+  }
+  val targs = match unrefine(recvRaw) {
+    case TyUser(_, _, a) -> a
+    case _ -> return
+  }
+  match mapGet(sigs, name) {
+    case Some(sig) -> {
+      if sig.originPackage != "Std.Core" or sig.generics.count != targs.count {
+        return
+      }
+      match symTableFuncDefPathKey(tbl, sig, name, true) {
+        case Some(dp) -> {
+          recordCalleeNode(tbl, dp, sig, node)
+          if tbl.genericArgsByNode.containsKey(node) {
+            tbl.genericArgsByNode.remove(node)
+          }
+          tbl.genericArgsByNode.add(node, targs)
+        }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+}
+
 // True for the six reserved bare-member accessor names `monadAccessorType`
 // grants a real type to on the genuine `Std.Core.Result`/`Option` (#6630).
 func isReservedMonadAccessorName(name: in String): Bool {
@@ -3851,6 +3893,18 @@ pub func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs
       )
     )
     i = i + 1
+  }
+  result
+}
+
+// The fields of the record `tid` at the type arguments `targs`, with the record's own
+// parameters replaced and every other type parameter left as it is (D465).
+func fieldsOfRecordSubstituted(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
+  val raw = fieldsOfRecord(tbl, tid)
+  val gnames = recordGenericNamesOf(tbl, tid)
+  val result: List[FieldEntry] = newList()
+  for f in raw {
+    result.add(FieldEntry(name = f.name, ty = substituteTyParams(f.ty, gnames, targs), isMutable = f.isMutable))
   }
   result
 }
@@ -5530,7 +5584,9 @@ func recordCtorSigNode(
       // A generic record's fields are instantiated at the result type's arguments.
       val fes = match unrefine(resultTy) {
         case TyUser(_, _, targs) -> if rd.generics.isSome() {
-          fieldsOfRecordInstantiated(tbl, id, targs)
+          // Not `fieldsOfRecordInstantiated`: it erases type parameters, and a field of the
+          // enclosing generic's own parameter (`One(v = x)` in `f[T]`) must keep its binder.
+          fieldsOfRecordSubstituted(tbl, id, targs)
         } else {
           fieldsOfRecord(tbl, id)
         }
@@ -5563,6 +5619,28 @@ func recordCtorSigNode(
       // A protected type's construction takes its fields as a record's: `Total()` leaves
       // each to its default.  Only a non-generic one has them here.
       if pd.generics.isSome() {
+        return
+      }
+      val scratch: List[Diagnostic] = newList()
+      val saved = enterDeclaringScope(tbl, sym)
+      for fd in ctorAllFields(sym) {
+        val fty = resolveType(tbl, newGenericContext(), scratch, fd.ty)
+        params.add(
+          ResolvedParam(
+            name = fd.name,
+            ty = fty,
+            mode = PMIn,
+            hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fty, fd.span),
+            span = fd.span,
+            dfltExpr = fd.dflt
+          )
+        )
+      }
+      restoreScope(tbl, saved)
+    }
+    case DKOpaque(_, od) -> {
+      // An opaque type is constructed inside its own package as a record is: by its fields.
+      if od.generics.isSome() {
         return
       }
       val scratch: List[Diagnostic] = newList()
@@ -5927,8 +6005,9 @@ func recordMethodCalleeNode(
       val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
       val owner = dotNamedOwnerName(unrefine(recvTy))
       var target: Option[SymbolId] = None
+      // The dot-named function whose declaration is at the signature's span.
       if owner.length > 0 {
-        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, false) {
           case Some(dp) -> {
             target = Some(value = internDefPathKey(tbl.interner, dp))
           }
@@ -5942,6 +6021,20 @@ func recordMethodCalleeNode(
         case Some(_) -> ()
         case None -> {
           target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span, owner)
+        }
+      }
+      // A dependency's dot-named function has no declaration at the signature's span here: it is the
+      // one same-named function of its package with the signature's parameter count.  Tried last, so a
+      // method of another arity beside a dot-named function (#9106) is never taken for it.
+      match target {
+        case Some(_) -> ()
+        case None -> if owner.length > 0 {
+          match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+            case Some(dp) -> {
+              target = Some(value = internDefPathKey(tbl.interner, dp))
+            }
+            case None -> ()
+          }
         }
       }
       match target {
@@ -21473,6 +21566,7 @@ func inferExprCore(
       }
       checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
+      recordMonadAccessorCallee(tbl, sigs, rt, name, e.nodeId)
       val readTy = match memberTy {
         case TyError(_) -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
         case _ -> memberTy
@@ -25950,6 +26044,12 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         // declaration (whose span the signature does not carry) is found by
         // name and arity.
         name = segs[0] + "." + member
+        allowArity = true
+      } else if segs.count >= 2 and startsUppercase(segs[segs.count - 1]) {
+        // `Pkg.Type.f(x)` and `Alias.Type.f(x)`: the same dot-named function written through
+        // its package.  The table lookup below matches by name, arity and signature, so a
+        // path that names no such function records nothing.
+        name = segs[segs.count - 1] + "." + member
         allowArity = true
       } else {
         return

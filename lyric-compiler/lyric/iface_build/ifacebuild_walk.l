@@ -158,10 +158,10 @@ func ifVerifOf(v: in VerificationLevel): IfVerif {
 }
 
 // The built default of parameter `name` of the function keyed `fnKey`, when the interface can record it.
-func builtDefault(bc: in BuildCtx, fnKey: in String, name: in String): Option[TExpr] {
+func builtDefault(bc: in BuildCtx, fnKey: in String, name: in String): Option[IfDefault] {
   match mapGet(bc.defaults, fnKey) {
     case Some(byName) -> match mapGet(byName, name) {
-      case Some(d) -> if defaultCarriable(d) { Some(value = d) } else { None }
+      case Some(d) -> if defaultCarriable(d.expr) { Some(value = d) } else { None }
       case None -> None
     }
     case None -> None
@@ -176,7 +176,10 @@ func paramsOf(
     val mode = match p.mode { case PMIn -> 0; case PMOut -> 1; case PMInout -> 2 }
     val hasDefault = match p.dflt { case Some(_) -> true; case None -> false }
     val param = mkParam(p.name, mode, resolveTy(bc, frames, selfTy, p.ty, what), hasDefault)
-    res.add(param.copy(dflt = builtDefault(bc, what, p.name)))
+    match builtDefault(bc, what, p.name) {
+      case Some(d) -> res.add(param.copy(dflt = Some(value = d.expr), dfltEntries = d.entries))
+      case None -> res.add(param)
+    }
   }
   res
 }
@@ -279,7 +282,11 @@ func fieldsOfRecord(
     match m {
       case RMField(f) -> {
         val hasDefault = match f.dflt { case Some(_) -> true; case None -> false }
-        res.add(mkField(f.name, resolveTy(bc, frames, None, f.ty, what + "." + f.name), f.isMutable, hasDefault))
+        val field = mkField(f.name, resolveTy(bc, frames, None, f.ty, what + "." + f.name), f.isMutable, hasDefault)
+        match builtDefault(bc, what, f.name) {
+          case Some(d) -> res.add(field.copy(dflt = Some(value = d.expr), dfltEntries = d.entries))
+          case None -> res.add(field)
+        }
       }
       case _ -> ()
     }

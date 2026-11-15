@@ -636,7 +636,13 @@ pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
 func jvmElemOfDesc(desc: in String): ExternIterElem {
   match jvmMemberTypeOfDesc(desc) {
     case Some(EMTType(elem)) -> elem
-    case _ -> EIEHost(hostName = "an array, pointer or by-reference type", args = newList())
+    case _ -> if desc == "F" {
+      EIEHost(hostName = "java.lang.Float", args = newList())
+    } else if desc == "S" {
+      EIEHost(hostName = "java.lang.Short", args = newList())
+    } else {
+      EIEHost(hostName = "an array, pointer or by-reference type", args = newList())
+    }
   }
 }
 
@@ -730,10 +736,8 @@ impl ExternIterResolver for JvmHostIterIndex {
             for pd in d.params {
               ps.add(jvmElemOfDesc(pd))
             }
-            match jvmMemberTypeOfDesc(d.ret) {
-              case Some(m) -> sigs.add(ExternMemberSig(isStatic = d.isStatic, params = ps, ret = m))
-              case None -> return None
-            }
+            val ret = match jvmMemberTypeOfDesc(d.ret) { case Some(m) -> m; case None -> EMTType(elem = jvmElemOfDesc(d.ret)) }
+            sigs.add(ExternMemberSig(isStatic = d.isStatic, params = ps, ret = ret))
           }
           self.memberSigs.add(key, sigs)
         }

@@ -155,6 +155,50 @@ test "a generic call at an instantiation verifies clean" {
   assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))), "", "id[Int](x)")
 }
 
+func tyNat(): Ty {
+  TPrim(kind = TPNat)
+}
+
+/// func f[T, N: Nat](): Nat = body, symbol 10.
+func valueGenericFn(body: in TExpr): TFnDecl {
+  val tps: List[TTypeParam] = newList()
+  tps.add(TTypeParam(name = "T", bounds = newList(), valueTy = None))
+  tps.add(TTypeParam(name = "N", bounds = newList(), valueTy = Some(value = tyNat())))
+  TFnDecl(
+    sym = sym(10),
+    typeParams = tps,
+    params = newList(),
+    ret = tyNat(),
+    isAsync = false,
+    preconds = newList(),
+    postconds = newList(),
+    body = Some(body),
+    span = noSourceSpan()
+  )
+}
+
+test "a value parameter read of the function's own value parameter verifies clean" {
+  val body = ex(2, tyNat(), XValueParam(owner = sym(10), index = 1))
+  assertEqual(rulesOf(oneFn(entries(), valueGenericFn(body))), "", "N read as Nat")
+}
+
+test "a value parameter read of the wrong type is reported" {
+  val body = ex(2, tyInt(), XValueParam(owner = sym(10), index = 1))
+  assertTrue(rulesOf(oneFn(entries(), valueGenericFn(body))).contains("value-param"), "Int is not Nat")
+}
+
+test "reading a type parameter as a value is reported" {
+  val body = ex(2, tyNat(), XValueParam(owner = sym(10), index = 0))
+  assertTrue(rulesOf(oneFn(entries(), valueGenericFn(body))).contains("value-param"), "T is a type parameter")
+}
+
+test "a value parameter of another declaration or out of range is reported" {
+  val other = ex(2, tyNat(), XValueParam(owner = sym(11), index = 1))
+  assertTrue(rulesOf(oneFn(entries(), valueGenericFn(other))).contains("value-param"), "another owner")
+  val far = ex(2, tyNat(), XValueParam(owner = sym(10), index = 5))
+  assertTrue(rulesOf(oneFn(entries(), valueGenericFn(far))).contains("value-param"), "out of range")
+}
+
 test "a type parameter outside its owner's scope is not closed" {
   val x = local(1, "x", tyInt(), false)
   val body = ex(2, TParam(owner = sym(99), index = 0), XLocal(local = x.id))

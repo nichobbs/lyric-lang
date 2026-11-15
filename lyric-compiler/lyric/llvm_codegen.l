@@ -18418,8 +18418,65 @@ record TirUnitMaps {
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
+  lists: Map[String, NType] = newMap()
+  maps: Map[String, NType] = newMap()
+  tasks: Map[String, NType] = newMap()
+  scans: Map[String, String] = newMap()
+  asyncFns: Map[Int, String] = newMap()
+  protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
+  ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
+  ifaceVts: Map[String, String] = newMap()
+  intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
+}
+
+/// An interface as the TIR lowering reads it: the box and vtable types the code generator chose
+/// and, per method, the erased call's types and whether it is a plain method.
+func tirIfaceLayout(info: in NIfaceInfo): LlvmTir.TirIfaceLayout {
+  val ms: List[LlvmTir.TirIfaceMethod] = newList()
+  var i = 0
+  while i < info.methodNames.count {
+    var plain = not info.methodRetIsSelf[i]
+    match info.methodAsyncElem[i] {
+      case Some(_) -> {
+        plain = false
+      }
+      case None -> ()
+    }
+    for b in info.methodParamIsSelf[i] {
+      if b {
+        plain = false
+      }
+    }
+    for b in info.methodParamByRef[i] {
+      if b {
+        plain = false
+      }
+    }
+    for b in info.methodParamSelfByRef[i] {
+      if b {
+        plain = false
+      }
+    }
+    ms.add(
+      LlvmTir.TirIfaceMethod(
+        name = info.methodNames[i],
+        paramTys = info.methodParamTys[i],
+        retTy = info.methodRetTys[i],
+        plain = plain
+      )
+    )
+    i = i + 1
+  }
+  LlvmTir.TirIfaceLayout(
+    boxTy = ifaceBoxPtrType(info),
+    structTy = ifaceBoxStructType(info),
+    vtTy = ifaceVtStructType(info),
+    dtor = ifaceBoxDtorName(info),
+    methods = ms
+  )
 }
 
 /// A union as the TIR lowering reads it: the type of a value, the struct behind it, where the
@@ -18459,13 +18516,80 @@ func tirUnitMaps(
   val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
+  val intrinsics: Map[Int, String] = newMap()
+  val asyncFns: Map[Int, String] = newMap()
+  val protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  // The interface, record and member lookups below read the DefPath keys that
+  // `Lyric.Resolve.resolve_collect` writes (`Pkg::Type`, `Pkg::Type::method(P1)`,
+  // `Pkg::Type::$impl(Iface)::method(P1)`); a change there changes these parsers.
+  // A member's IR name is the AST path's: `Target.Iface.name` for an `impl` method and
+  // `Record.name` for a method of a record's body, in a table keyed by the arity with the
+  // receiver, which is the declaration's own parameter count.  A body method owns the `@m`
+  // twin when a top-level function of the same dotted name and arity sits beside it.
+  val declArity: Map[Int, Int] = newMap()
+  for f in input.pkg.funcs {
+    declArity.add(f.sym.id, f.params.count)
+  }
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match mapGet(declArity, id) {
+        case None -> ()
+        case Some(ar) -> {
+          var sigKey = ""
+          match LlvmTir.tirImplMember(key) {
+            case Some(im) -> {
+              sigKey = im.pkg + "." + im.owner + "." + im.iface + "." + im.name + "/" + ar.toString()
+            }
+            case None -> match LlvmTir.tirTypeMember(key) {
+              case Some(tm) -> {
+                val twinKey = tm.pkg + "." + tm.owner + "." + tm.name + "@m/" + ar.toString()
+                sigKey = if sigs.containsKey(twinKey) {
+                  twinKey
+                } else {
+                  tm.pkg + "." + tm.owner + "." + tm.name + "/" + ar.toString()
+                }
+              }
+              case None -> ()
+            }
+          }
+          if sigKey.length > 0 {
+            match mapGet(sigs, sigKey) {
+              case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
+  }
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
+        case Some(n) -> {
+          if n.pkg == "Std.CollectionsHost" and (n.name == "newList" or n.name == "newListWithCapacity" or n.name == "newMap") {
+            intrinsics.add(id, n.name)
+          }
+          if n.pkg == "Std.Collections" and (n.name == "mapKeys" or n.name == "mapValues") {
+            intrinsics.add(id, n.name)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
   for id in mapKeys(input.names) {
     match mapGet(input.names, id) {
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
         case Some(n) -> match mapGet(sigs, n.pkg + "." + n.name + "/" + n.arity.toString()) {
-          // An async callee returns a task the call site unwraps: its calls stay on the AST path.
-          case Some(sg) -> if not sg.isAsync { fnNames.add(id, sg.irName) }
+          // An async callee returns a task the call site unwraps: it has its own table.
+          case Some(sg) -> if sg.isAsync {
+            asyncFns.add(id, sg.irName)
+          } else {
+            fnNames.add(id, sg.irName)
+          }
           case None -> ()
         }
         case None -> match Str.indexOf(key, "::") {
@@ -18480,7 +18604,14 @@ func tirUnitMaps(
                 // A record with an invariant is re-checked at public boundaries by the contract
                 // elaborator, whose asserts TIR does not carry yet (phase 3c): functions touching it
                 // stay on the AST path.
-                case Some(ri) -> if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
+                case Some(ri) -> if ctx.protectedRecNames.containsKey(ri.irName) {
+                  if not invariantRecs.containsKey(pkg + "." + rest) {
+                    protRecs.add(
+                      id,
+                      LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
+                    )
+                  }
+                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -18547,6 +18678,93 @@ func tirUnitMaps(
     }
     k = k + 1
   }
+  // Non-generic interfaces (`Pkg::Name`), the heap records that may implement them and each
+  // interface method's slot (`Pkg::Iface::method(...)`), then the vtable constant per pair.
+  val ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
+  val ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
+  val ifaceVts: Map[String, String] = newMap()
+  val ifaceIdByName: Map[String, Int] = newMap()
+  val ifaceInfoById: Map[Int, NIfaceInfo] = newMap()
+  val recIrById: Map[Int, String] = newMap()
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match Str.indexOf(key, "::") {
+        case None -> ()
+        case Some(sep) -> {
+          val pkg = Str.substring(key, 0, sep)
+          val rest = Str.substring(key, sep + 2)
+          if not Str.contains(rest, "(") and not Str.contains(rest, "::") {
+            match mapGet(ctx.ifaceInfos, pkg + "." + rest) {
+              case Some(info) -> {
+                ifaces.add(id, tirIfaceLayout(info))
+                ifaceIdByName.add(pkg + "." + rest, id)
+                ifaceInfoById.add(id, info)
+              }
+              case None -> match mapGet(ctx.recordDefs, pkg + "." + rest) {
+                case Some(ri) -> match mapGet(recs, id) {
+                  case Some(lay) -> if not lay.byValue { recIrById.add(id, ri.irName) }
+                  case None -> ()
+                }
+                case None -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for id in mapKeys(input.names) {
+    match mapGet(input.names, id) {
+      case None -> ()
+      case Some(key) -> match Str.indexOf(key, "::") {
+        case None -> ()
+        case Some(sep) -> {
+          val pkg = Str.substring(key, 0, sep)
+          val rest = Str.substring(key, sep + 2)
+          if Str.contains(rest, "(") {
+            match Str.indexOf(rest, "::") {
+              case None -> ()
+              case Some(m) -> {
+                val owner = Str.substring(rest, 0, m)
+                val after = Str.substring(rest, m + 2)
+                match Str.indexOf(after, "(") {
+                  case None -> ()
+                  case Some(open) -> match mapGet(ifaceIdByName, pkg + "." + owner) {
+                    case Some(ifaceId) -> match mapGet(ifaceInfoById, ifaceId) {
+                      case Some(info) -> {
+                        val slot = ifaceMethodSlot(info, Str.substring(after, 0, open))
+                        if slot >= 0 {
+                          ifaceMethods.add(id, LlvmTir.TirIfaceMethodRef(ifaceId = ifaceId, slot = slot))
+                        }
+                      }
+                      case None -> ()
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for rid in mapKeys(recIrById) {
+    match mapGet(recIrById, rid) {
+      case None -> ()
+      case Some(rir) -> {
+        for iid in mapKeys(ifaceInfoById) {
+          match mapGet(ifaceInfoById, iid) {
+            case None -> ()
+            case Some(info) -> if ctx.ifaceVtables.containsKey(rir + "|" + info.key) {
+              ifaceVts.add(rid.toString() + "|" + iid.toString(), ifaceVtableGlobalName(rir, info))
+            }
+          }
+        }
+      }
+    }
+  }
   TirUnitMaps(
     fnNames = fnNames,
     recs = recs,
@@ -18554,6 +18772,12 @@ func tirUnitMaps(
     cases = cases,
     enums = enums,
     enumCases = enumCases,
+    intrinsics = intrinsics,
+    asyncFns = asyncFns,
+    protRecs = protRecs,
+    ifaces = ifaces,
+    ifaceMethods = ifaceMethods,
+    ifaceVts = ifaceVts,
     checkedArith = input.checkedArith
   )
 }
@@ -18576,12 +18800,22 @@ func lowerWithTuples(
       enumCases = maps.enumCases,
       tuples = maps.tuples,
       funcs = maps.funcs,
+      lists = maps.lists,
+      maps = maps.maps,
+      tasks = maps.tasks,
+      scans = maps.scans,
+      asyncFns = maps.asyncFns,
+      protRecs = maps.protRecs,
+      ifaces = maps.ifaces,
+      ifaceMethods = maps.ifaceMethods,
+      ifaceVts = maps.ifaceVts,
+      intrinsics = maps.intrinsics,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0) or attempt >= 8 {
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0 and f.needScans.count == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -18599,11 +18833,37 @@ func lowerWithTuples(
         for n in f.needFuncs {
           maps.funcs.add(n.key, closureNType(ctx, n.paramTys, n.retTy))
         }
+        for n in f.needLists {
+          maps.lists.add(n.key, listNType(ctx, n.elemTy))
+        }
+        for n in f.needMaps {
+          maps.maps.add(n.key, mapNType(ctx, n.keyTy, n.valTy))
+        }
+        for n in f.needTasks {
+          maps.tasks.add(n.key, taskNType(ctx, n.elemTy))
+        }
+        for n in f.needScans {
+          val scanName = if n.kind == "remove" {
+            ensureListRemoveValue(ctx, n.elemTy)
+          } else if n.kind == "lastIndexOf" {
+            ensureListLastIndexOf(ctx, n.elemTy)
+          } else {
+            ensureListIndexOf(ctx, n.elemTy)
+          }
+          maps.scans.add(n.key, scanName)
+        }
         attempt = attempt + 1
       }
     }
   }
   panic("unreachable")
+}
+
+func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
@@ -18615,11 +18875,33 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
   val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
+  // An `impl` method is named `Target.Iface.name` on the AST path, a method declared in a
+  // record's body `Record.name`.
+  val parts = Str.split(fn.name, ".")
   for f in input.pkg.funcs {
     match mapGet(input.names, f.sym.id) {
       case None -> ()
       case Some(key) -> match LlvmTir.tirTopLevelFn(key) {
-        case None -> ()
+        case None -> match LlvmTir.tirImplMember(key) {
+          case None -> match LlvmTir.tirTypeMember(key) {
+            case None -> ()
+            case Some(tm) -> {
+              // A protected entry or function is lowered as `Type.name.__inner`, its body without
+              // the lock the AST path's wrapper takes; a `when:` barrier keeps the AST path.
+              if parts.length == 3 and parts[2] == "__inner" and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity and not isSomeExpr(f.barrier) {
+                decl = Some(value = f)
+              }
+              if isBodyMethodFn(fn) and parts.length == 2 and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity {
+                decl = Some(value = f)
+              }
+            }
+          }
+          case Some(im) -> {
+            if parts.length == 3 and im.pkg == u.pkgName and im.owner == parts[0] and im.iface == parts[1] and im.name == parts[2] and f.params.count == arity {
+              decl = Some(value = f)
+            }
+          }
+        }
         case Some(n) -> {
           if n.pkg == u.pkgName and n.name == fn.name and n.arity == arity {
             decl = Some(value = f)
@@ -18639,7 +18921,11 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
     }
     case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
-      if not fnNames.containsKey(d.sym.id) and not d.isAsync {
+      if d.isAsync {
+        if not maps.asyncFns.containsKey(d.sym.id) {
+          maps.asyncFns.add(d.sym.id, ast.name)
+        }
+      } else if not fnNames.containsKey(d.sym.id) {
         fnNames.add(d.sym.id, ast.name)
       }
       match lowerWithTuples(ctx, maps, d) {

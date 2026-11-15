@@ -93,6 +93,15 @@ pub record IfParam {
   ty: Ty
   hasDefault: Bool
   dflt: Option[TExpr] = None
+  /// The declarations of the symbols `dflt` names, so a consumer's verifier finds them
+  /// (D482); empty without a default.
+  dfltEntries: List[TSymEntry] = newList()
+}
+
+/// A default as a producer built it: the expression and the declarations it names.
+pub record IfDefault {
+  expr: TExpr
+  entries: List[TSymEntry]
 }
 
 /// A field of a record, a protected type or a union case.
@@ -101,6 +110,10 @@ pub record IfField {
   ty: Ty
   mutable: Bool
   hasDefault: Bool
+  /// A record field's default as a typed expression, with the declarations it names
+  /// (D482); absent for a case payload and when the producer could not record it.
+  dflt: Option[TExpr] = None
+  dfltEntries: List[TSymEntry] = newList()
 }
 
 /// What a declaration is, beyond its kind and visibility.
