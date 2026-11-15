@@ -488,8 +488,25 @@ func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   }
 }
 
-/// Build the expression `e`, or `None` after recording why in `env.errors`.
+/// Build the expression `e`, or `None` after recording why in `env.errors`.  An array the checker
+/// recorded as a copy site (`arrayCopySites`, D167: an array read out of a place and stored) is
+/// wrapped in an `XArrayCopy`; the sites a consumer only inspects were removed from the table.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
+  match buildExprBody(env, e) {
+    case Some(t) -> {
+      if env.ctx.tbl.arrayCopySites.containsKey(recordCopySiteKey(e.span)) {
+        match t.ty {
+          case TArray(_, _) -> return Some(value = TExpr(id = freshNodeId(env), ty = t.ty, span = t.span, kind = XArrayCopy(inner = t)))
+          case _ -> ()
+        }
+      }
+      Some(value = t)
+    }
+    case None -> None
+  }
+}
+
+func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
@@ -1598,7 +1615,16 @@ func buildLocalCore(env: in BuildEnv, s: in Statement, binding: in Px.LocalBindi
         case Some(te) -> match annotatedTy(env, te) {
           case Some(want) -> {
             val d = declareLocal(env, name, want, true)
-            Some(value = stmtOf(s, TsVar(decl = d, init = None)))
+            // An array has no uninitialised state: the checker records its zero value (D167).
+            val zero: Option[TExpr] = match want {
+              case TArray(_, _) -> if env.ctx.tbl.arrayZeroSites.containsKey(recordCopySiteKey(s.span)) {
+                Some(value = TExpr(id = freshNodeId(env), ty = want, span = s.span, kind = XZeroValue(ty = want)))
+              } else {
+                None
+              }
+              case _ -> None
+            }
+            Some(value = stmtOf(s, TsVar(decl = d, init = zero)))
           }
           case None -> None
         }

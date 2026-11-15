@@ -260,6 +260,17 @@ pub union TExprKind {
   /// A record `.copy(...)`: the value of `base` with the listed fields replaced, of the
   /// same type.  `base` is evaluated once, before the updates, which run in source order.
   case XCopy(base: TExpr, updates: List[TFieldUpdate])
+  /// A copy of the array `inner`, of the same type, made where the checker's array copy sites say a
+  /// stored array must not share storage with its source (`SymbolTable.arrayCopySites`, D167): a
+  /// read of an array out of a place that is then stored, passed on, returned or put in a record.
+  /// A read that is only inspected or written through (an index receiver, `.length`, `==`, an
+  /// assignment target, an `inout` argument) is not wrapped.
+  case XArrayCopy(inner: TExpr)
+  /// The zero value of the array type `ty`: the value of a `var a: array[N, T]` with no
+  /// initializer.  An element is zero as `zeroExprFor` defines it: `0`, `0.0`, `false`, `'\0'`, an
+  /// array of zero elements, or a record of zero fields (not an all-zero bit pattern: a record
+  /// element may hold a reference).
+  case XZeroValue(ty: Ty)
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])

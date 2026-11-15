@@ -165,6 +165,8 @@ pub func exprText(it: in DefPathInterner, e: in TExpr): String {
     case XLit(l) -> litText(l)
     case XGlobal(s, targs) -> "global " + symText(it, s) + "[" + tysText(it, targs) + "]"
     case XValueParam(o, i) -> "value-param " + symText(it, o) + "#" + toString(i)
+    case XArrayCopy(inner) -> "array-copy (" + exprText(it, inner) + ")"
+    case XZeroValue(zt) -> "zero-value " + tyText(it, zt)
     case XCall(callee, args) -> {
       val c = match callee {
         case Direct(s, targs) -> "call " + symText(it, s) + "[" + tysText(it, targs) + "]"
