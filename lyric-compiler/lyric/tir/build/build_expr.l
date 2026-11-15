@@ -1049,6 +1049,12 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
     case Some(b) -> b
     case None -> return uncoveredExpr(env, e, "a match the checker recorded no verdict for")
   }
+  // A scrutinee that leaves a type argument open (`match (None, 5)`) has the type the checker
+  // resolved from the arms' uses (`resolveOpenBindingSites`).
+  match mapGet(env.ctx.tbl.localBindingTypeSites, recordCopySiteKey(scrut.span)) {
+    case Some(te) -> match annotatedTy(env, te) { case Some(w) -> settleHole(env, scrut, w); case None -> () }
+    case None -> ()
+  }
   val s = buildExpr(env, scrut)
   val tarms: List[TArm] = newList()
   var ok = true
