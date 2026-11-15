@@ -51,6 +51,9 @@ pub record BuildEnv {
   /// The symbol of the member being built (empty or one entry): a method, an `impl` member or
   /// a protected entry has no top-level function symbol for `symTableFuncSymOf` to find.
   symOverride: List[SymbolId] = newList()
+  /// The unions `retypeValue` is rebuilding, innermost last: a payload that holds the same union
+  /// would need an unbounded match.
+  retyping: List[Int] = newList()
   /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
   /// leading parameter.
   recvTy: List[Ty] = newList()
@@ -3380,6 +3383,19 @@ func retypeConstruct(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 /// the case again at the arguments of `ty`, each payload converted to its type there.  None when
 /// the types are not one union at different arguments, or a payload does not convert.
 func retypeValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val outer = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+  for u in env.retyping {
+    if u == outer.id {
+      return None
+    }
+  }
+  env.retyping.add(outer.id)
+  val built = retypeValueCases(env, t, ty)
+  env.retyping.removeAt(env.retyping.count - 1)
+  built
+}
+
+func retypeValueCases(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   val parent = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
   val haveArgs = match t.ty { case TNamed(_, a) -> a; case _ -> return None }
   val wantParent = match ty { case TNamed(p, _) -> p; case _ -> return None }
