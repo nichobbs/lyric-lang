@@ -2296,7 +2296,10 @@ test "a slice of Byte passed for a host byte array builds as a host call (D599)"
   match externCallOf(st.body) {
     case Some(m) -> {
       assertEqualInt(m.params.count, 2, "two parameters")
-      assertTrue(tyEq(m.params[1].ty, hostTy("an array, pointer or by-reference type")), "over a host array")
+      val byteArray = TExtern(
+        host = HostTypeRef(name = "an array, pointer or by-reference type", args = [TPrim(kind = TPByte)])
+      )
+      assertTrue(tyEq(m.params[1].ty, byteArray), "over a host array of bytes (D472)")
     }
     case None -> assertTrue(false, "an extern call")
   }
