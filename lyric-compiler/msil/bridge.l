@@ -1434,7 +1434,8 @@ func iterElemOfSig(sig: in Mdr.SigType): ExternIterElem {
       }
       EIEHost(hostName = externHostBase(fqn), args = conv)
     }
-    // An array of `E` is the array name applied to `E` (D472); a pointer or by-reference type has no argument.
+    // An array of `E` is the array name applied to `E` (D472), the name `hostArrayName` is in `Lyric.Tir.Build`
+    // (which this package does not import); a pointer or by-reference type has no argument.
     case Mdr.STSzArray(e) -> {
       val elem: List[ExternIterElem] = newList()
       elem.add(iterElemOfSig(e))
