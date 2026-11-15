@@ -59,6 +59,17 @@ pub record BuildEnv {
   /// The locals the first alternative of an or-pattern bound: a later alternative's binding of
   /// the same name is that local (every alternative binds the same names).
   orBound: List[LocalDecl] = newList()
+  /// The value-generic parameters of the function being built (owner's first), by name: a bare
+  /// read of one is an `XValueParam` (D469).
+  valueParams: List[ValueParamRef] = newList()
+}
+
+/// A value-generic parameter a body may read by name: its position among the member's type
+/// parameters (the owner's first) and the symbol that binds them.
+pub record ValueParamRef {
+  name: String
+  owner: SymbolId
+  index: Int
 }
 
 /// The binder of a member's owner: the checker's key for it (a type's name, or the `impl`'s
@@ -67,6 +78,8 @@ pub record MemberOwner {
   key: String
   sym: SymbolId
   names: List[String]
+  /// Which of `names` are value-generic parameters (`N: Nat`).
+  valueNames: List[String] = newList()
 }
 
 /// A lambda being built: the highest local number declared before it began (a local
@@ -353,6 +366,25 @@ func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
   }
 }
 
+/// A bare read of a value-generic parameter of the function being built (`N` of `N: Nat`): an
+/// `Int` constant in the body (docs/01), `XValueParam` in the TIR (D469).
+func valueParamRead(env: in BuildEnv, e: in Expr): Option[TExpr] {
+  match e.kind {
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return None
+      }
+      for v in env.valueParams {
+        if v.name == p.segments[0] {
+          return Some(value = mkExpr(e, tyInt(), XValueParam(owner = v.owner, index = v.index)))
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 /// A name the checker resolved to a declaration: a value, constant, function value
 /// or nullary case.
 func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
@@ -375,7 +407,10 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
       }
       match bare {
         case Some(bf) -> Some(value = mkExpr(e, ty, XField(recv = bf.recv, field = bf.field)))
-        case None -> uncoveredExpr(env, e, "a name that is not a local")
+        case None -> match valueParamRead(env, e) {
+          case Some(v) -> Some(value = v)
+          case None -> uncoveredExpr(env, e, "a name that is not a local")
+        }
       }
     }
   }
@@ -1648,6 +1683,25 @@ func buildFnCore(
   pushScope(env)
   env.generics.clear()
   env.generics.add(gc)
+  env.valueParams.clear()
+  match sym {
+    case Some(sy) -> {
+      val values = valueGenericNames(fn.generics)
+      if env.memberOwner.count > 0 {
+        for v in env.memberOwner[0].valueNames {
+          values.add(v)
+        }
+      }
+      var k = 0
+      while k < allNames.count {
+        if values.contains(allNames[k]) {
+          env.valueParams.add(ValueParamRef(name = allNames[k], owner = sy, index = k))
+        }
+        k = k + 1
+      }
+    }
+    case None -> ()
+  }
   val diag: List[Diagnostic] = newList()
   var ok = true
   val params: List[TParamDecl] = newList()
@@ -1808,8 +1862,16 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
   match buildFnCore(env, fn, tbl, true, mode) {
     case Some(c) -> {
       val tps: List[TTypeParam] = newList()
+      val values = valueGenericNames(fn.generics)
+      if env.memberOwner.count > 0 {
+        for v in env.memberOwner[0].valueNames {
+          values.add(v)
+        }
+      }
       for n in c.typeNames {
-        tps.add(TTypeParam(name = n, bounds = newList(), valueTy = None))
+        tps.add(
+          TTypeParam(name = n, bounds = newList(), valueTy = if values.contains(n) { Some(value = tyInt()) } else { None })
+        )
       }
       val sym = match c.sym { case Some(x) -> x; case None -> SymbolId(id = 0) }
       val ownerCount = if env.memberOwner.count > 0 { env.memberOwner[0].names.count } else { 0 }
