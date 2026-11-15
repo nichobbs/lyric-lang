@@ -4834,7 +4834,10 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
       }
     }
     case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
-      case None -> unsupported(c, "a record pattern on a type that is not a registered record")
+      case None -> unsupported(
+        c,
+        "a record pattern on a type that is not a registered record"
+      )
       case Some(lay) -> {
         var acc = trueV()
         for fp in fields {
@@ -4897,7 +4900,9 @@ func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
       }
     }
     case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
-      case None -> c.problems.add("a record pattern on a type that is not a registered record")
+      case None -> c.problems.add(
+        "a record pattern on a type that is not a registered record"
+      )
       case Some(lay) -> {
         for fp in fields {
           if patBinds(fp.pat) {
@@ -4946,7 +4951,9 @@ func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
       }
     }
     case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
-      case None -> c.problems.add("a record pattern on a type that is not a registered record")
+      case None -> c.problems.add(
+        "a record pattern on a type that is not a registered record"
+      )
       case Some(lay) -> {
         for fp in fields {
           if patBinds(fp.pat) {
