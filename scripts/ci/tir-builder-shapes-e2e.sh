@@ -183,6 +183,7 @@ func main(): Int {
     case Err(_) -> 0
   }
 }
+LYRIC
 
 # A binding whose initializer leaves a type argument open takes the type its uses fix, and a name a
 # pattern then binds from it is a local (D486).
