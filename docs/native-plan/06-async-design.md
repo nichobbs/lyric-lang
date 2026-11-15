@@ -304,3 +304,5 @@ plan ahead:
 - **A-6:** Write `llvm_self_test_async.l` covering: basic async function, chained
   awaits, async in a loop, async with captures (testing ARC-across-await).
 - **A-7:** `lyric test` CI integration for async self-tests.
+
+- **Not built:** `out`/`inout` parameters of async functions and async lambdas / `async` function types. See D529 (`docs/decisions/D529-native-async-lambdas-and-byref-parameters.md`, nichobbs/lyric-lang#9127) for why they are features, not parity gaps, and the design.

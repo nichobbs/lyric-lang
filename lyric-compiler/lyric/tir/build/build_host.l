@@ -51,6 +51,29 @@ func isHostObject(name: in String): Bool {
   name == "System.Object" or name == "java.lang.Object"
 }
 
+/// The host's own classes for strings, boxed numbers and characters: a value of the language, never a
+/// functional interface or a delegate, so a function value fits none of them.
+func isHostValueClass(name: in String): Bool {
+  name == "System.String" or name == "java.lang.String" or name == "java.lang.CharSequence" or
+    name == "java.lang.Number" or
+    name == "java.lang.Boolean" or
+    name == "java.lang.Character" or
+    name == "java.lang.Byte" or
+    name == "java.lang.Short" or
+    name == "java.lang.Integer" or
+    name == "java.lang.Long" or
+    name == "java.lang.Float" or
+    name == "java.lang.Double" or
+    name == "System.Boolean" or
+    name == "System.Char" or
+    name == "System.Byte" or
+    name == "System.Int16" or
+    name == "System.Int32" or
+    name == "System.Int64" or
+    name == "System.Single" or
+    name == "System.Double"
+}
+
 /// The host integer types with no Lyric type: an `Int` or `Long` argument narrows to one, range checked.
 func isNarrowHostInt(name: in String): Bool {
   name == "System.SByte" or name == "System.Int16" or name == "System.UInt16" or name == "System.UInt32" or
@@ -91,6 +114,9 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         }
       }
       match from {
+        // A function value passed for a host functional interface or delegate (`Thread.new({ -> ... })`):
+        // the host adapts it; the operand keeps its function type.
+        case TFunc(_, _, _) -> if isHostValueClass(h.name) { None } else { Some(value = CvBoxToHost(host = h)) }
         case TPrim(f) -> {
           val narrows = isNarrowHostInt(h.name) and (match f { case TPInt -> true; case TPLong -> true; case _ -> false })
           val single = h.name == "System.Single" and (match f { case TPFloat -> true; case _ -> false })

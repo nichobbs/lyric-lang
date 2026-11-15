@@ -51,6 +51,9 @@ pub record BuildEnv {
   /// The symbol of the member being built (empty or one entry): a method, an `impl` member or
   /// a protected entry has no top-level function symbol for `symTableFuncSymOf` to find.
   symOverride: List[SymbolId] = newList()
+  /// The unions `retypeValue` is rebuilding, innermost last: a payload that holds the same union
+  /// would need an unbounded match.
+  retyping: List[Int] = newList()
   /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
   /// leading parameter.
   recvTy: List[Ty] = newList()
@@ -469,20 +472,39 @@ func exprNeverCompletes(e: in Expr): Bool {
   }
 }
 
+/// The type of a read of a local whose own type the checker left open at the read (`o` after
+/// `val o = None`): the type the local was declared at.
+func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match lookupLocal(env, p.segments[0]) {
+        case Some(d) -> if d.id.id >= 0 { Some(value = d.ty) } else { None }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
 /// Build the expression `e`, or `None` after recording why in `env.errors`.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
-      case None -> {
-        // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
-        // join type to record: it never completes.
-        if exprNeverCompletes(e) {
-          TirT.TNever
-        } else {
-          env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-          return None
+      case None -> match openLocalTy(env, e) {
+        case Some(t) -> t
+        case None -> {
+          // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
+          // join type to record: it never completes.
+          if exprNeverCompletes(e) {
+            TirT.TNever
+          } else {
+            env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+            return None
+          }
         }
       }
     }
@@ -801,13 +823,62 @@ func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   }
 }
 
+/// The scrutinee's type fixes the type of each pattern that matches it, for a pattern the checker
+/// left untyped because the scrutinee's own type was open (`val o = None; match o { case Some(v) -> v }`):
+/// a tuple pattern's elements take the tuple's, a constructor pattern's arguments the case's payload
+/// types at the union's arguments.
+func settlePattern(env: in BuildEnv, p: in Pattern, ty: in Ty): Unit {
+  if not env.settled.containsKey(p.nodeId) {
+    env.settled.add(p.nodeId, ty)
+  }
+  match p.kind {
+    case PParen(inner) -> settlePattern(env, inner, ty)
+    case PTuple(ps) -> match ty {
+      case TTuple(ts) -> if ps.count == ts.count {
+        var i = 0
+        while i < ps.count {
+          settlePattern(env, ps[i], ts[i])
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case PConstructor(_, args) -> match ty {
+      case TNamed(parent, targs) -> match patSym(env.ctx, p.nodeId) {
+        case Some(cs) -> {
+          noteCaseSym(env, cs)
+          match mapGet(env.syms, cs.id) {
+            case Some(en) -> match en.sig {
+              case Some(sg) -> if sg.params.count == args.count {
+                var i = 0
+                while i < args.count {
+                  settlePattern(env, args[i], substOwnerArgs(sg.params[i].ty, parent, targs))
+                  i = i + 1
+                }
+              }
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 /// Build a pattern, declaring the locals it binds in the innermost scope.
 func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
   val ty = match patTy(env.ctx, p.nodeId) {
     case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg + " (at " + toString(p.span.startPos.line) + ":" + toString(p.span.startPos.column) + ")")
-      return None
+    case Err(msg) -> match mapGet(env.settled, p.nodeId) {
+      case Some(t) -> t
+      case None -> {
+        env.errors.add(msg + " (at " + toString(p.span.startPos.line) + ":" + toString(p.span.startPos.column) + ")")
+        return None
+      }
     }
   }
   match p.kind {
@@ -981,10 +1052,20 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
     case Some(b) -> b
     case None -> return uncoveredExpr(env, e, "a match the checker recorded no verdict for")
   }
+  // A scrutinee that leaves a type argument open (`match (None, 5)`) has the type the checker
+  // resolved from the arms' uses (`resolveOpenBindingSites`).
+  match mapGet(env.ctx.tbl.localBindingTypeSites, recordCopySiteKey(scrut.span)) {
+    case Some(te) -> match annotatedTy(env, te) { case Some(w) -> settleHole(env, scrut, w); case None -> () }
+    case None -> ()
+  }
   val s = buildExpr(env, scrut)
   val tarms: List[TArm] = newList()
   var ok = true
   for arm in arms {
+    match s {
+      case Some(st) -> settlePattern(env, arm.pattern, st.ty)
+      case None -> ()
+    }
     pushScope(env)
     val pat = buildPat(env, arm.pattern)
     var guard: Option[TExpr] = None
@@ -1046,6 +1127,21 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
   if not env.settled.containsKey(x.nodeId) {
     env.settled.add(x.nodeId, ty)
+  }
+  // A tuple's elements take the tuple's element types (`(None, 5)` as `(Option[Int], Int)`).
+  match x.kind {
+    case ETuple(xs) -> match ty {
+      case TTuple(ts) -> if xs.count == ts.count {
+        var i = 0
+        while i < xs.count {
+          settleHole(env, xs[i], ts[i])
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case EParen(inner) -> settleHole(env, inner, ty)
+    case _ -> ()
   }
 }
 
@@ -1544,7 +1640,13 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
 
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
-func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+func buildInit(env: in BuildEnv, s: in Statement, ann0: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+  // A binding with no annotation whose initializer leaves a type argument open (`val o = None`)
+  // has the type the checker resolved from the uses of the name (`resolveOpenBindingSites`).
+  val ann: Option[TypeExpr] = match ann0 {
+    case Some(_) -> ann0
+    case None -> mapGet(env.ctx.tbl.localBindingTypeSites, recordCopySiteKey(init.span))
+  }
   // The annotation is the type the initializer's position gives it, for an expression the checker
   // left with an open type argument (`val xs: List[K] = newListWithCapacity(n)`).
   val wanted: Option[Ty] = match ann {
@@ -1583,6 +1685,7 @@ func buildLetPattern(
   env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr
 ): Option[TStmt] {
   val t = match buildInit(env, s, ann, init) { case Some(x) -> x; case None -> return None }
+  settlePattern(env, pat, t.ty)
   match buildPat(env, pat) {
     case Some(tp) -> Some(value = stmtOf(s, TsLet(pat = tp, init = t)))
     case None -> None
@@ -2383,7 +2486,8 @@ func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
 }
 
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter, a `String` for a `CharSequence` one), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+/// parameter, a `String` for a `CharSequence` one, a record that `impl`s an extern interface for that
+/// interface), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   match taskAsHostTask(from, to) {
     case Some(k) -> return Some(value = k)
@@ -2409,6 +2513,24 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
           }
           case None -> None
         }
+      }
+      case _ -> None
+    }
+    case TNamed(rsym, _) -> match to {
+      case TExtern(t) -> {
+        if isHostObject(t.name) {
+          return None
+        }
+        // A Lyric record or union that `impl`s an extern interface passes as that interface.
+        for p in env.ctx.tbl.impls {
+          if symbolIdEq(p.target, rsym) {
+            match symTableExternDeclOf(env.ctx.tbl, p.iface) {
+              case Some(d) -> if externHostBase(d.clrName) == t.name { return Some(value = CvBoxToHost(host = t)) }
+              case None -> ()
+            }
+          }
+        }
+        None
       }
       case _ -> None
     }
@@ -3212,7 +3334,10 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
       case None -> match taskAsHostTask(t.ty, ty) {
         case Some(k) -> Some(value = convertNode(env, t, ty, k))
-        case None -> retypeConstruct(env, t, ty)
+        case None -> match retypeConstruct(env, t, ty) {
+          case Some(c) -> Some(value = c)
+          case None -> retypeValue(env, t, ty)
+        }
       }
     }
   }
@@ -3251,6 +3376,74 @@ func retypeConstruct(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     }
     case _ -> None
   }
+}
+
+/// A value of a union used at the same union with other type arguments (a `Result[English, String]`
+/// where a `Result[Greeter, String]` is wanted): a `match` over every case of the union that builds
+/// the case again at the arguments of `ty`, each payload converted to its type there.  None when
+/// the types are not one union at different arguments, or a payload does not convert.
+func retypeValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val outer = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+  for u in env.retyping {
+    if u == outer.id {
+      return None
+    }
+  }
+  env.retyping.add(outer.id)
+  val built = retypeValueCases(env, t, ty)
+  env.retyping.removeAt(env.retyping.count - 1)
+  built
+}
+
+func retypeValueCases(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val parent = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+  val haveArgs = match t.ty { case TNamed(_, a) -> a; case _ -> return None }
+  val wantParent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val want = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  if parent.id != wantParent.id or haveArgs.count != want.count or want.count == 0 {
+    return None
+  }
+  val cases = match mapGet(caseSymbolsByParent(env.ctx.tbl), parent.id) { case Some(c) -> c; case None -> return None }
+  if cases.count == 0 {
+    return None
+  }
+  val arms: List[TArm] = newList()
+  for cs in cases {
+    noteCaseSym(env, cs)
+    val en = match mapGet(env.syms, cs.id) { case Some(x) -> x; case None -> return None }
+    val sig = match en.sig { case Some(x) -> x; case None -> return None }
+    pushScope(env)
+    val pats: List[TPat] = newList()
+    val fields: List[TExpr] = newList()
+    var i = 0
+    while i < sig.params.count {
+      val haveTy = substOwnerArgs(sig.params[i].ty, parent, haveArgs)
+      val wantTy = substOwnerArgs(sig.params[i].ty, parent, want)
+      val d = declareLocal(env, "__covariant" + toString(i), haveTy, false)
+      pats.add(TPat(id = freshNodeId(env), ty = haveTy, span = t.span, kind = TpBind(decl = d, inner = None)))
+      val read = TExpr(id = freshNodeId(env), ty = haveTy, span = t.span, kind = XLocal(local = d.id))
+      match convertValue(env, read, wantTy) {
+        case Some(c) -> fields.add(c)
+        case None -> {
+          popScope(env)
+          return None
+        }
+      }
+      i = i + 1
+    }
+    popScope(env)
+    val pat = TPat(id = freshNodeId(env), ty = t.ty, span = t.span, kind = TpCtor(sym = cs, args = pats))
+    val body = TExpr(id = freshNodeId(env), ty = ty, span = t.span, kind = XConstruct(sym = cs, fields = fields))
+    arms.add(TArm(pat = pat, guard = None, body = body))
+  }
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = ty,
+      span = t.span,
+      kind = XMatch(scrutinee = t, arms = arms, exhaustive = true)
+    )
+  )
 }
 
 /// A value of a declared type used where an interface is expected: the checker accepts
