@@ -1180,6 +1180,20 @@ test "a generic record is constructed at the enclosing function's own type param
   assertBuildsAndVerifies(pb, 2, "wrap and wrapped")
 }
 
+test "a bare read of a value-generic parameter is an XValueParam of type Int (D469)" {
+  val pb = packageOf(
+    "package App\nfunc size[N: Nat](a: in array[N, Int]): Int {\n  N\n}\nfunc twice[T, N: Nat](a: in array[N, T]): Int {\n  N + N\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "size and twice")
+}
+
+test "a protected type member reads the owner's value-generic parameter (D469)" {
+  val pb = packageOf(
+    "package App\nprotected type Ring[N: Nat] {\n  var buf: array[N, Int]\n  var next: Int = 0\n  func capacity(): Int = N\n  entry push(v: in Int): Unit {\n    buf[next] = v\n    next = (next + 1) % N\n  }\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "capacity and push")
+}
+
 test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"

@@ -51,7 +51,7 @@ func entryAsFunction(e: in EntryDecl): FunctionDecl {
 /// The binder of a type declaration's parameters (none for a type that declares none): a member's
 /// own parameters are keyed `key.fn` whether or not the owner is generic, as the checker keys them.
 func ownerOf(key: in String, sym: in SymbolId, gps: in Option[GenericParams]): MemberOwner {
-  MemberOwner(key = key, sym = sym, names = extractGenericNames(gps))
+  MemberOwner(key = key, sym = sym, names = extractGenericNames(gps), valueNames = valueGenericNames(gps))
 }
 
 /// The receiver of a member of a type that declares no parameters; `None` for a generic one.
