@@ -354,9 +354,11 @@ The `@LyricTest` annotation class and test-module class emitter
 --target native` synthesises the test program and compiles it through
 `Emitter.emitNative` (the same entry point `lyric build --target native`
 uses), then runs the produced self-contained binary directly — no
-`dotnet exec`/`java -jar` staging. Manifest (multi-package) test suites
-are rejected with a diagnostic, mirroring `lyric build --target
-native`'s single-file-only restriction.
+`dotnet exec`/`java -jar` staging. Manifest test suites
+(`lyric test --manifest <lyric.toml> --target native`) build one executable
+per `[project.tests]` entry from the project's packages and its path and
+workspace dependencies, and report like the other targets (#6815 item 3(b),
+D607).
 
 Native has no unwinding (D-N-003: `panic` aborts the process), so the
 JVM/dotnet per-test isolation model (wrap each test in `try`/`catch

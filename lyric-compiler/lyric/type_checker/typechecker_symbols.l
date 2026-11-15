@@ -981,6 +981,11 @@ pub record SymbolTable {
   /// imported record's field) has a span of another file and is not recorded.
   arrayTypeLens: Map[String, Int]
   arrayLenPkg: List[String]
+  /// Non-empty when the check is for a backend that erases `Char` to the same
+  /// machine integer as `Int` and keeps no static types (native, #9089): each
+  /// stringified operand whose checked type is `Char` is then recorded in
+  /// `argConversionSites` as the identity `.toChar()` (`recordCharOperand`).
+  markCharOperands: List[Bool]
   /// The zero value of an initializer-less array-typed local (keyed by the
   /// statement's span) or of an array-typed field with no default (keyed by
   /// the field declaration's span).
@@ -1329,6 +1334,7 @@ pub func newSymbolTable(): SymbolTable {
     arrayCopyExempt = newMap(),
     arrayTypeLens = newMap(),
     arrayLenPkg = newList(),
+    markCharOperands = newList(),
     arrayZeroSites = newMap(),
     arrayCtorZeroArgs = newMap(),
     arrayLiteralSites = newMap(),

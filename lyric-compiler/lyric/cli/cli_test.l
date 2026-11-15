@@ -535,19 +535,7 @@ func cmdTest(argv: in slice[String]): Int {
   // (#465).  Each test contributes one synthesised executable; the
   // command's exit code is non-zero if any test fails.
   // Explicit --manifest takes precedence.
-  // `--target native` does not yet support manifest (multi-package) test
-  // suites, mirroring `lyric build --target native`'s single-file-only
-  // restriction (N7.2) — compile the test file directly instead.
   if targetNative {
-    match manifestArg {
-      case Some(_) -> {
-        printErr(
-          "test: --target native does not yet support manifest (multi-package) test suites; run the test file directly: lyric test <file.l> --target native"
-        )
-        return 1
-      }
-      case None -> ()
-    }
     // #677: native has no exception unwinding (D-N-003), so a failing
     // sample cannot be isolated without aborting the whole binary — the
     // per-sample try/catch the sampling-and-shrinking harness relies on
@@ -568,6 +556,7 @@ func cmdTest(argv: in slice[String]): Int {
       filterArg,
       suiteArgs,
       targetJvm,
+      targetNative,
       failFast,
       runProperties,
       propCfg,
@@ -583,16 +572,13 @@ func cmdTest(argv: in slice[String]): Int {
 
   if positional.count == 0 {
     // No explicit source file and no --manifest: auto-discover project.
-    if targetNative {
-      printErr("test: --target native requires an explicit source file (auto-discovered manifests are not yet supported)")
-      return 1
-    }
     match resolveTestAutoDiscovery(Environment.currentDirectory()) {
       case TestShouldRunManifest(p) -> return cmdTestManifest(
         p,
         filterArg,
         suiteArgs,
         targetJvm,
+        targetNative,
         failFast,
         runProperties,
         propCfg,
@@ -887,25 +873,7 @@ func cmdTest(argv: in slice[String]): Int {
       // executable (clang-linked against lyric_rt.a, libm, libpthread) —
       // run it directly, with no DLL staging or runtimeconfig (N7.2).
       if targetNative {
-        val noArgs: List[String] = newList()
-        val nativeRes = ProcessCapture.runCaptureWithDiagnosticsTimeout(outPath, noArgs, "", 600000)
-        Console.print(nativeRes.stdout)
-        if nativeRes.stderr.length > 0 {
-          Console.error(nativeRes.stderr)
-        }
-        if nativeRes.exitCode == -1 {
-          printErr("test: failed to start native test binary")
-          return 1
-        }
-        if nativeRes.timedOut {
-          printErr("test: test binary timed out (600 s limit reached)")
-          return 1
-        }
-        if nativeRes.stdout.length == 0 and nativeRes.exitCode == 0 {
-          printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
-          return 1
-        }
-        return nativeRes.exitCode
+        return runNativeTestBinary(outPath, source, synthActive, synthDeclared)
       }
       // Co-locate the fully-compiled stdlib runtime assemblies beside the
       // test DLL so `dotnet exec` resolves the real stdlib `pub func`s
@@ -1343,11 +1311,109 @@ func mergeTestModuleIntoPackage(
   Emitter.ProjectPackage(name = lib.name, sources = srcs, paths = paths, nameFromManifest = true)
 }
 
+// The titles of the tests `source` (a `@test_module`, before synthesis)
+// runs, in the order the synthesised `main` numbers them: `test` items first,
+// by declaration.  Empty when the module does not parse.
+func testTitlesOf(source: in String, active: in List[String], declared: in List[String]): List[String] {
+  val titles: List[String] = newList()
+  match TestSynth.listEntriesFor(source, active, declared) {
+    case Ok(entries) -> {
+      for e in entries.toArray() {
+        match e {
+          case TestEntry(title) -> titles.add(title)
+          case _ -> ()
+        }
+      }
+    }
+    case Err(_) -> ()
+  }
+  titles
+}
+
+/// What the TAP text a native test binary wrote says about a run that did not
+/// reach its summary: the number of the test it stopped in and how many the
+/// module declares (`declared` is 0 when the plan line is missing).
+pub record NativeTapProgress {
+  declared: Int
+  stoppedIn: Int
+  finished: Bool
+}
+
+/// Reads `1..N`, the `ok <n> -`/`# skip <n> -` lines and the `# tests` summary line of a
+/// native test binary's output.  A native test runs straight through with no
+/// exception unwinding (D-N-003), so a failed assertion or a panic ends the
+/// process in the middle of a test: every test before it printed its line,
+/// and the next number is the test that stopped it.
+pub func nativeTapProgress(stdout: in String): NativeTapProgress {
+  var declared = 0
+  var done = 0
+  var finished = false
+  for raw in Str.split(stdout, "\n") {
+    val line = Str.trim(raw)
+    if Str.startsWith(line, "1..") and declared == 0 {
+      match parseOptInt(line.substring(3, line.length - 3)) {
+        case Some(n) -> {
+          declared = n
+        }
+        case None -> ()
+      }
+    } else if Str.startsWith(line, "ok " + toString(done + 1) + " - ") or Str.startsWith(line, "# skip " + toString(done + 1) + " - ") {
+      // The synthesised `main` numbers its lines in order, which tells them
+      // from a line a test printed itself.
+      done += 1
+    } else if Str.startsWith(line, "# tests ") {
+      finished = true
+    }
+  }
+  NativeTapProgress(declared = declared, stoppedIn = done + 1, finished = finished)
+}
+
+// Runs the native test binary at `exePath`, built from the `@test_module`
+// `source`, echoes its output and returns the exit code of the run (1 when it
+// could not start, timed out or wrote nothing).  A binary that stops before
+// its summary gets a `not ok` line for the test it stopped in, and a note of
+// the tests that therefore never ran: on dotnet and the JVM a failing test is
+// caught and the next one runs, which native cannot do.
+func runNativeTestBinary(exePath: in String, source: in String, active: in List[String], declared: in List[String]): Int {
+  val noArgs: List[String] = newList()
+  val res = ProcessCapture.runCaptureWithDiagnosticsTimeout(exePath, noArgs, "", 600000)
+  Console.print(res.stdout)
+  if res.stderr.length > 0 {
+    Console.error(res.stderr)
+  }
+  if res.exitCode == -1 {
+    printErr("test: failed to start native test binary")
+    return 1
+  }
+  if res.timedOut {
+    printErr("test: test binary timed out (600 s limit reached)")
+    return 1
+  }
+  if res.stdout.length == 0 and res.exitCode == 0 {
+    printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+    return 1
+  }
+  val progress = nativeTapProgress(res.stdout)
+  if res.exitCode != 0 and not progress.finished and progress.declared > 0 and progress.stoppedIn <= progress.declared {
+    val titles = testTitlesOf(source, active, declared)
+    val title = if progress.stoppedIn <= titles.count { " - " + titles[progress.stoppedIn - 1] } else { "" }
+    Console.println("not ok " + toString(progress.stoppedIn) + title)
+    val notRun = progress.declared - progress.stoppedIn
+    Console.println(
+      "  the test binary stopped here (exit code " + toString(res.exitCode) +
+        "): --target native has no exception unwinding, so a failed assertion or panic ends the whole test module" +
+        (if notRun > 0 { "; " + toString(notRun) + " later test(s) of it did not run" } else { "" })
+    )
+  }
+  res.exitCode
+}
+
 func cmdTestManifest(
   mfPath: in String,
   filterArg: in Option[String],
   suites: in List[String],
   targetJvm: in Bool,
+  targetNative: in Bool,
   failFast: in Bool,
   runProperties: in Bool,
   propCfg: in TestSynth.PropertyRunConfig,
@@ -1386,7 +1452,17 @@ func cmdTestManifest(
       return 1
     }
   }
-  match targetSupportError(mfPath, manifest, (if targetJvm { "jvm" } else { "dotnet" })) {
+  val testTarget: Emitter.CompileTarget = if targetJvm {
+    Emitter.Jvm
+  } else if targetNative {
+    Emitter.Native
+  } else {
+    Emitter.Dotnet
+  }
+  // Jvm and native compile a path or workspace dependency from its source
+  // into each test's build; Dotnet links the dependency's built DLL.
+  val depsFromSource = compilesDepsFromSource(testTarget)
+  match targetSupportError(mfPath, manifest, targetFeatureName(testTarget)) {
     case Some(msg) -> {
       printErr(msg)
       return 1
@@ -1507,6 +1583,10 @@ func cmdTestManifest(
         testArgv.add("--target")
         testArgv.add("jvm")
       }
+      if targetNative {
+        testArgv.add("--target")
+        testArgv.add("native")
+      }
       if runProperties {
         testArgv.add("--properties")
         testArgv.add("--property-trials")
@@ -1535,8 +1615,7 @@ func cmdTestManifest(
     fallbackFailed = anyFailed
   }
 
-  val testExt = if targetJvm { ".jar" } else { ".dll" }
-  val testTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
+  val testExt = outputExt(testTarget, "")
 
   // Resolve active feature set from manifest defaults + CLI flags via the
   // same shared resolver `lyric build` uses (D045, #5571): `--all-features`
@@ -1828,6 +1907,8 @@ func cmdTestManifest(
   // (#5571): a JVM test run never reads a dependency's `bin/<name>.dll`
   // (the `dllMatters` gate below, #6750/#6697); it compiles the
   // dependency's SOURCE straight into the bundle via `depTemplatePkgsList`.
+  // Native is skipped for the same reason (#7833): it has no restored form
+  // of a dependency at all.
   // Building it anyway would run codegen for `testTarget = Jvm` while
   // writing to whatever filename `[project].output_assembly` names — for
   // every real path-dep manifest in this repo (lyric-web et al.) that is a
@@ -1838,7 +1919,7 @@ func cmdTestManifest(
   // expects an MSIL PE there (#6770). It would also make a dependency that
   // cannot build for Jvm fatal here, contradicting #6264's "an absent
   // path-dep .dll must not be fatal on Jvm" decision.
-  if not targetJvm {
+  if not depsFromSource {
     var topoIdx = 0
     while topoIdx < topoOrder.count {
       val buildToml = topoOrder[topoIdx]
@@ -1911,7 +1992,7 @@ func cmdTestManifest(
               // `EmitProjectRequest.restoredDllPaths`, or the JVM
               // restored-dep loader (`Lyric.RestoredPackages.loadRestoredPackageJvm`,
               // #3094) hard-fails trying to read it as a JAR.
-              val dllMatters = not targetJvm
+              val dllMatters = not depsFromSource
               if File.fileExists(info.dllPath) {
                 if dllMatters and not stringListContains(seenDeps, dep.name) {
                   restoredDlls.add(dep.name + "\t" + info.dllPath)
@@ -2028,9 +2109,10 @@ func cmdTestManifest(
     libPkgs.add(lp)
   }
 
-  if targetJvm {
-    // Only native reports unsupported dependencies here.
-    val _ = collectTransitiveDepSources(
+  // Native folds them the same way (#7833), and has nothing else to offer a
+  // registry or git dependency, which it reports and stops on.
+  if depsFromSource {
+    val transitiveUnsupported = collectTransitiveDepSources(
       manifest,
       mfDir,
       cliFeatures,
@@ -2039,6 +2121,9 @@ func cmdTestManifest(
       depTemplatePkgsList,
       depPackageFeatures
     )
+    if targetNative and (nativeUnsupportedDeps(manifest) or transitiveUnsupported) {
+      return 1
+    }
     var jdpi = 0
     while jdpi < depTemplatePkgsList.count {
       libPkgs.add(depTemplatePkgsList[jdpi])
@@ -2087,7 +2172,11 @@ func cmdTestManifest(
   // leaving it to the auto-FFI metadata guess (#5004).
   val allNugetAssets = resolveAllNugetAssets(mfDir)
   val nugetPaths = allNugetAssets.dllPaths
-  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  if targetNative {
+    warnNativeIgnoresHostTables(manifest)
+  } else {
+    warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  }
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
   // #6750: NuGet is the dotnet-only package channel (docs/39
   // §"NuGet.org as the .NET channel"; Maven is the JVM channel), so a
@@ -2129,6 +2218,39 @@ func cmdTestManifest(
   }
   defer {
     restoreMavenClasspath(savedFfiJarsOpt)
+  }
+
+  // A native test binary links what a native build of the project links:
+  // `[native].extra_libs` and the `[native.libs]` of the manifest and of its
+  // dependencies, at the manifest's `opt_level`.  It is always built for this
+  // machine, which runs it, so `[native].triple` does not apply.
+  var nativeOpt = ""
+  val nativeLinkArgs: List[String] = newList()
+  var nativeLibPlan = emptyNativeLinkPlan()
+  if targetNative {
+    match manifest.native {
+      case Some(nc) -> {
+        nativeOpt = nc.optLevel
+        for lib in nc.extraLibs {
+          nativeLinkArgs.add(lib)
+        }
+      }
+      case None -> ()
+    }
+    val libDecls = nativeLibDeclsOf(manifest, mfDir)
+    for d in depNativeLibDecls(manifest, mfDir) {
+      libDecls.add(d)
+    }
+    nativeLibPlan = resolveNativeLibs(libDecls, "")
+    if nativeLibPlan.errors.count > 0 {
+      for e in nativeLibPlan.errors {
+        printErr(mfPath + ": " + e)
+      }
+      return 1
+    }
+    for a in nativeLibPlan.args {
+      nativeLinkArgs.add(a)
+    }
   }
 
   // The runs of the suite: each `[project.tests]` entry, then (`--doctests`)
@@ -2225,10 +2347,12 @@ func cmdTestManifest(
     // feature set `EmitProjectRequest` below will actually compile with —
     // not an empty set that could disagree with a manifest that activates
     // the gating feature.
+    // Native has no exception unwinding, so its tests run straight through
+    // (`--properties` was refused for it in `cmdTest`).
     val testSynthResult = if runProperties {
       TestSynth.synthesizeFor(testSourceRun, filterArg, false, true, propCfg, cfgActiveWithTarget, mfDeclared)
     } else {
-      TestSynth.synthesizeFor(testSourceRun, filterArg, false, false, propCfg, cfgActiveWithTarget, mfDeclared)
+      TestSynth.synthesizeFor(testSourceRun, filterArg, targetNative, false, propCfg, cfgActiveWithTarget, mfDeclared)
     }
     match testSynthResult {
       case Synthesised(rw, testCnt, _, selectedCnt) -> {
@@ -2304,7 +2428,9 @@ func cmdTestManifest(
     // reaches its package's non-`pub` items, so it still compiles the library
     // with the entry.  On the JVM the library build also carries the path
     // dependencies' packages, which a JVM build compiles from source (#6750).
-    val wantSharedLibrary = mergeIdx < 0 and libPkgs.count > 0
+    // A native binary is one whole-program compile with nothing to link a
+    // library build into, so on native every entry compiles the library too.
+    val wantSharedLibrary = mergeIdx < 0 and libPkgs.count > 0 and not targetNative
     if wantSharedLibrary and not sharedLibAttempted {
       sharedLibAttempted = true
       Console.println("== building the [project.packages] library once for the test entries")
@@ -2402,7 +2528,23 @@ func cmdTestManifest(
           }
           si += 1
         }
-        Emitter.emitProject(testBuildRequest(buildSettings, allPkgs, asmStem, outPath, restoredDlls, depTemplatePkgsList))
+        if targetNative {
+          Emitter.emitNativeProject(
+            allPkgs,
+            outPath,
+            "",
+            nativeOpt,
+            nativeLinkArgs,
+            newList(),
+            activeFeatures,
+            mfDeclared,
+            buildSettings.packageVersion,
+            buildSettings.contractsEnabled,
+            depPackageFeatures
+          )
+        } else {
+          Emitter.emitProject(testBuildRequest(buildSettings, allPkgs, asmStem, outPath, restoredDlls, depTemplatePkgsList))
+        }
       }
     }
     val jobRestoredDlls = match linkedResult {
@@ -2443,7 +2585,20 @@ func cmdTestManifest(
     // the referenced assemblies next to the test instead — mirroring the
     // single-file `cmdTest` path.  Without this `dotnet exec` fails with
     // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
-    val testExitCode = if targetJvm {
+    val testExitCode = if targetNative {
+      // The build wrote a self-contained executable (`.exe` on Windows); the
+      // shared libraries `[native.libs]` names ship beside it.
+      val exePath = match result.outputPath { case Some(p) -> p; case None -> outPath }
+      val bundleErrors = bundleNativeLibs(nativeLibPlan, exePath)
+      for e in bundleErrors {
+        printErr("test: " + e)
+      }
+      if bundleErrors.count > 0 {
+        1
+      } else {
+        runNativeTestBinary(exePath, testSource, cfgActiveWithTarget, mfDeclared)
+      }
+    } else if targetJvm {
       // JVM: the bundled JAR is self-contained for pure-Lyric/JDK code, but
       // `[maven]` third-party classes are resolved from `mavenJarColonSep`
       // only at compile time (LYRIC_FFI_JARS) — they are not copied into the

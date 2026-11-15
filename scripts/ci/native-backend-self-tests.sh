@@ -150,6 +150,7 @@ for t in \
   lyric-compiler/lyric/explicit_type_args_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
+  lyric-compiler/lyric/string_concat_operand_self_test.l \
   lyric-compiler/lyric/generic_default_named_self_test.l \
   lyric-compiler/lyric/open_alias_self_test.l \
   lyric-compiler/lyric/generic_overload_arity_self_test.l \
@@ -186,6 +187,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 # #8279: indexed callees beside `?` and `await` named from another package.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
+# #6815 item 3(b): `lyric test --manifest --target native` (one executable per [project.tests] entry).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-manifest-test-e2e.sh
 # docs/70 §9.6: a native library build writes `<Pkg>.lyri` beside its output.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh native
 # Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):

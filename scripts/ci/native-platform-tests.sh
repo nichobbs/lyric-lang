@@ -112,6 +112,7 @@ for t in \
   lyric-compiler/lyric/explicit_type_args_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
+  lyric-compiler/lyric/string_concat_operand_self_test.l \
   lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
   lyric-compiler/lyric/native_enum_pattern_scrutinee_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l \
@@ -187,6 +188,8 @@ run_suite "range-refinement-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/rang
 run_suite "value-generic-record-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
 run_suite "inout-receiver-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 run_suite "hoisted-callee-cross-package-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
+# #6815 item 3(b): `lyric test --manifest --target native`.
+run_suite "native-manifest-test-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/native-manifest-test-e2e.sh
 
 echo "=== summary ==="
 if [ "${#failed[@]}" -gt 0 ]; then

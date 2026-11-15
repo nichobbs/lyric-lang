@@ -1690,3 +1690,297 @@ test "a default expression of an imported package calls a function only that pac
   assertEqualInt(outcome.exitCode, 0, "default-expression exit code")
   assertEqual(Str.trim(outcome.stdout), "20", "the default means Dflt.Lib's import of factor, not the caller's (2000)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constructor names shared across packages by declarations of different
+// kinds (#9088).
+//
+// A constructor call names a record, a union case, a generic union case, a
+// generic record or a distinct type, each kept in its own bundle-wide
+// registry with a first-registered-wins bare key. Looked up one registry at a
+// time, a bare name fell through to another package's declaration of another
+// kind before the calling package's own was tried: `Held(freed = n)`, a union
+// case of the package being lowered, was built as an unrelated package's
+// record `Held` ("missing field 'since' constructing record"). The name is
+// now resolved one scope at a time (own package, imported packages, bundle),
+// as the type checker resolves it, and a function of a package further away
+// no longer captures a nearer constructor of the same name.
+//
+// `Col.A` and `Col.Z` do not import each other and reuse each other's names
+// for another kind of declaration (case/record, case/function, record/record
+// with another layout, case/case of another union, generic case/record,
+// generic record/case, function/case, enum case/enum case at another ordinal,
+// distinct type/case), so a mis-resolved name reads a wrong layout or fails
+// to compile instead of returning a plausible constant. Every package order
+// is built: which declaration holds the bare key depends on it.
+// ─────────────────────────────────────────────────────────────────────────────
+func collisionPkgA(): NativeSourcePackage {
+  NativeSourcePackage(
+    name = "Col.A",
+    sources = [
+      "package Col.A\n" + "\n" + "import Std.Core\n" + "\n" +
+        "// Names that Col.Z declares as something else.\n" +
+        "pub union Outcome {\n" +
+        "  case Taken\n" +
+        "  case Held(freed: Int)\n" +
+        "  case Marker(tag: Int)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Widget {\n" +
+        "  id: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub union Shape {\n" +
+        "  case Circle(r: Int)\n" +
+        "  case Square(side: Int)\n" +
+        "}\n" +
+        "\n" +
+        "pub union Wrap[T] {\n" +
+        "  case Full(v: T)\n" +
+        "  case Empty\n" +
+        "}\n" +
+        "\n" +
+        "pub record Pair[T] {\n" +
+        "  left: T\n" +
+        "  right: T\n" +
+        "}\n" +
+        "\n" +
+        "pub func Token(n: in Int): Int {\n" +
+        "  n * 2\n" +
+        "}\n" +
+        "\n" +
+        "pub enum Color {\n" +
+        "  case Red\n" +
+        "  case Green\n" +
+        "}\n" +
+        "\n" +
+        "type Meters = Int\n" +
+        "\n" +
+        "pub func runA(): Int {\n" +
+        "  val o = Held(freed = 3)\n" +
+        "  val held = match o {\n" +
+        "    case Held(f) -> f\n" +
+        "    case Taken -> 0\n" +
+        "    case Marker(t) -> t\n" +
+        "  }\n" +
+        "  val m = match Marker(tag = 4) {\n" +
+        "    case Marker(t) -> t\n" +
+        "    case _ -> 0\n" +
+        "  }\n" +
+        "  val w = Widget(id = 5)\n" +
+        "  val c = match Circle(r = 6) {\n" +
+        "    case Circle(r) -> r\n" +
+        "    case Square(s) -> s\n" +
+        "  }\n" +
+        "  val f = match Full(v = 7) {\n" +
+        "    case Full(v) -> v\n" +
+        "    case Empty -> 0\n" +
+        "  }\n" +
+        "  val p = Pair(left = 8, right = 9)\n" +
+        "  val t = Token(10)\n" +
+        "  val col = match Green {\n" +
+        "    case Red -> 100\n" +
+        "    case Green -> 11\n" +
+        "  }\n" +
+        "  val d = Meters.from(12)\n" +
+        "  held + m + w.id + c + f + p.left + p.right + t + col + d.value\n" +
+        "}\n"
+    ]
+  )
+}
+
+func collisionPkgZ(): NativeSourcePackage {
+  NativeSourcePackage(
+    name = "Col.Z",
+    sources = [
+      "package Col.Z\n" + "\n" + "import Std.Core\n" + "\n" +
+        "// The mirror image of Col.A: each name is another kind of declaration here.\n" +
+        "pub ref record Held {\n" +
+        "  var since: Long\n" +
+        "}\n" +
+        "\n" +
+        "pub func Marker(n: in Int): Int {\n" +
+        "  n + 100\n" +
+        "}\n" +
+        "\n" +
+        "pub record Widget {\n" +
+        "  id: Int\n" +
+        "  weight: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub union Solid {\n" +
+        "  case Circle(radius: Long, depth: Long)\n" +
+        "  case Cube(edge: Long)\n" +
+        "}\n" +
+        "\n" +
+        "pub record Full {\n" +
+        "  amount: Int\n" +
+        "}\n" +
+        "\n" +
+        "pub union Kind {\n" +
+        "  case Pair(a: Int)\n" +
+        "  case Single\n" +
+        "}\n" +
+        "\n" +
+        "pub union Lex {\n" +
+        "  case Token(text: String)\n" +
+        "  case End\n" +
+        "}\n" +
+        "\n" +
+        "pub enum Signal {\n" +
+        "  case Green\n" +
+        "  case Amber\n" +
+        "  case Red\n" +
+        "}\n" +
+        "\n" +
+        "pub union Unit2 {\n" +
+        "  case Meters(n: Int)\n" +
+        "}\n" +
+        "\n" +
+        "pub func runZ(): Int {\n" +
+        "  val h = Held(since = 0i64)\n" +
+        "  h.since = 1i64\n" +
+        "  val m = Marker(2)\n" +
+        "  val w = Widget(id = 3, weight = 4)\n" +
+        "  val c = match Circle(radius = 5i64, depth = 6i64) {\n" +
+        "    case Circle(r, d) -> (r + d).toInt()\n" +
+        "    case Cube(e) -> e.toInt()\n" +
+        "  }\n" +
+        "  val f = Full(amount = 7)\n" +
+        "  val p = match Pair(a = 8) {\n" +
+        "    case Pair(a) -> a\n" +
+        "    case Single -> 0\n" +
+        "  }\n" +
+        "  val t = match Token(text = \"nine\") {\n" +
+        "    case Token(s) -> s.length\n" +
+        "    case End -> 0\n" +
+        "  }\n" +
+        "  val col = match Green {\n" +
+        "    case Green -> 10\n" +
+        "    case Amber -> 200\n" +
+        "    case Red -> 300\n" +
+        "  }\n" +
+        "  val u = match Meters(n = 11) {\n" +
+        "    case Meters(n) -> n\n" +
+        "  }\n" +
+        "  h.since.toInt() + m + w.id + w.weight + c + f.amount + p + t + col + u\n" +
+        "}\n"
+    ]
+  )
+}
+
+// Calls both packages by qualified name only.
+func collisionMainQualified(): NativeSourcePackage {
+  NativeSourcePackage(
+    name = "Col.Main",
+    sources = [
+      "package Col.Main\n" + "\n" + "import Std.Core\n" + "import Col.A\n" + "import Col.Z\n" + "\n" +
+        "func main(): Int {\n" +
+        "  println(Col.A.runA().toString())\n" +
+        "  println(Col.Z.runZ().toString())\n" +
+        "  0\n" +
+        "}\n"
+    ]
+  )
+}
+
+// Imports `Col.A` alone and uses its names bare, beside a union of its own
+// whose case `Widget` is a record in both other packages.
+func collisionMainBare(): NativeSourcePackage {
+  NativeSourcePackage(
+    name = "Col.Main",
+    sources = [
+      "package Col.Main\n" + "\n" + "import Std.Core\n" + "import Col.A\n" + "\n" + "union Local {\n" +
+        "  case Widget(n: Int)\n" +
+        "  case Nothing\n" +
+        "}\n" +
+        "\n" +
+        "func main(): Int {\n" +
+        "  println(Col.A.runA().toString())\n" +
+        "  val o = Held(freed = 21)\n" +
+        "  val held = match o {\n" +
+        "    case Held(f) -> f\n" +
+        "    case Taken -> 0\n" +
+        "    case Marker(t) -> t\n" +
+        "  }\n" +
+        "  val mk = match Marker(tag = 22) {\n" +
+        "    case Marker(t) -> t\n" +
+        "    case _ -> 0\n" +
+        "  }\n" +
+        "  val w = match Widget(n = 23) {\n" +
+        "    case Widget(n) -> n\n" +
+        "    case Nothing -> 0\n" +
+        "  }\n" +
+        "  val full = match Full(v = 25) {\n" +
+        "    case Full(v) -> v\n" +
+        "    case Empty -> 0\n" +
+        "  }\n" +
+        "  val p = Pair(left = 26, right = 27)\n" +
+        "  val t = Token(28)\n" +
+        "  val taken = match Taken {\n" +
+        "    case Taken -> 29\n" +
+        "    case _ -> 0\n" +
+        "  }\n" +
+        "  println((held + mk + w + full + p.left + p.right + t + taken).toString())\n" +
+        "  0\n" +
+        "}\n"
+    ]
+  )
+}
+
+func collisionProject(order: in String, main: in NativeSourcePackage): List[NativeSourcePackage] {
+  val pkgs: List[NativeSourcePackage] = newList()
+  for part in Str.split(order, " ") {
+    if part == "A" {
+      pkgs.add(collisionPkgA())
+    } else if part == "Z" {
+      pkgs.add(collisionPkgZ())
+    } else {
+      pkgs.add(main)
+    }
+  }
+  pkgs
+}
+
+test "a union case is not built as an unrelated package's same-named record (ASan, #9088)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Cc.Lib",
+      sources = [
+        "package Cc.Lib\n" + "pub union TakeOutcome {\n  case Taken\n  case Held(freed: Int)\n}\n" +
+          "pub func take(n: in Int): TakeOutcome {\n  if n == 0 {\n    Taken\n  } else {\n    Held(freed = n)\n  }\n}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Cc.Main",
+      sources = [
+        "package Cc.Main\n" + "ref record Held {\n  var since: Long\n}\n" + "func main(): Int {\n" +
+          "  val h = Held(since = 0i64)\n" +
+          "  h.since = 5i64\n" +
+          "  h.since.toInt()\n" +
+          "}\n"
+      ]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 5, "Cc.Main.Held is the record; Cc.Lib's case Held(freed) is not in its scope")
+}
+
+test "same-named constructors of different kinds resolve in their own package, in every package order (ASan, #9088)" {
+  for order in ["A M Z", "Z M A", "M A Z", "M Z A", "A Z M", "Z A M"] {
+    val outcome = compileAndRunProject(collisionProject(order, collisionMainQualified()))
+    assertEqualInt(outcome.exitCode, 0, "exit code, package order " + order)
+    assertEqual(outcome.stdout, "85\n161\n", "Col.A.runA() and Col.Z.runZ(), package order " + order)
+  }
+}
+
+test "bare names of an imported package beat an unimported package's same-named declarations (ASan, #9088)" {
+  for order in ["A M Z", "Z M A", "M Z A"] {
+    val outcome = compileAndRunProject(collisionProject(order, collisionMainBare()))
+    assertEqualInt(outcome.exitCode, 0, "exit code, package order " + order)
+    assertEqual(outcome.stdout, "85\n229\n", "Col.A's names used bare from Col.Main, package order " + order)
+  }
+}

@@ -850,7 +850,8 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
 /// stdlib warning is not the user's to act on.  The package is checked
 /// against the packages its own import closure reaches rather than the
 /// whole stdlib, which bounds the signature resolution each check repeats.
-/// Returns None after reporting an error, else the package with the checker's
+/// Returns None after reporting an error, else the package with its stringified
+/// `Char` operands marked (#9089) and the checker's
 /// record-arithmetic, record-equality and `array[N, T]` sites lowered, as the
 /// user package gets from `pipeCheckFront`: the stdlib's own `Vec3 + Vec3` or
 /// `m.m[i]` would otherwise reach codegen as an operator on a record.
@@ -875,7 +876,14 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
       return Some(value = file)
     }
     traceStdlibCheckCache("uncacheable", pkg)
-    return Some(value = lowerArraySites(lowerRecordSites(file, tcRes.symbols), tcRes.symbols, false, false))
+    return Some(
+      value = lowerArraySites(
+        lowerRecordSites(lowerCharOperandSites(file, tcRes.symbols), tcRes.symbols),
+        tcRes.symbols,
+        false,
+        false
+      )
+    )
   }
   DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), errors)
   None

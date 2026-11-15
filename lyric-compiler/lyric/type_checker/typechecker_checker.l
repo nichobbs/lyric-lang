@@ -7415,6 +7415,9 @@ func checkWithImportedPackagesCore(
     }
   }
   registerNativeIntrinsicTypes(tbl, nativeIntrinsics)
+  if nativeIntrinsics {
+    tbl.markCharOperands.add(true)
+  }
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
   // compile pipeline has already desugared the file it passes here (so its

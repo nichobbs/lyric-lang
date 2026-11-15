@@ -226,6 +226,7 @@ for t in \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
   lyric-compiler/lyric/byte_arithmetic_self_test.l \
+  lyric-compiler/lyric/string_concat_operand_self_test.l \
   lyric-compiler/lyric/option_match_self_test.l \
   lyric-compiler/lyric/format_builtin_self_test.l \
   lyric-compiler/lyric/byte_erased_positions_self_test.l \

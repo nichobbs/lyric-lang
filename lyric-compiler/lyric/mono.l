@@ -150,6 +150,12 @@ pub record MonoResult {
   /// re-checks those whose body uses `==`/`!=`, so the comparison is lowered
   /// as the bound type's.
   structSpecs: List[UnsignedSpecRequest]
+  /// Each specialisation whose type arguments mention `Char` (#9089).  A
+  /// backend that cannot tell a `Char` from an `Int` (native) needs the
+  /// stringified `Char` operands of its body marked, which only a check of
+  /// the specialisation records; `Lyric.Pipeline` re-checks those that may
+  /// stringify a value when it builds for such a backend.
+  charSpecs: List[UnsignedSpecRequest] = newList()
   /// Each specialisation of a generic declared in another package, its body
   /// as it was before its calls were rewritten.  That package's type checker
   /// resolved the body's method calls, so `Lyric.Pipeline` re-checks those
@@ -399,6 +405,7 @@ record MonoState {
   activeSpecSites: List[Map[String, ArgConversionSite]]
   unsignedSpecs: List[UnsignedSpecRequest]
   structSpecs: List[UnsignedSpecRequest]
+  charSpecs: List[UnsignedSpecRequest]
   foreignSpecs: List[UnsignedSpecRequest]
   /// The generic record whose in-body methods are being rewritten (empty
   /// outside one).  A generic call whose type arguments name the record's own
@@ -473,6 +480,7 @@ func newMonoState(
     activeSpecSites = newList(),
     unsignedSpecs = newList(),
     structSpecs = newList(),
+    charSpecs = newList(),
     foreignSpecs = newList(),
     enclosingRec = newList(),
     protectedDecls = newMap(),
@@ -10488,7 +10496,8 @@ pub func monoFileWithLambdaTypes(
       foreignBufferSpec or
       overflowSpec
     val structSpec = not unsignedSpec and substMentionsStructuredMono(req.subst)
-    if unsignedSpec or structSpec or specOrigin.length > 0 {
+    val charSpec = substMentionsCharMono(req.subst)
+    if unsignedSpec or structSpec or charSpec or specOrigin.length > 0 {
       val specReq = UnsignedSpecRequest(
         specName = req.specName,
         originPkg = specOrigin,
@@ -10516,6 +10525,9 @@ pub func monoFileWithLambdaTypes(
       }
       if structSpec {
         state.structSpecs.add(specReq)
+      }
+      if charSpec {
+        state.charSpecs.add(specReq)
       }
       if specOrigin.length > 0 {
         state.foreignSpecs.add(specReq)
@@ -10598,6 +10610,7 @@ pub func monoFileWithLambdaTypes(
     diagnostics = state.diags,
     unsignedSpecs = state.unsignedSpecs,
     structSpecs = state.structSpecs,
+    charSpecs = state.charSpecs,
     foreignSpecs = state.foreignSpecs
   )
 }
@@ -10643,6 +10656,57 @@ func substMentionsUnsignedMono(subst: in Map[String, TypeExpr]): Bool {
     }
   }
   false
+}
+
+// True when a type argument of `subst` mentions `Char` (#9089).
+func substMentionsCharMono(subst: in Map[String, TypeExpr]): Bool {
+  for k in mapKeys(subst) {
+    match mapGet(subst, k) {
+      case Some(te) -> if teMentionsCharMono(te) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func isCharPathMono(p: in ModulePath): Bool {
+  p.segments.count == 1 and p.segments[0] == "Char"
+}
+
+func teMentionsCharMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> isCharPathMono(p)
+    case TRefined(p, _) -> isCharPathMono(p)
+    case TParen(inner) -> teMentionsCharMono(inner)
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(ate) -> if teMentionsCharMono(ate) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TTuple(elems) -> {
+      for el in elems {
+        if teMentionsCharMono(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TSlice(elem) -> teMentionsCharMono(elem)
+    case TArray(_, elem) -> teMentionsCharMono(elem)
+    case TFunction(ps, r) -> {
+      for pte in ps {
+        if teMentionsCharMono(pte) {
+          return true
+        }
+      }
+      teMentionsCharMono(r)
+    }
+    case _ -> false
+  }
 }
 
 // True when a type argument of `subst` mentions `array[N, T]`: such a

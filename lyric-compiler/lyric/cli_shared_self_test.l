@@ -1063,3 +1063,27 @@ test "undeclaredFeaturesError is F0050 for a --features name the manifest does n
   }
   cleanup(dir)
 }
+
+// `Lyric.Cli.nativeTapProgress` (cli_test.l): what the runner reads from a
+// native test binary that stopped before its summary (#6815 item 3(b)).
+test "nativeTapProgress names the test a native test binary stopped in" {
+  val stopped = Cli.nativeTapProgress("1..4\nok 1 - first\n# skip 2 - second (filter)\n")
+  assertEqualInt(stopped.declared, 4, "plan")
+  assertEqualInt(stopped.stoppedIn, 3, "the test after the last finished line")
+  assertFalse(stopped.finished, "no summary")
+}
+
+test "nativeTapProgress recognises a finished run" {
+  val done = Cli.nativeTapProgress("1..2\nok 1 - a\nok 2 - b\n\n# tests 2\n# pass  2\n# fail  0\n# skip  0\n")
+  assertEqualInt(done.declared, 2, "plan")
+  assertEqualInt(done.stoppedIn, 3, "past the last test")
+  assertTrue(done.finished, "summary seen")
+}
+
+test "nativeTapProgress ignores lines a test printed itself" {
+  val noisy = Cli.nativeTapProgress("1..3\nok 1 - a\nok then\nok 7 - not ours\n# skip this\n")
+  assertEqualInt(noisy.stoppedIn, 2, "only the runner's numbered lines count")
+  val empty = Cli.nativeTapProgress("")
+  assertEqualInt(empty.declared, 0, "no plan line")
+  assertEqualInt(empty.stoppedIn, 1, "nothing finished")
+}

@@ -2516,13 +2516,41 @@ pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile 
   lowerRecordEq(lowerRecordArith(file, sym.recordArithSites), sym.recordEqSites, sym.arrayEqSites, sym.wrapEqSites)
 }
 
-/// True when `lowerRecordSites` and `lowerArraySites(.., false, false)` return
-/// their input unchanged for `sym`: the checker recorded none of the sites they
-/// read.  The native stdlib check cache (#7971) relies on this to hand back a
-/// parsed package as its lowered form, so it must list every map those two
-/// functions consume.
+/// The stringified `Char` operands the checker marked for a backend that
+/// cannot tell a `Char` from an `Int` (`recordCharOperand`, #9089): the
+/// `.toChar()` entries of `sym.argConversionSites`.
+func charOperandSites(sym: in SymbolTable): Map[String, ArgConversionSite] {
+  val marked: Map[String, ArgConversionSite] = newMap()
+  for k in mapKeys(sym.argConversionSites) {
+    match mapGet(sym.argConversionSites, k) {
+      case Some(site) -> if site.method == "toChar" { marked.add(k, site) }
+      case None -> ()
+    }
+  }
+  marked
+}
+
+/// `file` with each stringified `Char` operand `sym` marks spelled as the
+/// identity `.toChar()`.  A user package gets this from `pipeDesugarChecked`
+/// with every other conversion; a bundled standard library package of a
+/// native build, which is checked but not desugared, gets only this.  `file`
+/// must be the file the check that filled `sym` saw.
+pub func lowerCharOperandSites(file: in SourceFile, sym: in SymbolTable): SourceFile {
+  val sites = charOperandSites(sym)
+  if sites.count == 0 {
+    return file
+  }
+  desugarCheckedFile(file, newMap(), newMap(), sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap()).file
+}
+
+/// True when `lowerCharOperandSites`, `lowerRecordSites` and
+/// `lowerArraySites(.., false, false)` return their input unchanged for `sym`:
+/// the checker recorded none of the sites they read.  The native stdlib check
+/// cache (#7971) relies on this to hand back a parsed package as its lowered
+/// form, so it must list every map those functions consume.
 pub func stdlibLoweringIsIdentity(sym: in SymbolTable): Bool {
-  sym.recordArithSites.count == 0 and sym.recordEqSites.count == 0 and sym.arrayEqSites.count == 0 and
+  charOperandSites(sym).count == 0 and sym.recordArithSites.count == 0 and sym.recordEqSites.count == 0 and
+    sym.arrayEqSites.count == 0 and
     sym.wrapEqSites.count == 0 and
     sym.arrayIndexSites.count == 0 and
     sym.arrayLenSites.count == 0 and
@@ -2890,6 +2918,18 @@ pub func pipeCheckAndMono(
     if not rechecked.containsKey(fs.specName) and specMentionsUnsigned(fs.specDecl) {
       rechecked.add(fs.specName, true)
       toRecheck.add(fs)
+    }
+  }
+  // A backend that erases `Char` to an `Int` with no static type (native)
+  // renders a stringified operand as a character only where the checker
+  // marked it, which for an operand typed by a type parameter is the check of
+  // the specialisation binding it to `Char` (#9089).
+  if opts.nativeIntrinsics {
+    for cs in monoRes0.charSpecs {
+      if not rechecked.containsKey(cs.specName) and specMayRender(cs.specDecl) {
+        rechecked.add(cs.specName, true)
+        toRecheck.add(cs)
+      }
     }
   }
   if toRecheck.count == 0 {
