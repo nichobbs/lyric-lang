@@ -91,6 +91,9 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         }
       }
       match from {
+        // A function value passed for a host functional interface or delegate (`Thread.new({ -> ... })`):
+        // the host adapts it; the operand keeps its function type.
+        case TFunc(_, _, _) -> Some(value = CvBoxToHost(host = h))
         case TPrim(f) -> {
           val narrows = isNarrowHostInt(h.name) and (match f { case TPInt -> true; case TPLong -> true; case _ -> false })
           val single = h.name == "System.Single" and (match f { case TPFloat -> true; case _ -> false })
