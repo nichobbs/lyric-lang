@@ -8652,6 +8652,23 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
   }
 }
 
+// Record the case `Enum.Case` read as a value names, under the member expression's
+// `NodeId` (`refByNode`, D477): the typed IR builds the member as the case, not as a
+// read of a field of the type's name.
+func recordQualifiedEnumCaseRef(tbl: in SymbolTable, node: in Int, enumTy: in Type, name: in String): Unit {
+  match enumTy {
+    case TyUser(eid, _, _) -> {
+      for cand in symTableTryFindAllNamed(tbl, name) {
+        match cand.kind {
+          case DKEnumCase(pid, _) -> if symbolIdEq(pid, eid) { recordRefNode(tbl, node, cand); return }
+          case _ -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // The case symbol of `Union.Case` read as a value (`PluginIssueKind.BadContributions`):
 // `recv` names a union (bare, or through its package) and `name` is one of its
 // cases.  A name a local binds is a value, never the union.
@@ -21396,11 +21413,17 @@ func inferExprCore(
       }
       checkQualifiedMemberRef(tbl, sc, recv, name, e.span, diag)
       match qualifiedEnumCaseType(sc, tbl, recv, name) {
-        case Some(enumTy) -> return enumTy
+        case Some(enumTy) -> {
+          recordQualifiedEnumCaseRef(tbl, e.nodeId, enumTy, name)
+          return enumTy
+        }
         case None -> ()
       }
       match qualifiedUnionCaseSymbol(sc, tbl, recv, name) {
-        case Some(csym) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), e.span, false)
+        case Some(csym) -> {
+          recordRefNode(tbl, e.nodeId, csym)
+          return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), e.span, false)
+        }
         case None -> ()
       }
       // A package-qualified module-level `val` (`Pkg.v`, the file's own

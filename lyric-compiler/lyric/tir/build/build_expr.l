@@ -689,7 +689,11 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case None -> None
     }
     case ECall(fn, args) -> buildCall(env, e, ty, fn, args)
-    case EMember(r, name) -> buildFieldRead(env, e, ty, r, name)
+    case EMember(r, name) -> match refSite(env.ctx, e.nodeId) {
+      // `Type.Case`: the checker resolved the member to a case (D477).
+      case Some(_) -> buildRefPath(env, e, ty)
+      case None -> buildFieldRead(env, e, ty, r, name)
+    }
     case EIndex(r, idxs) -> buildIndexRead(env, e, ty, r, idxs)
     case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
     case ELambda(ps, b) -> buildLambda(env, e, ty, ps, b)
