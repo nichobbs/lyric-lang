@@ -5,6 +5,10 @@ stability = "experimental"
 authors     = ["Lyric Contributors"]
 license     = "MIT"
 description = "Database access library for Lyric with a driver-agnostic interface and aspect templates."
+# dotnet (System.Data: Npgsql, Microsoft.Data.Sqlite) and the JVM (JDBC). There
+# is no native driver, so a native build fails with F0054/F0055 instead of
+# compiling a package with no backend (D603).
+targets     = ["dotnet", "jvm"]
 
 [project]
 name            = "Lyric.Db"

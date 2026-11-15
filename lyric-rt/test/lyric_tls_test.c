@@ -1416,6 +1416,378 @@ static void test_sock_try_ops(void) {
     lyric_sock_close(listen_fd);
 }
 
+/* ── Bounded operations (#9090) ───────────────────────────────────────── */
+
+static int64_t deadline_in_ms(int64_t ms) {
+    return lyric_monotonic_nanos() + ms * 1000000;
+}
+
+/* A bounded connect to a listener, by address and by name (the name goes
+ * through the lookup thread), leaves a blocking socket that round-trips. */
+static void test_connect_bounded_ok(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    const char* hosts[2] = {"127.0.0.1", "localhost"};
+    for (int i = 0; i < 2; i++) {
+        int fd = lyric_sock_connect_bounded(hosts[i], port, deadline_in_ms(5000), -1);
+        CHECK(fd >= 0);
+        int server_fd = lyric_sock_accept(listen_fd);
+        CHECK(server_fd >= 0);
+        CHECK(lyric_sock_write(fd, (const uint8_t*)"hi", 2) == 2);
+        uint8_t buf[8];
+        CHECK(lyric_sock_read(server_fd, buf, sizeof(buf)) == 2);
+        /* Blocking again: a read with a socket timeout waits it out. */
+        CHECK(lyric_sock_set_timeouts(fd, 100) == 0);
+        int64_t start = mono_ms();
+        CHECK(lyric_sock_read(fd, buf, sizeof(buf)) == -1);
+        CHECK(mono_ms() - start >= 80);
+        CHECK(last_error_contains("timed out"));
+        lyric_sock_close(server_fd);
+        lyric_sock_close(fd);
+    }
+    lyric_sock_close(listen_fd);
+}
+
+/* Refused, unresolvable and already-expired connects. */
+static void test_connect_bounded_failures(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    int port = lyric_sock_local_port(listen_fd);
+    lyric_sock_close(listen_fd); /* nothing listens on `port` now */
+    CHECK(lyric_sock_connect_bounded("127.0.0.1", port, deadline_in_ms(5000), -1) == -1);
+    CHECK(!last_error_contains("timed out"));
+    CHECK(lyric_sock_connect_bounded("name.invalid", 80, deadline_in_ms(20000), -1) == -1);
+    CHECK(last_error_contains("resolve"));
+    CHECK(lyric_sock_connect_bounded("127.0.0.1", 70000, deadline_in_ms(1000), -1) == -1);
+    /* A deadline that has passed fails as a deadline, whatever the peer. */
+    CHECK(lyric_sock_connect_bounded("localhost", port, lyric_monotonic_nanos() - 1, -1) == -2);
+    CHECK(last_error_contains("timed out"));
+    /* A wake pipe that is already readable interrupts the lookup. */
+    int rfd = -1, wfd = -1;
+    CHECK(lyric_sock_wake_pipe_new(&rfd, &wfd) == 0);
+    CHECK(lyric_sock_wake_pipe_signal(wfd) == 0);
+    CHECK(lyric_sock_connect_bounded("localhost", port, 0, rfd) == -3);
+    CHECK(last_error_contains("interrupted"));
+    lyric_sock_close(rfd);
+    lyric_sock_close(wfd);
+}
+
+#if defined(__linux__)
+/* A connect that the peer never answers.  Linux drops a SYN that arrives
+ * while the listener's accept queue is full, so once enough connections sit
+ * unaccepted the next connect stays in progress: a blackhole on loopback,
+ * with nothing outside the machine involved. */
+static void test_connect_bounded_deadline(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 1);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    int held[64];
+    int n_held = 0;
+    int stalled = 0;
+    while (n_held < 64) {
+        int64_t start = mono_ms();
+        int fd = lyric_sock_connect_bounded("127.0.0.1", port, deadline_in_ms(300), -1);
+        if (fd == -2) {
+            CHECK(mono_ms() - start >= 290);
+            CHECK(last_error_contains("timed out"));
+            stalled = 1;
+            break;
+        }
+        if (fd < 0) break;
+        held[n_held++] = fd;
+    }
+    if (!stalled) {
+        /* A kernel that never lets the queue overflow (a sandboxed network
+         * stack) cannot show the stall; say so instead of passing silently. */
+        printf("lyric_tls_test: the accept queue never filled (%d connections); "
+               "the connect-deadline case did not run\n", n_held);
+    } else {
+        /* The same stalled connect is interrupted by its wake pipe. */
+        int rfd = -1, wfd = -1;
+        CHECK(lyric_sock_wake_pipe_new(&rfd, &wfd) == 0);
+        CHECK(lyric_sock_wake_pipe_signal(wfd) == 0);
+        int64_t start = mono_ms();
+        CHECK(lyric_sock_connect_bounded("127.0.0.1", port, deadline_in_ms(5000), rfd) == -3);
+        CHECK(mono_ms() - start < 3000);
+        lyric_sock_close(rfd);
+        lyric_sock_close(wfd);
+    }
+    for (int i = 0; i < n_held; i++) lyric_sock_close(held[i]);
+    lyric_sock_close(listen_fd);
+}
+#endif
+
+typedef struct {
+    int write_fd;
+    int delay_ms;
+} delayed_signal_arg;
+
+static void* delayed_signal(void* p) {
+    delayed_signal_arg* a = (delayed_signal_arg*)p;
+    lyric_sleep_nanos((int64_t)a->delay_ms * 1000000);
+    lyric_sock_wake_pipe_signal(a->write_fd);
+    return NULL;
+}
+
+/* A bounded plain read: data, end of stream, the deadline and the wake pipe. */
+static void test_sock_read_bounded(void) {
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    int32_t status = -1;
+
+    int64_t deadline = deadline_in_ms(200);
+    int64_t start = mono_ms();
+    LyricList* l = lyric_sock_read_bytes_bounded(server_fd, 16, deadline, -1, &status);
+    CHECK(status == LYRIC_BOUNDED_DEADLINE);
+    CHECK(lyric_monotonic_nanos() >= deadline);
+    CHECK(mono_ms() - start < 3000);
+    CHECK(l->len == 0);
+    CHECK(last_error_contains("timed out"));
+    lyric_release(l);
+
+    int rfd = -1, wfd = -1;
+    CHECK(lyric_sock_wake_pipe_new(&rfd, &wfd) == 0);
+    delayed_signal_arg sig = {wfd, 100};
+    int64_t th = 0;
+    lyric_thread_create(&th, delayed_signal, &sig);
+    start = mono_ms();
+    l = lyric_sock_read_bytes_bounded(server_fd, 16, deadline_in_ms(10000), rfd, &status);
+    CHECK(status == LYRIC_BOUNDED_INTERRUPTED);
+    CHECK(mono_ms() - start < 3000);
+    CHECK(last_error_contains("interrupted"));
+    lyric_release(l);
+    lyric_thread_join(th, NULL);
+    lyric_sock_close(rfd);
+    lyric_sock_close(wfd);
+
+    CHECK(lyric_sock_write(client_fd, (const uint8_t*)"abc", 3) == 3);
+    l = lyric_sock_read_bytes_bounded(server_fd, 16, deadline_in_ms(5000), -1, &status);
+    CHECK(status == LYRIC_BOUNDED_OK);
+    CHECK(list_equals_str(l, "abc"));
+    lyric_release(l);
+
+    /* No limits at all behaves as the blocking read. */
+    CHECK(lyric_sock_write(client_fd, (const uint8_t*)"d", 1) == 1);
+    l = lyric_sock_read_bytes_bounded(server_fd, 16, 0, -1, &status);
+    CHECK(status == LYRIC_BOUNDED_OK);
+    CHECK(list_equals_str(l, "d"));
+    lyric_release(l);
+
+    lyric_sock_close(client_fd);
+    l = lyric_sock_read_bytes_bounded(server_fd, 16, deadline_in_ms(5000), -1, &status);
+    CHECK(status == LYRIC_BOUNDED_OK);
+    CHECK(l->len == 0);
+    lyric_release(l);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(listen_fd);
+}
+
+/* A bounded plain write to a peer that never reads stops at the deadline
+ * once the socket buffers are full. */
+static void test_sock_write_bounded(void) {
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    LyricList* small = list_of_bytes("ping");
+    CHECK(lyric_sock_write_bytes_bounded(client_fd, small, deadline_in_ms(5000), -1) == LYRIC_BOUNDED_OK);
+    lyric_release(small);
+    LyricList* big = lyric_list_new(0);
+    for (int i = 0; i < 16 * 1024 * 1024; i++) lyric_list_push(big, (int64_t)(i & 0xff));
+    int64_t deadline = deadline_in_ms(300);
+    int64_t start = mono_ms();
+    CHECK(lyric_sock_write_bytes_bounded(client_fd, big, deadline, -1) == LYRIC_BOUNDED_DEADLINE);
+    CHECK(lyric_monotonic_nanos() >= deadline);
+    CHECK(mono_ms() - start < 5000);
+    CHECK(last_error_contains("timed out"));
+    lyric_release(big);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+}
+
+/* Whether a bounded read on the silent `fd` is interrupted by `wake_fd`
+ * within 50 ms, which is how a signalled wake pipe shows. */
+static int wake_is_signalled(int fd, int wake_fd) {
+    int32_t status = -1;
+    LyricList* l = lyric_sock_read_bytes_bounded(fd, 1, deadline_in_ms(50), wake_fd, &status);
+    lyric_release(l);
+    CHECK(status == LYRIC_BOUNDED_INTERRUPTED || status == LYRIC_BOUNDED_DEADLINE);
+    return status == LYRIC_BOUNDED_INTERRUPTED;
+}
+
+/* lyric_cancel_wake_signal reaches the pipes registered under its key only. */
+static void test_cancel_wake_registry(void) {
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    int key_a = 0, key_b = 0;
+    int ra = -1, wa = -1, rb = -1, wb = -1;
+    CHECK(lyric_sock_wake_pipe_new(&ra, &wa) == 0);
+    CHECK(lyric_sock_wake_pipe_new(&rb, &wb) == 0);
+    lyric_cancel_wake_register(&key_a, wa);
+    lyric_cancel_wake_register(&key_b, wb);
+    lyric_cancel_wake_signal(&key_a);
+    CHECK(wake_is_signalled(server_fd, ra));
+    CHECK(!wake_is_signalled(server_fd, rb));
+    lyric_cancel_wake_unregister(&key_b, wb);
+    lyric_cancel_wake_signal(&key_b);
+    CHECK(!wake_is_signalled(server_fd, rb));
+    lyric_cancel_wake_unregister(&key_a, wa);
+    lyric_cancel_wake_signal(&key_a); /* no entry left: nothing to write to */
+    lyric_sock_close(ra);
+    lyric_sock_close(wa);
+    lyric_sock_close(rb);
+    lyric_sock_close(wb);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+}
+
+/* A server that accepts the TCP connection and never answers the
+ * ClientHello: the bounded client handshake ends at its deadline, and at
+ * once when its wake pipe is signalled. */
+static void test_tls_connect_bounded_stalled(void) {
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    int32_t status = -1;
+    int64_t deadline = deadline_in_ms(200);
+    int64_t start = mono_ms();
+    void* conn = lyric_tls_client_connect_bounded(client, client_fd, "localhost", "http/1.1", deadline, -1, &status);
+    CHECK(conn == NULL);
+    CHECK(status == LYRIC_BOUNDED_DEADLINE);
+    CHECK(lyric_monotonic_nanos() >= deadline);
+    CHECK(mono_ms() - start < 3000);
+    CHECK(last_error_contains("timed out"));
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    int rfd = -1, wfd = -1;
+    CHECK(lyric_sock_wake_pipe_new(&rfd, &wfd) == 0);
+    delayed_signal_arg sig = {wfd, 100};
+    int64_t th = 0;
+    lyric_thread_create(&th, delayed_signal, &sig);
+    start = mono_ms();
+    conn = lyric_tls_client_connect_bounded(client, client_fd, "localhost", "http/1.1", deadline_in_ms(10000), rfd,
+                                            &status);
+    CHECK(conn == NULL);
+    CHECK(status == LYRIC_BOUNDED_INTERRUPTED);
+    CHECK(mono_ms() - start < 3000);
+    lyric_thread_join(th, NULL);
+    lyric_sock_close(rfd);
+    lyric_sock_close(wfd);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(client);
+}
+
+/* The unbounded client handshake against the same silent server, under a
+ * socket timeout: it fails at the timeout and says so, as the server side
+ * does (test_tls_handshake_timeout). */
+static void test_tls_client_handshake_socket_timeout(void) {
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    CHECK(lyric_sock_set_timeouts(client_fd, 200) == 0);
+    int64_t start = mono_ms();
+    void* conn = lyric_tls_client_connect(client, client_fd, "localhost", "http/1.1");
+    int64_t elapsed = mono_ms() - start;
+    CHECK(conn == NULL);
+    CHECK(elapsed >= 150 && elapsed < 3000);
+    CHECK(last_error_contains("timed out"));
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(client);
+}
+
+typedef struct {
+    int listen_fd;
+    void* server_ctx;
+    int stall_ms; /* how long the server stays silent after the handshake */
+    int answered;
+} tls_slow_arg;
+
+/* Handshakes, reads the request, stays silent for `stall_ms`, then answers. */
+static void* tls_slow_server(void* p) {
+    tls_slow_arg* a = (tls_slow_arg*)p;
+    int fd = lyric_sock_accept(a->listen_fd);
+    if (fd < 0) return NULL;
+    set_timeout(fd);
+    void* conn = lyric_tls_server_accept(a->server_ctx, fd);
+    if (!conn) {
+        lyric_sock_close(fd);
+        return NULL;
+    }
+    uint8_t buf[256];
+    if (lyric_tls_read(conn, buf, sizeof(buf)) > 0) {
+        lyric_sleep_nanos((int64_t)a->stall_ms * 1000000);
+        if (lyric_tls_write(conn, (const uint8_t*)RESPONSE, (int64_t)strlen(RESPONSE)) > 0) a->answered = 1;
+    }
+    lyric_tls_shutdown(conn);
+    lyric_tls_free(conn);
+    lyric_sock_close(fd);
+    return NULL;
+}
+
+/* The bounded handshake, write and read against a real TLS server: a
+ * round trip within the limits, then a read the server answers too late. */
+static void test_tls_bounded_io(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(server != NULL && client != NULL);
+    for (int round = 0; round < 2; round++) {
+        tls_slow_arg a;
+        memset(&a, 0, sizeof(a));
+        a.listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+        a.server_ctx = server;
+        a.stall_ms = round == 0 ? 50 : 1500;
+        int port = lyric_sock_local_port(a.listen_fd);
+        int64_t th = 0;
+        lyric_thread_create(&th, tls_slow_server, &a);
+        int fd = lyric_sock_connect_bounded("127.0.0.1", port, deadline_in_ms(5000), -1);
+        CHECK(fd >= 0);
+        int32_t status = -1;
+        void* conn = lyric_tls_client_connect_bounded(client, fd, "localhost", "http/1.1", deadline_in_ms(5000), -1,
+                                                      &status);
+        CHECK(conn != NULL);
+        CHECK(status == LYRIC_BOUNDED_OK);
+        if (conn) {
+            LyricList* req = list_of_bytes(REQUEST);
+            CHECK(lyric_tls_write_bytes_bounded(conn, fd, req, deadline_in_ms(5000), -1) == LYRIC_BOUNDED_OK);
+            lyric_release(req);
+            int64_t deadline = deadline_in_ms(round == 0 ? 5000 : 300);
+            int64_t start = mono_ms();
+            LyricList* got = lyric_tls_read_bytes_bounded(conn, fd, 256, deadline, -1, &status);
+            if (round == 0) {
+                CHECK(status == LYRIC_BOUNDED_OK);
+                CHECK(list_equals_str(got, RESPONSE));
+                lyric_release(got);
+                /* The peer's close_notify is a clean end of stream. */
+                got = lyric_tls_read_bytes_bounded(conn, fd, 256, deadline_in_ms(5000), -1, &status);
+                CHECK(status == LYRIC_BOUNDED_OK);
+                CHECK(got->len == 0);
+            } else {
+                CHECK(status == LYRIC_BOUNDED_DEADLINE);
+                CHECK(lyric_monotonic_nanos() >= deadline);
+                CHECK(mono_ms() - start < 1400);
+                CHECK(last_error_contains("timed out"));
+                CHECK(got->len == 0);
+            }
+            lyric_release(got);
+            lyric_tls_free(conn);
+        }
+        lyric_sock_close(fd);
+        lyric_thread_join(th, NULL);
+        lyric_sock_close(a.listen_fd);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
 int main(void) {
     test_plain_roundtrip();
     test_sock_peer_string();
@@ -1430,6 +1802,14 @@ int main(void) {
     test_sock_read_timeout();
     test_sock_shutdown_wakes_blocked_read();
     test_sock_shutdown_before_read();
+    test_connect_bounded_ok();
+    test_connect_bounded_failures();
+#if defined(__linux__)
+    test_connect_bounded_deadline();
+#endif
+    test_sock_read_bounded();
+    test_sock_write_bounded();
+    test_cancel_wake_registry();
 
     if (!lyric_tls_available()) {
         char err[256];
@@ -1470,6 +1850,9 @@ int main(void) {
     test_tls_bytes_roundtrip();
     test_tls_handshake_timeout();
     test_tls_read_timeout();
+    test_tls_connect_bounded_stalled();
+    test_tls_client_handshake_socket_timeout();
+    test_tls_bounded_io();
 
     if (failures == 0) {
         printf("lyric_tls_test: all tests passed\n");

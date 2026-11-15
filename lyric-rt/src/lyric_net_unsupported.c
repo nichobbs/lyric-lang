@@ -140,6 +140,61 @@ int32_t lyric_sock_io_timeout_ms(int32_t fd) {
     return -1;
 }
 
+int32_t lyric_sock_connect_bounded(const char* host, int32_t port, int64_t deadline_ns, int32_t wake_fd) {
+    (void)host; (void)port; (void)deadline_ns; (void)wake_fd;
+    return fail_sock();
+}
+
+LyricList* lyric_sock_read_bytes_bounded(int32_t fd, int64_t max_bytes, int64_t deadline_ns, int32_t wake_fd,
+                                         int32_t* status) {
+    (void)fd; (void)max_bytes; (void)deadline_ns; (void)wake_fd;
+    (void)fail_sock();
+    *status = LYRIC_BOUNDED_ERROR;
+    return lyric_list_new(0);
+}
+
+int32_t lyric_sock_write_bytes_bounded(int32_t fd, void* bytes_list, int64_t deadline_ns, int32_t wake_fd) {
+    (void)fd; (void)bytes_list; (void)deadline_ns; (void)wake_fd;
+    (void)fail_sock();
+    return LYRIC_BOUNDED_ERROR;
+}
+
+/* No wake pipe can exist here (lyric_sock_wake_pipe_new fails), so there is
+ * never one to register or signal. */
+void lyric_cancel_wake_register(void* key, int32_t write_fd) {
+    (void)key; (void)write_fd;
+}
+
+void lyric_cancel_wake_unregister(void* key, int32_t write_fd) {
+    (void)key; (void)write_fd;
+}
+
+void lyric_cancel_wake_signal(void* key) {
+    (void)key;
+}
+
+void* lyric_tls_client_connect_bounded(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv,
+                                       int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    (void)client_ctx; (void)fd; (void)sni_host; (void)alpn_csv; (void)deadline_ns; (void)wake_fd;
+    *status = LYRIC_BOUNDED_ERROR;
+    return fail_tls();
+}
+
+LyricList* lyric_tls_read_bytes_bounded(void* conn, int32_t fd, int64_t max_bytes, int64_t deadline_ns,
+                                        int32_t wake_fd, int32_t* status) {
+    (void)conn; (void)fd; (void)max_bytes; (void)deadline_ns; (void)wake_fd;
+    fail_tls();
+    *status = LYRIC_BOUNDED_ERROR;
+    return lyric_list_new(0);
+}
+
+int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, int64_t deadline_ns,
+                                      int32_t wake_fd) {
+    (void)conn; (void)fd; (void)bytes_list; (void)deadline_ns; (void)wake_fd;
+    fail_tls();
+    return LYRIC_BOUNDED_ERROR;
+}
+
 int32_t lyric_tls_available(void) {
     return 0;
 }

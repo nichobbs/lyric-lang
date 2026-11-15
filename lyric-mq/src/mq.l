@@ -452,9 +452,12 @@ pub func messageFromJson(json: in String): Result[Message, String] {
           case None -> return Err("'deliveryCount' must be an integer")
         }
       }
-      val headers = match tryGetProperty(root, "headers") {
+      val headers: slice[MessageHeader] = match tryGetProperty(root, "headers") {
         case None -> []
-        case Some(v) -> match headersFromJson(v) { case Ok(hs) -> hs; case Err(e) -> return Err(e) }
+        case Some(v) -> match headersFromJson(v) {
+          case Ok(hs) -> hs
+          case Err(e) -> return Err(e)
+        }
       }
       return Ok(Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount))
     }

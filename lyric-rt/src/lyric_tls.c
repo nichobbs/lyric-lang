@@ -762,6 +762,387 @@ int32_t lyric_sock_io_timeout_ms(int32_t fd) {
     return ms > 2147483647 ? 2147483647 : (int32_t)ms;
 }
 
+/* ── Bounded operations (#9090) ───────────────────────────────────────── */
+
+/* Waits until `fd` is ready for `events`, `deadline_ns` (0: none) passes or
+ * `wake_fd` (-1: none) becomes readable.  An error or hang-up on `fd` counts
+ * as ready: the read or write that follows reports it.  `what` names the
+ * operation in last_error. */
+static int bounded_wait(int fd, short events, int64_t deadline_ns, int32_t wake_fd, const char* what) {
+    for (;;) {
+        int timeout = -1;
+        if (deadline_ns != 0) {
+            int64_t left = deadline_ns - lyric_monotonic_nanos();
+            if (left <= 0) {
+                set_err("%s: timed out", what);
+                return LYRIC_BOUNDED_DEADLINE;
+            }
+            /* Rounded up, so the poll never returns just before the deadline. */
+            int64_t ms = (left + 999999) / 1000000;
+            timeout = ms > 2147483647 ? 2147483647 : (int)ms;
+        }
+        struct pollfd p[2];
+        p[0].fd = fd;
+        p[0].events = events;
+        p[0].revents = 0;
+        nfds_t n = 1;
+        if (wake_fd >= 0) {
+            p[1].fd = wake_fd;
+            p[1].events = POLLIN;
+            p[1].revents = 0;
+            n = 2;
+        }
+        int rc = poll(p, n, timeout);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            set_err("%s: poll: %s", what, strerror(errno));
+            return LYRIC_BOUNDED_ERROR;
+        }
+        if (rc == 0) continue; /* the deadline test above decides */
+        if (n == 2 && p[1].revents != 0) {
+            set_err("%s: interrupted", what);
+            return LYRIC_BOUNDED_INTERRUPTED;
+        }
+        if (p[0].revents != 0) return LYRIC_BOUNDED_OK;
+    }
+}
+
+/* Switches O_NONBLOCK on or off; 0, or -1 with last_error set. */
+static int set_nonblocking(int fd, int on) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) {
+        set_err("fcntl(F_GETFL): %s", strerror(errno));
+        return -1;
+    }
+    int want = on ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    if (want != flags && fcntl(fd, F_SETFL, want) != 0) {
+        set_err("fcntl(F_SETFL): %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/* Back to blocking mode on a path that already has an error to report:
+ * last_error keeps that error. */
+static void set_nonblocking_quiet(int fd, int on) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) {
+        (void)fcntl(fd, F_SETFL, on ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK));
+    }
+}
+
+/* One name lookup on a helper thread.  The waiter and the helper share the
+ * job under g_resolve_mutex; whichever of them finishes last frees it. */
+typedef struct {
+    char* host;
+    char port[16];
+    struct addrinfo* res;
+    int gai;
+    int done;      /* the helper has stored res/gai */
+    int abandoned; /* the waiter gave up: the helper frees the job */
+    int done_fd;   /* written by the helper when done */
+} resolve_job;
+
+static pthread_mutex_t g_resolve_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void resolve_job_free(resolve_job* j) {
+    if (j->res) freeaddrinfo(j->res);
+    if (j->done_fd >= 0) close(j->done_fd);
+    free(j->host);
+    free(j);
+}
+
+static void* resolve_main(void* arg) {
+    resolve_job* j = (resolve_job*)arg;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+    int gai = getaddrinfo(j->host, j->port, &hints, &res);
+    pthread_mutex_lock(&g_resolve_mutex);
+    j->res = res;
+    j->gai = gai;
+    j->done = 1;
+    int abandoned = j->abandoned;
+    if (!abandoned) {
+        uint8_t b = 1;
+        ssize_t w;
+        do {
+            w = write(j->done_fd, &b, 1);
+        } while (w < 0 && errno == EINTR);
+    }
+    pthread_mutex_unlock(&g_resolve_mutex);
+    if (abandoned) resolve_job_free(j);
+    return NULL;
+}
+
+/* getaddrinfo within the limits.  An address literal never leaves the
+ * calling thread; a name is looked up on a detached helper thread, since
+ * getaddrinfo itself cannot be given a deadline or interrupted. */
+static int resolve_bounded(const char* host, const char* portstr, int64_t deadline_ns, int32_t wake_fd,
+                           struct addrinfo** out) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+    if (getaddrinfo(host, portstr, &hints, out) == 0) return LYRIC_BOUNDED_OK;
+    *out = NULL;
+
+    resolve_job* j = (resolve_job*)calloc(1, sizeof(resolve_job));
+    if (j) {
+        j->done_fd = -1;
+        j->host = strdup(host);
+    }
+    if (!j || !j->host) {
+        set_err("out of memory");
+        if (j) resolve_job_free(j);
+        return LYRIC_BOUNDED_ERROR;
+    }
+    int fds[2] = {-1, -1};
+    if (lyric_sock_wake_pipe_new(&fds[0], &fds[1]) != 0) {
+        resolve_job_free(j);
+        return LYRIC_BOUNDED_ERROR;
+    }
+    snprintf(j->port, sizeof(j->port), "%s", portstr);
+    j->done_fd = fds[1];
+    pthread_attr_t attr;
+    pthread_t tid;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&tid, &attr, resolve_main, j);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        set_err("resolve %s: cannot start the lookup thread: %s", host, strerror(rc));
+        close(fds[0]);
+        resolve_job_free(j);
+        return LYRIC_BOUNDED_ERROR;
+    }
+    char what[160];
+    snprintf(what, sizeof(what), "resolve %s", host);
+    int st = bounded_wait(fds[0], POLLIN, deadline_ns, wake_fd, what);
+    pthread_mutex_lock(&g_resolve_mutex);
+    if (!j->done) {
+        /* Still looking: the helper frees the job when getaddrinfo returns,
+         * and no longer writes to the pipe, whose read end closes here. */
+        j->abandoned = 1;
+        pthread_mutex_unlock(&g_resolve_mutex);
+        close(fds[0]);
+        if (st == LYRIC_BOUNDED_OK) {
+            set_err("%s: the lookup ended without an answer", what);
+            st = LYRIC_BOUNDED_ERROR;
+        }
+        return st;
+    }
+    pthread_mutex_unlock(&g_resolve_mutex);
+    close(fds[0]);
+    /* The lookup finished, so its answer stands even if a limit passed in
+     * the same instant: the connect that follows tests the limits again. */
+    if (j->gai != 0) {
+        set_err("resolve %s: %s", host, gai_strerror(j->gai));
+        resolve_job_free(j);
+        return LYRIC_BOUNDED_ERROR;
+    }
+    *out = j->res;
+    j->res = NULL;
+    resolve_job_free(j);
+    return LYRIC_BOUNDED_OK;
+}
+
+static int32_t bounded_fd_result(int st) {
+    return st == LYRIC_BOUNDED_DEADLINE ? -2 : st == LYRIC_BOUNDED_INTERRUPTED ? -3 : -1;
+}
+
+int32_t lyric_sock_connect_bounded(const char* host, int32_t port, int64_t deadline_ns, int32_t wake_fd) {
+    if (deadline_ns == 0 && wake_fd < 0) return lyric_sock_connect(host, port);
+    if (!host || port < 0 || port > 65535) {
+        set_err("invalid host/port");
+        return -1;
+    }
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%d", (int)port);
+    char what[200];
+    snprintf(what, sizeof(what), "connect %s:%d", host, (int)port);
+
+    struct addrinfo* res = NULL;
+    int st = resolve_bounded(host, portstr, deadline_ns, wake_fd, &res);
+    if (st != LYRIC_BOUNDED_OK) return bounded_fd_result(st);
+
+    int fd = -1;
+    int last_errno = 0;
+    for (struct addrinfo* ai = res; ai != NULL; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            last_errno = errno;
+            continue;
+        }
+        sock_nosigpipe(fd);
+        if (set_nonblocking(fd, 1) != 0) {
+            last_errno = errno;
+            close(fd);
+            fd = -1;
+            continue;
+        }
+        int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        /* An interrupted connect carries on in the background, like one
+         * that reports EINPROGRESS: wait for the socket to become writable
+         * and read the outcome from SO_ERROR. */
+        if (rc != 0 && (errno == EINPROGRESS || errno == EINTR)) {
+            st = bounded_wait(fd, POLLOUT, deadline_ns, wake_fd, what);
+            if (st == LYRIC_BOUNDED_DEADLINE || st == LYRIC_BOUNDED_INTERRUPTED) {
+                close(fd);
+                freeaddrinfo(res);
+                return bounded_fd_result(st);
+            }
+            int soerr = 0;
+            socklen_t len = sizeof soerr;
+            if (st != LYRIC_BOUNDED_OK) {
+                soerr = EIO;
+            } else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &len) != 0) {
+                soerr = errno;
+            }
+            rc = soerr == 0 ? 0 : -1;
+            errno = soerr;
+        }
+        if (rc == 0 && set_nonblocking(fd, 0) == 0) break; /* connected */
+        last_errno = errno;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) {
+        set_err("%s: %s", what, last_errno ? strerror(last_errno) : "no usable address");
+        return -1;
+    }
+    return (int32_t)fd;
+}
+
+LyricList* lyric_sock_read_bytes_bounded(int32_t fd, int64_t max_bytes, int64_t deadline_ns, int32_t wake_fd,
+                                         int32_t* status) {
+    LyricList* list = lyric_list_new(0);
+    if (max_bytes <= 0) {
+        *status = LYRIC_BOUNDED_OK;
+        return list;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max_bytes);
+    if (!buf) {
+        set_err("out of memory");
+        *status = LYRIC_BOUNDED_ERROR;
+        return list;
+    }
+    for (;;) {
+        ssize_t got = recv(fd, buf, (size_t)max_bytes, MSG_DONTWAIT);
+        if (got >= 0) {
+            for (ssize_t i = 0; i < got; i++) {
+                lyric_list_push(list, (int64_t)buf[i]);
+            }
+            *status = LYRIC_BOUNDED_OK;
+            break;
+        }
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            set_err("read: %s", strerror(errno));
+            *status = LYRIC_BOUNDED_ERROR;
+            break;
+        }
+        int st = bounded_wait(fd, POLLIN, deadline_ns, wake_fd, "read");
+        if (st != LYRIC_BOUNDED_OK) {
+            *status = st;
+            break;
+        }
+    }
+    free(buf);
+    return list;
+}
+
+int32_t lyric_sock_write_bytes_bounded(int32_t fd, void* bytes_list, int64_t deadline_ns, int32_t wake_fd) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = list ? list->len : 0;
+    if (n <= 0) return LYRIC_BOUNDED_OK;
+    uint8_t* buf = (uint8_t*)malloc((size_t)n);
+    if (!buf) {
+        set_err("out of memory");
+        return LYRIC_BOUNDED_ERROR;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        buf[i] = (uint8_t)(list->data[i] & 0xff);
+    }
+    int flags = MSG_DONTWAIT;
+#if defined(MSG_NOSIGNAL)
+    flags |= MSG_NOSIGNAL;
+#endif
+    int st = LYRIC_BOUNDED_OK;
+    int64_t off = 0;
+    while (off < n) {
+        ssize_t w = send(fd, buf + off, (size_t)(n - off), flags);
+        if (w > 0) {
+            off += w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        if (w == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            set_err("write: %s", w == 0 ? "no progress" : strerror(errno));
+            st = LYRIC_BOUNDED_ERROR;
+            break;
+        }
+        st = bounded_wait(fd, POLLOUT, deadline_ns, wake_fd, "write");
+        if (st != LYRIC_BOUNDED_OK) break;
+    }
+    free(buf);
+    return st;
+}
+
+/* The registered wake pipes, under lyric_global_lock. */
+typedef struct {
+    void* key;
+    int32_t write_fd;
+} cancel_wake_entry;
+
+static cancel_wake_entry* g_cancel_wakes = NULL;
+static size_t g_cancel_wake_count = 0;
+static size_t g_cancel_wake_cap = 0;
+
+void lyric_cancel_wake_register(void* key, int32_t write_fd) {
+    lyric_global_lock();
+    if (g_cancel_wake_count == g_cancel_wake_cap) {
+        size_t cap = g_cancel_wake_cap ? g_cancel_wake_cap * 2 : 8;
+        cancel_wake_entry* grown = (cancel_wake_entry*)realloc(g_cancel_wakes, cap * sizeof(cancel_wake_entry));
+        if (!grown) {
+            lyric_global_unlock();
+            lyric_panic_msg("out of memory registering a cancellation wake-up", "lyric_tls.c", __LINE__);
+        }
+        g_cancel_wakes = grown;
+        g_cancel_wake_cap = cap;
+    }
+    g_cancel_wakes[g_cancel_wake_count].key = key;
+    g_cancel_wakes[g_cancel_wake_count].write_fd = write_fd;
+    g_cancel_wake_count++;
+    lyric_global_unlock();
+}
+
+void lyric_cancel_wake_unregister(void* key, int32_t write_fd) {
+    lyric_global_lock();
+    for (size_t i = 0; i < g_cancel_wake_count; i++) {
+        if (g_cancel_wakes[i].key == key && g_cancel_wakes[i].write_fd == write_fd) {
+            g_cancel_wakes[i] = g_cancel_wakes[g_cancel_wake_count - 1];
+            g_cancel_wake_count--;
+            break;
+        }
+    }
+    lyric_global_unlock();
+}
+
+void lyric_cancel_wake_signal(void* key) {
+    lyric_global_lock();
+    for (size_t i = 0; i < g_cancel_wake_count; i++) {
+        if (g_cancel_wakes[i].key == key) {
+            (void)lyric_sock_wake_pipe_signal(g_cancel_wakes[i].write_fd);
+        }
+    }
+    lyric_global_unlock();
+}
+
 /* ── OpenSSL 3.x dynamic binding ──────────────────────────────────────── */
 
 /* Opaque OpenSSL types (we only ever hold pointers). */
@@ -1304,7 +1685,12 @@ int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, co
     return use_identity(w->ctx, cert_pem ? cert_pem : "", key_pem ? key_pem : "") == 0 ? 0 : -1;
 }
 
-void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv) {
+/* The client handshake; `bounded` makes it honour `deadline_ns`/`wake_fd`
+ * over a socket switched to non-blocking for the duration.  *status is a
+ * LYRIC_BOUNDED_* code. */
+static void* client_connect_impl(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv,
+                                 int bounded, int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    *status = LYRIC_BOUNDED_ERROR;
     if (!tls_ready() || !client_ctx) return NULL;
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)client_ctx;
     __atomic_store_n(&w->connected, 1, __ATOMIC_RELEASE);
@@ -1356,12 +1742,36 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
         O.SSL_set_alpn_protos(ssl, wire, wire_len);
         free(wire);
     }
-    sigpipe_guard guard;
-    sigpipe_block(&guard);
-    int connect_rc = O.SSL_connect(ssl);
-    sigpipe_unblock(&guard);
-    if (connect_rc != 1) {
-        set_ossl_err("TLS handshake");
+    if (bounded && set_nonblocking(fd, 1) != 0) {
+        O.SSL_free(ssl);
+        return NULL;
+    }
+    for (;;) {
+        errno = 0;
+        sigpipe_guard guard;
+        sigpipe_block(&guard);
+        int connect_rc = O.SSL_connect(ssl);
+        sigpipe_unblock(&guard);
+        if (connect_rc == 1) break;
+        int saved_errno = errno;
+        int err = O.SSL_get_error(ssl, connect_rc);
+        int wants = err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE;
+        if (bounded && wants) {
+            int st = bounded_wait(fd, err == OSSL_SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, deadline_ns, wake_fd,
+                                  "TLS handshake");
+            if (st == LYRIC_BOUNDED_OK) continue;
+            *status = st;
+        } else if (wants && is_timeout_errno(saved_errno)) {
+            /* A socket timeout (lyric_sock_set_timeouts) on a blocking fd. */
+            set_err("TLS handshake: timed out");
+        } else {
+            set_ossl_err("TLS handshake");
+        }
+        O.SSL_free(ssl);
+        if (bounded) set_nonblocking_quiet(fd, 0);
+        return NULL;
+    }
+    if (bounded && set_nonblocking(fd, 0) != 0) {
         O.SSL_free(ssl);
         return NULL;
     }
@@ -1373,7 +1783,18 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
             return NULL;
         }
     }
+    *status = LYRIC_BOUNDED_OK;
     return ssl;
+}
+
+void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv) {
+    int32_t status;
+    return client_connect_impl(client_ctx, fd, sni_host, alpn_csv, 0, 0, -1, &status);
+}
+
+void* lyric_tls_client_connect_bounded(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv,
+                                       int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    return client_connect_impl(client_ctx, fd, sni_host, alpn_csv, 1, deadline_ns, wake_fd, status);
 }
 
 /* ── Server ───────────────────────────────────────────────────────────── */
@@ -1498,10 +1919,14 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
 
 /* ── Shared connection I/O ────────────────────────────────────────────── */
 
-int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
-    if (!conn || n <= 0) return 0;
-    ossl_ssl* ssl = (ossl_ssl*)conn;
+/* The read loop.  `bounded` means `fd` is non-blocking and a WANT_* waits on
+ * it within the limits; otherwise the fd blocks and a WANT_* with EAGAIN is
+ * its socket timeout.  Returns the count, 0 at a clean close, or -1 with
+ * *status set (LYRIC_BOUNDED_ERROR, _DEADLINE or _INTERRUPTED). */
+static int64_t tls_read_impl(ossl_ssl* ssl, uint8_t* buf, int64_t n, int bounded, int fd, int64_t deadline_ns,
+                             int32_t wake_fd, int32_t* status) {
     int want = (n > 0x7fffffff) ? 0x7fffffff : (int)n;
+    *status = LYRIC_BOUNDED_ERROR;
     for (;;) {
         errno = 0;
         sigpipe_guard guard;
@@ -1513,6 +1938,13 @@ int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
         int err = O.SSL_get_error(ssl, r);
         if (err == OSSL_SSL_ERROR_ZERO_RETURN) return 0; /* clean close_notify */
         if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
+            if (bounded) {
+                int st = bounded_wait(fd, err == OSSL_SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, deadline_ns, wake_fd,
+                                      "TLS read");
+                if (st == LYRIC_BOUNDED_OK) continue;
+                *status = st;
+                return -1;
+            }
             /* On a blocking fd a WANT_* with EAGAIN is a socket timeout, not
              * a retryable condition: retrying would wait forever. */
             if (is_timeout_errno(saved_errno)) {
@@ -1526,10 +1958,17 @@ int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
     }
 }
 
-int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
-    if (!conn) return -1;
-    if (n <= 0) return 0;
-    ossl_ssl* ssl = (ossl_ssl*)conn;
+int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
+    if (!conn || n <= 0) return 0;
+    int32_t status;
+    return tls_read_impl((ossl_ssl*)conn, buf, n, 0, -1, 0, -1, &status);
+}
+
+/* The write loop, with tls_read_impl's `bounded` convention.  Returns `n`,
+ * or -1 with *status set. */
+static int64_t tls_write_impl(ossl_ssl* ssl, const uint8_t* buf, int64_t n, int bounded, int fd,
+                              int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    *status = LYRIC_BOUNDED_ERROR;
     int64_t off = 0;
     while (off < n) {
         int64_t remaining = n - off;
@@ -1546,6 +1985,15 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
         int saved_errno = errno;
         int err = O.SSL_get_error(ssl, w);
         if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
+            if (bounded) {
+                /* The retry passes the same buffer and length, as SSL_write
+                 * requires after a WANT_*. */
+                int st = bounded_wait(fd, err == OSSL_SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, deadline_ns, wake_fd,
+                                      "TLS write");
+                if (st == LYRIC_BOUNDED_OK) continue;
+                *status = st;
+                return -1;
+            }
             if (is_timeout_errno(saved_errno)) {
                 set_err("TLS write: timed out");
                 return -1;
@@ -1556,6 +2004,13 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
         return -1;
     }
     return n;
+}
+
+int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
+    if (!conn) return -1;
+    if (n <= 0) return 0;
+    int32_t status;
+    return tls_write_impl((ossl_ssl*)conn, buf, n, 0, -1, 0, -1, &status);
 }
 
 /* TLS counterparts of lyric_sock_read_bytes/lyric_sock_write_bytes above
@@ -1601,6 +2056,76 @@ int64_t lyric_tls_write_bytes(void* conn, void* bytes_list) {
     int64_t rc = lyric_tls_write(conn, buf, n);
     free(buf);
     return rc;
+}
+
+LyricList* lyric_tls_read_bytes_bounded(void* conn, int32_t fd, int64_t max_bytes, int64_t deadline_ns,
+                                        int32_t wake_fd, int32_t* status) {
+    LyricList* list = lyric_list_new(0);
+    if (!conn || max_bytes <= 0) {
+        *status = LYRIC_BOUNDED_OK;
+        return list;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max_bytes);
+    if (!buf) {
+        set_err("out of memory");
+        *status = LYRIC_BOUNDED_ERROR;
+        return list;
+    }
+    if (set_nonblocking(fd, 1) != 0) {
+        free(buf);
+        *status = LYRIC_BOUNDED_ERROR;
+        return list;
+    }
+    int32_t st = LYRIC_BOUNDED_ERROR;
+    int64_t n = tls_read_impl((ossl_ssl*)conn, buf, max_bytes, 1, fd, deadline_ns, wake_fd, &st);
+    if (n < 0) {
+        set_nonblocking_quiet(fd, 0);
+        free(buf);
+        *status = st;
+        return list;
+    }
+    if (set_nonblocking(fd, 0) != 0) {
+        free(buf);
+        *status = LYRIC_BOUNDED_ERROR;
+        return list;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        lyric_list_push(list, (int64_t)buf[i]);
+    }
+    free(buf);
+    *status = LYRIC_BOUNDED_OK;
+    return list;
+}
+
+int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, int64_t deadline_ns,
+                                      int32_t wake_fd) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = list ? list->len : 0;
+    if (!conn) {
+        set_err("TLS write: no connection");
+        return LYRIC_BOUNDED_ERROR;
+    }
+    if (n <= 0) return LYRIC_BOUNDED_OK;
+    uint8_t* buf = (uint8_t*)malloc((size_t)n);
+    if (!buf) {
+        set_err("out of memory");
+        return LYRIC_BOUNDED_ERROR;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        buf[i] = (uint8_t)(list->data[i] & 0xff);
+    }
+    if (set_nonblocking(fd, 1) != 0) {
+        free(buf);
+        return LYRIC_BOUNDED_ERROR;
+    }
+    int32_t st = LYRIC_BOUNDED_ERROR;
+    int64_t rc = tls_write_impl((ossl_ssl*)conn, buf, n, 1, fd, deadline_ns, wake_fd, &st);
+    free(buf);
+    if (rc < 0) {
+        set_nonblocking_quiet(fd, 0);
+        return st;
+    }
+    return set_nonblocking(fd, 0) == 0 ? LYRIC_BOUNDED_OK : LYRIC_BOUNDED_ERROR;
 }
 
 int32_t lyric_tls_alpn(void* conn, char* out, int32_t out_cap) {

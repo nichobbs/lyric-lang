@@ -1,29 +1,23 @@
-//! tests/conformance_tests.l — runs each library's conformance suite against
-//! every in-tree backend, and against the mocks that implement the same
-//! contract, so a backend or mock cannot drift from what the interface says.
+//! tests/conformance_tests.l — runs the conformance suites of
+//! `Lyric.Conformance` (lyric-conformance/) against the mocks that implement
+//! the same contracts, so a mock cannot drift from what the interface says.
+//! The in-tree backends run their suites in `lyric-conformance/tests/`.
 //!
-//! The negative tests at the end run each suite against a deliberately broken
-//! implementation: a suite that cannot fail proves nothing.
+//! The negative tests run a suite against a deliberately broken
+//! implementation, including one that panics: these need a panic to be
+//! caught, so they run on `dotnet` and the JVM, where this package runs.
 @test_module
 package Testing.ConformanceTests
 
 import Std.Core
 import Std.Collections
-import Std.Uuid as Uuid
 import Testing
 import Testing.Conformance
 import Testing.Conformance.Cache as CacheConformance
-import Testing.Conformance.Flags as FlagsConformance
-import Testing.Conformance.Session as SessionConformance
-import Testing.Conformance.Mq as MqConformance
-import Testing.Conformance.Storage as StorageConformance
 import Testing.Conformance.Jobs as JobsConformance
 import Testing.Conformance.Search as SearchConformance
 import Cache
-import Flags
-import Session
 import Mq
-import Storage
 import Jobs
 import Search
 import Std.Testing
@@ -35,79 +29,10 @@ func advanceCacheClock(seconds: in Int): Unit {
   cacheClock.millis = cacheClock.millis + seconds.toLong() * 1000i64
 }
 
-func makeInProcessCache(): Cache.CacheStore {
-  val s: Cache.CacheStore = Cache.inProcessWithClock(cacheClock)
-  return s
-}
-
-test "InProcessCacheStore conforms to CacheStore" {
-  requireConformance(CacheConformance.run({ -> makeInProcessCache() }, { s -> advanceCacheClock(s) }))
-}
-
-// ─── Flags ───────────────────────────────────────────────────────────────────
-func makeInProcessFlags(entries: in slice[Flags.FlagEntry]): Flags.FlagStore {
-  val s: Flags.FlagStore = Flags.fromEntries(entries)
-  return s
-}
-
-test "InProcessFlagStore conforms to FlagStore" {
-  requireConformance(FlagsConformance.run({ entries -> makeInProcessFlags(entries) }))
-}
-
-// ─── Session ─────────────────────────────────────────────────────────────────
-func makeInProcessSessions(): Session.SessionStore {
-  val s: Session.SessionStore = Session.inMemory()
-  return s
-}
-
-test "InProcessSessionStore conforms to SessionStore" {
-  requireConformance(SessionConformance.run({ -> makeInProcessSessions() }))
-}
-
-// ─── Mq ──────────────────────────────────────────────────────────────────────
-func makeInMemoryQueue(): MqConformance.QueueEnds {
-  val queue = unwrapResult(Mq.connectTo("inmemory://conformance", "q-" + Uuid.uuidToString(Uuid.newUuid())))
-  val publisher: Mq.MessageQueue = queue
-  val consumer: Mq.QueueConsumer = queue
-  return MqConformance.QueueEnds(publisher = publisher, consumer = consumer)
-}
-
-func makeDeadLetterStore(maxEntries: in Int): Mq.DeadLetterStore {
-  val s: Mq.DeadLetterStore = Mq.inProcessDeadLetterStore(maxEntries)
-  return s
-}
-
-test "the in-memory broker conforms to MessageQueue and QueueConsumer" {
-  requireConformance(MqConformance.runQueue({ -> makeInMemoryQueue() }))
-}
-
-test "InProcessDeadLetterStore conforms to DeadLetterStore" {
-  requireConformance(MqConformance.runDeadLetterStore({ n -> makeDeadLetterStore(n) }))
-}
-
-// ─── Storage ─────────────────────────────────────────────────────────────────
-func makeLocalBucket(): Storage.StorageBucket {
-  val name = "conformance-" + Uuid.uuidToString(Uuid.newUuid())
-  return unwrapResult(Storage.connectLocal("/tmp/lyric-storage-conformance", name))
-}
-
-test "the local filesystem bucket conforms to StorageBucket" {
-  requireConformance(StorageConformance.run({ -> makeLocalBucket() }))
-}
-
 // ─── Jobs ────────────────────────────────────────────────────────────────────
-func makeInProcessJobs(): Jobs.JobScheduler {
-  val s: Jobs.JobScheduler = Jobs.inProcess()
-  return s
-}
-
 func makeMockJobs(): Jobs.JobScheduler {
   val s: Jobs.JobScheduler = Testing.MockJobScheduler(specs = newList(), results = newMap(), counter = 0)
   return s
-}
-
-test "InProcessJobScheduler conforms to JobScheduler" {
-  requireConformance(JobsConformance.run({ -> makeInProcessJobs() }))
 }
 
 test "MockJobScheduler conforms to JobScheduler" {

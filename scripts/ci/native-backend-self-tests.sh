@@ -195,6 +195,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh native
 # the stdlib suites that need no catchable panic.
 for t in \
   lyric-stdlib/tests/task_native_tests.l \
+  lyric-stdlib/tests/http_timeout_native_tests.l \
+  lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/char_native_tests.l \

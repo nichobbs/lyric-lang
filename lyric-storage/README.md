@@ -6,18 +6,32 @@ Object and file storage with pluggable backend support.
 
 ## Platform parity
 
-The local filesystem backend is the only backend, and it is production-ready
-on both targets: `dotnet` through `Storage.Kernel.Net` and `jvm` through
-`Storage.Kernel.Jvm`, which needs nothing beyond `java.base`. There are no
+The local filesystem backend is the only backend, and it is real on every
+target: `dotnet` through `Storage.Kernel.Net`, `jvm` through
+`Storage.Kernel.Jvm`, which needs nothing beyond `java.base`, and native
+through the standard library (`Std.File`, `Std.Directory`, `Std.Encoding`),
+with the MD5 ETag and full-path resolution written in Lyric. There are no
 placeholder backends: every backend this library exposes works.
 
-| Feature flag | Backend          | Status    |
-|--------------|------------------|-----------|
-| `dotnet`     | Local filesystem | Available |
-| `jvm`        | Local filesystem | Available |
+| Target   | Backend          | Selected by                                              | Status    |
+|----------|------------------|----------------------------------------------------------|-----------|
+| `dotnet` | Local filesystem | feature `dotnet` (the default)                           | Available |
+| `jvm`    | Local filesystem | `--target jvm --no-default-features --features jvm`      | Available |
+| `native` | Local filesystem | `--target native` (no feature)                           | Available |
 
-Select exactly one flag, matching `--target` (`--target jvm
---no-default-features --features jvm`).
+`storage.l` reaches the host only through `Storage.Port`, whose functions
+return failures as `Result`s: `storage_port_managed.l` wraps the two kernels
+and is the one place their exceptions are caught, `storage_port_native.l` is
+the native implementation. The library therefore has no `try` outside that
+file and behaves the same on every target: the same `StorageError` codes for
+the same failures.
+
+Native notes: `tests/storage_tests.l` (36 cases) passes there, and the
+`StorageBucket` conformance suite of `lyric-conformance` runs against the
+local bucket. Linux is what was run; the path code also handles Windows roots
+and separators but has not been run there. The `Storage.Aspects` templates
+cannot be instantiated from a native project build yet (`A0045`, #3498), so
+`tests/storage_aspect_weaving_tests.l` has no native case.
 
 ## Migration: S3 and Azure Blob removed
 
@@ -65,7 +79,7 @@ for entry in listing.entries {
 
 ## Supported backends
 
-- `local` - local filesystem (production-ready on `dotnet` and `jvm`)
+- `local` - local filesystem (`dotnet`, `jvm` and native)
 
 ## Core types and functions
 

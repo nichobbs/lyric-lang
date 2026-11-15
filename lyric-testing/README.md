@@ -5,53 +5,35 @@
 Mock implementations and assertion helpers for unit testing Lyric applications
 without real infrastructure.
 
+## Targets
+
+`dotnet`. The mocks cover every library interface, including `lyric-db` and
+`lyric-mail`, which have no native backend, and the `Testing` package does not
+compile for the JVM (a code generator defect, J002). `[package] targets` says
+so, so a build for another target stops with `F0054`/`F0055` rather than in
+the middle of a dependency.
+
 ## Packages
 
 | Package | Purpose |
 |---|---|
 | `Testing` | Core mock types, `TestContext` factory, and assertion helpers |
-| `Testing.Conformance` | Harness shared by the conformance suites (`Checks`, `runCase`, `requireConformance`) |
-| `Testing.Conformance.Cache` / `.Flags` / `.Session` / `.Mq` / `.Storage` / `.Jobs` / `.Search` | One conformance suite per library interface |
 
 ## Conformance suites
 
-Each library keeps an interface, one real in-tree backend and a conformance
-suite (D552). A suite is a function that takes a factory for the
-implementation and checks the contract the interface documents. It never stops
-at the first failure: every case runs, and `requireConformance` then fails the
-calling test once, naming each failed expectation.
+The conformance suites (`Testing.Conformance` and `Testing.Conformance.Cache`
+/ `.Flags` / `.Session` / `.Mq` / `.Storage` / `.Jobs` / `.Search`) are the
+`lyric-conformance` package since D604. It depends only on the interface
+packages and builds for `dotnet`, the JVM and native; see its README for the
+suites and how to run one. A package that imported them through `Lyric.Testing`
+declares `"Lyric.Conformance"` as a dependency instead; the imports do not
+change.
 
-```lyric
-import Testing.Conformance
-import Testing.Conformance.Cache as CacheConformance
-
-test "MyRedisCacheStore conforms to CacheStore" {
-  requireConformance(CacheConformance.run({ -> connectMyStore() }, { n -> sleepSeconds(n) }))
-}
-```
-
-| Suite | Interface | Factory |
-|---|---|---|
-| `Cache.run(factory, advanceSeconds)` | `Cache.CacheStore` | fresh store; a hook that moves the store's clock (or sleeps) |
-| `Flags.run(factory)` | `Flags.FlagStore` | `(entries) -> store` seeded with the entries |
-| `Session.run(factory)` | `Session.SessionStore` | fresh store |
-| `Mq.runQueue(factory)` | `Mq.MessageQueue` + `Mq.QueueConsumer` | fresh queue as `QueueEnds` |
-| `Mq.runDeadLetterStore(factory)` | `Mq.DeadLetterStore` | `(maxEntries) -> store` |
-| `Storage.run(factory)` | `Storage.StorageBucket` | fresh, empty bucket |
-| `Jobs.run(factory)` | `Jobs.JobScheduler` | fresh scheduler (submission, status, cancel, cron; handler execution is backend-specific) |
-| `Search.run(factory)` (async) | `Search.SearchClient` | client over a fresh backend; `index` must make the document visible to `search` |
-
-Backends run their suite from `lyric-testing/tests/conformance_tests.l`
-(in-process cache, flag, session and job stores, the in-memory broker and
-dead-letter store, the local filesystem bucket, `MockJobScheduler`,
-`MockSearchClient`). The negative tests there run a suite against a broken
-store, so a suite that cannot fail is caught.
-
-Where backends legitimately differ the suite accepts exactly the documented
-alternatives: `presignedUrl` succeeds or answers `NOT_SUPPORTED`, and `put`
-with user metadata stores it or answers `USER_META_UNSUPPORTED`. The session
-suite pins the secure behaviour: `set` on an unknown session is
-`SESSION_NOT_FOUND` and never creates the session.
+This package's `tests/conformance_tests.l` runs those suites against the mocks
+that implement the same contracts (`MockJobScheduler`, `MockSearchClient`),
+and holds the negative tests that need a panic to be caught: a store that
+panics fails its case and not the run, and `requireConformance` fails its
+caller.
 
 ## Mocks added alongside the suites
 

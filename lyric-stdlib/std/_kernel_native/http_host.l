@@ -59,11 +59,12 @@
 //!    Correctness is unaffected; only per-request connection-setup latency
 //!    is worse than the other two targets. A pooling follow-up is tracked
 //!    alongside N9.5.
-//! 3. **Unix domain sockets are unsupported** (`panic`, matching the JVM
-//!    kernel's own unconditional-panic shape for ITS unrelated reason): the
-//!    N9.1 `lyric_sock_*` seam has no Unix-socket transport yet. A future
-//!    seam addition would let this file drop the panic with no `Std.Http`-
-//!    level changes.
+//! 3. **Unix domain sockets are unsupported.** The `lyric_sock_*` seam has
+//!    no Unix-socket transport. A client built for one is constructed (so
+//!    `HttpClientBuilder.build()` stays infallible, as on the other targets)
+//!    and every request through it fails with an `Err` naming the gap; it
+//!    never panics, which a caller could not catch here (D-N-003). A seam
+//!    addition would lift this with no `Std.Http`-level change.
 //! 4. **No `Std.String`/`Std.Char` helper calls.** `Lyric.LlvmCodegen`'s
 //!    String-receiver method lowering supports ONLY `.toString()` and
 //!    `.substring(start, count)` for `--target native` today (verified
@@ -87,97 +88,63 @@
 //!    The one exception is `findSubstring`, which calls
 //!    `Std.String.indexOfFromRaw`: that function is a plain call into the
 //!    `Std.StringHost` native kernel, not a String-receiver method (#7269).
-//! 5. **`*WithCancel*` accept a `CancellationToken` but never consult it.**
-//!    `Std.Task` (which owns `CancellationToken`) has no
-//!    `_kernel_native/task.l` twin — a separate, pre-existing gap, not
-//!    introduced here — so cooperative cancellation genuinely cannot be
-//!    implemented on this target yet. These functions still MUST be
-//!    declared with the exact signature `Std.Http`'s `sendWithCancelAsync`/
-//!    `getWithCancelAsync`/`postWithCancelAsync`/`bodyTextWithCancel`
-//!    call, or `std/http.l` itself fails to TYPE-CHECK on native (a missing
-//!    symbol in an unconditionally-referenced call, independent of whether
-//!    any USER program ever calls the `*WithCancel*` wrapper) — verified
-//!    directly (`import Std.Http` alone, never calling anything, already
-//!    compiles clean on native today via the `_kernel/http_host.l`
-//!    fallback, confirming native codegen is per-reachability lazy: a
-//!    declared-but-uncalled function, however broken its body would be if
-//!    reached, never gets lowered). So these are declared, accept the
-//!    token for signature parity, and silently do not honour it — clearly
-//!    worse than the other two targets, not a silent behavioural claim
-//!    (nothing here claims cancellation works).
+//! 5. **Timeouts and cancellation: the `*WithCancel*` family (#9090).** A
+//!    request has no timeout of its own on any target: `Std.Http`'s limits
+//!    are those of the `CancellationToken` a send is given
+//!    (`sendWithCancel`, `sendWithCancelAsync`, `getWithCancelAsync`,
+//!    `postWithCancelAsync` and the `*WithTimeoutAsync` wrappers built on
+//!    them). On this target the token bounds the whole send:
 //!
-//! ## The `HttpClient` interface itself does not work on native today (pre-existing, general compiler gap — not fixed here)
+//!      - **What is bounded.** Name resolution, the TCP connect, the TLS
+//!        handshake, writing the request, and reading the response: status
+//!        line, headers, and the body in every framing (`Content-Length`,
+//!        chunked, close-delimited), across redirects. The token's deadline
+//!        (`makeCancelSourceTimeout`) is one absolute instant for all of it,
+//!        not an idle timeout per read: a peer that keeps sending a byte now
+//!        and then does not extend it. There is no separate connect timeout.
+//!      - **A deadline that passes** ends the send with the cause
+//!        `"request timed out"`, which `Std.Http` reports as
+//!        `ConnectionFailed(url, "request timed out")` — the JVM kernel's
+//!        wording, so a caller's test is the same there (#9067: `Std.Http`
+//!        has no `HttpError.Timeout` producer on any target yet). It is never
+//!        reported early: the monotonic clock has reached the deadline, so
+//!        `isCancelled(token)` is already true when the send returns.
+//!      - **`cancelSource` (or `cancelScope`) from another thread** ends the
+//!        send at once, wherever it is waiting, with the cause
+//!        `"request cancelled: cancellation was requested"`.
+//!      - **A token that is already cancelled** fails the send with the same
+//!        causes before any connection is made.
+//!      - **Anything else** (refused, unreachable, unresolved, reset, TLS
+//!        failure, malformed response) keeps its own cause and is not a
+//!        timeout.
 //!
-//! This is the one item genuinely out of this file's power to complete,
-//! discovered by direct compilation, not assumed:
+//!    How: `Std.TcpHost`'s bounded operations (`hostConnectBounded`,
+//!    `hostUpgradeClientTlsBounded`, `hostReadBounded`, `hostWriteBounded`)
+//!    take the deadline and a wake pipe; the pipe is registered for the
+//!    token's source with lyric-rt (`lyric_cancel_wake_register`), and
+//!    `Std.Task.cancelSource` signals it. The helper thread of a name lookup
+//!    that outlives its limit is left to finish on its own.
 //!
-//! ```text
-//! $ lyric build --target native repro.l   # `val c = defaultClient()`
-//! Unhandled exception. System.Exception: Lyric.LlvmCodegen: type
-//! 'HttpClient' is not yet supported for --target native (Phase N1 lowers
-//! scalars and String only)
-//!   at Lyric.LlvmCodegen.Program.typeExprToNType(TypeExpr)
-//!   ...
-//! ```
+//!    Not supported, by construction rather than silently: the sends without
+//!    a token (`send`, `get`, `post`, ...) have no limit, as on the JVM (.NET
+//!    alone applies `HttpClient`'s default 100 s there); and
+//!    `bodyTextWithCancel` has nothing to interrupt, because a response is
+//!    fully buffered by the send, so it only fails for a token that is
+//!    already cancelled. The send blocks its thread (it is not a reactor
+//!    task), like every send of this kernel.
 //!
-//! and, isolating further with a same-shape single-file interface (proving
-//! this is a general async-interface-dispatch gap, not anything
-//! `HttpClient`- or bundled-stdlib-specific):
+//! Every failure of a send is an `Err`: no entry point of this kernel panics
+//! on a transport failure, a malformed URL or response, or an unsupported
+//! client, so a caller never needs `try` (which native does not have).
 //!
-//! ```text
-//! interface Greeter { async func greet(): Int }
-//! ...
-//! async func run(): Int { await makeGreeter().greet() }
-//! ```
-//! ```text
-//! Unhandled exception. System.Exception: Lyric.LlvmCodegen: interface
-//! method '.greet' on 'T.Greeter' is not yet lowerable for --target native
-//! — only non-generic abstract interface methods dispatch through the
-//! vtable; default, generic, async, and Self-returning interface methods
-//! are deferred (N3.2).
-//! ```
+//! ## Reached through `Std.Http`
 //!
-//! `Std.Http.HttpClient` declares SEVEN methods, every one `async func`
-//! (`send`/`sendWithCancel`/`get`/`post`/`put`/`delete`/`patch`) — exactly
-//! the deferred shape the compiler's own error names. This blocks, on
-//! `--target native` only, EVERY `Std.Http` entry point that returns or
-//! dispatches through the `HttpClient` interface: `defaultClient()`,
-//! `clientWithRedirects`/`clientNoRedirects`/`clientWithUnixSocket*`, and
-//! — the headline casualty for this issue — `HttpClientBuilder.build()`,
-//! which means `withCaCertificate`/`withExclusiveCaCertificate`/
-//! `withClientIdentity`/`withMinTlsVersion`/`withInsecureSkipVerify` have
-//! NO reachable call path into this kernel's `hostClientWithTls` through
-//! `Std.Http`'s public surface today, on this target only.
-//!
-//! This is a general, pre-existing `Lyric.LlvmCodegen` limitation (N3.2,
-//! already tracked in the compiler's own source comments) affecting ANY
-//! async-method interface, not an HTTP-specific gap and not something a
-//! `_kernel_native/` file can work around — the fix belongs in
-//! `Lyric.LlvmCodegen`'s interface-dispatch lowering, a compiler change far
-//! outside this issue's kernel-boundary scope. Per this repository's
-//! standard (no stub, no fake pass), this kernel ships the REAL,
-//! substantive, working functionality that IS reachable today:
-//!
-//!   - Every function below (`hostDefaultClient`, `hostClientWithTls` and
-//!     the whole TLS-option surface, `hostMakeRequest`/`hostWithHeader`/
-//!     `hostWithStringBody`, every `*Safe` send function, every response
-//!     accessor) is fully implemented and directly callable — verified end
-//!     to end by this file's self-test, `llvm_http_client_self_test.l`,
-//!     which drives `Std.HttpHost` DIRECTLY (the same way that test drives
-//!     `Std.TcpHost` for N9.2, rather than through the blocked
-//!     `Std.Http`/`HttpClient` layer) for a real loopback HTTPS round trip,
-//!     including `hostClientWithTls`'s CA-pinning path.
-//!   - `Std.Http`'s FREE functions that never touch the `HttpClient`
-//!     interface type — `sendAsync`/`getAsync`/`postAsync` (and their
-//!     `*WithCancelAsync` siblings, modulo item 5 above) — call
-//!     `HostHttp.hostDefaultClient()` directly (a plain record, not the
-//!     interface) and so already work end to end through `Std.Http`'s
-//!     public surface on native, verified directly.
-//!   - The moment N3.2 ships vtable dispatch for async interface methods,
-//!     `HttpClientBuilder.build()`/`defaultClient()`/the `HttpClient`
-//!     interface start working with ZERO changes needed in this file —
-//!     this kernel is not blocked on anything of its own; it is fully
-//!     ready and waiting behind a compiler capability it does not own.
+//! `Std.Http`'s whole public surface runs on this kernel on native: the free
+//! functions and the `HttpClient` interface (`defaultClient()`,
+//! `HttpClientBuilder.build()`, including the TLS options, which reach
+//! `hostClientWithTls`). `lyric-stdlib/tests/http_timeout_native_tests.l`
+//! drives it that way; `llvm_http_client_self_test.l` calls the kernel
+//! directly.
 //!
 //! ## `withCaCertificate`'s ADDITIVE semantics needed a small, genuine seam extension
 //!
@@ -229,24 +196,24 @@ import Std.TcpHost as Tcp
 // =====================================================================
 // Public types.
 // =====================================================================
-/// A configured client. Plain record (module header item 6's blocker is
-/// about `Std.Http`'s `HttpClient` INTERFACE, not this kernel-private
-/// handle type, which every `Std.Http` free function already passes
-/// around successfully). `maxRedirects` is a hop CAP, meaningful only when
-/// `followRedirects` is true.
+/// A configured client: what `Std.Http`'s `HttpClient` implementation holds.
+/// `maxRedirects` is a hop cap, meaningful only when `followRedirects` is
+/// true.
 pub record HttpClientHandle {
   followRedirects: Bool
   maxRedirects: Int
   trust: Tcp.TlsClientTrust
   clientIdentity: Option[Tls.Identity]
   minVersion: Tls.TlsVersion
+  // Why every request through this client fails (module header item 3),
+  // or `None` for a usable client.
+  unsupportedReason: Option[String]
 }
 
 /// Request under construction (module header: no shared client engine, so
-/// this file owns request serialization). `timeoutNanos` is accepted for
-/// signature parity with the other two kernels' `HttpRequestMessage` but
-/// unused on this target (module header item 5's cancellation gap covers
-/// deadlines too — there is no `Std.Task` timer primitive to drive one).
+/// this file owns request serialization). It carries no timeout: the limits
+/// of a send come from the `CancellationToken` given to the `*WithCancel*`
+/// family (module header item 5).
 pub record HttpRequestMessage {
   method: String
   url: String
@@ -255,7 +222,6 @@ pub record HttpRequestMessage {
   contentType: String
   body: slice[Byte]
   hasBody: Bool
-  timeoutNanos: Long
 }
 
 /// Response, fully buffered at send time (matches both other kernels'
@@ -597,6 +563,113 @@ val maxInterimResponses: Int = 20
 /// default (100).
 val maxHeaderCount: Int = 100
 
+// =====================================================================
+// The limits of a request (module header item 5).
+// =====================================================================
+extern func rtMonotonicNanos(): Long = "lyric_monotonic_nanos"
+
+extern func rtCancelWakeRegister(source: CancellationTokenSource, writeFd: Int): Unit = "lyric_cancel_wake_register"
+
+extern func rtCancelWakeUnregister(source: CancellationTokenSource, writeFd: Int): Unit = "lyric_cancel_wake_unregister"
+
+/// The cause a send reports when its token's deadline passed. The JVM
+/// kernel's wording for the same event, so a caller's test for it is the
+/// same on both.
+val timedOutMessage: String = "request timed out"
+
+/// The cause a send reports when its token was cancelled explicitly.
+val cancelledMessage: String = "request cancelled: cancellation was requested"
+
+/// What bounds one send, redirects included: the token's deadline (an
+/// absolute `lyric_monotonic_nanos` instant, `0i64` for none) and, for a
+/// token that can be cancelled, a wake pipe `cancelSource` signals.
+record Limits {
+  deadlineNanos: Long
+  wake: Option[Tcp.WakePipe]
+  source: Option[CancellationTokenSource]
+}
+
+func noLimits(): Limits {
+  Limits(deadlineNanos = 0i64, wake = None, source = None)
+}
+
+func wakeFdOf(limits: in Limits): Int {
+  match limits.wake {
+    case Some(p) -> Tcp.hostWakePipeReadFd(p)
+    case None -> 0 - 1
+  }
+}
+
+/// Why a token that reads as cancelled is so: its deadline, or `cancelSource`.
+func cancelCause(token: in CancellationToken): String {
+  match token.source {
+    case Some(src) -> {
+      if src.deadlineNanos > 0i64 and rtMonotonicNanos() - src.deadlineNanos >= 0i64 {
+        timedOutMessage
+      } else {
+        cancelledMessage
+      }
+    }
+    case None -> cancelledMessage
+  }
+}
+
+/// The limits `token` puts on a send. The wake pipe is registered before the
+/// token is tested, so a `cancelSource` that lands in between is not lost:
+/// it either shows in the test or signals the pipe. `Err` when the token is
+/// already cancelled, or no pipe can be made.
+func openLimits(token: in CancellationToken): Result[Limits, String] {
+  match token.source {
+    case None -> Ok(value = noLimits())
+    case Some(src) -> {
+      val pipe = match Tcp.hostWakePipeNew() { case Ok(p) -> p; case Err(e) -> return Err(error = Tcp.TcpError.message(e)) }
+      rtCancelWakeRegister(src, Tcp.hostWakePipeWriteFd(pipe))
+      val limits = Limits(deadlineNanos = src.deadlineNanos, wake = Some(value = pipe), source = Some(value = src))
+      if isCancelled(token) {
+        closeLimits(limits)
+        return Err(error = cancelCause(token))
+      }
+      Ok(value = limits)
+    }
+  }
+}
+
+func closeLimits(limits: in Limits): Unit {
+  match limits.wake {
+    case None -> ()
+    case Some(pipe) -> {
+      match limits.source {
+        case Some(src) -> rtCancelWakeUnregister(src, Tcp.hostWakePipeWriteFd(pipe))
+        case None -> ()
+      }
+      Tcp.hostWakePipeClose(pipe)
+    }
+  }
+}
+
+/// The cause for a transport operation that did not complete.
+func boundedCause(e: in Tcp.BoundedError): String {
+  match e {
+    case BoundDeadlinePassed -> timedOutMessage
+    case BoundInterrupted -> cancelledMessage
+    case BoundFailed(error) -> Tcp.TcpError.message(error)
+  }
+}
+
+/// One connection of a send, with the limits the send runs under.
+record Wire {
+  conn: Tcp.Conn
+  deadlineNanos: Long
+  wakeFd: Int
+}
+
+func wireRead(wire: in Wire): Result[slice[Byte], String] {
+  match Tcp.hostReadBounded(wire.conn, 8192, wire.deadlineNanos, wire.wakeFd) {
+    case Ok(chunk) -> Ok(value = chunk)
+    case Err(e) -> Err(error = boundedCause(e))
+  }
+}
+
 func crlfBytes(): slice[Byte] {
   [13u8, 10u8]
 }
@@ -653,7 +726,7 @@ func copyRange(buf: in List[Byte], start: in Int, count: in Int): slice[Byte] {
 /// `pattern` (#6636: bounds a header block, or a single chunk-size/
 /// trailer line, that never terminates).
 func readUntilPatternFrom(
-  conn: in Tcp.Conn, buf: in List[Byte], from: in Int, pattern: in slice[Byte], maxBytes: in Int
+  wire: in Wire, buf: in List[Byte], from: in Int, pattern: in slice[Byte], maxBytes: in Int
 ): Result[Int, String] {
   var searchFrom = from
   var found = findPattern(buf, searchFrom, pattern)
@@ -662,8 +735,8 @@ func readUntilPatternFrom(
       return Err(error = "response exceeds the maximum allowed size while searching for expected data")
     }
     val priorCount = buf.count
-    match Tcp.hostRead(conn, 8192) {
-      case Err(e) -> return Err(error = Tcp.TcpError.message(e))
+    match wireRead(wire) {
+      case Err(e) -> return Err(error = e)
       case Ok(chunk) -> {
         if chunk.length == 0 {
           return Err(error = "connection closed before expected data arrived")
@@ -684,10 +757,10 @@ func readUntilPatternFrom(
 }
 
 /// Read from `conn` into `buf` until it holds at least `total` bytes.
-func readAtLeast(conn: in Tcp.Conn, buf: in List[Byte], total: in Int): Result[Unit, String] {
+func readAtLeast(wire: in Wire, buf: in List[Byte], total: in Int): Result[Unit, String] {
   while buf.count < total {
-    match Tcp.hostRead(conn, 8192) {
-      case Err(e) -> return Err(error = Tcp.TcpError.message(e))
+    match wireRead(wire) {
+      case Err(e) -> return Err(error = e)
       case Ok(chunk) -> {
         if chunk.length == 0 {
           return Err(error = "connection closed before response body was fully received")
@@ -709,14 +782,14 @@ func readAtLeast(conn: in Tcp.Conn, buf: in List[Byte], total: in Int): Result[U
 /// Fails with `Err` once the body (from `bodyStart` on) exceeds
 /// `maxResponseBodyBytes` rather than reading an unbounded close-delimited
 /// stream to completion (#6636).
-func readUntilEof(conn: in Tcp.Conn, buf: in List[Byte], bodyStart: in Int): Result[Unit, String] {
+func readUntilEof(wire: in Wire, buf: in List[Byte], bodyStart: in Int): Result[Unit, String] {
   var reading = true
   while reading {
     if buf.count - bodyStart > maxResponseBodyBytes {
       return Err(error = "response body exceeds the maximum allowed size")
     }
-    match Tcp.hostRead(conn, 8192) {
-      case Err(e) -> return Err(error = Tcp.TcpError.message(e))
+    match wireRead(wire) {
+      case Err(e) -> return Err(error = e)
       case Ok(chunk) -> {
         if chunk.length == 0 {
           reading = false
@@ -742,7 +815,7 @@ func decodeRange(buf: in List[Byte], start: in Int, count: in Int): Option[Strin
 /// only far enough to find the terminating blank line), matching
 /// `Std.HttpEngine`'s own "parse trailers, discard them" policy on the
 /// server side.
-func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): Result[slice[Byte], String] {
+func readChunkedBody(wire: in Wire, buf: in List[Byte], startPos: in Int): Result[slice[Byte], String] {
   val acc: List[Byte] = newList()
   var pos = startPos
   var done = false
@@ -760,7 +833,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
     if buf.count - startPos > maxResponseBodyBytes {
       return Err(error = "chunked response exceeds the maximum allowed raw size")
     }
-    val lineEnd = match readUntilPatternFrom(conn, buf, pos, crlfBytes(), maxChunkLineBytes) {
+    val lineEnd = match readUntilPatternFrom(wire, buf, pos, crlfBytes(), maxChunkLineBytes) {
       case Ok(idx) -> idx
       case Err(e) -> return Err(error = e)
     }
@@ -807,7 +880,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
         if trailerCount >= maxTrailerLines {
           return Err(error = "chunked response trailer section exceeds the maximum allowed number of lines")
         }
-        val trailerLineEnd = match readUntilPatternFrom(conn, buf, trailerPos, crlfBytes(), maxChunkLineBytes) {
+        val trailerLineEnd = match readUntilPatternFrom(wire, buf, trailerPos, crlfBytes(), maxChunkLineBytes) {
           case Ok(idx) -> idx
           case Err(e) -> return Err(error = e)
         }
@@ -821,7 +894,7 @@ func readChunkedBody(conn: in Tcp.Conn, buf: in List[Byte], startPos: in Int): R
       done = true
     } else {
       val dataEnd = dataStart + size
-      match readAtLeast(conn, buf, dataEnd + 2) {
+      match readAtLeast(wire, buf, dataEnd + 2) {
         case Ok(_) -> {
         }
         case Err(e) -> return Err(error = e)
@@ -913,7 +986,8 @@ func defaultClientHandle(trust: in Tcp.TlsClientTrust): HttpClientHandle {
     maxRedirects = 20,
     trust = trust,
     clientIdentity = None,
-    minVersion = Tls.TlsVersion.Tls12
+    minVersion = Tls.TlsVersion.Tls12,
+    unsupportedReason = None
   )
 }
 
@@ -927,7 +1001,8 @@ pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
     maxRedirects = maxRedirects,
     trust = Tcp.TlsTrustSystemDefault,
     clientIdentity = None,
-    minVersion = Tls.TlsVersion.Tls12
+    minVersion = Tls.TlsVersion.Tls12,
+    unsupportedReason = None
   )
 }
 
@@ -937,7 +1012,8 @@ pub func hostClientNoRedirects(): HttpClientHandle {
     maxRedirects = 0,
     trust = Tcp.TlsTrustSystemDefault,
     clientIdentity = None,
-    minVersion = Tls.TlsVersion.Tls12
+    minVersion = Tls.TlsVersion.Tls12,
+    unsupportedReason = None
   )
 }
 
@@ -959,14 +1035,22 @@ pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
 
 // ---------------------------------------------------------------------------
 // Unix domain socket support: not available on this target yet (module
-// header item 3) — the N9.1 `lyric_sock_*` seam has no Unix-socket
-// transport. Fails loudly rather than silently dialing TCP, matching the
-// JVM kernel's own unconditional-panic shape for its own, unrelated reason.
+// header item 3) — the `lyric_sock_*` seam has no Unix-socket transport.
+// Constructing the client succeeds, as `HttpClientBuilder.build()` promises;
+// every request through it then fails with this reason rather than dialing
+// TCP, or panicking where a caller has no way to catch it (D-N-003).
 // ---------------------------------------------------------------------------
 func unixSocketUnsupported(): HttpClientHandle {
-  panic(
-    "Std.Http: Unix domain socket clients are not supported on --target native yet " +
-      "(the lyric_sock_*/lyric_tls_* seam has no Unix-socket transport; N9.4/#6105)"
+  HttpClientHandle(
+    followRedirects = false,
+    maxRedirects = 0,
+    trust = Tcp.TlsTrustSystemDefault,
+    clientIdentity = None,
+    minVersion = Tls.TlsVersion.Tls12,
+    unsupportedReason = Some(
+      value = "Unix domain socket clients are not supported on --target native " +
+        "(the native socket layer has no Unix-socket transport)"
+    )
   )
 }
 
@@ -1056,7 +1140,8 @@ pub func hostClientWithTls(
     maxRedirects = maxRedirectsResolved,
     trust = trust,
     clientIdentity = clientIdentity,
-    minVersion = minVersion
+    minVersion = minVersion,
+    unsupportedReason = None
   )
 }
 
@@ -1073,8 +1158,7 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
     headerValues = values,
     contentType = "",
     body = [],
-    hasBody = false,
-    timeoutNanos = 0i64
+    hasBody = false
   )
 }
 
@@ -1120,8 +1204,7 @@ pub func hostWithBytesBody(
     headerValues = request.headerValues,
     contentType = contentType,
     body = body,
-    hasBody = true,
-    timeoutNanos = request.timeoutNanos
+    hasBody = true
   )
 }
 
@@ -1231,17 +1314,20 @@ func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): Re
   Ok(value = acc.toArray())
 }
 
-func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl): Result[Tcp.Conn, String] {
-  if parsed.isHttps {
-    match Tcp.hostConnectTls(parsed.host, parsed.port, client.trust, client.clientIdentity, client.minVersion, "http/1.1") {
-      case Err(e) -> Err(error = Tcp.TcpError.message(e))
-      case Ok(conn) -> Ok(value = conn)
-    }
-  } else {
-    match Tcp.hostConnect(parsed.host, parsed.port) {
-      case Err(e) -> Err(error = Tcp.TcpError.message(e))
-      case Ok(conn) -> Ok(value = conn)
-    }
+/// Connect within the limits: name lookup, TCP connect and, for `https`,
+/// the whole TLS handshake.
+func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl, limits: in Limits): Result[Tcp.Conn, String] {
+  val wakeFd = wakeFdOf(limits)
+  val plain = match Tcp.hostConnectBounded(parsed.host, parsed.port, limits.deadlineNanos, wakeFd) {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = boundedCause(e))
+  }
+  if not parsed.isHttps {
+    return Ok(value = plain)
+  }
+  match Tcp.hostUpgradeClientTlsBounded(plain, parsed.host, client.trust, client.clientIdentity, client.minVersion, "http/1.1", limits.deadlineNanos, wakeFd) {
+    case Ok(conn) -> Ok(value = conn)
+    case Err(e) -> Err(error = boundedCause(e))
   }
 }
 
@@ -1310,12 +1396,12 @@ func isBodylessResponse(method: in String, status: in Int): Bool {
 /// must check `isBodylessResponse` first (#6692): this function always
 /// tries to read a body per the framing headers.
 func readBody(
-  conn: in Tcp.Conn, buf: in List[Byte], bodyStart: in Int, headers: in ParsedHeaders
+  wire: in Wire, buf: in List[Byte], bodyStart: in Int, headers: in ParsedHeaders
 ): Result[slice[Byte], String] {
   match findHeaderValue(headers.names, headers.values, "Transfer-Encoding") {
     case Some(te) -> {
       if asciiEqualsCaseInsensitive(trimSpaces(te), "chunked") {
-        readChunkedBody(conn, buf, bodyStart)
+        readChunkedBody(wire, buf, bodyStart)
       } else {
         Err(error = "unsupported Transfer-Encoding: " + te)
       }
@@ -1328,14 +1414,14 @@ func readBody(
             Err(error = "response Content-Length exceeds the maximum allowed size")
           } else {
             val total = bodyStart + len
-            match readAtLeast(conn, buf, total) {
+            match readAtLeast(wire, buf, total) {
               case Ok(_) -> Ok(value = copyRange(buf, bodyStart, len))
               case Err(e) -> Err(error = e)
             }
           }
         }
       }
-      case None -> match readUntilEof(conn, buf, bodyStart) {
+      case None -> match readUntilEof(wire, buf, bodyStart) {
         case Ok(_) -> Ok(value = copyRange(buf, bodyStart, buf.count - bodyStart))
         case Err(e) -> Err(error = e)
       }
@@ -1353,7 +1439,7 @@ func readBody(
 /// discarded before giving up (#6704): each one's header block is
 /// individually bounded by `maxResponseHeaderBytes`, but nothing else
 /// bounded how many a server could stream in a row.
-func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMessage, String] {
+func readResponse(wire: in Wire, method: in String): Result[HttpResponseMessage, String] {
   val buf: List[Byte] = newList()
   var searchFrom = 0
   var interimCount = 0
@@ -1361,7 +1447,7 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
     if interimCount >= maxInterimResponses {
       return Err(error = "response exceeds the maximum allowed number of interim (1xx) responses")
     }
-    val headerEndIdx = match readUntilPatternFrom(conn, buf, searchFrom, crlfcrlfBytes(), maxResponseHeaderBytes) {
+    val headerEndIdx = match readUntilPatternFrom(wire, buf, searchFrom, crlfcrlfBytes(), maxResponseHeaderBytes) {
       case Ok(idx) -> idx
       case Err(e) -> return Err(error = e)
     }
@@ -1375,7 +1461,7 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
       val bodyBytes: slice[Byte] = if isBodylessResponse(method, headers.status) {
         []
       } else {
-        match readBody(conn, buf, bodyStart, headers) {
+        match readBody(wire, buf, bodyStart, headers) {
           case Ok(b) -> b
           case Err(e) -> return Err(error = e)
         }
@@ -1394,25 +1480,24 @@ func readResponse(conn: in Tcp.Conn, method: in String): Result[HttpResponseMess
   }
 }
 
-func doSendOnce(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+func doSendOnce(
+  client: in HttpClientHandle, request: in HttpRequestMessage, limits: in Limits
+): Result[HttpResponseMessage, String] {
   val parsed = match parseUrl(request.url) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
-  val conn = match connectForUrl(client, parsed) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
-  val bytes = match buildRequestBytes(request, parsed) {
-    case Ok(b) -> b
+  // Serialized before connecting, so a request that cannot go on the wire
+  // costs no connection.
+  val bytes = match buildRequestBytes(request, parsed) { case Ok(b) -> b; case Err(e) -> return Err(error = e) }
+  val conn = match connectForUrl(client, parsed, limits) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
+  val wire = Wire(conn = conn, deadlineNanos = limits.deadlineNanos, wakeFd = wakeFdOf(limits))
+  match Tcp.hostWriteBounded(conn, bytes, wire.deadlineNanos, wire.wakeFd) {
     case Err(e) -> {
       Tcp.hostClose(conn)
-      return Err(error = e)
-    }
-  }
-  match Tcp.hostWrite(conn, bytes) {
-    case Err(e) -> {
-      Tcp.hostClose(conn)
-      return Err(error = Tcp.TcpError.message(e))
+      return Err(error = boundedCause(e))
     }
     case Ok(_) -> {
     }
   }
-  val result = readResponse(conn, request.method)
+  val result = readResponse(wire, request.method)
   Tcp.hostClose(conn)
   result
 }
@@ -1520,8 +1605,7 @@ func nextRequestForRedirect(request: in HttpRequestMessage, status: in Int, newU
       headerValues = filtered.values,
       contentType = request.contentType,
       body = request.body,
-      hasBody = request.hasBody,
-      timeoutNanos = request.timeoutNanos
+      hasBody = request.hasBody
     )
   }
 }
@@ -1529,10 +1613,16 @@ func nextRequestForRedirect(request: in HttpRequestMessage, status: in Int, newU
 /// Send `request`, following redirects per `client`'s configuration
 /// (module header: hand-rolled, since native has no
 /// `HttpClientHandler`/`Redirect` to delegate to).
-func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): Result[HttpResponseMessage, String] {
+func doSend(
+  client: in HttpClientHandle, request: in HttpRequestMessage, limits: in Limits
+): Result[HttpResponseMessage, String] {
+  match client.unsupportedReason {
+    case Some(reason) -> return Err(error = reason)
+    case None -> ()
+  }
   var current = request
   var attempts = 0
-  var result = doSendOnce(client, current)
+  var result = doSendOnce(client, current, limits)
   var redirecting = true
   while redirecting and client.followRedirects and attempts < client.maxRedirects {
     match result {
@@ -1553,7 +1643,7 @@ func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): Result
                 val newUrl = resolveRedirectUrl(parsedCurrent, loc)
                 current = nextRequestForRedirect(current, response.status, newUrl)
                 attempts = attempts + 1
-                result = doSendOnce(client, current)
+                result = doSendOnce(client, current, limits)
               }
             }
           }
@@ -1614,17 +1704,17 @@ func readBodyTextOf(response: in HttpResponseMessage): Result[String, String] {
 pub async func hostSendSafe(
   client: in HttpClientHandle, request: in HttpRequestMessage
 ): Result[HttpResponseMessage, String] {
-  doSend(client, request)
+  doSend(client, request, noLimits())
 }
 
 pub async func hostGetSafe(client: in HttpClientHandle, url: in String): Result[HttpResponseMessage, String] {
-  doSend(client, hostMakeRequest("GET", url))
+  doSend(client, hostMakeRequest("GET", url), noLimits())
 }
 
 pub async func hostPostStringSafe(
   client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): Result[HttpResponseMessage, String] {
-  doSend(client, hostWithStringBody(hostMakeRequest("POST", url), contentType, body))
+  doSend(client, hostWithStringBody(hostMakeRequest("POST", url), contentType, body), noLimits())
 }
 
 pub async func hostReadBodyTextSafe(response: in HttpResponseMessage): Result[String, String] {
@@ -1636,22 +1726,30 @@ pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[s
 }
 
 // ---------------------------------------------------------------------------
-// `*WithCancel*` family (module header item 5): declared for
-// `std/http.l`'s type-checking needs, `token` accepted but never
-// consulted — no native `Std.Task` cancellation kernel exists yet.
+// `*WithCancel*` family (module header item 5): the send runs under the
+// token's limits from the name lookup to the last body byte.
 // ---------------------------------------------------------------------------
+func doSendWithCancel(
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+): Result[HttpResponseMessage, String] {
+  val limits = match openLimits(token) { case Ok(l) -> l; case Err(e) -> return Err(error = e) }
+  val result = doSend(client, request, limits)
+  closeLimits(limits)
+  result
+}
+
 pub async func hostSendWithCancelSafe(
   client: in HttpClientHandle,
   request: in HttpRequestMessage,
   token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
-  doSend(client, request)
+  doSendWithCancel(client, request, token)
 }
 
 pub async func hostGetWithCancelSafe(
   client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): Result[HttpResponseMessage, String] {
-  doSend(client, hostMakeRequest("GET", url))
+  doSendWithCancel(client, hostMakeRequest("GET", url), token)
 }
 
 pub async func hostPostStringWithCancelSafe(
@@ -1661,11 +1759,17 @@ pub async func hostPostStringWithCancelSafe(
   contentType: in String,
   token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
-  doSend(client, hostWithStringBody(hostMakeRequest("POST", url), contentType, body))
+  doSendWithCancel(client, hostWithStringBody(hostMakeRequest("POST", url), contentType, body), token)
 }
 
+/// The body was buffered by the send, so there is no read left to cancel;
+/// a token that is already cancelled still fails the call, as on the other
+/// targets.
 pub async func hostReadBodyTextWithCancelSafe(
   response: in HttpResponseMessage, token: in CancellationToken
 ): Result[String, String] {
+  if isCancelled(token) {
+    return Err(error = cancelCause(token))
+  }
   readBodyTextOf(response)
 }

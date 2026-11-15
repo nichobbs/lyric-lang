@@ -6,11 +6,21 @@ Background job scheduling behind a `JobScheduler` interface, with an in-process 
 
 ## Platform parity
 
-**`InProcessJobScheduler` is production-ready on both targets** (pure Lyric,
-no kernel dependency; `Jobs.inProcess()`). The `dotnet` and `jvm` features
-only select the platform kernel that supplies the clock, sleep and job-ID
-primitives; they are mutually exclusive, so select the one matching
-`--target`:
+**`InProcessJobScheduler` is production-ready on `dotnet` and the JVM, and
+works on native** (pure Lyric, no kernel dependency; `Jobs.inProcess()`). The
+`dotnet` and `jvm` features only select the platform kernel that supplies the
+clock, sleep and job-ID primitives; they are mutually exclusive, so select the
+one matching `--target`. A native build needs no feature: `Jobs.Kernel.Native`
+supplies the same three primitives from `Std.Time` and `Std.Uuid`.
+
+On native a panic cannot be caught (D-N-003). `dotnet` and the JVM report a
+handler that panics as a failed attempt and retry it; on native it ends the
+process, so a native handler reports failure with `Err`. The `JobScheduler`
+conformance suite passes against `Jobs.inProcess()` on native
+(`lyric-conformance`); this library's own suite relies on caught panics
+(`assertPanics`, a panicking handler) and runs on `dotnet` and the JVM. The
+`Jobs.Aspects` templates cannot be instantiated from a native project build
+yet (`A0045`, #3498).
 
 ```sh
 lyric test --manifest lyric-jobs/lyric.toml                       # dotnet

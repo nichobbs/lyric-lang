@@ -18,7 +18,7 @@ import Flags as FlagsLib
 @stable(since = "0.1")
 pub func run(factory: (slice[FlagsLib.FlagEntry]) -> FlagsLib.FlagStore): Checks {
   val c = newChecks("FlagStore")
-  runCase(c, "an empty store has no flags", { -> emptyStore(c, factory([])) })
+  runCase(c, "an empty store has no flags", { -> emptyStore(c, factory(noEntries())) })
   runCase(c, "a Bool flag reports its value through isEnabled", { -> boolFlags(c, factory(boolEntries())) })
   runCase(c, "a missing flag is disabled and has no value", { -> missingFlag(c, factory(boolEntries())) })
   runCase(c, "only a true Bool flag is enabled", { -> nonBoolNotEnabled(c, factory(typedEntries())) })
@@ -27,6 +27,10 @@ pub func run(factory: (slice[FlagsLib.FlagEntry]) -> FlagsLib.FlagStore): Checks
   runCase(c, "refresh succeeds and leaves the flags readable", { -> refreshKeepsFlags(c, factory(typedEntries())) })
   runCase(c, "the typed accessors fall back to their default", { -> accessors(c, factory(typedEntries())) })
   return c
+}
+
+func noEntries(): slice[FlagsLib.FlagEntry] {
+  return []
 }
 
 func boolEntries(): slice[FlagsLib.FlagEntry] {

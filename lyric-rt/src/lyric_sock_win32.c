@@ -187,6 +187,67 @@ static void down_clear(SOCKET s) {
 /* How long a waiting read sleeps between looks at the shutdown record. */
 #define LYRIC_SOCK_WAKE_SLICE_MS 50
 
+/* ── The bound of a `*_bounded` operation (#9090) ──────────────────────
+ *
+ * The bounded entry points run the ordinary read, write and handshake code
+ * with the calling thread's bound set: the two places that wait on a socket
+ * (lyric_win32_sock_recv and lyric_win32_sock_send) test it, fail with
+ * WSAETIMEDOUT when it ends the wait, and record which limit it was. */
+
+static _Thread_local int g_bound_on;
+static _Thread_local int64_t g_bound_deadline_ns;
+static _Thread_local SOCKET g_bound_wake;
+static _Thread_local int32_t g_bound_outcome;
+
+/* Milliseconds until the bound's deadline, rounded up so a wait never ends
+ * just before it: -1 without a deadline, 0 once it has passed (recorded). */
+static int bound_left_ms(void) {
+    if (!g_bound_on || g_bound_deadline_ns == 0) return -1;
+    int64_t left = g_bound_deadline_ns - lyric_monotonic_nanos();
+    if (left <= 0) {
+        g_bound_outcome = LYRIC_BOUNDED_DEADLINE;
+        return 0;
+    }
+    int64_t ms = (left + 999999) / 1000000;
+    return ms > 0x7fffffff ? 0x7fffffff : (int)ms;
+}
+
+/* Waits under the bound until `s` is ready for `events`: 0 when ready (or
+ * failed, which the next call on it reports), -1 with the Winsock error set
+ * otherwise (WSAETIMEDOUT when the bound ended the wait). */
+static int bound_wait(SOCKET s, short events) {
+    for (;;) {
+        int wait = bound_left_ms();
+        if (wait == 0) {
+            WSASetLastError(WSAETIMEDOUT);
+            return -1;
+        }
+        WSAPOLLFD pfd[2];
+        ULONG n = 1;
+        pfd[0].fd = s;
+        pfd[0].events = events;
+        pfd[0].revents = 0;
+        if (g_bound_on && g_bound_wake != INVALID_SOCKET) {
+            pfd[1].fd = g_bound_wake;
+            pfd[1].events = POLLRDNORM;
+            pfd[1].revents = 0;
+            n = 2;
+        }
+        int ready = WSAPoll(pfd, n, wait);
+        if (ready == SOCKET_ERROR) {
+            if (WSAGetLastError() == WSAEINTR) continue;
+            return -1;
+        }
+        if (ready == 0) continue; /* bound_left_ms decides */
+        if (n == 2 && pfd[1].revents != 0) {
+            g_bound_outcome = LYRIC_BOUNDED_INTERRUPTED;
+            WSASetLastError(WSAETIMEDOUT);
+            return -1;
+        }
+        if (pfd[0].revents != 0) return 0;
+    }
+}
+
 /* recv() that a concurrent lyric_sock_shutdown always ends: returns the bytes
  * read, 0 at end of stream or once the read side was shut down, or -1 with
  * the Winsock error set (WSAETIMEDOUT when the socket's SO_RCVTIMEO elapses,
@@ -208,17 +269,36 @@ int lyric_win32_sock_recv(uintptr_t sock, char* buf, int len) {
             }
             if (deadline - now < (ULONGLONG)slice) slice = (int)(deadline - now);
         }
-        WSAPOLLFD pfd;
-        pfd.fd = s;
-        pfd.events = POLLRDNORM;
-        pfd.revents = 0;
-        int ready = WSAPoll(&pfd, 1, slice);
+        int bound_ms = bound_left_ms();
+        if (bound_ms == 0) {
+            WSASetLastError(WSAETIMEDOUT);
+            return -1;
+        }
+        if (bound_ms > 0 && bound_ms < slice) slice = bound_ms;
+        WSAPOLLFD pfd[2];
+        ULONG npfd = 1;
+        pfd[0].fd = s;
+        pfd[0].events = POLLRDNORM;
+        pfd[0].revents = 0;
+        if (g_bound_on && g_bound_wake != INVALID_SOCKET) {
+            pfd[1].fd = g_bound_wake;
+            pfd[1].events = POLLRDNORM;
+            pfd[1].revents = 0;
+            npfd = 2;
+        }
+        int ready = WSAPoll(pfd, npfd, slice);
         if (ready == SOCKET_ERROR) {
             int e = WSAGetLastError();
             if (e == WSAEINTR) continue;
             return -1;
         }
         if (ready == 0) continue;
+        if (npfd == 2 && pfd[1].revents != 0) {
+            g_bound_outcome = LYRIC_BOUNDED_INTERRUPTED;
+            WSASetLastError(WSAETIMEDOUT);
+            return -1;
+        }
+        if (pfd[0].revents == 0) continue;
         /* Readable, hung up or failed: recv reports which without blocking. A
          * shutdown that landed in between is seen first. */
         if (down_has(s)) return 0;
@@ -601,6 +681,8 @@ int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd)
 
 /* ── Reads and writes ──────────────────────────────────────────────── */
 
+static int sock_make_nonblocking(SOCKET s);
+
 /* 0 clears both timeouts (wait without a bound), as on POSIX.  After a
  * timed-out read or write Windows leaves the socket in an indeterminate
  * state, so the kernels close a connection whose read timed out. */
@@ -671,13 +753,67 @@ static int sock_wait_writable(SOCKET s, ULONGLONG* deadline) {
     }
 }
 
+int lyric_win32_sock_send(uintptr_t sock, const char* buf, int len) {
+    SOCKET s = (SOCKET)sock;
+    ULONGLONG deadline = 0;
+    for (;;) {
+        int w = send(s, buf, len, 0);
+        if (w != SOCKET_ERROR) return w;
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e != WSAEWOULDBLOCK) {
+            WSASetLastError(e);
+            return -1;
+        }
+        /* A non-blocking socket with a full send buffer. */
+        if (g_bound_on) {
+            if (bound_wait(s, POLLWRNORM) != 0) return -1;
+        } else {
+            int r = sock_wait_writable(s, &deadline);
+            if (r == 0) {
+                WSASetLastError(WSAETIMEDOUT);
+                return -1;
+            }
+            if (r < 0) return -1;
+        }
+    }
+}
+
+int lyric_win32_bound_begin(uintptr_t sock, int64_t deadline_ns, int32_t wake_fd) {
+    if (sock_make_nonblocking((SOCKET)sock) != 0) {
+        set_wsa_err("non-blocking mode", WSAGetLastError());
+        return -1;
+    }
+    g_bound_deadline_ns = deadline_ns;
+    g_bound_wake = to_socket(wake_fd);
+    g_bound_outcome = 0;
+    g_bound_on = 1;
+    return 0;
+}
+
+int32_t lyric_win32_bound_end(int ok, const char* what) {
+    int32_t outcome = g_bound_outcome;
+    g_bound_on = 0;
+    g_bound_outcome = 0;
+    if (ok) return LYRIC_BOUNDED_OK;
+    if (outcome == LYRIC_BOUNDED_DEADLINE) {
+        lyric_net_set_err("%s: timed out", what);
+        return LYRIC_BOUNDED_DEADLINE;
+    }
+    if (outcome == LYRIC_BOUNDED_INTERRUPTED) {
+        lyric_net_set_err("%s: interrupted", what);
+        return LYRIC_BOUNDED_INTERRUPTED;
+    }
+    return LYRIC_BOUNDED_ERROR;
+}
+
 int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
     int64_t off = 0;
     ULONGLONG deadline = 0;
     while (off < n) {
         int64_t left = n - off;
         int chunk = left > INT32_MAX ? INT32_MAX : (int)left;
-        int w = send(to_socket(fd), (const char*)buf + off, chunk, 0);
+        int w = lyric_win32_sock_send(to_socket(fd), (const char*)buf + off, chunk);
         if (w < 0) {
             int e = WSAGetLastError();
             if (e == WSAEINTR) continue;
@@ -848,4 +984,282 @@ int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list) {
     int64_t rc = lyric_sock_write(fd, buf, n);
     free(buf);
     return rc;
+}
+
+/* ── Bounded operations (#9090; lyric_rt.h) ─────────────────────────── */
+
+LyricList* lyric_sock_read_bytes_bounded(int32_t fd, int64_t max_bytes, int64_t deadline_ns, int32_t wake_fd,
+                                         int32_t* status) {
+    if (lyric_win32_bound_begin(to_socket(fd), deadline_ns, wake_fd) != 0) {
+        *status = LYRIC_BOUNDED_ERROR;
+        return lyric_list_new(0);
+    }
+    int32_t ok = 0;
+    LyricList* list = lyric_sock_read_bytes(fd, max_bytes, &ok);
+    *status = lyric_win32_bound_end(ok == 1, "read");
+    return list;
+}
+
+int32_t lyric_sock_write_bytes_bounded(int32_t fd, void* bytes_list, int64_t deadline_ns, int32_t wake_fd) {
+    if (lyric_win32_bound_begin(to_socket(fd), deadline_ns, wake_fd) != 0) return LYRIC_BOUNDED_ERROR;
+    int64_t rc = lyric_sock_write_bytes(fd, bytes_list);
+    return lyric_win32_bound_end(rc >= 0, "write");
+}
+
+/* One name lookup on a helper thread: GetAddrInfoW cannot be given a
+ * deadline.  The waiter and the helper each hold a reference; the job is
+ * freed with the last one, so a waiter that gives up leaves the helper to
+ * finish on its own. */
+typedef struct {
+    char* host;
+    int32_t port;
+    ADDRINFOW* res;
+    int ok;
+    char err[256];
+    HANDLE done;
+    volatile LONG refs;
+} resolve_job;
+
+static void resolve_job_release(resolve_job* j) {
+    if (InterlockedDecrement(&j->refs) != 0) return;
+    if (j->res) FreeAddrInfoW(j->res);
+    if (j->done) CloseHandle(j->done);
+    free(j->host);
+    free(j);
+}
+
+static DWORD WINAPI resolve_thread(LPVOID param) {
+    resolve_job* j = (resolve_job*)param;
+    ADDRINFOW* res = NULL;
+    int ok = resolve(j->host, j->port, 0, &res) == 0;
+    if (!ok) lyric_tls_last_error(j->err, (int32_t)sizeof j->err);
+    j->res = res;
+    j->ok = ok;
+    SetEvent(j->done);
+    resolve_job_release(j);
+    return 0;
+}
+
+/* 1 when the wake socket of the calling thread's bound is readable. */
+static int bound_wake_ready(void) {
+    if (g_bound_wake == INVALID_SOCKET) return 0;
+    WSAPOLLFD pfd;
+    pfd.fd = g_bound_wake;
+    pfd.events = POLLRDNORM;
+    pfd.revents = 0;
+    return WSAPoll(&pfd, 1, 0) > 0 && pfd.revents != 0;
+}
+
+/* resolve() under the calling thread's bound: 0 and *out, or -1 (the bound's
+ * outcome is recorded when it ended the wait; otherwise last_error is set).
+ * An address literal is parsed on the calling thread. */
+static int resolve_bounded(const char* host, int32_t port, ADDRINFOW** out) {
+    wchar_t* whost = lyric_win32_wide(host);
+    if (!whost) {
+        lyric_net_set_err("resolve %s: the host name is not valid UTF-8", host);
+        return -1;
+    }
+    wchar_t wport[16];
+    _snwprintf(wport, sizeof wport / sizeof wport[0], L"%d", (int)port);
+    wport[sizeof wport / sizeof wport[0] - 1] = L'\0';
+    ADDRINFOW hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_NUMERICHOST;
+    int numeric = GetAddrInfoW(whost, wport, &hints, out);
+    free(whost);
+    if (numeric == 0) return 0;
+    *out = NULL;
+
+    resolve_job* j = (resolve_job*)calloc(1, sizeof *j);
+    if (j) {
+        j->refs = 2;
+        j->port = port;
+        j->host = _strdup(host);
+        j->done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    }
+    if (!j || !j->host || !j->done) {
+        lyric_net_set_err("resolve %s: out of memory", host);
+        if (j) {
+            j->refs = 1;
+            resolve_job_release(j);
+        }
+        return -1;
+    }
+    HANDLE th = CreateThread(NULL, 0, resolve_thread, j, 0, NULL);
+    if (!th) {
+        lyric_net_set_err("resolve %s: cannot start the lookup thread", host);
+        j->refs = 1;
+        resolve_job_release(j);
+        return -1;
+    }
+    CloseHandle(th);
+    int rc = -1;
+    for (;;) {
+        /* The limits are tested before the answer, as on POSIX. */
+        if (bound_wake_ready()) {
+            g_bound_outcome = LYRIC_BOUNDED_INTERRUPTED;
+            break;
+        }
+        int slice = LYRIC_SOCK_WAKE_SLICE_MS;
+        int left = bound_left_ms();
+        if (left == 0) break; /* the deadline, recorded by bound_left_ms */
+        if (left > 0 && left < slice) slice = left;
+        if (WaitForSingleObject(j->done, (DWORD)slice) == WAIT_OBJECT_0) {
+            if (j->ok) {
+                *out = j->res;
+                j->res = NULL;
+                rc = 0;
+            } else {
+                lyric_net_set_err("%s", j->err);
+            }
+            break;
+        }
+    }
+    resolve_job_release(j);
+    return rc;
+}
+
+/* Waits under the bound for a non-blocking connect on `s` to finish: 0 when
+ * it has (SO_ERROR says how), -1 otherwise.  select, not WSAPoll: a failed
+ * connect is reported through the exception set on every Windows release. */
+static int connect_wait(SOCKET s) {
+    for (;;) {
+        int left = bound_left_ms();
+        if (left == 0) return -1;
+        struct timeval tv;
+        tv.tv_sec = left / 1000;
+        tv.tv_usec = (left % 1000) * 1000;
+        fd_set rs, ws, es;
+        FD_ZERO(&rs);
+        FD_ZERO(&ws);
+        FD_ZERO(&es);
+        FD_SET(s, &ws);
+        FD_SET(s, &es);
+        int has_wake = g_bound_wake != INVALID_SOCKET;
+        if (has_wake) FD_SET(g_bound_wake, &rs);
+        int rc = select(0, has_wake ? &rs : NULL, &ws, &es, left < 0 ? NULL : &tv);
+        if (rc == SOCKET_ERROR) return -1;
+        if (rc == 0) continue; /* bound_left_ms decides */
+        if (has_wake && FD_ISSET(g_bound_wake, &rs)) {
+            g_bound_outcome = LYRIC_BOUNDED_INTERRUPTED;
+            return -1;
+        }
+        return 0;
+    }
+}
+
+int32_t lyric_sock_connect_bounded(const char* host, int32_t port, int64_t deadline_ns, int32_t wake_fd) {
+    if (deadline_ns == 0 && wake_fd < 0) return lyric_sock_connect(host, port);
+    if (!host || port < 0 || port > 65535) {
+        lyric_net_set_err("invalid host/port");
+        return -1;
+    }
+    if (!wsa_ready()) return -1;
+    char what[300];
+    snprintf(what, sizeof what, "connect %s:%d", host, (int)port);
+    g_bound_deadline_ns = deadline_ns;
+    g_bound_wake = to_socket(wake_fd);
+    g_bound_outcome = 0;
+    g_bound_on = 1;
+
+    ADDRINFOW* res = NULL;
+    SOCKET s = INVALID_SOCKET;
+    int last = 0;
+    int have_error = 0; /* last_error already describes the failure */
+    if (resolve_bounded(host, port, &res) != 0) {
+        have_error = 1;
+    } else {
+        for (ADDRINFOW* ai = res; ai != NULL && g_bound_outcome == 0; ai = ai->ai_next) {
+            s = new_socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+            if (s == INVALID_SOCKET) {
+                last = WSAGetLastError();
+                continue;
+            }
+            int err = 0;
+            if (set_nonblocking(s, 1) != 0) {
+                err = WSAGetLastError();
+            } else if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) != 0) {
+                err = WSAGetLastError();
+                if (err == WSAEWOULDBLOCK) {
+                    if (connect_wait(s) != 0) {
+                        err = g_bound_outcome != 0 ? WSAETIMEDOUT : WSAGetLastError();
+                    } else {
+                        int len = (int)sizeof err;
+                        if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&err, &len) != 0) err = WSAGetLastError();
+                    }
+                }
+            }
+            if (err == 0 && set_nonblocking(s, 0) != 0) err = WSAGetLastError();
+            if (err == 0) break; /* connected */
+            last = err;
+            closesocket(s);
+            s = INVALID_SOCKET;
+        }
+        FreeAddrInfoW(res);
+    }
+    int32_t status = lyric_win32_bound_end(s != INVALID_SOCKET, what);
+    if (status == LYRIC_BOUNDED_OK) return from_socket(s);
+    if (status == LYRIC_BOUNDED_DEADLINE) return -2;
+    if (status == LYRIC_BOUNDED_INTERRUPTED) return -3;
+    if (!have_error) {
+        if (last) {
+            set_wsa_err(what, last);
+        } else {
+            lyric_net_set_err("%s: no usable address", what);
+        }
+    }
+    return -1;
+}
+
+/* The registered wake sockets, under lyric_global_lock. */
+typedef struct {
+    void* key;
+    int32_t write_fd;
+} cancel_wake_entry;
+
+static cancel_wake_entry* g_cancel_wakes;
+static size_t g_cancel_wake_count;
+static size_t g_cancel_wake_cap;
+
+void lyric_cancel_wake_register(void* key, int32_t write_fd) {
+    lyric_global_lock();
+    if (g_cancel_wake_count == g_cancel_wake_cap) {
+        size_t cap = g_cancel_wake_cap ? g_cancel_wake_cap * 2 : 8;
+        cancel_wake_entry* grown = (cancel_wake_entry*)realloc(g_cancel_wakes, cap * sizeof *grown);
+        if (!grown) {
+            lyric_global_unlock();
+            lyric_panic_msg("out of memory registering a cancellation wake-up", "lyric_sock_win32.c", __LINE__);
+        }
+        g_cancel_wakes = grown;
+        g_cancel_wake_cap = cap;
+    }
+    g_cancel_wakes[g_cancel_wake_count].key = key;
+    g_cancel_wakes[g_cancel_wake_count].write_fd = write_fd;
+    g_cancel_wake_count++;
+    lyric_global_unlock();
+}
+
+void lyric_cancel_wake_unregister(void* key, int32_t write_fd) {
+    lyric_global_lock();
+    for (size_t i = 0; i < g_cancel_wake_count; i++) {
+        if (g_cancel_wakes[i].key == key && g_cancel_wakes[i].write_fd == write_fd) {
+            g_cancel_wakes[i] = g_cancel_wakes[g_cancel_wake_count - 1];
+            g_cancel_wake_count--;
+            break;
+        }
+    }
+    lyric_global_unlock();
+}
+
+void lyric_cancel_wake_signal(void* key) {
+    lyric_global_lock();
+    for (size_t i = 0; i < g_cancel_wake_count; i++) {
+        if (g_cancel_wakes[i].key == key) {
+            (void)lyric_sock_wake_pipe_signal(g_cancel_wakes[i].write_fd);
+        }
+    }
+    lyric_global_unlock();
 }
