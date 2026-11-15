@@ -2363,6 +2363,7 @@ func exprKindName(k: in TExprKind): String {
     case XLit(_) -> "XLit"
     case XLocal(_) -> "XLocal"
     case XGlobal(_, _) -> "XGlobal"
+    case XValueParam(_, _) -> "XValueParam"
     case XCall(_, _) -> "XCall"
     case XConstruct(_, _) -> "XConstruct"
     case XField(_, _) -> "XField"
