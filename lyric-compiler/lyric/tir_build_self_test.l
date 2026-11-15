@@ -2203,6 +2203,32 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPString)), TExtern(host = intArray))),
     "a String slice is not a host int array (D472)"
   )
+  val byteArray = HostTypeRef(name = "an array, pointer or by-reference type", args = [TPrim(kind = TPByte)])
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = byteArray))),
+    "an Int slice is not a host byte array (D472)"
+  )
+  assertTrue(
+    isSome(hostBoxKind(TArray(len = ALKnown(n = 3), element = TPrim(kind = TPInt)), TExtern(host = intArray))),
+    "an array[3, Int] is a host int array (D472)"
+  )
+  val objectArray = HostTypeRef(
+    name = "an array, pointer or by-reference type",
+    args = [TExtern(host = HostTypeRef(name = "java.lang.Object", args = []))]
+  )
+  assertTrue(
+    isSome(
+      hostBoxKind(
+        TSlice(element = TExtern(host = HostTypeRef(name = "java.lang.String", args = []))),
+        TExtern(host = objectArray)
+      )
+    ),
+    "a slice of host values is a host Object[] (D472)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
+    "an Int slice is not a host Object[] (D472)"
+  )
   val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
   assertTrue(
     isSome(hostBoxKind(thunk, hostTy("System.Threading.ThreadStart"))),
