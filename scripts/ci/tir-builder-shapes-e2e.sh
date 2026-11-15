@@ -396,6 +396,29 @@ func main(): Int {
 }
 LYRIC
 
+# Arithmetic on a record that derives Add is lowered field by field by the AST pass; the builder counts
+# the body instead of emitting a plain `+` on two records (D491).
+check_counted record_arith_stays_counted <<'LYRIC'
+package Shapes16
+import Std.Core
+
+@derive(Add)
+record Vec2 {
+  x: Float
+  y: Float
+}
+
+func sum(): Float {
+  val a = Vec2(x = 0.25, y = 1.0)
+  val b = Vec2(x = 0.5, y = 2.0)
+  var c = a + b
+  c += a
+  c.x + c.y
+}
+
+func main(): Int = if sum() > 3.0 { 1 } else { 0 }
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]

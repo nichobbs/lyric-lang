@@ -760,6 +760,11 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
     }
     case EBinop(op, lhs, rhs) -> {
+      // `a + b` on a record that derives `Add`/`Sub` is applied field by field (D155): the AST
+      // lowering does that, and TIR has no node for it yet, so the body stays counted.
+      if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
+        return uncoveredExpr(env, e, "record arithmetic")
+      }
       val l = buildExpr(env, lhs)
       // `x == None`: the checker leaves the bare right operand untyped, and equality
       // takes its type from the left one.
@@ -1581,6 +1586,9 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       built
     }
     case SAssign(t, op, v) -> {
+      if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(s.span)) {
+        return uncoveredStmt(env, s, "record arithmetic")
+      }
       val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
         case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
