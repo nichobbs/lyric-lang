@@ -2178,6 +2178,19 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     ),
     "a slice of host values is a host array"
   )
+  val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
+  assertTrue(
+    isSome(hostBoxKind(thunk, hostTy("System.Threading.ThreadStart"))),
+    "a function value is a host delegate (D470)"
+  )
+  assertTrue(
+    isSome(hostBoxKind(thunk, hostTy("java.lang.Runnable"))),
+    "a function value is a host functional interface (D470)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(thunk, hostTy("an array, pointer or by-reference type"))),
+    "a function value is not a host array"
+  )
   assertTrue(isSome(hostBoxKind(TPrim(kind = TPFloat), hostTy("System.Single"))), "a Float is a Single")
   assertTrue(not isSome(hostBoxKind(TPrim(kind = TPDouble), hostTy("System.Single"))), "a Double is not a Single")
 }
