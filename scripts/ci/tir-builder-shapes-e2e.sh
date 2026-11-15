@@ -383,6 +383,19 @@ func main(): Int {
 }
 LYRIC
 
+# A float literal passed where a `Float` is expected is a `Float` literal, not a conversion (D491).
+check float_literal_argument 5 <<'LYRIC'
+package Shapes14
+import Std.Core
+
+func half(x: in Float): Float = x
+
+func main(): Int {
+  val h = half(0.5)
+  if h > 0.25 and half(2.0) > 1.5 { 5 } else { 0 }
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]

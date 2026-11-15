@@ -3550,6 +3550,18 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if tyEq(t.ty, ty) {
     return Some(value = t)
   }
+  // A float literal where a `Float` is expected is a `Float` literal (the checker accepts it as
+  // one): the same literal retyped, which a backend rounds to 32 bits, not a conversion.
+  match t.kind {
+    case XLit(TLFloat(_)) -> match t.ty {
+      case TPrim(TPDouble) -> match ty {
+        case TPrim(TPFloat) -> return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
