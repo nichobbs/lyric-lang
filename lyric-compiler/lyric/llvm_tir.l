@@ -1866,10 +1866,51 @@ func lowerConstruct(c: in LCtx, sym: in SymbolId, fields: in List[TExpr]): Val {
     case Some(cr) -> return lowerCase(c, cr, fields)
     case None -> ()
   }
+  match mapGet(c.env.protRecs, sym.id) {
+    case Some(lay) -> return constructProtected(c, lay, fields)
+    case None -> ()
+  }
   match recLayout(c, sym) {
     case None -> unitVal()
     case Some(lay) -> constructWith(c, lay, fields)
   }
+}
+
+/// A protected object: the heap record of its user fields, then the runtime-sized mutex buffer
+/// (`lyric_mutex_size`, `lyric_alloc`, `lyric_mutex_init`) the code generator's layout holds in
+/// its last field.  The destructor the layout names tears the mutex down.
+func constructProtected(c: in LCtx, lay: in TirRecLayout, fields: in List[TExpr]): Val {
+  if fields.count + 1 != lay.fieldTys.count {
+    return unsupported(
+      c,
+      "a protected construction with " + toString(fields.count) + " fields for a layout of " +
+        toString(lay.fieldTys.count)
+    )
+  }
+  val vals: List[Val] = newList()
+  var i = 0
+  while i < fields.count {
+    val v = borrow(c, lowerExpr(c, fields[i]))
+    if not fieldTypeOk(c, lay, i, v) {
+      return unitVal()
+    }
+    vals.add(v)
+    i = i + 1
+  }
+  val obj = allocHeap(c, lay)
+  var j = 0
+  while j < vals.count {
+    storeHeapField(c, lay, obj, j, vals[j])
+    j = j + 1
+  }
+  val size = tmp(c)
+  c.insns.add(NCall(dest = size, retTy = NI32, fn = NGlobal(name = "lyric_mutex_size"), args = noArgs()))
+  val wide = tmp(c)
+  c.insns.add(NSExt(dest = wide, fromTy = NI32, value = NLocal(name = size), toTy = NI64))
+  val buf = callRt(c, "lyric_alloc", i8ptr(), arg1(NI64, NLocal(name = wide)))
+  callRtVoid(c, "lyric_mutex_init", arg1(i8ptr(), buf))
+  c.insns.add(NStore(ty = i8ptr(), value = buf, ptr = fieldPtr(c, lay, obj, fields.count)))
+  Val(ty = lay.ty, value = obj, owned = true)
 }
 
 func constructWith(c: in LCtx, lay: in TirRecLayout, fields: in List[TExpr]): Val {

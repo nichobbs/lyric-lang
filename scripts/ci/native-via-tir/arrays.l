@@ -69,6 +69,13 @@ func bumpElem(): Int {
   a[1]
 }
 
+func nested(): Int {
+  var g: array[2, array[3, Int]] = [[1, 2, 3], [4, 5, 6]]
+  inc(g[1][2])
+  inc(g[0][0])
+  g[1][2] * 10 + g[0][0]
+}
+
 func at(a: in array[3, Int], i: in Int): Int {
   a[i]
 }
@@ -88,4 +95,6 @@ func main(): Unit {
   println(toString(vecs()))
   println(toString(bumpElem()))
   println(toString(at([7, 8, 9], 2)))
+  println(toString(nested()))
+  println(toString(meshTotal(Mesh(cells = [at([1, 2, 3], 0), 5, 6], n = 1))))
 }
