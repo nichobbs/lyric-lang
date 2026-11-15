@@ -164,6 +164,7 @@ pub func exprText(it: in DefPathInterner, e: in TExpr): String {
   val body = match e.kind {
     case XLit(l) -> litText(l)
     case XGlobal(s, targs) -> "global " + symText(it, s) + "[" + tysText(it, targs) + "]"
+    case XValueParam(o, i) -> "value-param " + symText(it, o) + "#" + toString(i)
     case XCall(callee, args) -> {
       val c = match callee {
         case Direct(s, targs) -> "call " + symText(it, s) + "[" + tysText(it, targs) + "]"

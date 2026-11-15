@@ -248,6 +248,10 @@ pub union TExprKind {
   case XLit(lit: TLit)
   case XLocal(local: LocalId)
   case XGlobal(sym: SymbolId, typeArgs: List[Ty])
+  /// The value of a value-generic parameter of the declaration being built (`N` of `N: Nat`): the
+  /// parameter `index` of `owner`, whose `TTypeParam.valueTy` is the type of the node.  Like a type
+  /// parameter it is bound by a call's instantiation and removed by monomorphisation (phase 3c).
+  case XValueParam(owner: SymbolId, index: Int)
   case XCall(callee: Callee, args: List[TArg])
   /// A record or union case value; `fields` are in declaration order with
   /// defaults filled in.
