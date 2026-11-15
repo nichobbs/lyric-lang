@@ -1,6 +1,6 @@
 # D529: async lambdas and `out`/`inout` parameters of async functions on native
 
-Status: recorded (phase 4a, part 5). No implementation: neither construct is a parity gap.
+Status: recorded (phase 4a, part 5). No implementation: neither construct is a parity gap. Tracked in nichobbs/lyric-lang#9127.
 
 ## Finding
 
