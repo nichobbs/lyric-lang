@@ -30,6 +30,9 @@ pub record TyConvCtx {
   ownerSyms: Map[String, SymbolId]
   ownerParams: Map[String, List[String]]
   selfIface: Option[SymbolId]
+  /// The type `Self` names inside an `impl` member being built: its target type (D476).  A
+  /// one-element stack, since the context is shared by every body of the package.
+  implSelf: List[Ty] = newList()
   /// The union and enum case symbols of the table by `SymbolId`, filled on first use
   /// (`loadCases`); `casesLoaded` is a one-element flag.
   cases: Map[Int, Symbol] = newMap()
@@ -221,7 +224,11 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
     }
     case TySelf -> match ctx.selfIface {
       case Some(i) -> Ok(value = tySelfOf(i))
-      case None -> Err(error = i0002Type("`Self` outside an interface", t))
+      case None -> if ctx.implSelf.count > 0 {
+        Ok(value = ctx.implSelf[ctx.implSelf.count - 1])
+      } else {
+        Err(error = i0002Type("`Self` outside an interface or an impl", t))
+      }
     }
     case TyLen(n) -> Ok(value = TLen(n = n))
     case TyParam(name, owner) -> match mapGet(ctx.ownerSyms, owner) {

@@ -2700,3 +2700,20 @@ test "the census lists each body by its DefPath key, built or not (D474)" {
   assertEqualInt(linesStarting(c.bodyLines, "unbuilt\tApp::bad"), 1, "bad is not")
   assertTrue(linesStarting(c.bodyLines, "kind\tApp::bad") >= 1, "bad's uncovered kind is listed under its key")
 }
+
+test "Self in an impl member names the impl's target type (D476)" {
+  val c = censusOf(
+    "package App\ninterface Cl {\n  func cl(self: in Self): Self\n}\nrecord Q { y: Int }\nimpl Cl for Q {\n  func cl(self: in Self): Self { Q(y = self.y) }\n}\n"
+  )
+  assertEqualInt(c.total, 1, "the impl member")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "Self in a member of a generic impl names the generic target (D476)" {
+  val c = censusOf(
+    "package App\ninterface Cl {\n  func cl(self: in Self): Self\n}\nrecord Box[T] { v: T }\nimpl[T] Cl for Box[T] {\n  func cl(self: in Self): Self { Box(v = self.v) }\n}\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
