@@ -2187,6 +2187,15 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     ),
     "a slice of host values is a host array"
   )
+  val intArray = HostTypeRef(name = "an array, pointer or by-reference type", args = [TPrim(kind = TPInt)])
+  assertTrue(
+    isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = intArray))),
+    "an Int slice is a host int array (D472)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPString)), TExtern(host = intArray))),
+    "a String slice is not a host int array (D472)"
+  )
   val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
   assertTrue(
     isSome(hostBoxKind(thunk, hostTy("System.Threading.ThreadStart"))),
@@ -2287,7 +2296,10 @@ test "a slice of Byte passed for a host byte array builds as a host call (D599)"
   match externCallOf(st.body) {
     case Some(m) -> {
       assertEqualInt(m.params.count, 2, "two parameters")
-      assertTrue(tyEq(m.params[1].ty, hostTy("an array, pointer or by-reference type")), "over a host array")
+      val byteArray = TExtern(
+        host = HostTypeRef(name = "an array, pointer or by-reference type", args = [TPrim(kind = TPByte)])
+      )
+      assertTrue(tyEq(m.params[1].ty, byteArray), "over a host array of bytes (D472)")
     }
     case None -> assertTrue(false, "an extern call")
   }
