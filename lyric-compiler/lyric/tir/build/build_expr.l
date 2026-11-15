@@ -1544,7 +1544,13 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
 
 /// The initializer of a binding as a value of the annotated type, or as built when
 /// there is no annotation.
-func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+func buildInit(env: in BuildEnv, s: in Statement, ann0: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+  // A binding with no annotation whose initializer leaves a type argument open (`val o = None`)
+  // has the type the checker resolved from the uses of the name (`resolveOpenBindingSites`).
+  val ann: Option[TypeExpr] = match ann0 {
+    case Some(_) -> ann0
+    case None -> mapGet(env.ctx.tbl.localBindingTypeSites, recordCopySiteKey(init.span))
+  }
   // The annotation is the type the initializer's position gives it, for an expression the checker
   // left with an open type argument (`val xs: List[K] = newListWithCapacity(n)`).
   val wanted: Option[Ty] = match ann {
