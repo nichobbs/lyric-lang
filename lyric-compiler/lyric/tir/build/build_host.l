@@ -80,6 +80,26 @@ func isNarrowHostInt(name: in String): Bool {
     name == "System.UInt64"
 }
 
+/// Whether a slice of `el` is the host array `h`: its named element, or bytes and host values when the
+/// signature names none.  A host `String` element is Lyric's `String`, and an `Object[]` takes any array of
+/// host values (reference arrays are covariant).
+func hostArrayAccepts(h: in HostTypeRef, el: in Ty): Bool {
+  if h.args.count != 1 {
+    return isHostArrayElement(el)
+  }
+  if tyEq(h.args[0], el) {
+    return true
+  }
+  match h.args[0] {
+    case TExtern(w) -> {
+      val stringElem = (w.name == "System.String" or w.name == "java.lang.String") and
+        (match el { case TPrim(TPString) -> true; case _ -> false })
+      stringElem or (isHostObject(w.name) and (match el { case TExtern(_) -> true; case _ -> false }))
+    }
+    case _ -> false
+  }
+}
+
 /// An element type whose array is the host's own array: bytes and host (extern) values.
 func isHostArrayElement(el: in Ty): Bool {
   match el {
@@ -104,12 +124,13 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         val boxable = match from { case TNever -> false; case TPrim(TPUnit) -> false; case _ -> true }
         return if boxable { Some(value = CvBoxToHost(host = h)) } else { None }
       }
-      // A slice or `array[N, T]` of bytes or of host values passed for a host array: the elements keep the host's
-      // representation (the signature keeps no element type, so any other element is not claimed).
+      // A slice or `array[N, T]` passed for a host array: the representation is the host's.  The signature
+      // names the element (the array name applied to it, D472) and the argument's element must match; with no
+      // element known, bytes and host values are accepted.
       if h.name == hostArrayName() {
         return match from {
-          case TSlice(el) -> if isHostArrayElement(el) { Some(value = CvBoxToHost(host = h)) } else { None }
-          case TArray(_, el) -> if isHostArrayElement(el) { Some(value = CvBoxToHost(host = h)) } else { None }
+          case TSlice(el) -> if hostArrayAccepts(h, el) { Some(value = CvBoxToHost(host = h)) } else { None }
+          case TArray(_, el) -> if hostArrayAccepts(h, el) { Some(value = CvBoxToHost(host = h)) } else { None }
           case _ -> None
         }
       }

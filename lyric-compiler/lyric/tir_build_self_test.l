@@ -2187,6 +2187,15 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     ),
     "a slice of host values is a host array"
   )
+  val intArray = HostTypeRef(name = "an array, pointer or by-reference type", args = [TPrim(kind = TPInt)])
+  assertTrue(
+    isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = intArray))),
+    "an Int slice is a host int array (D472)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPString)), TExtern(host = intArray))),
+    "a String slice is not a host int array (D472)"
+  )
   val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
   assertTrue(
     isSome(hostBoxKind(thunk, hostTy("System.Threading.ThreadStart"))),
