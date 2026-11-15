@@ -821,12 +821,61 @@ func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
 }
 
 /// Build a pattern, declaring the locals it binds in the innermost scope.
+/// The scrutinee's type fixes the type of each pattern that matches it, for a pattern the checker
+/// left untyped because the scrutinee's own type was open (`val o = None; match o { case Some(v) -> v }`):
+/// a tuple pattern's elements take the tuple's, a constructor pattern's arguments the case's payload
+/// types at the union's arguments.
+func settlePattern(env: in BuildEnv, p: in Pattern, ty: in Ty): Unit {
+  if not env.settled.containsKey(p.nodeId) {
+    env.settled.add(p.nodeId, ty)
+  }
+  match p.kind {
+    case PParen(inner) -> settlePattern(env, inner, ty)
+    case PTuple(ps) -> match ty {
+      case TTuple(ts) -> if ps.count == ts.count {
+        var i = 0
+        while i < ps.count {
+          settlePattern(env, ps[i], ts[i])
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case PConstructor(_, args) -> match ty {
+      case TNamed(parent, targs) -> match patSym(env.ctx, p.nodeId) {
+        case Some(cs) -> {
+          noteCaseSym(env, cs)
+          match mapGet(env.syms, cs.id) {
+            case Some(en) -> match en.sig {
+              case Some(sg) -> if sg.params.count == args.count {
+                var i = 0
+                while i < args.count {
+                  settlePattern(env, args[i], substOwnerArgs(sg.params[i].ty, parent, targs))
+                  i = i + 1
+                }
+              }
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
   val ty = match patTy(env.ctx, p.nodeId) {
     case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg + " (at " + toString(p.span.startPos.line) + ":" + toString(p.span.startPos.column) + ")")
-      return None
+    case Err(msg) -> match mapGet(env.settled, p.nodeId) {
+      case Some(t) -> t
+      case None -> {
+        env.errors.add(msg + " (at " + toString(p.span.startPos.line) + ":" + toString(p.span.startPos.column) + ")")
+        return None
+      }
     }
   }
   match p.kind {
@@ -1004,6 +1053,10 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
   val tarms: List[TArm] = newList()
   var ok = true
   for arm in arms {
+    match s {
+      case Some(st) -> settlePattern(env, arm.pattern, st.ty)
+      case None -> ()
+    }
     pushScope(env)
     val pat = buildPat(env, arm.pattern)
     var guard: Option[TExpr] = None
@@ -1623,6 +1676,7 @@ func buildLetPattern(
   env: in BuildEnv, s: in Statement, pat: in Pattern, ann: in Option[TypeExpr], init: in Expr
 ): Option[TStmt] {
   val t = match buildInit(env, s, ann, init) { case Some(x) -> x; case None -> return None }
+  settlePattern(env, pat, t.ty)
   match buildPat(env, pat) {
     case Some(tp) -> Some(value = stmtOf(s, TsLet(pat = tp, init = t)))
     case None -> None
