@@ -7049,7 +7049,7 @@ jobs:
       - name: Run tests (testing)
         if: matrix.id == 'testing'
         run: |
-          "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+          bash scripts/ci/testing-tests.sh
 
       - name: Set up Java 22 (game, unicode)
         if: matrix.id == 'game' || matrix.id == 'unicode'

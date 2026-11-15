@@ -43,11 +43,20 @@ for lib in "${tier1[@]}"; do
   fi
 done
 # Tier 2: libraries depending on tier-0 and tier-1 libraries.
-tier2=(lyric-health lyric-testing lyric-lambda)
+tier2=(lyric-health lyric-conformance lyric-lambda)
 for lib in "${tier2[@]}"; do
   echo "=== build $lib (tier 2) ==="
   if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
     echo "::error::$lib (tier 2) failed to build"
+    exit 1
+  fi
+done
+# Tier 3: lyric-testing runs the suites of lyric-conformance against its mocks.
+tier3=(lyric-testing)
+for lib in "${tier3[@]}"; do
+  echo "=== build $lib (tier 3) ==="
+  if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then
+    echo "::error::$lib (tier 3) failed to build"
     exit 1
   fi
 done

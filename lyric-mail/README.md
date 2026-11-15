@@ -32,6 +32,15 @@ The `dotnet`/`jvm` platform features are resolved automatically from
 `--target` (D-N-013 target normalization; see
 `docs/24-build-features.md` §2.3) — you don't pass them yourself.
 
+**Targets:** `dotnet` and `jvm` (`[package] targets`). Building the package,
+or an application that depends on it, for `--target native` fails with
+`F0054`/`F0055`. What a native port needs: an SMTP client written over
+`Std.TcpHost` (plain and STARTTLS) to stand where `System.Net.Mail` and
+Jakarta Mail do, since native has no platform mail library; and the four
+`try`/`catch` sites of `mail.l` turned into `Result`-returning calls, as
+`lyric-storage`'s were (native cannot catch a panic). The SES and SendGrid
+providers are already plain `Std.Http` code.
+
 ## Packages
 
 | Package | Purpose |

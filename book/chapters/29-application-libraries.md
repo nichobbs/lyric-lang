@@ -484,10 +484,11 @@ never opened always, a 5xx or a timeout only for idempotent requests, so a
 send to a standard SQS queue is not repeated after an unknown outcome.
 
 `Lyric.Net`, `Lyric.Redis` and `Lyric.Aws.SigV4` also build for `--target
-native` (Linux; OpenSSL 3 at run time for TLS). The HTTP backends and the
-packages that need a conformance suite do not yet: `Std.Xml` and request
-timeouts in `Std.Http` do not work on native, and `lyric-testing` does not
-build there (#9089, #9090).
+native` (Linux; OpenSSL 3 at run time for TLS). What the HTTP backends and
+the conformance-tested packages wait for there has moved: `Std.Http` honours
+a request's cancellation token on native (D605), and the conformance suites
+are the `lyric-conformance` package, which builds for every target (D604).
+`Std.Xml` on native is still open (#9089).
 
 Two things differ between backends of one interface and are worth reading in
 the package README before choosing: what `nack` without requeue does (ActiveMQ
@@ -518,7 +519,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | experimental | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
 | lyric-mq | experimental | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | D056, D552 |
-| lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062 |
+| lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062; `targets = ["dotnet", "jvm"]` |
 | lyric-storage | experimental | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | local filesystem (the only in-tree backend); S3, Azure Blob and GCS in `lyric-ecosystem` | D056, D552 |
 | lyric-search | experimental | implemented over HTTP (#5408) and tested against a fake engine, not yet a real cluster | same code, same tests (default `elasticsearch` backend in CI) | D056 |
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
@@ -529,9 +530,10 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
 | lyric-validation | stable | stable | stable | — |
-| lyric-testing | stable | stable | — | — |
+| lyric-testing | stable | stable | — | mocks and assertion helpers; `targets = ["dotnet"]`, the conformance suites are `lyric-conformance` (D604) |
+| lyric-conformance | stable | stable | stable (suite passes) | the `Testing.Conformance.*` suites; every target (D604) |
 | lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
-| lyric-db | experimental | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056 |
+| lyric-db | experimental | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056; `targets = ["dotnet", "jvm"]` |
 | lyric-health | stable | stable | stable | D057 |
 | lyric-web | experimental | stable | stable | D057 |
 | lyric-logging | stable | stable | stable (suite in CI) | D054 |
@@ -542,6 +544,19 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-aws-secrets | incomplete | `local` and `aws` real | `jvm` real | D064, D230, D552; the annotation path is not declared on `--target native` (no annotation metadata, #8524) |
 | lyric-aws-xray | experimental | experimental; real SDK binding | experimental; SDK binding real, `Tracing` aspect broken (B′-mode weaver, docs/71 phase 1) | D064 |
 | lyric-ui | experimental | experimental | experimental | D137, D139; see Chapter 31 |
+
+**Native (`--target native`).** The table's columns are the two managed
+targets. On native, as of D604: `lyric-storage` (local filesystem; its
+36-case suite passes), `lyric-jobs` (`InProcessJobScheduler`), `lyric-cache`,
+`lyric-mq`, `lyric-session` and `lyric-feature-flags` (their in-process
+backends) pass their conformance suites, which `lyric-conformance` provides
+there. A panic cannot be caught on native (D-N-003), so a panicking job
+handler or conformance case ends the process instead of being recorded.
+`lyric-db`, `lyric-mail` and `lyric-testing` do not support native and say so
+in `[package] targets`: building one, or an application that depends on one,
+for native fails with `F0054`/`F0055`. Library aspects (`Storage.Aspects`,
+`Jobs.Aspects`, ...) cannot be instantiated from a native project build yet
+(`A0045`, #3498). The other libraries have not been verified on native.
 
 > **Note:** `lyric-jobs`, `lyric-ws`, `lyric-session`, `lyric-auth`, `lyric-resilience`,
 > `lyric-validation`, `lyric-testing`, `lyric-cache`, `lyric-db`, `lyric-health`,

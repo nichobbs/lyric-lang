@@ -1,7 +1,7 @@
 //! Storage — object and file storage library for Lyric.
 //!
 //! Stability: @experimental — the local-filesystem backend is
-//! exercised by tests on both targets.
+//! exercised by tests on every target.
 //! WARNING: experimental — no stability guarantee.  The
 //! `StorageBucket` interface and the `connect*` factories may change
 //! before the surface freezes for `1.0`.
@@ -24,16 +24,16 @@
 //!   val listing = Storage.list(bucket, "uploads/")?
 //!
 //! Backends:
-//!   * Local filesystem — fully native Lyric implementation on both
-//!     targets: `Storage.Kernel.Net` binds the minimum BCL extern set
-//!     (Base64, MD5, canonical-path resolve, sidecar text I/O, directory
-//!     walks) and `Storage.Kernel.Jvm` binds the JDK equivalents (#1444);
-//!     object payloads are read and written through
-//!     `Std.File.readBytes`/`writeBytes`.  The
-//!     kernels export the same `host*` surface and are `@cfg`-gated on
-//!     the `dotnet` / `jvm` features, so the inactive one is erased and
-//!     the unqualified calls below resolve to the survivor.  No host
-//!     shim on either target.
+//!   * Local filesystem, on `dotnet`, the JVM and native.  Everything this
+//!     file needs from the host (Base64, the MD5 ETag, full-path resolution,
+//!     sidecar text I/O, directory walks) comes through `Storage.Port`,
+//!     whose `port*` functions return failures as `Result`s.  The package
+//!     has one file per kind of target: `storage_port_managed.l` wraps
+//!     `Storage.Kernel.Net` (BCL externs) and `Storage.Kernel.Jvm` (JDK
+//!     externs, #1444) and is where their exceptions are caught;
+//!     `storage_port_native.l` is built on the standard library.  Object
+//!     payloads are read and written through
+//!     `Std.File.readBytes`/`writeBytes`.
 //!
 //! There are no S3 or Azure Blob backends; the `StorageBucket` interface is
 //! the seam a remote backend would implement (docs/decisions/D552).
@@ -54,8 +54,7 @@ import Std.Math
 import Std.Iter
 import Std.Sort
 import Std.Log
-import Storage.Kernel.Net
-import Storage.Kernel.Jvm
+import Storage.Port
 
 // ─── Key safety primitives (defense-in-depth against path traversal) ─────────
 //
@@ -367,20 +366,17 @@ func resolveLocalPath(bucket: in LocalBucket, key: in String): Result[String, St
   // same separator as `canon` or the `startsWith` check would always
   // fail (#1458 — would have broken every storage op on Windows).
   // Probe `bucket.bucketDir` itself (already canonicalised by
-  // `connectLocal` via `hostPathGetFullPath`) for the native separator;
+  // `connectLocal` via `portFullPath`) for the native separator;
   // fall back to `/` for the degenerate case where `bucketDir` is
   // root-relative and carries no separator at all.
   val sep = if Str.contains(bucket.bucketDir, "\\") { "\\" } else { "/" }
   val joined = bucket.bucketDir + sep + key
-  // Canonicalisation can throw for a key that is `isSafeKey`-clean but still
+  // Canonicalisation can fail for a key that is `isSafeKey`-clean but still
   // illegal for the host path API (e.g. a colon on Windows, or an
-  // over-long path).  Catch it and surface a clean Err, matching every other
-  // host-boundary call in this file — an uncaught Bug here propagates out of
-  // the StorageBucket method and can terminate a lyric-web server process.
-  val canon = try {
-    hostPathGetFullPath(joined)
-  } catch Bug as b {
-    return Err(StorageError(message = "invalid key '" + key + "': " + b.message, code = "INVALID_KEY"))
+  // over-long path): a clean Err, like every other host-boundary call here.
+  val canon = match portFullPath(joined) {
+    case Ok(p) -> p
+    case Err(cause) -> return Err(StorageError(message = "invalid key '" + key + "': " + cause, code = "INVALID_KEY"))
   }
   val bucketTrm = if Str.endsWith(bucket.bucketDir, sep) { bucket.bucketDir } else { bucket.bucketDir + sep }
   if canon != bucket.bucketDir and not Str.startsWith(canon, bucketTrm) {
@@ -397,8 +393,7 @@ func metaSidecarPath(objectPath: in String): String {
 // Compute the lowercase-hex MD5 of `bytes`.  Matches the single-part S3
 // ETag scheme so callers can verify content integrity end-to-end.
 func computeEtag(bytes: in slice[Byte]): String {
-  val raw = hostMd5(bytes)
-  Str.toLower(hostBytesToHexUpper(raw))
+  portEtag(bytes)
 }
 
 // Format a sidecar JSON object: contentType / contentLength / lastModified /
@@ -423,18 +418,17 @@ func buildSidecarJson(
     "}"
 }
 
-// Best-effort directory-create.  Returns an `Err` only when the
-// underlying BCL call throws and the directory still doesn't exist
+// Directory-create.  Returns an `Err` only when the host call fails
 // (typical permission failure).  Pre-existing directories return Ok.
 func createDirIfMissing(path: in String): Result[Unit, StorageError] {
-  if hostDirectoryExists(path) {
+  if portDirectoryExists(path) {
     return Ok(())
   }
-  return try {
-    hostCreateDirectory(path)
-    Ok(())
-  } catch Bug as b {
-    Err(StorageError(message = "cannot create directory '" + path + "': " + b.message, code = "IO_ERROR"))
+  match portCreateDirectory(path) {
+    case Ok(_) -> Ok(())
+    case Err(cause) -> Err(
+      StorageError(message = "cannot create directory '" + path + "': " + cause, code = "IO_ERROR")
+    )
   }
 }
 
@@ -459,7 +453,7 @@ func parentDir(path: in String): String {
 // pre-create intermediate dirs.
 func ensureParents(path: in String): Result[Unit, StorageError] {
   val parent = parentDir(path)
-  if parent.length == 0 or hostDirectoryExists(parent) {
+  if parent.length == 0 or portDirectoryExists(parent) {
     return Ok(())
   }
   match ensureParents(parent) {
@@ -511,10 +505,9 @@ impl StorageBucket for LocalBucket {
         // Decode the wire payload to raw bytes.  Malformed base64 from
         // a hostile caller is surfaced as INVALID_BASE64 rather than a
         // generic IO error.
-        val bytes: slice[Byte] = try {
-          hostFromBase64(dataBase64)
-        } catch Bug as b {
-          return Err(StorageError(message = "invalid base64 payload: " + b.message, code = "INVALID_BASE64"))
+        val bytes: slice[Byte] = match portDecodeBase64(dataBase64) {
+          case Ok(decoded) -> decoded
+          case Err(cause) -> return Err(StorageError(message = "invalid base64 payload: " + cause, code = "INVALID_BASE64"))
         }
         // Ensure parent directories exist for hierarchical keys
         // (e.g. `path/to/object.bin` under a fresh bucket).
@@ -542,8 +535,8 @@ impl StorageBucket for LocalBucket {
         // failure mode loud during the transition.
         val userMetaJson = "{}"
         val sidecarJson = buildSidecarJson(contentType, contentLength, lastModified, etag, userMetaJson)
-        match try { hostWriteAllText(metaSidecarPath(fullPath), sidecarJson); Ok(()) } catch Bug as b { Err(StorageError(message = "cannot write metadata sidecar for '" + key + "': " + b.message, code = "PUT_ERROR")) } {
-          case Err(e) -> return Err(e)
+        match portWriteText(metaSidecarPath(fullPath), sidecarJson) {
+          case Err(cause) -> return Err(StorageError(message = "cannot write metadata sidecar for '" + key + "': " + cause, code = "PUT_ERROR"))
           case Ok(_) -> ()
         }
         return Ok(
@@ -571,14 +564,14 @@ impl StorageBucket for LocalBucket {
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
       case Ok(fullPath) -> {
-        if not hostFileExists(fullPath) {
+        if not portFileExists(fullPath) {
           return Err(StorageError(message = "key '" + key + "' not found in bucket", code = "NOT_FOUND"))
         }
         val bytes: slice[Byte] = match File.readBytes(fullPath) {
           case Ok(b) -> b
           case Err(e) -> return Err(StorageError(message = "cannot read object '" + key + "': " + IOError.message(e), code = "GET_ERROR"))
         }
-        val dataBase64 = hostToBase64(bytes)
+        val dataBase64 = portEncodeBase64(bytes)
         match readSidecar(fullPath, bytes.length.toLong()) {
           case Err(e) -> Err(e)
           case Ok(meta) -> Ok(StorageObject(bucket = self.bucketName, key = key, metadata = meta, dataBase64 = dataBase64))
@@ -600,16 +593,18 @@ impl StorageBucket for LocalBucket {
       case Err(e) -> return Err(e)
       case Ok(fullPath) -> {
         // Delete is idempotent: missing file is not an error.
-        if hostFileExists(fullPath) {
-          match try { hostDeleteFile(fullPath); Ok(()) } catch Bug as b { Err(StorageError(message = "cannot delete object '" + key + "': " + b.message, code = "DELETE_ERROR")) } {
-            case Err(e) -> return Err(e)
+        if portFileExists(fullPath) {
+          match portDeleteFile(fullPath) {
+            case Err(cause) -> return Err(StorageError(message = "cannot delete object '" + key + "': " + cause, code = "DELETE_ERROR"))
             case Ok(_) -> ()
           }
         }
         val sidecar = metaSidecarPath(fullPath)
-        if hostFileExists(sidecar) {
-          match try { hostDeleteFile(sidecar); Ok(()) } catch Bug as b { Err(StorageError(message = "cannot delete metadata sidecar for '" + key + "': " + b.message, code = "DELETE_ERROR")) } {
-            case Err(e) -> return Err(e)
+        if portFileExists(sidecar) {
+          match portDeleteFile(sidecar) {
+            case Err(cause) -> return Err(
+              StorageError(message = "cannot delete metadata sidecar for '" + key + "': " + cause, code = "DELETE_ERROR")
+            )
             case Ok(_) -> ()
           }
         }
@@ -625,7 +620,7 @@ impl StorageBucket for LocalBucket {
     if not isSafePrefix(prefix) {
       return Err(StorageError(message = "invalid key prefix '" + prefix + "'", code = "INVALID_KEY"))
     }
-    if not hostDirectoryExists(self.bucketDir) {
+    if not portDirectoryExists(self.bucketDir) {
       return Ok(ListResult(entries = [], nextContinuationToken = None, isTruncated = false))
     }
     // Collect every key (file path relative to bucketDir, with '/'
@@ -705,7 +700,7 @@ impl StorageBucket for LocalBucket {
     }
     match resolveLocalPath(self, key) {
       case Err(e) -> return Err(e)
-      case Ok(fullPath) -> Ok(hostFileExists(fullPath))
+      case Ok(fullPath) -> Ok(portFileExists(fullPath))
     }
   }
 }
@@ -728,7 +723,7 @@ func jkObject(): Int {
 // by an older version.
 func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageMetadata, StorageError] {
   val sidecar = metaSidecarPath(objectPath)
-  if not hostFileExists(sidecar) {
+  if not portFileExists(sidecar) {
     return Ok(
       StorageMetadata(
         contentType = "application/octet-stream",
@@ -739,18 +734,15 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
       )
     )
   }
-  val txt = try {
-    hostReadAllText(sidecar)
-  } catch Bug as b {
-    return Err(StorageError(message = "cannot read metadata sidecar: " + b.message, code = "META_READ_ERROR"))
+  val txt = match portReadText(sidecar) {
+    case Ok(text) -> text
+    case Err(cause) -> return Err(StorageError(message = "cannot read metadata sidecar: " + cause, code = "META_READ_ERROR"))
   }
-  // Wrap parseJson so a truncated / externally-corrupted sidecar
-  // produces a typed `META_PARSE_ERROR` instead of an unhandled Bug
-  // bubbling out of the storage layer (#1440).
-  val doc = try {
-    parseJson(txt)
-  } catch Bug as b {
-    return Err(StorageError(message = "cannot parse metadata sidecar JSON: " + b.message, code = "META_PARSE_ERROR"))
+  // A truncated / externally-corrupted sidecar is a typed
+  // `META_PARSE_ERROR`, not a failure of the storage layer (#1440).
+  val doc = match tryParseJson(txt) {
+    case Ok(parsed) -> parsed
+    case Err(cause) -> return Err(StorageError(message = "cannot parse metadata sidecar JSON: " + cause, code = "META_PARSE_ERROR"))
   }
   defer {
     disposeJson(doc)
@@ -777,10 +769,9 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
 // collected so far when a subdirectory was unreadable, breaking the
 // standard "loop while isTruncated" pagination contract.
 func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[String]): Result[Unit, StorageError] {
-  val files = try {
-    hostGetFiles(dir)
-  } catch Bug as b {
-    return Err(StorageError(message = "cannot enumerate '" + dir + "': " + b.message, code = "LIST_ERROR"))
+  val files = match portFiles(dir) {
+    case Ok(found) -> found
+    case Err(cause) -> return Err(StorageError(message = "cannot enumerate '" + dir + "': " + cause, code = "LIST_ERROR"))
   }
   var i = 0
   while i < files.length {
@@ -792,10 +783,9 @@ func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[Str
     }
     i = i + 1
   }
-  val subs = try {
-    hostGetDirectories(dir)
-  } catch Bug as b {
-    return Err(StorageError(message = "cannot enumerate subdirs of '" + dir + "': " + b.message, code = "LIST_ERROR"))
+  val subs = match portDirectories(dir) {
+    case Ok(found) -> found
+    case Err(cause) -> return Err(StorageError(message = "cannot enumerate subdirs of '" + dir + "': " + cause, code = "LIST_ERROR"))
   }
   var k = 0
   while k < subs.length {
@@ -860,26 +850,15 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
       var etag = ""
       var lastModified = ""
       val sidecar = metaSidecarPath(fullPath)
-      if hostFileExists(sidecar) {
-        val txt = try {
-          hostReadAllText(sidecar)
-        } catch Bug as _ {
-          ""
-        }
+      if portFileExists(sidecar) {
+        val txt = match portReadText(sidecar) { case Ok(text) -> text; case Err(_) -> "" }
         if txt.length > 0 {
           // Tolerate a corrupted / partially-written sidecar — the
           // entry is still listable with zero-valued fallbacks rather
-          // than aborting the whole `list` call.  parseJson throws an
-          // unhandled Bug on truncated input, so guard it with
-          // try/catch and treat the failure the same as a missing
-          // sidecar (#1440).
-          val parsed = try {
-            Some(value = parseJson(txt))
-          } catch Bug as _ {
-            None
-          }
-          match parsed {
-            case Some(doc) -> {
+          // than aborting the whole `list` call: a sidecar that does not
+          // parse is treated the same as a missing one (#1440).
+          match tryParseJson(txt) {
+            case Ok(doc) -> {
               defer {
                 disposeJson(doc)
               }
@@ -895,7 +874,7 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
                 }
               }
             }
-            case None -> ()
+            case Err(_) -> ()
           }
         }
       }
@@ -923,10 +902,9 @@ pub func connectLocal(basePath: in String, bucketName: in String): Result[Storag
     case Ok(_) -> ()
   }
   val joined = basePath + "/" + bucketName
-  val bucketDir = try {
-    hostPathGetFullPath(joined)
-  } catch Bug as b {
-    return Err(StorageError(message = "invalid basePath/bucketName: " + b.message, code = "INVALID_ARGUMENT"))
+  val bucketDir = match portFullPath(joined) {
+    case Ok(p) -> p
+    case Err(cause) -> return Err(StorageError(message = "invalid basePath/bucketName: " + cause, code = "INVALID_ARGUMENT"))
   }
   match createDirIfMissing(bucketDir) {
     case Err(e) -> return Err(e)

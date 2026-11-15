@@ -930,12 +930,17 @@ jobs:
             lyric-feature-flags/lyric.toml \
             lyric-i18n/lyric.toml
 
-          # Tier 4: depends on Tier 3. lyric-testing depends on lyric-mq and
-          # lyric-session (both Tier 3), so it cannot safely share their tier
-          # -- it moved here from Tier 3 after that same-tier race caused a
-          # publish failure (NU1102) even with the barrier working correctly.
+          # Tier 4: depends on Tier 3. lyric-conformance depends on lyric-mq
+          # and lyric-session (both Tier 3), so it cannot safely share their
+          # tier -- lyric-testing moved here from Tier 3 for the same reason,
+          # after a same-tier race caused a publish failure (NU1102) even with
+          # the barrier working correctly.
           run_tier 4 \
             lyric-lambda/lyric.toml \
+            lyric-conformance/lyric.toml
+
+          # Tier 5: lyric-testing depends on lyric-conformance (Tier 4).
+          run_tier 5 \
             lyric-testing/lyric.toml
 
           # Final report — to both the log and the GitHub job summary.

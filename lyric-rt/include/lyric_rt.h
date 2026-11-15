@@ -1247,6 +1247,59 @@ int32_t lyric_sock_io_timeout_ms(int32_t fd);
 LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok);
 int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list);
 
+/* ── Bounded operations (#9090) ────────────────────────────────────────
+ *
+ * The functions above block until the socket is ready or its
+ * SO_RCVTIMEO/SO_SNDTIMEO passes.  The `*_bounded` forms take the two limits a
+ * request has instead: `deadline_ns`, an absolute lyric_monotonic_nanos()
+ * instant after which the operation gives up (0: no deadline), and `wake_fd`,
+ * the read end of a lyric_sock_wake_pipe_new pipe whose becoming readable
+ * abandons the operation at once (-1: none).  Each reports one of:
+ *
+ *   LYRIC_BOUNDED_OK           done
+ *   LYRIC_BOUNDED_ERROR        failed (last_error set), as the unbounded form
+ *   LYRIC_BOUNDED_DEADLINE     `deadline_ns` passed first; never reported
+ *                              before lyric_monotonic_nanos() reaches it
+ *   LYRIC_BOUNDED_INTERRUPTED  `wake_fd` became readable first
+ *
+ * last_error is set for the last two as well ("... timed out",
+ * "... interrupted").  A connection on which an operation ended with
+ * DEADLINE or INTERRUPTED may hold half a message: close it.  The socket is
+ * in blocking mode before and after every call; a TLS operation switches it
+ * to non-blocking for its own duration, so no other thread may use the same
+ * connection meanwhile (a connection has one owner anyway). */
+#define LYRIC_BOUNDED_ERROR       0
+#define LYRIC_BOUNDED_OK          1
+#define LYRIC_BOUNDED_DEADLINE    2
+#define LYRIC_BOUNDED_INTERRUPTED 3
+
+/* lyric_sock_connect within the limits, name resolution included (the lookup
+ * of a name that is not an address literal runs on a helper thread, which is
+ * left to finish on its own when the limit passes first).  Returns the
+ * connected descriptor, -1 on error, -2 for LYRIC_BOUNDED_DEADLINE, -3 for
+ * LYRIC_BOUNDED_INTERRUPTED. */
+int32_t lyric_sock_connect_bounded(const char* host, int32_t port, int64_t deadline_ns, int32_t wake_fd);
+
+/* lyric_sock_read_bytes within the limits: *status is a LYRIC_BOUNDED_* code,
+ * and the list holds the bytes read only for LYRIC_BOUNDED_OK (empty at end of
+ * stream). */
+LyricList* lyric_sock_read_bytes_bounded(int32_t fd, int64_t max_bytes, int64_t deadline_ns, int32_t wake_fd,
+                                         int32_t* status);
+
+/* lyric_sock_write_bytes within the limits: a LYRIC_BOUNDED_* code.  Part of
+ * the bytes may have been sent when it is not LYRIC_BOUNDED_OK. */
+int32_t lyric_sock_write_bytes_bounded(int32_t fd, void* bytes_list, int64_t deadline_ns, int32_t wake_fd);
+
+/* Cancellation wake-ups.  `key` identifies a cancellation source (the
+ * address of the Lyric object); a registered `write_fd` (the write end of a
+ * lyric_sock_wake_pipe_new pipe) is signalled by lyric_cancel_wake_signal(key),
+ * which `Std.Task.cancelSource` calls, so an operation bounded by the pipe's
+ * read end stops when its token is cancelled.  Unregister before closing the
+ * pipe. */
+void lyric_cancel_wake_register(void* key, int32_t write_fd);
+void lyric_cancel_wake_unregister(void* key, int32_t write_fd);
+void lyric_cancel_wake_signal(void* key);
+
 /* ── TLS over OpenSSL 3.x (dlopen'd) ───────────────────────────────────
  *
  * `min_version` is 12 for TLS 1.2 (the floor) or 13 for TLS 1.3.  ALPN is
@@ -1335,6 +1388,19 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n);
  * (same LyricList[Byte] bridging, issue #6103 item C). */
 LyricList* lyric_tls_read_bytes(void* conn, int64_t max_bytes, int32_t* ok);
 int64_t lyric_tls_write_bytes(void* conn, void* bytes_list);
+
+/* The bounded forms (see "Bounded operations" above).  `fd` is the
+ * connection's socket.  lyric_tls_client_connect_bounded returns the handle
+ * with *status LYRIC_BOUNDED_OK, or NULL with another code;
+ * lyric_tls_read_bytes_bounded and lyric_tls_write_bytes_bounded are the
+ * counterparts of lyric_sock_read_bytes_bounded and
+ * lyric_sock_write_bytes_bounded. */
+void* lyric_tls_client_connect_bounded(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv,
+                                       int64_t deadline_ns, int32_t wake_fd, int32_t* status);
+LyricList* lyric_tls_read_bytes_bounded(void* conn, int32_t fd, int64_t max_bytes, int64_t deadline_ns,
+                                        int32_t wake_fd, int32_t* status);
+int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, int64_t deadline_ns,
+                                      int32_t wake_fd);
 
 /* The negotiated ALPN protocol wire name into `out` (NUL-terminated,
  * truncated to `out_cap`).  Returns its length, or 0 when no ALPN protocol

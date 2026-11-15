@@ -1113,8 +1113,9 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
 - `lyric-storage/` — `lyric-storage` library: object storage
-  (`Lyric.Storage`). Local filesystem is the only backend and is
-  production-ready on both targets; the unimplemented S3 and Azure Blob
+  (`Lyric.Storage`). Local filesystem is the only backend and is real on
+  dotnet, the JVM and native (`Storage.Port`: the managed kernels behind
+  `Result`s, a standard-library implementation on native; D604); the unimplemented S3 and Azure Blob
   factories were removed (D552, migration note in
   `lyric-storage/README.md`); `StorageBucket` interface with
   put/get/delete/list/presignedUrl/exists; `AuditAccess` and
@@ -1164,10 +1165,16 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   locale fallback chain; JSON-based translation loading; BCP 47 locale
   parsing.
 - `lyric-testing/` — `lyric-testing` library: test helpers and mocks
-  (`Lyric.Testing`). `MockMailSender`, `MockStorageBucket`,
+  (`Lyric.Testing`, `targets = ["dotnet"]`). `MockMailSender`, `MockStorageBucket`,
   `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
   `TestContext` factory; `assertOk`/`assertErr`/`assertSome`/`assertEq`/
   `assertTrue`/`assertFalse` assertion helpers.
+- `lyric-conformance/` — `lyric-conformance` library (`Lyric.Conformance`):
+  the conformance suites `Testing.Conformance` and `Testing.Conformance.Cache` /
+  `.Flags` / `.Session` / `.Mq` / `.Storage` / `.Jobs` / `.Search`, split out of
+  `lyric-testing` so they depend only on the interface packages and build for
+  dotnet, the JVM and native (D604). `tests/conformance_tests.l` runs each
+  suite against its in-tree backend on every target.
 - `lyric-gpu/` — `lyric-gpu` library: WebGPU compute and offscreen rendering for `--target native` over wgpu-native (`Gpu`; `Gpu.Kernel.Wgpu` is `lyric bindgen` output, never hand-edited). Examples `compute`, `triangle` and `quad` (golden images) run in CI on lavapipe via `scripts/ci/gpu-examples-e2e.sh`, and `window` (an SDL3 window with a wgpu surface, screenshot-checked under Xvfb) via `scripts/ci/gpu-window-e2e.sh` (D194, D196, D197, docs/67 G5).
 - `lyric-window/` — `lyric-window` library: SDL3 windows, input events, clipboard, timing and audio for `--target native` (`Window`; `Window.Kernel.Sdl` is `lyric bindgen` output, never hand-edited). SDL3 via pkg-config; CI builds the pinned release tarball (`scripts/ci/build-sdl3.sh`) and runs the headless demo (`scripts/ci/window-examples-e2e.sh`) (D195, docs/67 G4).
 - `lyric-gpu-window/` — `lyric-gpu-window` library: `GpuWindow.surfaceFor`, the one bridge from a `lyric-window` window to a `lyric-gpu` surface (X11, Wayland, Win32, and macOS through the window's `CAMetalLayer`; D317).

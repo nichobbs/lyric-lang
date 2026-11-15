@@ -26,12 +26,15 @@
 //!     predicate, and a timed wait gives up at its deadline.  Nothing polls.
 //!   - **Deadlines are lazy.**  `makeCancelSourceTimeout` stores a monotonic
 //!     deadline that `isCancelled` compares against; no timer thread exists.
+//!     A wait that honours a token (`delayWithCancel`, `Std.Http`'s
+//!     `*WithCancel*` sends) reads `deadlineNanos` and ends at that instant
+//!     itself, on the same clock, so the token reads as cancelled by then.
 //!   - **The ambient token is per thread** (a lyric-rt thread slot).  A child
 //!     started by `scopeSpawn` inherits its parent's ambient token, as an
 //!     `AsyncLocal` flows into `Task.Run` on .NET.
 //!
 //! Only `Std.Task` should import this.
-@axiom("lyric_global_lock/unlock, lyric_global_cond_*, lyric_thread_ref_*, lyric_thread_spawn_detached and lyric_monotonic_nanos (lyric-rt) conform to their documented contracts; lyric_retain/lyric_release are the ARC primitives")
+@axiom("lyric_global_lock/unlock, lyric_global_cond_*, lyric_thread_ref_*, lyric_thread_spawn_detached, lyric_cancel_wake_signal and lyric_monotonic_nanos (lyric-rt) conform to their documented contracts; lyric_retain/lyric_release are the ARC primitives")
 @runtime_checked
 @io
 package Std.Task
@@ -63,6 +66,8 @@ extern func rtMonotonicNanos(): Long = "lyric_monotonic_nanos"
 extern func rtRetain(p: NativePtr[Byte]): Unit = "lyric_retain"
 
 extern func rtRelease(p: NativePtr[Byte]): Unit = "lyric_release"
+
+extern func rtCancelWakeSignal(source: CancellationTokenSource): Unit = "lyric_cancel_wake_signal"
 
 extern func rtThreadSpawnDetached(start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "lyric_thread_spawn_detached"
 
@@ -110,13 +115,16 @@ pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
   CancellationToken(source = Some(value = source))
 }
 
-/// Request cancellation.  Idempotent.
+/// Request cancellation.  Idempotent.  Wakes the waits that watch the source:
+/// a `delayWithCancel`, and an I/O operation bounded by a wake pipe registered
+/// for it (`Std.Http`'s `*WithCancel*` sends).
 @experimental
 pub func cancelSource(source: in CancellationTokenSource): Unit {
   rtGlobalLock()
   source.cancelled = true
   rtGlobalCondBroadcast()
   rtGlobalUnlock()
+  rtCancelWakeSignal(source)
 }
 
 /// Nothing to release on this target; kept for API parity.
