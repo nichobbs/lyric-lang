@@ -2321,7 +2321,7 @@ func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
 }
 
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+/// parameter, a `String` for a `CharSequence` one), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   match taskAsHostTask(from, to) {
     case Some(k) -> return Some(value = k)
@@ -2347,6 +2347,27 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
           }
           case None -> None
         }
+      }
+      case _ -> None
+    }
+    case TPrim(TPString) -> match to {
+      case TExtern(t) -> {
+        if isHostObject(t.name) {
+          return None
+        }
+        for hostString in ["System.String", "java.lang.String"] {
+          match env.ctx.tbl.externIterResolver[0].resolveBases(hostString) {
+            case Some(bases) -> {
+              for b in bases {
+                if b == t.name {
+                  return Some(value = CvBoxToHost(host = t))
+                }
+              }
+            }
+            case None -> ()
+          }
+        }
+        None
       }
       case _ -> None
     }
@@ -2411,6 +2432,17 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
   if hostResultIsCallType(ret, ty) {
     val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
     return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
+  }
+  // The checker settles a host result at the supertype the context expects (`JString.valueOf(x)` returned as
+  // a `CharSequence`): the call keeps the host's result type and an upcast gives the checker's.
+  if not tyEq(ret, ty) {
+    match hostUpcastKind(env, ret, ty) {
+      case Some(k) -> {
+        val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+        return mkExpr(e, ty, XConvert(kind = k, inner = c))
+      }
+      case None -> ()
+    }
   }
   mkExpr(e, ty, call)
 }
