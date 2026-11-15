@@ -124,7 +124,14 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
         case Some(_) -> {
           total = total + 1
           val env = newBuildEnvSharing(ctx, counter)
-          match buildFnDecl(env, decl, tbl) {
+          // An `@externTarget` function is the host's: its source body (`= ()`) is a placeholder the checker
+          // never types, so the TIR describes it by its signature alone (D473).
+          val declared = if hasExternTargetAnnotation(decl.annotations) {
+            buildFnSigDecl(env, decl, tbl)
+          } else {
+            buildFnDecl(env, decl, tbl)
+          }
+          match declared {
             case Some(fd) -> {
               built = built + 1
               funcs.add(fd)
