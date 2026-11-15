@@ -233,7 +233,7 @@ if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
 fi
 # The unique-body counts rest on the `TIR body` lines (D474); if the checker stops printing
 # them the counts would silently fall back to nothing, so their absence is a failure.
-if [[ ! -s "$OUT/bodies.stdlib-tests" ]]; then
+if ! compgen -G "$OUT/bodies.*" >/dev/null; then
   echo "TIR census: no 'TIR body' line in any build output (LYRIC_TIR_CENSUS_BODIES=1)" >&2
   exit 1
 fi
@@ -328,6 +328,8 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     mapfile -t ub < <(unique_bodies "$area")
     read -r utotal ubuilt <<<"${ub[0]}"
     echo "    unique bodies: $ubuilt of $utotal built, $((utotal - ubuilt)) not yet (I0002)"
+    # A kind line is `<count> <kind>TAB<site>`: the count is its first word and the kind
+    # name must hold no tab.
     [[ ${#ub[@]} -gt 1 ]] && printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
       echo "    I0002 kind ${head#* }: ${head%% *} (e.g. ${site})"
     done
