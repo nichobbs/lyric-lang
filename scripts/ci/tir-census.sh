@@ -147,7 +147,7 @@ absorb_log() {
   lines="$(grep -c '^TIR build census' "$log" || true)"
   a_tried[$area]=$(( ${a_tried[$area]:-0} + 1 ))
   if [[ "$lines" -eq 0 ]]; then
-    if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit $rc) "; fi
+    if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit=$rc) "; fi
     return 0
   fi
   collect_bodies "$area" "$name" "$log"
@@ -260,9 +260,10 @@ is_native_only() {
   return 1
 }
 
-# TIR_CENSUS_AREAS picks the wide areas (default all three); TIR_CENSUS_LINKED=1 also
-# judges the self-tests that import compiler packages, by running them under `lyric test`
-# (about 25 s each, so CI leaves it off and such a test is counted as unchecked).
+# TIR_CENSUS_AREAS picks the wide areas (default all three).  A self-test that fails the
+# ordinary build because it imports compiler packages is judged by running it under `lyric
+# test` (TIR_CENSUS_LINKED=0 disables that; about 25 s each).  TIR_CENSUS_SELFTESTS="a.l b.l"
+# replaces the self-test list (for a check of one change).
 log="$OUT/wide.txt"
 AREAS=" ${TIR_CENSUS_AREAS:-compiler ecosystem self-tests} "
 
@@ -302,13 +303,16 @@ if [[ "$AREAS" == *" self-tests "* ]]; then
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
   run_cached "st-$f" 600 "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/st.dll"
-  if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-0}" == 1 ]]; then
-    # A program that imports compiler packages builds only through `lyric test`, which
-    # links them as restored dependencies; the census line is the same.  The tests run too.
-    run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 "$LYRIC" test --target dotnet "$f"
+  if ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-1}" == 1 ]] && grep -q '@test_module' "$f"; then
+    # A @test_module that imports compiler packages builds only through `lyric test`, which
+    # links them as restored dependencies; the census line is the same.  The tests run too
+    # (about 25 s each), so CI, which leaves the self-tests area out, is unaffected, and
+    # TIR_CENSUS_LINKED=0 turns it off.  A program that is not a @test_module has no such
+    # path and stays unchecked (it is a `func main` program no gate builds; D475).
+    run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 LYRIC_TIR_CENSUS_BODIES=1 "$LYRIC" test --target "$(target_of "$f")" "$f"
   fi
   absorb_log self-tests "$f" "$log" "$rc"
-done < <(find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort)
+done < <(if [[ -n "${TIR_CENSUS_SELFTESTS:-}" ]]; then tr ' ' '\n' <<<"$TIR_CENSUS_SELFTESTS"; else find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort; fi)
 fi
 
 echo
