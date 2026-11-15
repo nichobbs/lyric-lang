@@ -405,6 +405,23 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/e_tir.ll" lyric-rt/b
 diff -u "$work/e_tir.out" "$work/e_asan.out"
 echo "by-value elements under AddressSanitizer: clean"
 
+# Record patterns (docs/70 phase 4a): `match` arms and destructuring `val` on a by-value and a heap
+# record lowered from TIR, then under AddressSanitizer.  The AST lowering has no record patterns, so
+# there is no plain build to compare with: the output is the specified one.
+rpsrc=scripts/ci/native-via-tir/recpat.l
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$rpsrc" -o "$work/rp_tir" 2> "$work/rp_census.txt" >/dev/null
+cat "$work/rp_census.txt"
+"$work/rp_tir" > "$work/rp_tir.out"
+printf '7\n300\n7\nR4\nleaf!\nleaf2\n42\n8\n' | diff -u - "$work/rp_tir.out"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/rp_census.txt" || {
+  echo "::error::expected every function of recpat.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/rp_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/rp_asan"
+"$work/rp_asan" > "$work/rp_asan.out"
+diff -u "$work/rp_tir.out" "$work/rp_asan.out"
+echo "record patterns under AddressSanitizer: clean"
+
 # Inline arrays (docs/70 phase 4a): element reads and writes through the element's address,
 # compound assignment, nested arrays, arrays in by-value and heap records, `for`, `.length` and an
 # array of by-value records from TIR; an out-of-range index panics with the AST path's message.
