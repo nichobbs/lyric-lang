@@ -879,7 +879,10 @@ static void* resolve_main(void* arg) {
 
 /* getaddrinfo within the limits.  An address literal never leaves the
  * calling thread; a name is looked up on a detached helper thread, since
- * getaddrinfo itself cannot be given a deadline or interrupted. */
+ * getaddrinfo itself cannot be given a deadline or interrupted.  A helper
+ * whose waiter gave up lives until its getaddrinfo returns, so lookups that
+ * keep timing out against a resolver that never answers hold one thread each
+ * for the resolver's own timeout; there is no cap. */
 static int resolve_bounded(const char* host, const char* portstr, int64_t deadline_ns, int32_t wake_fd,
                            struct addrinfo** out) {
     struct addrinfo hints;

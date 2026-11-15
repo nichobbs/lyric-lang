@@ -1594,7 +1594,13 @@ static void test_sock_write_bounded(void) {
     for (int i = 0; i < 16 * 1024 * 1024; i++) lyric_list_push(big, (int64_t)(i & 0xff));
     int64_t deadline = deadline_in_ms(300);
     int64_t start = mono_ms();
-    CHECK(lyric_sock_write_bytes_bounded(client_fd, big, deadline, -1) == LYRIC_BOUNDED_DEADLINE);
+    /* Winsock takes one send of any size while the send buffer is empty, so
+     * the first write can succeed there; the buffers are full for the next. */
+    int32_t outcome = LYRIC_BOUNDED_OK;
+    for (int i = 0; i < 8 && outcome == LYRIC_BOUNDED_OK; i++) {
+        outcome = lyric_sock_write_bytes_bounded(client_fd, big, deadline, -1);
+    }
+    CHECK(outcome == LYRIC_BOUNDED_DEADLINE);
     CHECK(lyric_monotonic_nanos() >= deadline);
     CHECK(mono_ms() - start < 5000);
     CHECK(last_error_contains("timed out"));
