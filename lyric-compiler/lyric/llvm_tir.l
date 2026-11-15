@@ -4065,10 +4065,11 @@ func lowerArrayCopy(c: in LCtx, inner: in TExpr): Val {
   Val(ty = l.ty, value = NLocal(name = d), owned = true)
 }
 
-/// `XZeroValue`: `var a: array[N, T]` without an initializer.  An inline array of scalar leaves is
-/// `zeroinitializer`; an array held as a list of `String`s is `N` empty strings.  A record element's
-/// zero is built from the checker's zero expression, which the node does not carry, so it stays on
-/// the AST path.
+/// `XZeroValue`: `var a: array[N, T]` without an initializer, which the checker allows only for an
+/// element with a zero value.  An inline array of scalar leaves is `zeroinitializer`.  A record
+/// element's zero is built from the checker's zero expression, which the node does not carry, and an
+/// array held as a list has no zero value (a `String` or a reference element has none, T0156), so
+/// those stay on the AST path.
 func lowerZeroValue(c: in LCtx, ty: in Ty): Val {
   val nt = match tyToN(c.env, ty) {
     case Some(x) -> x
@@ -4079,35 +4080,10 @@ func lowerZeroValue(c: in LCtx, ty: in Ty): Val {
       if not arrayZeroOk(nt) {
         return unsupported(c, "the zero value of " + renderTy(ty))
       }
-      return Val(ty = nt, value = NZeroInit(ty = nt))
+      Val(ty = nt, value = NZeroInit(ty = nt))
     }
-    case _ -> ()
+    case _ -> unsupported(c, "the zero value of " + renderTy(ty))
   }
-  val n = match heapArrayLen(ty) {
-    case Some(k) -> k
-    case None -> return unsupported(c, "the zero value of " + renderTy(ty))
-  }
-  val el = match listElemN(c, ty) {
-    case Some(x) -> x
-    case None -> return unsupported(c, "the zero value of " + renderTy(ty))
-  }
-  if not isStringN(el) or n > 64 {
-    return unsupported(c, "the zero value of " + renderTy(ty))
-  }
-  val raw = callRt(c, "lyric_list_new", i8ptr(), arg1(NI32, NLitInt(v = 1i64, ty = NI32)))
-  val d = tmp(c)
-  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = nt))
-  val l = Val(ty = nt, value = NLocal(name = d), owned = true)
-  var i = 0
-  while i < n {
-    val empty = stringLiteral(c, "")
-    val args: List[NArg] = newList()
-    args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
-    args.add(NArg(ty = NI64, value = slotOf(c, empty)))
-    callRtVoid(c, "lyric_list_push", args)
-    i = i + 1
-  }
-  l
 }
 
 /// `a[i] = v` and `a[i] op= v` on an inline array.  The right-hand side is evaluated after the

@@ -1,6 +1,6 @@
 //! arrayrefs.l - `array[N, T]` of references (a counted list on native) lowered from TIR (docs/70
-//! phase 4a, D520): the builder's `XArrayCopy` at a store, `XZeroValue` for `var a: array[N, String]`,
-//! element reads and writes with the array's own bounds check, compound assignment and `for`.
+//! phase 4a, D520): the builder's `XArrayCopy` at a store, element reads and writes with the array's
+//! own bounds check, compound assignment and `for`.
 //! `native-via-tir-e2e.sh` runs it both ways and under AddressSanitizer.
 package ArrayRefsViaTir
 
@@ -13,7 +13,7 @@ record Tag {
 }
 
 func fill(): array[3, String] {
-  var a: array[3, String]
+  var a: array[3, String] = ["", "", ""]
   a[0] = "x"
   a[1] = "yy"
   a[2] = a[0] + a[1]
