@@ -2571,6 +2571,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       match mapGet(c.env.fnNames, sym.id) {
         case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
         case Some(irName) -> {
+          if c.coro {
+            match lowerCoroLeaf(c, irName, args) {
+              case Some(v) -> return v
+              case None -> ()
+            }
+          }
           if c.coro and isCoroLeaf(irName) {
             return unsupported(c, "a coroutine calling " + irName)
           }
@@ -3108,10 +3114,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   unsupported(c, "builtin " + name)
 }
 
-/// The runtime leaves the AST path lowers specially inside a coroutine (`sleepMillis`, the fd
-/// waits, the process capture and the socket twins): they park the task instead of blocking the
-/// scheduler, so a coroutine that calls one stays on the AST path.  Keep in step with
-/// `lowerResolvedSigCall`, `tryEmitIoLeaf` and `nativeAsyncTwin` in llvm_codegen.l.
+/// The leaves the AST path lowers specially inside a coroutine: they park the task instead of
+/// blocking the scheduler.  `sleepMillis` and the fd waits lower here (`lowerCoroLeaf`); the
+/// process capture and the socket twins return a `Result`, so a coroutine that calls one stays on
+/// the AST path until generic unions lower.  Keep in step with `lowerResolvedSigCall`,
+/// `tryEmitIoLeaf` and `nativeAsyncTwin` in llvm_codegen.l.
 func isCoroLeaf(irName: in String): Bool {
   irName == "Std.Time.sleepMillis" or irName == "Std.IoWait.waitFd" or irName == "Std.IoWait.waitFd2" or
     irName == "Std.Process.runCapture" or
@@ -3119,6 +3126,61 @@ func isCoroLeaf(irName: in String): Bool {
     irName == "Std.TcpHost.hostAccept" or
     irName == "Std.TcpHost.hostRead" or
     irName == "Std.TcpHost.hostWrite"
+}
+
+/// An integer argument as the runtime's 64-bit (or, for an event mask, 32-bit) operand.
+func leafOperand(c: in LCtx, v: in Val, want: in NType): Option[NValue] {
+  if nTypeToIrString(v.ty) == nTypeToIrString(want) {
+    return Some(value = v.value)
+  }
+  match v.ty {
+    case NI32 -> match want {
+      case NI64 -> {
+        val d = tmp(c)
+        c.insns.add(NSExt(dest = d, fromTy = NI32, value = v.value, toTy = NI64))
+        Some(value = NLocal(name = d))
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// `Std.Time.sleepMillis`, `Std.IoWait.waitFd` and `waitFd2` inside a coroutine: register the
+/// task with the reactor, suspend, and (for the waits) read the outcome after the resume, as the
+/// AST path's `emitAsyncSleep` and `emitAsyncWaitFd` do.  None for any other callee.
+func lowerCoroLeaf(c: in LCtx, irName: in String, args: in List[TArg]): Option[Val] {
+  val isSleep = irName == "Std.Time.sleepMillis" and args.count == 1
+  val isWait = irName == "Std.IoWait.waitFd" and args.count == 3
+  val isWait2 = irName == "Std.IoWait.waitFd2" and args.count == 5
+  if not (isSleep or isWait or isWait2) {
+    return None
+  }
+  val rargs: List[NArg] = newList()
+  rargs.add(NArg(ty = i8ptr(), value = NLocal(name = "coro.task")))
+  var i = 0
+  for a in args {
+    val ex = match a { case TArgIn(v) -> v; case _ -> return None }
+    val v = borrow(c, lowerExpr(c, ex))
+    val isMask = i == 1 or (isWait2 and i == 3)
+    val want = if isMask { NI32 } else { NI64 }
+    match leafOperand(c, v, want) {
+      case Some(op) -> rargs.add(NArg(ty = want, value = op))
+      case None -> {
+        c.problems.add("an argument of " + irName + " of type " + nTypeToIrString(v.ty))
+        return Some(value = unitVal())
+      }
+    }
+    i = i + 1
+  }
+  val fn = if isSleep { "lyric_async_sleep" } else if isWait { "lyric_async_wait_fd" } else { "lyric_async_wait_fd2" }
+  callRtVoid(c, fn, rargs)
+  emitSuspendPoint(c)
+  if isSleep {
+    return Some(value = unitVal())
+  }
+  val r = callRt(c, "lyric_async_wait_fd_result", NI32, arg1(i8ptr(), NLocal(name = "coro.task")))
+  Some(value = Val(ty = NI32, value = r))
 }
 
 func noArgs(): List[NArg] {

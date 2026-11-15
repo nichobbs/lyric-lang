@@ -315,8 +315,8 @@ cat "$work/a_census.txt"
 "$work/a_ast" > "$work/a_ast.out"
 "$work/a_tir" > "$work/a_tir.out"
 diff -u "$work/a_ast.out" "$work/a_tir.out"
-printf '42\n42\nhello ann!\nnote a\n333\n' | diff -u - "$work/a_tir.out"
-grep -q '^native via-TIR: 8 of 8 functions lowered from TIR' "$work/a_census.txt" || {
+printf '42\n42\nhello ann!\nnote a\n333\n7\n' | diff -u - "$work/a_tir.out"
+grep -q '^native via-TIR: 9 of 9 functions lowered from TIR' "$work/a_census.txt" || {
   echo "::error::expected every function of async.l to be lowered from TIR"
   exit 1
 }
