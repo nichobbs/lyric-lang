@@ -2012,6 +2012,9 @@ pub record BuildCensus {
   firstErrors: List[String] = newList()
   /// The built functions as a package, with the declarations their bodies reach.
   pkg: TPackage = TPackage(name = "", symbols = newList(), funcs = newList())
+  /// One tab-separated line per body, built or not, for the census script to count a body
+  /// shared by several programs once (D474); see `bodyCensusLines`.
+  bodyLines: List[String] = newList()
 }
 
 /// Build every function body of `file` that has one, each with a fresh
@@ -2030,8 +2033,33 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
     uncovered = pb.uncovered,
     sites = pb.sites,
     firstErrors = firstErrors,
-    pkg = pb.pkg
+    pkg = pb.pkg,
+    bodyLines = bodyCensusLines(pb)
   )
+}
+
+/// The census's per-body lines (D474): `built<TAB>key` for a built body, `unbuilt<TAB>key` for
+/// one that did not build, then `kind<TAB>key<TAB>count<TAB>line:column<TAB>kind` for each kind
+/// of node an unbuilt body has no case for.  The key is the symbol's DefPath key, or `~name`
+/// when the checker has none.
+pub func bodyCensusLines(pb: in PackageBuild): List[String] {
+  val res: List[String] = newList()
+  for fd in pb.pkg.funcs {
+    match mapGet(pb.names, fd.sym.id) {
+      case Some(k) -> res.add("built\t" + k)
+      case None -> ()
+    }
+  }
+  for f in pb.failed {
+    val key = match f.path { case Some(k) -> k; case None -> "~" + f.name }
+    res.add("unbuilt\t" + key)
+    for k in mapKeys(f.uncovered) {
+      val n = match mapGet(f.uncovered, k) { case Some(v) -> v; case None -> 0 }
+      val at = match mapGet(f.sites, k) { case Some(a) -> a; case None -> "" }
+      res.add("kind\t" + key + "\t" + toString(n) + "\t" + at + "\t" + k)
+    }
+  }
+  res
 }
 
 /// The uncovered kinds of `c`, most frequent first, as `kind x count`.
