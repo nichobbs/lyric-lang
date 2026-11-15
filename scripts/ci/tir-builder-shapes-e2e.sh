@@ -41,6 +41,20 @@ check() {
   echo "ok   $name"
 }
 
+# check_counted NAME <<< source: the program must reach the end of the build (a hang is the failure
+# this guards against) and the verifier must report nothing, but a body may stay counted.
+check_counted() {
+  local name="$1" src="$WORK/$1.l" log="$WORK/$1.log"
+  cat > "$src"
+  (cd "$WORK" && timeout 180 "$LYRIC" build --verify-ir "$src" -o "$WORK/$name.dll" >"$log" 2>&1)
+  local rc=$?
+  if [[ $rc -eq 124 ]]; then echo "FAIL ($name): the build did not finish in 180s"; fail=1; return; fi
+  if ! grep -q "^TIR build census" "$log" || ! grep -q "^I0003 census .*: 0 diagnostic" "$log"; then
+    echo "FAIL ($name): no census, or the verifier rejected a built body"; grep -E "I0003|error" "$log" | head -3; fail=1; return
+  fi
+  echo "ok   $name"
+}
+
 check collection_arguments 7 <<'LYRIC'
 package Shapes1
 import Std.Core
@@ -253,6 +267,69 @@ func viaBinding(): Int {
 }
 
 func main(): Int = viaArgument(10) + describe(viaTail(7)) + viaBinding() + 8
+LYRIC
+
+# A generic record value used at the same record with other type arguments, and a recursive union
+# whose conversion stays counted (a first version of the union rule never finished building) (D488).
+check covariant_record_values 17 <<'LYRIC'
+package Shapes10
+import Std.Core
+
+interface Greeter {
+  func greet(self: in Greeter): Int
+}
+
+record English { n: Int }
+
+impl Greeter for English {
+  func greet(self: in English): Int = self.n
+}
+
+record Box[T] { item: T, tag: Int }
+
+func boxed(n: in Int): Box[English] = Box(item = English(n = n), tag = 2)
+
+func open(b: in Box[Greeter]): Int = b.item.greet() + b.tag
+
+func viaArgument(n: in Int): Int = open(boxed(n))
+
+func viaBinding(): Int {
+  val b: Box[Greeter] = boxed(4)
+  open(b)
+}
+
+func main(): Int = viaArgument(5) + viaBinding() + 4
+LYRIC
+
+check_counted covariant_recursive_union_stays_counted <<'LYRIC'
+package Shapes11
+import Std.Core
+
+interface Greeter {
+  func greet(self: in Greeter): Int
+}
+
+record English { n: Int }
+
+impl Greeter for English {
+  func greet(self: in English): Int = self.n
+}
+
+union Tree[T] {
+  case Leaf(value: T)
+  case Node(left: Tree[T], right: Tree[T])
+}
+
+func leaf(n: in Int): Tree[English] = Leaf(value = English(n = n))
+
+func widen(t: in Tree[English]): Tree[Greeter] = t
+
+func main(): Int {
+  match widen(leaf(3)) {
+    case Leaf(g) -> g.greet()
+    case Node(_, _) -> 0
+  }
+}
 LYRIC
 
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"

@@ -3403,9 +3403,9 @@ func retypeValueCases(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if parent.id != wantParent.id or haveArgs.count != want.count or want.count == 0 {
     return None
   }
-  val cases = match mapGet(caseSymbolsByParent(env.ctx.tbl), parent.id) { case Some(c) -> c; case None -> return None }
+  val cases = match mapGet(caseSymbolsByParent(env.ctx.tbl), parent.id) { case Some(c) -> c; case None -> newList() }
   if cases.count == 0 {
-    return None
+    return retypeRecord(env, t, ty, parent, haveArgs, want)
   }
   val arms: List[TArm] = newList()
   for cs in cases {
@@ -3442,6 +3442,94 @@ func retypeValueCases(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
       ty = ty,
       span = t.span,
       kind = XMatch(scrutinee = t, arms = arms, exhaustive = true)
+    )
+  )
+}
+
+/// A record value used at the same record with other type arguments (`Box[English]` where a
+/// `Box[Greeter]` is wanted): the value is bound once and the record built again at the arguments
+/// of `ty`, each field read and converted to its type there.  A record with a `var` field has
+/// identity, so a copy would change what an alias sees: it stays counted.
+func retypeRecord(
+  env: in BuildEnv,
+  t: in TExpr,
+  ty: in Ty,
+  parent: in SymbolId,
+  haveArgs: in List[Ty],
+  want: in List[Ty],
+): Option[TExpr] {
+  val sym = match symbolOfDefId(env.ctx.tbl, parent) { case Some(x) -> x; case None -> return None }
+  match sym.kind {
+    case DKRecord(_, _) -> ()
+    case _ -> return None
+  }
+  val names = recordGenericNamesOf(env.ctx.tbl, parent)
+  if names.count != want.count {
+    return None
+  }
+  val ctx = newTyConvCtx(env.ctx.tbl)
+  tyConvBind(ctx, sym.name, parent, names)
+  val vars = varFieldNames(env.ctx.tbl, parent)
+  val fs: List[TFieldSig] = newList()
+  for f in fieldsOfRecord(env.ctx.tbl, parent) {
+    if vars.containsKey(f.name) {
+      return None
+    }
+    match tyOfType(ctx, f.ty) {
+      case Ok(ft) -> fs.add(TFieldSig(name = f.name, ty = ft, mutable = false))
+      case Err(_) -> return None
+    }
+  }
+  if fs.count == 0 {
+    return None
+  }
+  if not env.syms.containsKey(parent.id) {
+    env.syms.add(parent.id, typeEntry(parent, names.count, fs))
+  }
+  pushScope(env)
+  val d = declareLocal(env, "__covariant_record", t.ty, false)
+  val bound = TStmt(
+    id = freshNodeId(env),
+    span = t.span,
+    kind = TsLet(
+      pat = TPat(
+        id = freshNodeId(env),
+        ty = t.ty,
+        span = t.span,
+        kind = TpBind(decl = d, inner = None)
+      ),
+      init = t
+    )
+  )
+  val fields: List[TExpr] = newList()
+  var i = 0
+  while i < fs.count {
+    val haveTy = substOwnerArgs(fs[i].ty, parent, haveArgs)
+    val wantTy = substOwnerArgs(fs[i].ty, parent, want)
+    val recv = TExpr(id = freshNodeId(env), ty = t.ty, span = t.span, kind = XLocal(local = d.id))
+    val read = TExpr(
+      id = freshNodeId(env),
+      ty = haveTy,
+      span = t.span,
+      kind = XField(recv = recv, field = FieldRef(owner = parent, name = fs[i].name, index = i))
+    )
+    match convertValue(env, read, wantTy) {
+      case Some(c) -> fields.add(c)
+      case None -> {
+        popScope(env)
+        return None
+      }
+    }
+    i = i + 1
+  }
+  popScope(env)
+  val built = TExpr(id = freshNodeId(env), ty = ty, span = t.span, kind = XConstruct(sym = parent, fields = fields))
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = ty,
+      span = t.span,
+      kind = XBlock(stmts = [bound], tail = Some(value = built))
     )
   )
 }
