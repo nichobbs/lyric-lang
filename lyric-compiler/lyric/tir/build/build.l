@@ -227,7 +227,9 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
       case None -> if ctx.implSelf.count > 0 {
         Ok(value = ctx.implSelf[ctx.implSelf.count - 1])
       } else {
-        Err(error = i0002Type("`Self` outside an interface or an impl", t))
+        Err(
+          error = i0002Type("`Self` outside an interface, or in an impl whose target type the builder could not convert", t)
+        )
       }
     }
     case TyLen(n) -> Ok(value = TLen(n = n))

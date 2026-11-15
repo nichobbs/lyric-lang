@@ -263,7 +263,8 @@ is_native_only() {
 # TIR_CENSUS_AREAS picks the wide areas (default all three).  A self-test that fails the
 # ordinary build because it imports compiler packages is judged by running it under `lyric
 # test` (TIR_CENSUS_LINKED=0 disables that; about 25 s each).  TIR_CENSUS_SELFTESTS="a.l b.l"
-# replaces the self-test list (for a check of one change).
+# replaces the self-test list (for a check of one change; its entries are split on spaces, so a
+# path with a space is not supported).
 log="$OUT/wide.txt"
 AREAS=" ${TIR_CENSUS_AREAS:-compiler ecosystem self-tests} "
 
@@ -309,6 +310,7 @@ while IFS= read -r f; do
     # (about 25 s each), so CI, which leaves the self-tests area out, is unaffected, and
     # TIR_CENSUS_LINKED=0 turns it off.  A program that is not a @test_module has no such
     # path and stays unchecked (it is a `func main` program no gate builds; D475).
+    # target_of answers native only for two named stdlib tests, never for a compiler self-test.
     run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 LYRIC_TIR_CENSUS_BODIES=1 "$LYRIC" test --target "$(target_of "$f")" "$f"
   fi
   absorb_log self-tests "$f" "$log" "$rc"
@@ -329,7 +331,8 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     read -r utotal ubuilt <<<"${ub[0]}"
     echo "    unique bodies: $ubuilt of $utotal built, $((utotal - ubuilt)) not yet (I0002)"
     # A kind line is `<count> <kind>TAB<site>`: the count is its first word and the kind
-    # name must hold no tab.
+    # name must hold no tab.  (The raw `kind` line the checker prints is pinned by
+    # tir_build_self_test.l: five tab-separated fields.)
     [[ ${#ub[@]} -gt 1 ]] && printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
       echo "    I0002 kind ${head#* }: ${head%% *} (e.g. ${site})"
     done
