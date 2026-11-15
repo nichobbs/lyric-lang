@@ -16,4 +16,4 @@ A record with a `var` field has identity (D157): a rebuilt copy would no longer 
 
 `tir-builder-shapes-e2e.sh` gains `covariant_record_values` (argument and annotated binding, built with `--verify-ir`, exits 17) and `covariant_recursive_union_stays_counted`, the regression test for D487's guard: a recursive union conversion builds under a timeout with the verifier reporting nothing, and the body stays counted.
 
-Still open: a collection of covariant values (`List[Result[English, String]]`), a recursive union or record (`Tree[T]`), and a union nested in the same union (`Result[Result[English, E], E]`), which the guard refuses.
+`covariant_conversion_self_test.l` builds 26 of 28 bodies (24 before). Still open: a collection of covariant values (`List[Result[English, String]]`), a recursive union or record (`Tree[T]`), and a union nested in the same union (`Result[Result[English, E], E]`), which the guard refuses.
