@@ -177,6 +177,42 @@ func valueGenericFn(body: in TExpr): TFnDecl {
   )
 }
 
+func arr3(): Ty {
+  TArray(len = ALKnown(n = 3), element = tyInt())
+}
+
+func arrFn(body: in TExpr): TFnDecl {
+  val a = local(1, "a", arr3(), false)
+  fnDecl(10, 0, params1(a), arr3(), body)
+}
+
+test "an array copy of an array read verifies clean" {
+  val a = local(1, "a", arr3(), false)
+  val copy = ex(2, arr3(), XArrayCopy(inner = ex(3, arr3(), XLocal(local = a.id))))
+  assertEqual(rulesOf(oneFn(entries(), arrFn(copy))), "", "a copy of an array")
+}
+
+test "an array copy of another type or of a non-array is reported" {
+  val a = local(1, "a", arr3(), false)
+  val other = TArray(len = ALKnown(n = 4), element = tyInt())
+  val wrong = ex(2, other, XArrayCopy(inner = ex(3, arr3(), XLocal(local = a.id))))
+  assertTrue(rulesOf(oneFn(entries(), arrFn(wrong))).contains("array-copy"), "a copy changes the type")
+  val x = local(1, "x", tyInt(), false)
+  val scalar = ex(2, tyInt(), XArrayCopy(inner = ex(3, tyInt(), XLocal(local = x.id))))
+  val f = fnDecl(10, 0, params1(x), tyInt(), scalar)
+  assertTrue(rulesOf(oneFn(entries(), f)).contains("array-copy"), "an Int is not an array")
+}
+
+test "a zero value of an array type verifies clean, of another type or node type is reported" {
+  val ok = ex(2, arr3(), XZeroValue(ty = arr3()))
+  assertEqual(rulesOf(oneFn(entries(), arrFn(ok))), "", "an array zero")
+  val mismatch = ex(2, arr3(), XZeroValue(ty = TArray(len = ALKnown(n = 4), element = tyInt())))
+  assertTrue(rulesOf(oneFn(entries(), arrFn(mismatch))).contains("zero-value"), "node type differs")
+  val x = local(1, "x", tyInt(), false)
+  val scalar = ex(2, tyInt(), XZeroValue(ty = tyInt()))
+  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), scalar))).contains("zero-value"), "an Int")
+}
+
 test "a value parameter read of the function's own value parameter verifies clean" {
   val body = ex(2, tyNat(), XValueParam(owner = sym(10), index = 1))
   assertEqual(rulesOf(oneFn(entries(), valueGenericFn(body))), "", "N read as Nat")

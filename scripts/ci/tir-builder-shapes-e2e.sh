@@ -332,6 +332,34 @@ func main(): Int {
 }
 LYRIC
 
+# An array with no initializer is its zero value, and an array stored from a place is a copy (D489).
+check array_copy_and_zero 27 <<'LYRIC'
+package Shapes12
+import Std.Core
+
+record Grid {
+  cells: array[3, Int]
+}
+
+func sumOf(a: in array[3, Int]): Int = a[0] + a[1] + a[2]
+
+func filled(): array[3, Int] {
+  var a: array[3, Int]
+  a[0] = 4
+  a[1] = 5
+  a
+}
+
+func main(): Int {
+  val a = filled()
+  var b = a
+  b[2] = 9
+  val g = Grid(cells = b)
+  var zero: array[3, Int]
+  sumOf(a) + sumOf(g.cells) + sumOf(zero)
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]

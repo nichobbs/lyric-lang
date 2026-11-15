@@ -422,6 +422,26 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/rp_tir.ll" lyric-rt/
 diff -u "$work/rp_tir.out" "$work/rp_asan.out"
 echo "record patterns under AddressSanitizer: clean"
 
+# Arrays of references (docs/70 phase 4a): a counted list on native, copied at a store (`XArrayCopy`),
+# zero filled (`XZeroValue`), indexed with the array's own bounds check, from TIR, then under
+# AddressSanitizer (a leaked or doubly released element or list fails the run).
+arsrc=scripts/ci/native-via-tir/arrayrefs.l
+"$lyric_bin" build --target native "$arsrc" -o "$work/arr_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$arsrc" -o "$work/arr_tir" 2> "$work/arr_census.txt" >/dev/null
+cat "$work/arr_census.txt"
+"$work/arr_ast" > "$work/arr_ast.out"
+"$work/arr_tir" > "$work/arr_tir.out"
+diff -u "$work/arr_ast.out" "$work/arr_tir.out"
+printf 'x,yy,xyy,\npZ2\n9\nab!\n' | diff -u - "$work/arr_tir.out"
+if grep -q '^  fallback:' "$work/arr_census.txt"; then
+  echo "::error::arrayrefs.l has a TIR fallback"
+  exit 1
+fi
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/arr_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/arr_asan"
+"$work/arr_asan" > "$work/arr_asan.out"
+diff -u "$work/arr_tir.out" "$work/arr_asan.out"
+echo "arrays of references under AddressSanitizer: clean"
+
 # Inline arrays (docs/70 phase 4a): element reads and writes through the element's address,
 # compound assignment, nested arrays, arrays in by-value and heap records, `for`, `.length` and an
 # array of by-value records from TIR; an out-of-range index panics with the AST path's message.

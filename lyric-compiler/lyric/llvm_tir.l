@@ -829,14 +829,13 @@ func inlineElemN(t: in NType): Bool {
   }
 }
 
-/// `array[N, T]` with a known length and an element held by value: the inline LLVM array
-/// `[N x T]`.  An array of references is a `List` on this backend, and a copy of it is a copy of
-/// the storage, a step the checker records at its own sites and the TIR does not carry, so it
-/// stays on the AST path.
+/// `array[N, T]` with a known length: the inline LLVM array `[N x T]` when the element is held
+/// by value, otherwise the reference-counted list the AST path uses, whose copy at a store is the
+/// builder's `XArrayCopy` node.
 func arrayType(env: in TirLowerEnv, len: in ArrayLen, el: in Ty): Option[NType] {
   val n = match len { case ALKnown(k) -> k; case _ -> return None }
   match tyToN(env, el) {
-    case Some(en) -> if inlineElemN(en) { Some(value = NArray(elem = en, size = n)) } else { None }
+    case Some(en) -> if inlineElemN(en) { Some(value = NArray(elem = en, size = n)) } else { listTypeOfElem(env, el) }
     case None -> None
   }
 }
@@ -1175,6 +1174,11 @@ func boxAgg(c: in LCtx, v: in Val): NValue {
 /// is recorded in `env.needLists` (once) and reads as unsupported for this attempt.
 func listType(env: in TirLowerEnv, t: in Ty): Option[NType] {
   val el = match listElemTy(t) { case Some(x) -> x; case None -> return None }
+  listTypeOfElem(env, el)
+}
+
+/// The list type whose element type is `el`; see `listType`.
+func listTypeOfElem(env: in TirLowerEnv, el: in Ty): Option[NType] {
   val en = match tyToN(env, el) { case Some(x) -> x; case None -> return None }
   if not listElemOk(en) {
     return None
@@ -1715,6 +1719,8 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XCopy(base, updates) -> lowerCopy(c, e, base, updates)
     case XTuple(elems) -> lowerTuple(c, e, elems)
     case XListLit(elems) -> lowerListLit(c, e, elems)
+    case XArrayCopy(inner) -> lowerArrayCopy(c, inner)
+    case XZeroValue(ty) -> lowerZeroValue(c, ty)
     case XAwait(inner) -> lowerAwait(c, inner)
     case XSpawn(inner) -> lowerSpawn(c, inner)
     case XLambda(params, captures, body) -> lowerLambda(c, e, params, captures, body)
@@ -3553,7 +3559,7 @@ func listAsI8(c: in LCtx, v: in Val): NValue {
 func listElemN(c: in LCtx, t: in Ty): Option[NType] {
   match listElemTy(t) {
     case Some(el) -> tyToN(c.env, el)
-    case None -> None
+    case None -> match t { case TArray(_, el) -> tyToN(c.env, el); case _ -> None }
   }
 }
 
@@ -3581,7 +3587,10 @@ func pushOnto(c: in LCtx, l: in Val, x: in TExpr): Unit {
 func lowerListLit(c: in LCtx, e: in TExpr, elems: in List[TExpr]): Val {
   match e.ty {
     case TArray(_, _) -> match tyToN(c.env, e.ty) {
-      case Some(nt) -> return lowerArrayLit(c, nt, elems)
+      case Some(nt) -> match nt {
+        case NArray(_, _) -> return lowerArrayLit(c, nt, elems)
+        case _ -> ()
+      }
       case None -> return unsupported(c, "a literal of " + renderTy(e.ty))
     }
     case _ -> ()
@@ -3945,6 +3954,9 @@ func arrayElemPlace(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Op
 /// `a[i]` on an inline array: the element is read through its address, never by loading the
 /// whole array.
 func lowerArrayIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val {
+  if isHeapArray(c, recv.ty) {
+    return lowerHeapArrayIndex(c, recv, idx, line)
+  }
   match arrayElemPlace(c, recv, idx, line) {
     case None -> unitVal()
     case Some(p) -> {
@@ -3955,9 +3967,131 @@ func lowerArrayIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): V
   }
 }
 
+/// An array held as a reference-counted list (its elements are not held by value).
+func isHeapArray(c: in LCtx, t: in Ty): Bool {
+  match t {
+    case TArray(_, _) -> match tyToN(c.env, t) {
+      case Some(nt) -> match nt { case NArray(_, _) -> false; case _ -> true }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
+func heapArrayLen(t: in Ty): Option[Int] {
+  match t {
+    case TArray(len, _) -> match len { case ALKnown(k) -> Some(value = k); case _ -> None }
+    case _ -> None
+  }
+}
+
+/// `a[i]` on an array held as a list: the index is checked against the array's length first (the
+/// panic message of an inline array), then the element is read from the list.
+func lowerHeapArrayIndex(c: in LCtx, recv: in TExpr, idx: in TExpr, line: in Int): Val {
+  val n = match heapArrayLen(recv.ty) {
+    case Some(k) -> k
+    case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+  }
+  val el = match listElemN(c, recv.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "indexing " + renderTy(recv.ty))
+  }
+  val l = borrow(c, lowerExpr(c, recv))
+  val iv = match arrayIndexValue(c, idx, n, line) { case Some(x) -> x; case None -> return unitVal() }
+  val wide = tmp(c)
+  c.insns.add(NSExt(dest = wide, fromTy = NI32, value = iv, toTy = NI64))
+  val slot = callRt(c, "lyric_list_get", NI64, arg2(i8ptr(), listAsI8(c, l), NI64, NLocal(name = wide)))
+  fromSlot(c, slot, el)
+}
+
+/// `a[i] = v` and `a[i] op= v` on an array held as a list; the kernel retains the new element and
+/// releases the old one.
+func lowerHeapArraySet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr, line: in Int): Val {
+  val n = match heapArrayLen(recv.ty) {
+    case Some(k) -> k
+    case None -> return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
+  }
+  val el = match listElemN(c, recv.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "assignment to an element of " + renderTy(recv.ty))
+  }
+  val l = borrow(c, lowerExpr(c, recv))
+  val iv = match arrayIndexValue(c, idx, n, line) { case Some(x) -> x; case None -> return unitVal() }
+  val wide = tmp(c)
+  c.insns.add(NSExt(dest = wide, fromTy = NI32, value = iv, toTy = NI64))
+  val v = match op {
+    case AkSet -> borrow(c, lowerExpr(c, value))
+    case _ -> {
+      val rhs = lowerExpr(c, value)
+      val slot = callRt(c, "lyric_list_get", NI64, arg2(i8ptr(), listAsI8(c, l), NI64, NLocal(name = wide)))
+      val cur = fromSlot(c, slot, el)
+      match compoundElem(c, op, value.ty, el, cur, rhs, line) {
+        case Some(nv) -> borrow(c, nv)
+        case None -> return unitVal()
+      }
+    }
+  }
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+  args.add(NArg(ty = NI64, value = NLocal(name = wide)))
+  args.add(NArg(ty = NI64, value = slotOf(c, v)))
+  callRtVoid(c, "lyric_list_set", args)
+  unitVal()
+}
+
+/// `XArrayCopy`: an inline array is already a value; an array held as a list is copied (the
+/// kernel's copy retains each element).  An array whose elements are arrays would need a deep
+/// copy and stays on the AST path.
+func lowerArrayCopy(c: in LCtx, inner: in TExpr): Val {
+  val v = lowerExpr(c, inner)
+  match v.ty {
+    case NArray(_, _) -> return v
+    case _ -> ()
+  }
+  match inner.ty {
+    case TArray(_, el) -> match el {
+      case TArray(_, _) -> return unsupported(c, "a copy of an array of arrays")
+      case _ -> ()
+    }
+    case _ -> return unsupported(c, "a copy of " + renderTy(inner.ty))
+  }
+  if not isRefN(v.ty) {
+    return unsupported(c, "a copy of " + renderTy(inner.ty))
+  }
+  val l = borrow(c, v)
+  val raw = callRt(c, "lyric_list_copy", i8ptr(), arg1(i8ptr(), listAsI8(c, l)))
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = l.ty))
+  Val(ty = l.ty, value = NLocal(name = d), owned = true)
+}
+
+/// `XZeroValue`: `var a: array[N, T]` without an initializer, which the checker allows only for an
+/// element with a zero value.  An inline array of scalar leaves is `zeroinitializer`.  A record
+/// element's zero is built from the checker's zero expression, which the node does not carry, and an
+/// array held as a list has no zero value (a `String` or a reference element has none, T0156), so
+/// those stay on the AST path.
+func lowerZeroValue(c: in LCtx, ty: in Ty): Val {
+  val nt = match tyToN(c.env, ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "the zero value of " + renderTy(ty))
+  }
+  match nt {
+    case NArray(_, _) -> {
+      if not arrayZeroOk(nt) {
+        return unsupported(c, "the zero value of " + renderTy(ty))
+      }
+      Val(ty = nt, value = NZeroInit(ty = nt))
+    }
+    case _ -> unsupported(c, "the zero value of " + renderTy(ty))
+  }
+}
+
 /// `a[i] = v` and `a[i] op= v` on an inline array.  The right-hand side is evaluated after the
 /// index and before the element is read.
 func lowerArraySet(c: in LCtx, recv: in TExpr, idx: in TExpr, op: in AssignKind, value: in TExpr, line: in Int): Val {
+  if isHeapArray(c, recv.ty) {
+    return lowerHeapArraySet(c, recv, idx, op, value, line)
+  }
   match arrayElemPlace(c, recv, idx, line) {
     case None -> unitVal()
     case Some(p) -> match p.value {
@@ -5144,7 +5278,11 @@ func lowerFor(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr
       }
     }
     case _ -> match iter.ty {
-      case TArray(_, _) -> lowerForArray(c, label, pat, iter, body)
+      case TArray(_, _) -> if isHeapArray(c, iter.ty) {
+        lowerForHeapArray(c, label, pat, iter, body)
+      } else {
+        lowerForArray(c, label, pat, iter, body)
+      }
       case _ -> lowerForList(c, label, pat, iter, body)
     }
   }
@@ -5161,6 +5299,28 @@ func lowerForList(c: in LCtx, label: in Option[String], pat: in TPat, iter: in T
     }
   }
   val l = borrow(c, lowerExpr(c, iter))
+  lowerForListOver(c, label, pat, l, el, body)
+}
+
+/// `for x in a` on an array held as a list: the loop runs over a copy of the list, so the body
+/// cannot change what it iterates (an element that is itself an array is not copied).
+func lowerForHeapArray(c: in LCtx, label: in Option[String], pat: in TPat, iter: in TExpr, body: in TExpr): Unit {
+  val el = match listElemN(c, iter.ty) {
+    case Some(x) -> x
+    case None -> {
+      c.problems.add("a for over " + renderTy(iter.ty))
+      return
+    }
+  }
+  val src = borrow(c, lowerExpr(c, iter))
+  val raw = callRt(c, "lyric_list_copy", i8ptr(), arg1(i8ptr(), listAsI8(c, src)))
+  val d = tmp(c)
+  c.insns.add(NBitcast(dest = d, fromTy = i8ptr(), value = raw, toTy = src.ty))
+  val copy = borrow(c, Val(ty = src.ty, value = NLocal(name = d), owned = true))
+  lowerForListOver(c, label, pat, copy, el, body)
+}
+
+func lowerForListOver(c: in LCtx, label: in Option[String], pat: in TPat, l: in Val, el: in NType, body: in TExpr): Unit {
   val lp = listAsI8(c, l)
   val slotName = "for" + toString(c.ticker.count + 1) + ".i"
   c.ticker.add(0)
@@ -5221,7 +5381,13 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
               }
               Val(ty = slot.ty, value = NZeroInit(ty = slot.ty))
             }
-            case _ -> Val(ty = slot.ty, value = zeroOf(slot.ty))
+            case _ -> {
+              match decl.ty {
+                case TArray(_, _) -> c.problems.add("the zero value of " + renderTy(decl.ty))
+                case _ -> ()
+              }
+              Val(ty = slot.ty, value = zeroOf(slot.ty))
+            }
           }
         }
         c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
