@@ -4969,12 +4969,42 @@ func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
   }
 }
 
-func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], exhaustive: in Bool): Val {
-  if not exhaustive {
-    return unsupported(c, "a match the builder did not prove exhaustive")
+/// A pattern every value of its type matches: a wildcard, a binding, and a tuple or record of
+/// such patterns.
+func patIrrefutable(pat: in TPat): Bool {
+  match pat.kind {
+    case TpWild -> true
+    case TpBind(_, inner) -> match inner { case None -> true; case Some(p) -> patIrrefutable(p) }
+    case TpTuple(elems) -> {
+      for p in elems {
+        if not patIrrefutable(p) {
+          return false
+        }
+      }
+      true
+    }
+    case TpRecord(_, fields) -> {
+      for fp in fields {
+        if not patIrrefutable(fp.pat) {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
   }
+}
+
+func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], exhaustive: in Bool): Val {
   if arms.count == 0 {
     return unsupported(c, "a match with no arms")
+  }
+  // The checker's verdict does not cover every pattern (a record pattern, say), but a last arm
+  // nothing can fail is a proof of its own.
+  val lastArm = arms[arms.count - 1]
+  val lastCatchesAll = match lastArm.guard { case Some(_) -> false; case None -> patIrrefutable(lastArm.pat) }
+  if not exhaustive and not lastCatchesAll {
+    return unsupported(c, "a match the builder did not prove exhaustive")
   }
   val scrut0 = lowerExpr(c, scrutE)
   match scrut0.ty {
