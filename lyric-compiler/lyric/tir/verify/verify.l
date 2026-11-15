@@ -781,6 +781,21 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       }
       checkCopy(c, e, base, updates)
     }
+    case XArrayCopy(inner) -> {
+      visitExpr(c, inner)
+      expectTy(c, e.id, e.ty, inner.ty, "array-copy", "array copy")
+      match e.ty {
+        case TArray(_, _) -> ()
+        case _ -> report(c, e.id, "array-copy", "an array copy of " + renderTy(e.ty) + ", which is not an array type")
+      }
+    }
+    case XZeroValue(zt) -> {
+      expectTy(c, e.id, e.ty, zt, "zero-value", "zero value")
+      match zt {
+        case TArray(_, _) -> ()
+        case _ -> report(c, e.id, "zero-value", "a zero value of " + renderTy(zt) + ", which is not an array type")
+      }
+    }
     case XIndex(recv, idx, _) -> {
       visitExpr(c, recv)
       visitExpr(c, idx)
