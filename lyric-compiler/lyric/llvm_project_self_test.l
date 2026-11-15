@@ -45,6 +45,7 @@ import Std.String as Str
 import Std.Uuid as Uuid
 import Lyric.Emitter
 import Lyric.LlvmBridge
+import Lyric.Pipeline as Pipe
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness.
@@ -1983,4 +1984,599 @@ test "bare names of an imported package beat an unimported package's same-named 
     assertEqualInt(outcome.exitCode, 0, "exit code, package order " + order)
     assertEqual(outcome.stdout, "85\n229\n", "Col.A's names used bare from Col.Main, package order " + order)
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Calls the type checker resolved through another package (#9136).
+//
+// Three shapes that type-checked and ran on dotnet but did not build for
+// native, each for the same reason as #9088: the native backend resolved a
+// name from the calling package's point of view only.
+//
+//   * A method call whose receiver is a field chain (`client.retry.decide(n)`)
+//     flattens to a dotted path, like a package-qualified call, so the
+//     reachability walk traced it as one and left the method of a dependency's
+//     type out of the build.
+//   * A path written through a facade (`Lib.configFromEnv` where `Lib` has
+//     `pub use Lib.Client`) was looked up under the facade's name, which no
+//     registry holds.
+//   * A field default (`retry: RetryPolicy = standardRetry()`) was traced by
+//     nothing and lowered in the scope of whichever package built the record,
+//     so it failed to resolve, or bound a same-named function of the caller.
+//
+// The packages a real build takes from another manifest are given here as
+// dependency packages (`asDependency`): only those are lowered by
+// reachability, which is where the first and third shape went wrong. Every
+// project is built in several package orders, because which declaration holds
+// a bare registry key depends on it.
+// ─────────────────────────────────────────────────────────────────────────────
+func sourcePackage(name: in String, source: in String, asDependency: in Bool): NativeSourcePackage {
+  if asDependency {
+    val none: List[String] = newList()
+    return NativeSourcePackage(
+      name = name,
+      sources = [source],
+      features = Some(value = Pipe.PackageFeatureSet(packageName = name, active = none, declared = none))
+    )
+  }
+  NativeSourcePackage(name = name, sources = [source])
+}
+
+func recvDepPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Rc.Dep",
+    "package Rc.Dep\n" + "pub union Decision {\n" + "  case GiveUp\n" + "  case RetryAfter(delayMs: Int)\n" + "}\n" +
+      "pub record RetryPolicy {\n" +
+      "  maxAttempts: Int = 3\n" +
+      "}\n" +
+      "pub record Limits {\n" +
+      "  ceiling: Int\n" +
+      "  func doubled(self: in Limits): Int {\n" +
+      "    self.ceiling * 2\n" +
+      "  }\n" +
+      "}\n" +
+      "pub func standardRetry(): RetryPolicy {\n" +
+      "  RetryPolicy()\n" +
+      "}\n" +
+      "pub func RetryPolicy.decide(policy: in RetryPolicy, attempt: in Int, idempotent: in Bool): Decision {\n" +
+      "  if attempt >= policy.maxAttempts or not idempotent {\n" +
+      "    return GiveUp\n" +
+      "  }\n" +
+      "  RetryAfter(delayMs = 10)\n" +
+      "}\n" +
+      "pub func RetryPolicy.budget(policy: in RetryPolicy): Int {\n" +
+      "  policy.maxAttempts * 10\n" +
+      "}\n" +
+      "pub func RetryPolicy.label(policy: in RetryPolicy): Int {\n" +
+      "  policy.maxAttempts + 100\n" +
+      "}\n" +
+      "pub func RetryPolicy.viaMid(policy: in RetryPolicy): Int {\n" +
+      "  policy.maxAttempts + 1000\n" +
+      "}\n" +
+      "pub func Limits.widened(l: in Limits, by: in Int): Int {\n" +
+      "  l.ceiling + by\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func recvMidPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Rc.Mid",
+    "package Rc.Mid\n" + "import Rc.Dep\n" + "pub record Wrapper {\n" + "  retry: RetryPolicy\n" + "}\n" +
+      "pub func wrap(): Wrapper {\n" +
+      "  Wrapper(retry = standardRetry())\n" +
+      "}\n" +
+      "pub func throughMid(w: in Wrapper): Int {\n" +
+      "  w.retry.viaMid()\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func recvAppPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Rc.App",
+    "package Rc.App\n" + "import Std.Console as Console\n" + "import Rc.Dep\n" + "import Rc.Mid\n" + "record Client {\n" +
+      "  retry: RetryPolicy\n" +
+      "  limits: Limits\n" +
+      "}\n" +
+      "record Holder {\n" +
+      "  client: Client\n" +
+      "}\n" +
+      "val Shared: Client = makeClient()\n" +
+      "func makeClient(): Client {\n" +
+      "  Client(retry = standardRetry(), limits = Limits(ceiling = 7))\n" +
+      "}\n" +
+      "func attempts(client: in Client): Int {\n" +
+      "  var number = 1\n" +
+      "  while true {\n" +
+      "    match client.retry.decide(number, true) {\n" +
+      "      case GiveUp -> return number\n" +
+      "      case RetryAfter(_) -> ()\n" +
+      "    }\n" +
+      "    number = number + 1\n" +
+      "  }\n" +
+      "  0\n" +
+      "}\n" +
+      "func main(): Int {\n" +
+      "  val holder = Holder(client = makeClient())\n" +
+      "  Console.println(toString(attempts(holder.client)))\n" +
+      "  Console.println(toString(holder.client.retry.budget()))\n" +
+      "  Console.println(toString(holder.client.limits.doubled()))\n" +
+      "  Console.println(toString(holder.client.limits.widened(1)))\n" +
+      "  Console.println(toString(Shared.retry.label()))\n" +
+      "  Console.println(toString(throughMid(wrap())))\n" +
+      "  0\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func facadePkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Pu",
+    "package Pu\n" + "import Pu.Client\n" + "pub use Pu.Client\n" + "pub func facadeOwn(): Int {\n" + "  1\n" + "}\n",
+    asDependency
+  )
+}
+
+func facadeClientPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Pu.Client",
+    "package Pu.Client\n" + "import Pu.Inner\n" + "pub use Pu.Inner\n" +
+      "pub func configFromEnv(name: in String): String {\n" +
+      "  name + \"!\"\n" +
+      "}\n" +
+      "pub record Config {\n" +
+      "  name: String\n" +
+      "  retries: Int = 3\n" +
+      "}\n" +
+      "pub func Config.describe(c: in Config): String {\n" +
+      "  c.name + \":\" + toString(c.retries)\n" +
+      "}\n" +
+      "pub enum Mode {\n" +
+      "  case Slow\n" +
+      "  case Fast\n" +
+      "}\n" +
+      "pub union Shape {\n" +
+      "  case Dot\n" +
+      "  case Circle(r: Int)\n" +
+      "}\n" +
+      "pub func areaOf(s: in Shape): Int {\n" +
+      "  match s {\n" +
+      "    case Dot -> 0\n" +
+      "    case Circle(r) -> r * r\n" +
+      "  }\n" +
+      "}\n" +
+      "pub generic[T] func ident(x: in T): T {\n" +
+      "  x\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func facadeInnerPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Pu.Inner",
+    "package Pu.Inner\n" + "pub func deep(n: in Int): Int {\n" + "  n * 2\n" + "}\n" + "pub record Leaf {\n" +
+      "  v: Int\n" +
+      "}\n" +
+      "pub type Meters = Int\n",
+    asDependency
+  )
+}
+
+func facadeOtherPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Pu.Other",
+    "package Pu.Other\n" + "pub func configFromEnv(name: in String): String {\n" + "  \"other \" + name\n" + "}\n" +
+      "pub record Config {\n" +
+      "  wrong: Bool\n" +
+      "}\n" +
+      "pub record Leaf {\n" +
+      "  a: Long\n" +
+      "  b: Long\n" +
+      "}\n" +
+      "pub func deep(n: in Int): Int {\n" +
+      "  0 - n\n" +
+      "}\n" +
+      "pub func touch(): Int {\n" +
+      "  val c = Config(wrong = true)\n" +
+      "  val l = Leaf(a = 1i64, b = 2i64)\n" +
+      "  if c.wrong { deep(l.a.toInt()) } else { 0 }\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func facadeMainPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Pu.Main",
+    "package Pu.Main\n" + "import Std.Console as Console\n" + "import Pu as L\n" + "import Pu.Other as O\n" +
+      "func modeNum(m: in L.Mode): Int {\n" +
+      "  if m == L.Mode.Fast { 2 } else { 1 }\n" +
+      "}\n" +
+      "func leafOf(n: in Int): L.Leaf {\n" +
+      "  L.Leaf(v = n)\n" +
+      "}\n" +
+      "func main(): Int {\n" +
+      "  Console.println(L.configFromEnv(\"a\"))\n" +
+      "  val c: L.Config = L.Config(name = \"n\")\n" +
+      "  Console.println(L.Config.describe(c))\n" +
+      "  Console.println(c.describe())\n" +
+      "  Console.println(toString(modeNum(L.Mode.Fast)))\n" +
+      "  Console.println(toString(L.areaOf(L.Circle(r = 3))))\n" +
+      "  Console.println(toString(L.ident(4)))\n" +
+      "  Console.println(toString(L.deep(4)))\n" +
+      "  Console.println(toString(leafOf(5).v))\n" +
+      "  val m: L.Meters = L.Meters.from(3)\n" +
+      "  Console.println(toString(m.value))\n" +
+      "  Console.println(toString(L.facadeOwn()))\n" +
+      "  Console.println(toString(O.touch()))\n" +
+      "  0\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func defaultsAPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Df.A",
+    "package Df.A\n" + "pub record RetryPolicy {\n" + "  maxAttempts: Int = 3\n" + "}\n" + "pub enum Mode {\n" +
+      "  case Slow\n" +
+      "  case Fast\n" +
+      "}\n" +
+      "pub union Backoff {\n" +
+      "  case Fixed(ms: Int)\n" +
+      "  case Never\n" +
+      "}\n" +
+      "pub func standardRetry(): RetryPolicy {\n" +
+      "  RetryPolicy()\n" +
+      "}\n" +
+      "pub func lenientRetry(): RetryPolicy {\n" +
+      "  RetryPolicy(maxAttempts = 9)\n" +
+      "}\n" +
+      "pub func tag(s: in String): String {\n" +
+      "  \"a:\" + s\n" +
+      "}\n" +
+      "pub func seed(): Int {\n" +
+      "  40\n" +
+      "}\n" +
+      "pub func backoffMs(b: in Backoff): Int {\n" +
+      "  match b {\n" +
+      "    case Fixed(ms) -> ms\n" +
+      "    case Never -> 0\n" +
+      "  }\n" +
+      "}\n" +
+      "pub func modeNum(m: in Mode): Int {\n" +
+      "  if m == Fast { 2 } else { 1 }\n" +
+      "}\n" +
+      "pub func attemptsOf(p: in RetryPolicy): Int {\n" +
+      "  p.maxAttempts\n" +
+      "}\n" +
+      "pub func stampOf(): Int {\n" +
+      "  77\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func defaultsBPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Df.B",
+    "package Df.B\n" + "import Df.A\n" + "pub record Client {\n" + "  retry: RetryPolicy = standardRetry()\n" +
+      "  label: String = tag(\"x\")\n" +
+      "  mode: Mode = Fast\n" +
+      "  backoff: Backoff = Fixed(ms = seed() + 2)\n" +
+      "}\n" +
+      "pub generic[T] record Box {\n" +
+      "  item: T\n" +
+      "  policy: RetryPolicy = lenientRetry()\n" +
+      "}\n" +
+      "pub protected type Counter {\n" +
+      "  var n: Int = seed()\n" +
+      "  entry bump(): Int {\n" +
+      "    n = n + 1\n" +
+      "    n\n" +
+      "  }\n" +
+      "}\n" +
+      "pub interface Greeter {\n" +
+      "  func greet(self: in Self, who: in String = tag(\"iface\")): String\n" +
+      "}\n" +
+      "pub record Plain {\n" +
+      "  prefix: String\n" +
+      "}\n" +
+      "impl Greeter for Plain {\n" +
+      "  func greet(self: in Self, who: in String = tag(\"iface\")): String {\n" +
+      "    self.prefix + who\n" +
+      "  }\n" +
+      "}\n" +
+      "pub func asGreeter(): Greeter {\n" +
+      "  Plain(prefix = \">\")\n" +
+      "}\n" +
+      "pub opaque type Token {\n" +
+      "  stamp: Int = stampOf()\n" +
+      "}\n" +
+      "pub func newToken(): Token {\n" +
+      "  Token()\n" +
+      "}\n" +
+      "pub func tokenStamp(t: in Token): Int {\n" +
+      "  t.stamp\n" +
+      "}\n" +
+      "pub func run(n: in Int, p: in RetryPolicy = lenientRetry()): Int {\n" +
+      "  n + attemptsOf(p)\n" +
+      "}\n" +
+      "pub generic[T] func pick(x: in T, bonus: in Int = seed()): Int {\n" +
+      "  bonus + 1\n" +
+      "}\n" +
+      "pub func clientAttempts(c: in Client): Int {\n" +
+      "  attemptsOf(c.retry)\n" +
+      "}\n" +
+      "pub func clientMode(c: in Client): Int {\n" +
+      "  modeNum(c.mode)\n" +
+      "}\n" +
+      "pub func clientBackoff(c: in Client): Int {\n" +
+      "  backoffMs(c.backoff)\n" +
+      "}\n" +
+      "pub func boxAttempts(b: in Box[Int]): Int {\n" +
+      "  attemptsOf(b.policy)\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func defaultsMainPkg(asDependency: in Bool): NativeSourcePackage {
+  sourcePackage(
+    "Df.C",
+    "package Df.C\n" + "import Std.Console as Console\n" + "import Df.B\n" + "func tag(s: in String): String {\n" +
+      "  \"c:\" + s\n" +
+      "}\n" +
+      "func seed(): Int {\n" +
+      "  7000\n" +
+      "}\n" +
+      "func main(): Int {\n" +
+      "  val c = Client()\n" +
+      "  Console.println(toString(clientAttempts(c)))\n" +
+      "  Console.println(c.label)\n" +
+      "  Console.println(toString(clientMode(c)))\n" +
+      "  Console.println(toString(clientBackoff(c)))\n" +
+      "  Console.println(toString(boxAttempts(Box(item = 1))))\n" +
+      "  val k = Counter()\n" +
+      "  Console.println(toString(k.bump()))\n" +
+      "  Console.println(asGreeter().greet())\n" +
+      "  Console.println(toString(run(1)))\n" +
+      "  Console.println(toString(pick(\"s\")))\n" +
+      "  Console.println(toString(tokenStamp(newToken())))\n" +
+      "  0\n" +
+      "}\n",
+    asDependency
+  )
+}
+
+func recvProject(order: in String): List[NativeSourcePackage] {
+  val pkgs: List[NativeSourcePackage] = newList()
+  for part in Str.split(order, " ") {
+    if part == "D" {
+      pkgs.add(recvDepPkg(true))
+    } else if part == "M" {
+      pkgs.add(recvMidPkg(true))
+    } else {
+      pkgs.add(recvAppPkg(false))
+    }
+  }
+  pkgs
+}
+
+test "a method call on a field chain reaches the method of a dependency's type (ASan, #9136)" {
+  // `client.retry.decide(n, true)`, a chain of three, a body method, a
+  // receiver whose head is a module-level `val`, and the same call written in
+  // a dependency package: each names a function nothing else calls.
+  for order in ["D M A", "A M D", "M A D"] {
+    val outcome = compileAndRunProject(recvProject(order))
+    assertEqualInt(outcome.exitCode, 0, "exit code, package order " + order)
+    assertEqual(outcome.stdout, "3\n30\n14\n8\n103\n1003\n", "methods called on field chains, package order " + order)
+  }
+}
+
+func facadeProject(order: in String, asDependency: in Bool): List[NativeSourcePackage] {
+  val pkgs: List[NativeSourcePackage] = newList()
+  for part in Str.split(order, " ") {
+    if part == "P" {
+      pkgs.add(facadePkg(asDependency))
+    } else if part == "C" {
+      pkgs.add(facadeClientPkg(asDependency))
+    } else if part == "I" {
+      pkgs.add(facadeInnerPkg(asDependency))
+    } else if part == "O" {
+      pkgs.add(facadeOtherPkg(asDependency))
+    } else {
+      pkgs.add(facadeMainPkg(false))
+    }
+  }
+  pkgs
+}
+
+test "a function re-exported with pub use is callable through the facade's alias (ASan, #9136)" {
+  for order in ["L C T", "T C L", "C T L"] {
+    val pkgs: List[NativeSourcePackage] = newList()
+    for part in Str.split(order, " ") {
+      if part == "L" {
+        pkgs.add(
+          sourcePackage(
+            "Pb",
+            "package Pb\n" + "import Pb.Client\n" + "pub use Pb.Client\n" + "pub func connect(name: in String): String {\n" +
+              "  configFromEnv(name)\n" +
+              "}\n",
+            false
+          )
+        )
+      } else if part == "C" {
+        pkgs.add(
+          sourcePackage(
+            "Pb.Client",
+            "package Pb.Client\n" + "pub func configFromEnv(name: in String): String {\n" + "  name + \"!\"\n" + "}\n",
+            false
+          )
+        )
+      } else {
+        pkgs.add(
+          sourcePackage(
+            "Pb.Main",
+            "package Pb.Main\n" + "import Std.Console as Console\n" + "import Pb as L\n" + "func main(): Int {\n" +
+              "  Console.println(L.configFromEnv(\"a\"))\n" +
+              "  Console.println(L.connect(\"b\"))\n" +
+              "  0\n" +
+              "}\n",
+            false
+          )
+        )
+      }
+    }
+    val outcome = compileAndRunProject(pkgs)
+    assertEqualInt(outcome.exitCode, 0, "exit code, package order " + order)
+    assertEqual(outcome.stdout, "a!\nb!\n", "L.configFromEnv is Pb.Client's, package order " + order)
+  }
+}
+
+test "paths through a facade follow chains of pub use for every kind of declaration (ASan, #9136)" {
+  // `Pu` re-exports `Pu.Client`, which re-exports `Pu.Inner`; `Pu.Other`
+  // declares the same names with other layouts and results. Through the alias
+  // of `Pu`: a function, a record and its type, a dot-named function, a
+  // method, an enum case, a union case, a generic function, and a function, a
+  // record and a distinct type two re-exports away.
+  for asDependency in [true, false] {
+    for order in ["P C I O M", "O I C P M", "M O P I C"] {
+      val outcome = compileAndRunProject(facadeProject(order, asDependency))
+      val what = "package order " + order + (if asDependency { ", library as a dependency" } else { "" })
+      assertEqualInt(outcome.exitCode, 0, "exit code, " + what)
+      assertEqual(outcome.stdout, "a!\nn:3\nn:3\n2\n9\n4\n8\n5\n3\n1\n-1\n", "names through the facade, " + what)
+    }
+  }
+}
+
+func defaultsProject(order: in String, libraryAsDependency: in Bool): List[NativeSourcePackage] {
+  val pkgs: List[NativeSourcePackage] = newList()
+  for part in Str.split(order, " ") {
+    if part == "A" {
+      pkgs.add(defaultsAPkg(true))
+    } else if part == "B" {
+      pkgs.add(defaultsBPkg(libraryAsDependency))
+    } else {
+      pkgs.add(defaultsMainPkg(false))
+    }
+  }
+  pkgs
+}
+
+test "a field default that alone calls a dependency's function builds (ASan, #9136)" {
+  for order in ["R C T", "T C R", "C T R"] {
+    val pkgs: List[NativeSourcePackage] = newList()
+    for part in Str.split(order, " ") {
+      if part == "R" {
+        pkgs.add(
+          sourcePackage(
+            "Dr.Retry",
+            "package Dr.Retry\n" + "pub record RetryPolicy {\n" + "  maxAttempts: Int = 3\n" + "}\n" +
+              "pub func standardRetry(): RetryPolicy {\n" +
+              "  RetryPolicy()\n" +
+              "}\n" +
+              "pub func attemptsOf(p: in RetryPolicy): Int {\n" +
+              "  p.maxAttempts\n" +
+              "}\n",
+            true
+          )
+        )
+      } else if part == "C" {
+        pkgs.add(
+          sourcePackage(
+            "Dr.Client",
+            "package Dr.Client\n" + "import Dr.Retry\n" + "pub record Client {\n" + "  retry: RetryPolicy = standardRetry()\n" +
+              "}\n" +
+              "pub func attempts(c: in Client): Int {\n" +
+              "  attemptsOf(c.retry)\n" +
+              "}\n",
+            false
+          )
+        )
+      } else {
+        pkgs.add(
+          sourcePackage(
+            "Dr.Main",
+            "package Dr.Main\n" + "import Dr.Client\n" + "func main(): Int {\n" + "  attempts(Client())\n" + "}\n",
+            false
+          )
+        )
+      }
+    }
+    val outcome = compileAndRunProject(pkgs)
+    assertEqualInt(outcome.exitCode, 3, "Client() takes Dr.Retry.standardRetry(), package order " + order)
+  }
+}
+
+test "a field default that alone calls a standard library function builds (ASan, #9136)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    sourcePackage(
+      "Ds.Main",
+      "package Ds.Main\n" + "import Std.Console as Console\n" + "import Std.String as Str\n" + "record Shout {\n" +
+        "  text: String = Str.toUpper(\"abc\")\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  Console.println(Shout().text)\n" +
+        "  0\n" +
+        "}\n",
+      false
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "exit code")
+  assertEqual(outcome.stdout, "ABC\n", "the default ran Std.String.toUpper")
+}
+
+test "a default expression means the names of the package that declares it (ASan, #9136)" {
+  // `Df.B`'s defaults call `Df.A`'s `tag` and `seed`; `Df.C`, which builds the
+  // records and makes the calls, does not import `Df.A` and declares its own
+  // `tag` and `seed`. Field defaults of a record, a generic record, a
+  // protected type and an opaque type (whose default alone calls `stampOf`),
+  // and parameter defaults of an interface method, a function and a generic
+  // function.
+  for libraryAsDependency in [true, false] {
+    for order in ["A B C", "C B A", "B C A"] {
+      val outcome = compileAndRunProject(defaultsProject(order, libraryAsDependency))
+      val what = "package order " + order + (if libraryAsDependency { ", library as a dependency" } else { "" })
+      assertEqualInt(outcome.exitCode, 0, "exit code, " + what)
+      assertEqual(outcome.stdout, "3\na:x\n2\n42\n9\n41\n>a:iface\n10\n41\n77\n", "defaults of Df.B, " + what)
+    }
+  }
+}
+
+test "try/catch is refused with its line, function and package (#9136)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    sourcePackage(
+      "Tr.Guard",
+      "package Tr.Guard\n" + "pub func guarded(body: in () -> Unit): Bool {\n" + "  try {\n" + "    body()\n" +
+        "    false\n" +
+        "  } catch Bug as _ {\n" +
+        "    true\n" +
+        "  }\n" +
+        "}\n",
+      true
+    )
+  )
+  pkgs.add(
+    sourcePackage(
+      "Tr.Main",
+      "package Tr.Main\n" + "import Tr.Guard\n" + "func main(): Int {\n" +
+        "  if guarded({ -> panic(\"x\") }) { 1 } else { 0 }\n" +
+        "}\n",
+      false
+    )
+  )
+  assertPanicsWith(
+    "a try in a dependency's function is located in that function",
+    "error[N0007] 3:3: try/catch is not supported for --target native (D-N-003: no unwinding), in function 'guarded' of package 'Tr.Guard'",
+    { -> val _ = compileAndRunProject(pkgs) }
+  )
 }

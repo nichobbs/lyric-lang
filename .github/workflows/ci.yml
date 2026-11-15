@@ -2526,7 +2526,7 @@ jobs:
   # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
   native-backend-self-tests:
     runs-on: ${{ !github.event.pull_request.head.repo.fork && (vars.CI_NATIVE_RUNNER || vars.CI_HEAVY_RUNNER) || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     needs: [build]
     permissions:
       contents: read
