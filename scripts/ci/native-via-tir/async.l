@@ -1,11 +1,12 @@
 //! async.l - async functions lowered from TIR (docs/70 phase 4a, D520): a coroutine with its task
 //! completion, retained reference parameters, a call that awaits in place, `spawn` inside a
-//! `scope` with `await` on the handle, an async function calling another, and a Unit-returning
-//! one.  `native-via-tir-e2e.sh` runs it both ways and under AddressSanitizer.
+//! `scope` with `await` on the handle, an async function calling another, a Unit-returning one, and
+//! `sleepMillis` (the reactor's sleep leaf, which parks the task).  `native-via-tir-e2e.sh` runs it both ways and under AddressSanitizer.
 package AsyncViaTir
 
 import Std.Core
 import Std.Console as Console
+import Std.Time
 
 async func answer(): Int {
   42
@@ -41,10 +42,18 @@ async func fan(): Int {
   }
 }
 
+async func napper(): Int {
+  sleepMillis(5)
+  val t = answer()
+  sleepMillis(1)
+  t - 35
+}
+
 func main(): Unit {
   println(toString(twice(21)))
   println(toString(answer()))
   println(shout("ann"))
   note("a")
   println(toString(fan()))
+  println(toString(napper()))
 }
