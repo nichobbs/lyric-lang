@@ -1446,7 +1446,7 @@ func joinTryBranches(
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Function body checking.
 // ─────────────────────────────────────────────────────────────────────────────
-func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
+pub func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
   var i = 0
   while i < anns.count {
     val segs = anns[i].name.segments

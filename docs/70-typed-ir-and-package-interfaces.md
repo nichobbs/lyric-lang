@@ -885,6 +885,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function value passes for a host functional interface or delegate, and a Lyric record passes as an extern interface it `impl`s, as `CvBoxToHost` conversions (D470).
   - `Exception.typeName` and the `Result`/`Option` `value` and `error` projections are built-in property reads (D471).
   - A host member's array parameter or result names its element type (the array placeholder applied to it, from the JVM descriptor and the CLR signature), so a slice passes for the host array of its own element type (D472).
+  - An `@externTarget` function is a declaration with no TIR body: its placeholder source body (`= ()`) is never built (D473).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

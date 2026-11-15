@@ -1194,6 +1194,13 @@ test "a protected type member reads the owner's value-generic parameter (D469)" 
   assertBuildsAndVerifies(pb, 2, "capacity and push")
 }
 
+test "an @externTarget function is a declaration with no TIR body, its placeholder body is not built (D473)" {
+  val pb = packageOf(
+    "package App\n@externTarget(\"System.Math.Abs\")\nfunc hostAbs(x: in Int): Int = ()\nfunc f(n: in Int): Int {\n  hostAbs(n)\n}\n"
+  )
+  assertBuildsAndVerifies(pb, 2, "hostAbs and f")
+}
+
 test "a field of an opaque type is readable in its own package (D592)" {
   val pb = packageOf(
     "package App\nopaque type Id {\n  n: Int\n  label: String\n}\nfunc f(i: in Id): String {\n  i.label\n}\n"
