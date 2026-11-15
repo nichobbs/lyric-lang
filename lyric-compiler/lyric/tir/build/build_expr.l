@@ -4236,6 +4236,21 @@ func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedP
     case ELiteral(l) -> match l {
       case LInt(_, sfx, _) -> match sfx {
         case NoIntSuffix -> Some(value = tyInt())
+        case I32 -> Some(value = tyInt())
+        case I64 -> Some(
+          value = TPrim(kind = TPLong)
+        )
+        case U8 -> Some(
+          value = TPrim(kind = TPByte)
+        )
+        case U32 -> Some(
+          value = TPrim(kind = TPUInt)
+        )
+        case U64 -> Some(
+          value = TPrim(
+            kind = TPULong
+          )
+        )
         case _ -> None
       }
       case LFloat(_, sfx, _) -> match sfx {
@@ -4260,10 +4275,7 @@ func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedP
     }
     case _ -> None
   }
-  val lit = match d.kind {
-    case ELiteral(l) -> l
-    case _ -> return uncoveredExpr(env, call, "a default argument declared in another package")
-  }
+  val lit = match d.kind { case ELiteral(l) -> l; case _ -> return buildForeignCaseDefault(env, call, d, pty) }
   match natural {
     case Some(nt) -> {
       val t = TExpr(id = freshNodeId(env), ty = nt, span = call.span, kind = XLit(lit = litOf(lit)))
@@ -4274,6 +4286,33 @@ func buildForeignLiteralDefault(env: in BuildEnv, call: in Expr, p: in ResolvedP
     }
     case None -> uncoveredExpr(env, call, "a default argument declared in another package")
   }
+}
+
+/// A source-loaded default that is a bare payload-free case (`None`, `Tls12`): the case of the
+/// parameter's own union or enum, constructed at the parameter's type.  Any other shape is counted.
+func buildForeignCaseDefault(env: in BuildEnv, call: in Expr, d: in Expr, pty: in Ty): Option[TExpr] {
+  val name = match d.kind { case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }; case _ -> "" }
+  val parent = match pty { case TNamed(sym, _) -> Some(value = sym); case _ -> None }
+  if name != "" {
+    match parent {
+      case Some(par) -> match nullaryCaseOf(env, par, name) {
+        case Some(cs) -> {
+          noteCaseSym(env, cs)
+          return Some(
+            value = TExpr(
+              id = freshNodeId(env),
+              ty = pty,
+              span = call.span,
+              kind = XConstruct(sym = cs, fields = newList())
+            )
+          )
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  uncoveredExpr(env, call, "a default argument declared in another package")
 }
 
 /// An argument bound to a temporary, with its position in the source.
