@@ -4683,6 +4683,14 @@ func orV(c: in LCtx, a: in Val, b: in Val): Val {
 func patBinds(pat: in TPat): Bool {
   match pat.kind {
     case TpBind(_, _) -> true
+    case TpRecord(_, fields) -> {
+      for f in fields {
+        if patBinds(f.pat) {
+          return true
+        }
+      }
+      false
+    }
     case TpTuple(elems) -> {
       for a in elems {
         if patBinds(a) {
@@ -4700,6 +4708,30 @@ func patBinds(pat: in TPat): Bool {
       false
     }
     case _ -> false
+  }
+}
+
+/// Field `field` of the record `obj` (laid out as `lay`): `extractvalue` out of a by-value
+/// record, a load through the field pointer of a heap one (borrowed from the object).
+func readRecField(c: in LCtx, lay: in TirRecLayout, obj: in NValue, field: in FieldRef): Option[Val] {
+  if field.index < 0 or field.index >= lay.fieldTys.count {
+    c.problems.add("field " + field.name + " outside its record's layout")
+    return None
+  }
+  match lay.fieldTys[field.index] {
+    case NVoid -> {
+      c.problems.add("a pattern on the Unit field " + field.name)
+      None
+    }
+    case ft -> {
+      val d = tmp(c)
+      if lay.byValue {
+        c.insns.add(NExtractValue(dest = d, aggTy = lay.ty, agg = obj, index = field.index))
+      } else {
+        c.insns.add(NLoad(dest = d, ty = ft, ptr = fieldPtr(c, lay, obj, field.index)))
+      }
+      Some(value = Val(ty = ft, value = NLocal(name = d)))
+    }
   }
 }
 
@@ -4801,6 +4833,23 @@ func patTest(c: in LCtx, pat: in TPat, scrut: in Val, sty: in Ty): Val {
         acc
       }
     }
+    case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
+      case None -> unsupported(c, "a record pattern on a type that is not a registered record")
+      case Some(lay) -> {
+        var acc = trueV()
+        for fp in fields {
+          if subPatTests(fp.pat) {
+            match readRecField(c, lay, scrut.value, fp.field) {
+              case Some(fv) -> {
+                acc = andV(c, acc, patTestAny(c, fp.pat, fv, fp.pat.ty))
+              }
+              case None -> ()
+            }
+          }
+        }
+        acc
+      }
+    }
     case TpOr(alts) -> {
       var acc = patTest(c, alts[0], scrut, sty)
       var i = 1
@@ -4847,6 +4896,19 @@ func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
         }
       }
     }
+    case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
+      case None -> c.problems.add("a record pattern on a type that is not a registered record")
+      case Some(lay) -> {
+        for fp in fields {
+          if patBinds(fp.pat) {
+            match readRecField(c, lay, scrut.value, fp.field) {
+              case Some(fv) -> patBind(c, fp.pat, fv)
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
     case _ -> ()
   }
 }
@@ -4880,6 +4942,19 @@ func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
             }
           }
           i = i + 1
+        }
+      }
+    }
+    case TpRecord(sym, fields) -> match mapGet(c.env.recs, sym.id) {
+      case None -> c.problems.add("a record pattern on a type that is not a registered record")
+      case Some(lay) -> {
+        for fp in fields {
+          if patBinds(fp.pat) {
+            match readRecField(c, lay, v.value, fp.field) {
+              case Some(fv) -> patBindOwned(c, fp.pat, fv)
+              case None -> ()
+            }
+          }
         }
       }
     }
@@ -5131,6 +5206,11 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
         }
       }
       case TpTuple(_) -> {
+        val v = lowerExpr(c, init)
+        patBindOwned(c, pat, v)
+        discard(c, v)
+      }
+      case TpRecord(_, _) -> {
         val v = lowerExpr(c, init)
         patBindOwned(c, pat, v)
         discard(c, v)

@@ -17666,6 +17666,49 @@ func stmtContainsYieldNative(stmt: in Statement): Bool {
 
 /// Lower one function body; a non-empty type env lowers a generic
 /// declaration as one concrete instantiation (N3.1).
+/// The signature `lowerFunctionEnv` gives `fn` (name, parameter and result types, linkage and
+/// attributes) without lowering its body, so the TIR lowering can be tried first and the AST
+/// lowering run only for a function it refuses (docs/70 phase 4a).  A coroutine marks the module
+/// as using async, as its AST lowering does.  Keep in step with `lowerFunctionEnv`.
+func astSignature(modCtx: in Ctx, pkg: in String, fn: in FunctionDecl, irName: in String): NFunc {
+  val ctx = freshFnCtx(modCtx, pkg, NVoid)
+  ctx.curOrigin.clear()
+  val origin = originPkgOf(fn.annotations)
+  if origin.length > 0 and origin != pkg {
+    ctx.curOrigin.add(origin)
+  }
+  val retTy = retTypeToN(ctx, fn.ret)
+  val params: List[NParam] = newList()
+  for p in fn.params {
+    val pty = typeToN(ctx, p.ty)
+    val byRef = match p.mode { case PMIn -> false; case _ -> true }
+    val isVoid = match pty { case NVoid -> true; case _ -> false }
+    if byRef and not isVoid {
+      params.add(NParam(name = "arg." + p.name, ty = NPtr(pointee = pty)))
+    } else {
+      params.add(NParam(name = "arg." + p.name, ty = pty))
+    }
+  }
+  val attrs: List[String] = newList()
+  if fn.isAsync {
+    attrs.add("presplitcoroutine")
+    if modCtx.usesAsync.count == 0 {
+      modCtx.usesAsync.add(1)
+    }
+  }
+  val isPub = match fn.visibility { case Some(_) -> true; case None -> pkg == modCtx.mainPkg }
+  val noBody: List[NInsn] = newList()
+  NFunc(
+    name = irName,
+    params = params,
+    retTy = if fn.isAsync { NPtr(pointee = NI8) } else { retTy },
+    isPublic = isPub,
+    isExtern = false,
+    body = noBody,
+    attributes = attrs
+  )
+}
+
 func lowerFunctionEnv(
   modCtx: in Ctx,
   pkg: in String,
@@ -18866,10 +18909,14 @@ func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
   }
 }
 
-func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, ast: in NFunc): NFunc {
+/// The lowering of `fn` from TIR, tried before the AST lowering: `sig` is the signature the AST
+/// path would give it, and None means the function stays on the AST path (the reason is in the
+/// census).  A function the AST lowering cannot lower at all (a record pattern) is reached this way.
+func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in FunctionDecl, sig: in NFunc): Option[NFunc] {
   if u.tir.count == 0 {
-    return ast
+    return None
   }
+  val ast = sig
   val input = u.tir[0]
   val census = input.census
   val fnNames = maps.fnNames
@@ -18912,12 +18959,12 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
   }
   if LlvmTir.tirSkipped(fn.name) {
     census.fallbacks.add(fn.name + ": skipped by LYRIC_NATIVE_TIR_SKIP")
-    return ast
+    return None
   }
   match decl {
     case None -> {
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
-      ast
+      None
     }
     case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
@@ -18931,12 +18978,12 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
       match lowerWithTuples(ctx, maps, d) {
         case Err(f) -> {
           census.fallbacks.add(fn.name + ": " + f.reason)
-          ast
+          None
         }
         case Ok(l) -> {
           if not sameSignature(ast, l.fn) {
             census.fallbacks.add(fn.name + ": the TIR signature differs from the AST lowering's")
-            ast
+            None
           } else {
             for g in l.globals {
               ctx.globals.add(g)
@@ -18951,14 +18998,16 @@ func tirOrAst(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Funct
               }
             }
             census.lowered.add(fn.name)
-            NFunc(
-              name = ast.name,
-              params = l.fn.params,
-              retTy = ast.retTy,
-              isPublic = ast.isPublic,
-              isExtern = ast.isExtern,
-              body = l.fn.body,
-              attributes = ast.attributes
+            Some(
+              value = NFunc(
+                name = ast.name,
+                params = l.fn.params,
+                retTy = ast.retTy,
+                isPublic = ast.isPublic,
+                isExtern = ast.isExtern,
+                body = l.fn.body,
+                attributes = ast.attributes
+              )
             )
           }
         }
@@ -19274,7 +19323,13 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
         }
       }
       val irName = match mapGet(sigs, key) { case Some(s) -> s.irName; case None -> u.pkgName + "." + fn.name }
-      fns.add(tirOrAst(ctx, u, tirMaps, fn, lowerFunction(ctx, u.pkgName, fn, irName)))
+      // The TIR lowering is tried first: only a function it refuses is lowered from the AST.
+      val viaTir = if u.tir.count > 0 {
+        tirTry(ctx, u, tirMaps, fn, astSignature(ctx, u.pkgName, fn, irName))
+      } else {
+        None
+      }
+      fns.add(match viaTir { case Some(f) -> f; case None -> lowerFunction(ctx, u.pkgName, fn, irName) })
       if ui == 0 and fn.name == "main" and fn.params.count == 0 {
         mainRet = retTypeToNType(fn.ret)
         mainIr = irName
