@@ -185,6 +185,39 @@ func main(): Int {
 }
 LYRIC
 
+# A binding whose initializer leaves a type argument open takes the type its uses fix, and a name a
+# pattern then binds from it is a local (D486).
+check open_binding_uses 8 <<'LYRIC'
+package Shapes8
+import Std.Core
+
+func viaAlias(): Int {
+  val o = None
+  val o2 = o
+  val x: Option[Int] = o2
+  match o {
+    case Some(v) -> v
+    case None -> 3
+  }
+}
+
+func tupled(): Int {
+  val t = (None, 5)
+  match t {
+    case (o, n) -> addOpt(o, n)
+  }
+}
+
+func addOpt(o: in Option[Int], n: in Int): Int {
+  match o {
+    case Some(v) -> v + n
+    case None -> n
+  }
+}
+
+func main(): Int = viaAlias() + tupled()
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
