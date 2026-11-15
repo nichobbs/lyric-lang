@@ -448,6 +448,41 @@ func pack(a: in Sla): Unit {
 func main(): Int = 0
 LYRIC
 
+
+
+# A field of a generic record read inside a function generic over the record's parameter keeps its
+# type (`List[D]` for `many: List[D]`), so the read and a loop over it build (D492).
+check rigid_nested_field 9 <<'LYRIC'
+package Shapes15
+import Std.Core
+import Std.Collections
+
+record A[D] {
+  one: D
+  many: List[D]
+}
+
+func first[D](a: in A[D]): D = a.one
+
+func rest[D](a: in A[D]): List[D] = a.many
+
+func countOf[D](a: in A[D]): Int {
+  var n = 0
+  for x in a.many {
+    n = n + 1
+  }
+  n
+}
+
+func main(): Int {
+  val xs: List[Int] = newList()
+  xs.add(4)
+  xs.add(5)
+  val a = A(one = 3, many = xs)
+  first(a) + rest(a).count + countOf(a) + 2
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
