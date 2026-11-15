@@ -69,6 +69,10 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   `Lyric.Jobs.Hangfire`, heart-beats and reconnecting in the ActiveMQ and
   RabbitMQ clients, and the first packages on `--target native`
   (docs/progress/2026-11-14-ecosystem-aws-hangfire-recovery-native.md).
+  Then the AWS packages on native: `Lyric.Aws.Credentials`,
+  `Lyric.Storage.S3` and `Lyric.Mq.Sqs` claim `native`, with their conformance
+  and integration suites run there
+  (docs/progress/2026-11-15-ecosystem-s3-sqs-native.md).
 
 ## 4. Open questions
 
