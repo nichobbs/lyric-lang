@@ -218,6 +218,45 @@ func addOpt(o: in Option[Int], n: in Int): Int {
 func main(): Int = viaAlias() + tupled()
 LYRIC
 
+# A union value used at the same union with other type arguments (`Result[English, String]` where a
+# `Result[Greeter, String]` is wanted) as an argument, a branch and an annotated binding (D487).
+check covariant_union_values 30 <<'LYRIC'
+package Shapes9
+import Std.Core
+
+interface Greeter {
+  func greet(self: in Greeter): Int
+}
+
+record English { n: Int }
+
+impl Greeter for English {
+  func greet(self: in English): Int = self.n
+}
+
+func okEnglish(n: in Int): Result[English, String] = Ok(value = English(n = n))
+
+func describe(r: in Result[Greeter, String]): Int {
+  match r {
+    case Ok(g) -> g.greet()
+    case Err(_) -> 0
+  }
+}
+
+func viaArgument(n: in Int): Int = describe(okEnglish(n))
+
+func viaBranch(c: in Bool): Result[Greeter, String] {
+  if c { okEnglish(7) } else { Err(error = "no") }
+}
+
+func viaBinding(): Int {
+  val r: Result[Greeter, String] = okEnglish(5)
+  describe(r)
+}
+
+func main(): Int = viaArgument(10) + describe(viaBranch(true)) + viaBinding() + 8
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
