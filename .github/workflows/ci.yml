@@ -6747,7 +6747,7 @@ jobs:
           - id: ui
             deps: "generator-sdk forms auth resilience web ws"
           - id: testing
-            deps: "cache mail storage feature-flags mq session"
+            deps: "conformance cache mail storage feature-flags mq session jobs search"
           - id: game
             deps: ""
           - id: unicode
