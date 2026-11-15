@@ -360,6 +360,29 @@ func main(): Int {
 }
 LYRIC
 
+# The operand of `?` that is a construction leaving a type argument open takes its success type from
+# its payload and its error type from the enclosing function (D490).
+check propagate_open_operand 7 <<'LYRIC'
+package Shapes13
+import Std.Core
+
+func okInit(): Result[Int, String] {
+  val m = Ok(value = "bb")?
+  Ok(value = m.length)
+}
+
+func someInit(): Option[Int] {
+  val s = Some(value = "abc")?
+  Some(value = s.length)
+}
+
+func main(): Int {
+  val a = match okInit() { case Ok(v) -> v; case Err(_) -> 100 }
+  val b = match someInit() { case Some(v) -> v; case None -> 100 }
+  a + b + 2
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]

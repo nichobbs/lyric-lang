@@ -472,6 +472,144 @@ func exprNeverCompletes(e: in Expr): Bool {
   }
 }
 
+/// The expression `x` without its parentheses.
+func unparen(x: in Expr): Expr {
+  match x.kind {
+    case EParen(i) -> unparen(i)
+    case _ -> x
+  }
+}
+
+/// The type the checker recorded for the operand of `?` (`hoistOperandTypeSites`: the closed type of
+/// a construction that leaves a type argument open), when it recorded one without a conflict.
+func hoistedOperandTy(env: in BuildEnv, inner: in Expr): Option[Ty] {
+  match mapGet(env.ctx.tbl.hoistOperandTypeSites, recordCopySiteKey(inner.span)) {
+    case Some(site) -> if site.conflicting {
+      None
+    } else {
+      match annotatedTy(env, site.operandType) {
+        case Some(t) -> Some(value = t)
+        case None -> None
+      }
+    }
+    case None -> None
+  }
+}
+
+/// The type of the operand of `?` when it is a `Result` or `Option` construction that leaves a type
+/// argument open (`Ok(value = "bb")?`, `Err(error = x)?`, `None?`), which the checker records no type
+/// for (`openPropagateOperands`).  A success value fixes the success type (the payload's own type);
+/// the failure path is the enclosing function's, so the error type is the function's; a failure
+/// value or `None` fixes only the error type, and the success type is what the `?` yields
+/// (`yielded`).  None when the operand is not such a construction or the function's own type is
+/// not recorded.
+func propagateOperandTy(env: in BuildEnv, inner: in Expr, yielded: in Ty): Option[Ty] {
+  match hoistedOperandTy(env, inner) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  val op = match mapGet(env.ctx.tbl.openPropagateOperands, recordCopySiteKey(inner.span)) {
+    case Some(o) -> o
+    case None -> return None
+  }
+  val fb = match tyOfType(env.ctx, op.fallback) { case Ok(t) -> t; case Err(_) -> return None }
+  val sym = match fb { case TNamed(s, _) -> s; case _ -> return None }
+  val args = match fb { case TNamed(_, a) -> a; case _ -> return None }
+  val operand = unparen(inner)
+  var name = ""
+  var payload: Option[Expr] = None
+  match operand.kind {
+    case EPath(p) -> {
+      name = p.segments[p.segments.count - 1]
+    }
+    case ECall(fn, cargs) -> {
+      match fn.kind {
+        case EPath(p) -> {
+          name = p.segments[p.segments.count - 1]
+        }
+        case _ -> return None
+      }
+      if cargs.count == 1 {
+        match cargs[0] {
+          case CAPositional(x) -> {
+            payload = Some(value = x)
+          }
+          case CANamed(_, x, _) -> {
+            payload = Some(value = x)
+          }
+        }
+      }
+    }
+    case _ -> return None
+  }
+  val payloadTy: Option[Ty] = match payload {
+    case Some(x) -> match exprTy(env.ctx, x.nodeId) {
+      case Ok(t) -> Some(value = t)
+      case Err(_) -> None
+    }
+    case None -> None
+  }
+  if args.count == 2 {
+    if name == "Ok" {
+      match payloadTy {
+        case Some(t) -> return Some(value = TNamed(sym = sym, args = [t, args[1]]))
+        case None -> return None
+      }
+    }
+    if name == "Err" {
+      val et = match payloadTy { case Some(t) -> t; case None -> args[1] }
+      return Some(value = TNamed(sym = sym, args = [yielded, et]))
+    }
+    return None
+  }
+  if args.count == 1 {
+    if name == "Some" {
+      match payloadTy {
+        case Some(t) -> return Some(value = TNamed(sym = sym, args = [t]))
+        case None -> return None
+      }
+    }
+    if name == "None" {
+      return Some(value = TNamed(sym = sym, args = [yielded]))
+    }
+  }
+  None
+}
+
+/// What `Ok(x)?` and `Some(x)?` yield when the checker left the whole `?` untyped (the construction's
+/// other type argument is open): the payload's own type.  `Err(x)?` and `None?` yield what their
+/// position expects, which only a context fixes.
+func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val inner = match e.kind { case EPropagate(i) -> unparen(i); case _ -> return None }
+  match hoistedOperandTy(env, inner) {
+    case Some(TNamed(_, args)) -> if args.count > 0 { return Some(value = args[0]) }
+    case _ -> ()
+  }
+  match inner.kind {
+    case ECall(fn, cargs) -> {
+      val name = match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1]; case _ -> return None }
+      if cargs.count != 1 or (name != "Ok" and name != "Some") {
+        return None
+      }
+      val x = match cargs[0] { case CAPositional(v) -> v; case CANamed(_, v, _) -> v }
+      match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> Some(value = t)
+        case Err(_) -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The type of an expression the checker left untyped, when its own shape gives it: a read of a
+/// local declared at a type, or `Ok(x)?` and `Some(x)?`.
+func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match openLocalTy(env, e) {
+    case Some(t) -> Some(value = t)
+    case None -> openPropagateYield(env, e)
+  }
+}
+
 /// The type of a read of a local whose own type the checker left open at the read (`o` after
 /// `val o = None`): the type the local was declared at.
 func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
@@ -511,7 +649,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case Ok(t) -> t
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
-      case None -> match openLocalTy(env, e) {
+      case None -> match openHoleTy(env, e) {
         case Some(t) -> t
         case None -> {
           // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
@@ -590,9 +728,15 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case Some(t) -> Some(value = mkExpr(e, ty, XYield(inner = t)))
       case None -> None
     }
-    case EPropagate(inner) -> match buildExpr(env, inner) {
-      case Some(t) -> Some(value = mkExpr(e, ty, XPropagate(inner = t)))
-      case None -> None
+    case EPropagate(inner) -> {
+      match propagateOperandTy(env, inner, ty) {
+        case Some(ot) -> settleHole(env, inner, ot)
+        case None -> ()
+      }
+      match buildExpr(env, inner) {
+        case Some(t) -> Some(value = mkExpr(e, ty, XPropagate(inner = t)))
+        case None -> None
+      }
     }
     case EOld(inner) -> match buildExpr(env, inner) {
       case Some(t) -> Some(value = mkExpr(e, ty, XOld(inner = t)))
