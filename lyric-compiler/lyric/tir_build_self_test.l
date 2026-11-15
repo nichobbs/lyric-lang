@@ -2713,6 +2713,10 @@ test "Self in an impl member names the impl's target type (D476)" {
 test "Self in a member of a generic impl names the generic target (D476)" {
   val c = censusOf(
     "package App\ninterface Cl {\n  func cl(self: in Self): Self\n}\nrecord Box[T] { v: T }\nimpl[T] Cl for Box[T] {\n  func cl(self: in Self): Self { Box(v = self.v) }\n}\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
 
 test "a qualified enum case read as a value builds as the case (D477)" {
   val c = censusOf(
@@ -2724,6 +2728,14 @@ test "a qualified enum case read as a value builds as the case (D477)" {
 
 test "a qualified nullary union case read as a value builds as the case (D477)" {
   val c = censusOf("package App\nunion Sh {\n  case Dot\n  case Circle(r: Int)\n}\nfunc f(): Sh { Sh.Dot }\n")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a local named like an enum is read as a field, not as a case (D477)" {
+  val c = censusOf(
+    "package App\nenum Lv {\n  case Trace\n}\nrecord R { Trace: Int }\nfunc f(Lv: in R): Int { Lv.Trace }\n"
+  )
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
