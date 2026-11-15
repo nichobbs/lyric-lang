@@ -2383,7 +2383,8 @@ func taskAsHostTask(from: in Ty, to: in Ty): Option[ConvKind] {
 }
 
 /// A host value passed as one of its host supertypes (`HttpClientHandler` for an `HttpMessageHandler`
-/// parameter, a `String` for a `CharSequence` one), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
+/// parameter, a `String` for a `CharSequence` one, a record that `impl`s an extern interface for that
+/// interface), read from the host's metadata (`resolveBases`).  `object` is boxing, not an upcast.
 func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   match taskAsHostTask(from, to) {
     case Some(k) -> return Some(value = k)
@@ -2409,6 +2410,24 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
           }
           case None -> None
         }
+      }
+      case _ -> None
+    }
+    case TNamed(rsym, _) -> match to {
+      case TExtern(t) -> {
+        if isHostObject(t.name) {
+          return None
+        }
+        // A Lyric record or union that `impl`s an extern interface passes as that interface.
+        for p in env.ctx.tbl.impls {
+          if symbolIdEq(p.target, rsym) {
+            match symTableExternDeclOf(env.ctx.tbl, p.iface) {
+              case Some(d) -> if externHostBase(d.clrName) == t.name { return Some(value = CvBoxToHost(host = t)) }
+              case None -> ()
+            }
+          }
+        }
+        None
       }
       case _ -> None
     }
