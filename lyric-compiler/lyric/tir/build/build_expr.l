@@ -480,6 +480,22 @@ func unparen(x: in Expr): Expr {
   }
 }
 
+/// The type the checker recorded for the operand of `?` (`hoistOperandTypeSites`: the closed type of
+/// a construction that leaves a type argument open), when it recorded one without a conflict.
+func hoistedOperandTy(env: in BuildEnv, inner: in Expr): Option[Ty] {
+  match mapGet(env.ctx.tbl.hoistOperandTypeSites, recordCopySiteKey(inner.span)) {
+    case Some(site) -> if site.conflicting {
+      None
+    } else {
+      match annotatedTy(env, site.operandType) {
+        case Some(t) -> Some(value = t)
+        case None -> None
+      }
+    }
+    case None -> None
+  }
+}
+
 /// The type of the operand of `?` when it is a `Result` or `Option` construction that leaves a type
 /// argument open (`Ok(value = "bb")?`, `Err(error = x)?`, `None?`), which the checker records no type
 /// for (`openPropagateOperands`).  A success value fixes the success type (the payload's own type);
@@ -488,6 +504,10 @@ func unparen(x: in Expr): Expr {
 /// (`yielded`).  None when the operand is not such a construction or the function's own type is
 /// not recorded.
 func propagateOperandTy(env: in BuildEnv, inner: in Expr, yielded: in Ty): Option[Ty] {
+  match hoistedOperandTy(env, inner) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
   val op = match mapGet(env.ctx.tbl.openPropagateOperands, recordCopySiteKey(inner.span)) {
     case Some(o) -> o
     case None -> return None
@@ -561,6 +581,10 @@ func propagateOperandTy(env: in BuildEnv, inner: in Expr, yielded: in Ty): Optio
 /// position expects, which only a context fixes.
 func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
   val inner = match e.kind { case EPropagate(i) -> unparen(i); case _ -> return None }
+  match hoistedOperandTy(env, inner) {
+    case Some(TNamed(_, args)) -> if args.count > 0 { return Some(value = args[0]) }
+    case _ -> ()
+  }
   match inner.kind {
     case ECall(fn, cargs) -> {
       val name = match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1]; case _ -> return None }
