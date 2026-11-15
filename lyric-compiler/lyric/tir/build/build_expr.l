@@ -820,7 +820,6 @@ func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
   }
 }
 
-/// Build a pattern, declaring the locals it binds in the innermost scope.
 /// The scrutinee's type fixes the type of each pattern that matches it, for a pattern the checker
 /// left untyped because the scrutinee's own type was open (`val o = None; match o { case Some(v) -> v }`):
 /// a tuple pattern's elements take the tuple's, a constructor pattern's arguments the case's payload
@@ -867,6 +866,7 @@ func settlePattern(env: in BuildEnv, p: in Pattern, ty: in Ty): Unit {
   }
 }
 
+/// Build a pattern, declaring the locals it binds in the innermost scope.
 func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
   val ty = match patTy(env.ctx, p.nodeId) {
     case Ok(t) -> t
