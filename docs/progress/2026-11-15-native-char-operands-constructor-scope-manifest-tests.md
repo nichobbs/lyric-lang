@@ -35,7 +35,7 @@ and printed as its code point by `.toString()` and interpolation, and
   itself is keyed by erased types, so one instantiation serves `Int` and
   `Char`. `String + x` on an `i32` there stays a compile-time error, with a
   message that says why; `.toString()` in such a function renders a `Char` as
-  its code point, as before.
+  its code point, as before (#9131).
 
 `string_concat_operand_self_test.l` (13 cases: every binding form, every scalar
 operand type, `Std.Xml`'s entity decoder) passes on dotnet, the JVM and native.
@@ -51,7 +51,8 @@ scope at a time, as the type checker does: the calling package's own
 declaration of any kind, then an imported package's, then the key as written.
 A function or generic function of a package further away no longer captures a
 nearer constructor of the same name (`constructorScopeLevel`), and a generic
-union case is keyed by `<pkg>.<Case>` like a plain one.
+union case is keyed by `<pkg>.<Case>` like a plain one. The MSIL and JVM
+backends still fail on the same collisions at run time (#9130).
 
 `llvm_project_self_test.l` gains three tests: the reported shape, and two
 packages that reuse each other's names for another kind of declaration (case

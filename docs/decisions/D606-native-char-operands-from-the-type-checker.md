@@ -72,4 +72,4 @@ records each operand whose lowering depends on signedness and
 Item 6: `.toString()`, interpolation and `println` of a value typed by a type
 parameter in a generic of another package still render a `Char` as its code
 point on native, and `String +` there is an error. Both end when native
-generics are specialised by the middle end or lowered from TIR.
+generics are specialised by the middle end or lowered from TIR (#9131).
