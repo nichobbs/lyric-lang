@@ -2694,11 +2694,30 @@ func linesStarting(lines: in List[String], prefix: in String): Int {
   n
 }
 
+func tabCount(s: in String): Int {
+  var n = 0
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "\t" {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
 test "the census lists each body by its DefPath key, built or not (D474)" {
   val c = censusOf("package App\nfunc good(): Int { 1 }\nfunc bad(): Int { nowhere }\n")
   assertEqualInt(linesStarting(c.bodyLines, "built\tApp::good"), 1, "good is built")
   assertEqualInt(linesStarting(c.bodyLines, "unbuilt\tApp::bad"), 1, "bad is not")
   assertTrue(linesStarting(c.bodyLines, "kind\tApp::bad") >= 1, "bad's uncovered kind is listed under its key")
+  for l in c.bodyLines {
+    if l.startsWith("kind\t") {
+      assertEqualInt(tabCount(l), 4, "a kind line is kind, key, count, line:column, kind")
+    } else {
+      assertEqualInt(tabCount(l), 1, "a body line is its outcome and its key")
+    }
+  }
 }
 
 test "Self in an impl member names the impl's target type (D476)" {
