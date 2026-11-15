@@ -3440,10 +3440,7 @@ func recordMonadAccessorCallee(
     case Some(_) -> ()
     case None -> return
   }
-  val targs = match unrefine(recvRaw) {
-    case TyUser(_, _, a) -> a
-    case _ -> return
-  }
+  val targs = match unrefine(recvRaw) { case TyUser(_, _, a) -> a; case _ -> return }
   match mapGet(sigs, name) {
     case Some(sig) -> {
       if sig.originPackage != "Std.Core" or sig.generics.count != targs.count {
@@ -8660,10 +8657,7 @@ func recordQualifiedEnumCaseRef(tbl: in SymbolTable, node: in Int, enumTy: in Ty
     case TyUser(eid, _, _) -> {
       for cand in symTableTryFindAllNamed(tbl, name) {
         match cand.kind {
-          case DKEnumCase(pid, _) -> if symbolIdEq(pid, eid) {
-            recordRefNode(tbl, node, cand)
-            return
-          }
+          case DKEnumCase(pid, _) -> if symbolIdEq(pid, eid) { recordRefNode(tbl, node, cand); return }
           case _ -> ()
         }
       }

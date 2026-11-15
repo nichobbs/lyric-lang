@@ -888,6 +888,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - An `@externTarget` function is a declaration with no TIR body: its placeholder source body (`= ()`) is never built (D473).
   - The census counts a body shared by several programs once (D474): `LYRIC_TIR_CENSUS_BODIES=1` prints a `TIR body` line per body and `scripts/ci/tir-census.sh` reports unique bodies and kinds, and names an area it did not run.
   - `Self` inside an `impl` member is the impl's target type (D476): a member that spells its receiver or result `Self` builds instead of recording I0002.
+  - A qualified enum or nullary union case read as a value (`Lv.Trace`) is a reference the checker records, built as the case (D477), not a field read of the type name.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

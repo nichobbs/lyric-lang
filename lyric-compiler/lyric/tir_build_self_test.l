@@ -2723,9 +2723,7 @@ test "a qualified enum case read as a value builds as the case (D477)" {
 }
 
 test "a qualified nullary union case read as a value builds as the case (D477)" {
-  val c = censusOf(
-    "package App\nunion Sh {\n  case Dot\n  case Circle(r: Int)\n}\nfunc f(): Sh { Sh.Dot }\n"
-  )
+  val c = censusOf("package App\nunion Sh {\n  case Dot\n  case Circle(r: Int)\n}\nfunc f(): Sh { Sh.Dot }\n")
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
