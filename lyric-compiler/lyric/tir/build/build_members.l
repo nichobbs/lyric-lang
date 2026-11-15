@@ -217,6 +217,35 @@ pub func buildMemberDefaults(
 func buildMemberWith(
   env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, mode: in Int
 ): Option[TFnDecl] {
+  // Inside an `impl`, `Self` is the impl's target type (D476).
+  var pushed = false
+  if isSome(site.implTarget) {
+    val target = if site.owner.names.count > 0 {
+      match memberSymOf(tbl, pkg, site) {
+        case Some(s) -> genericRecvOf(env, tbl, site, s)
+        case None -> None
+      }
+    } else {
+      site.recv
+    }
+    match target {
+      case Some(t) -> {
+        env.ctx.implSelf.add(t)
+        pushed = true
+      }
+      case None -> ()
+    }
+  }
+  val res = buildMemberInner(env, tbl, pkg, site, mode)
+  if pushed {
+    env.ctx.implSelf.removeAt(env.ctx.implSelf.count - 1)
+  }
+  res
+}
+
+func buildMemberInner(
+  env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, mode: in Int
+): Option[TFnDecl] {
   // A method declares its receiver as an explicit first parameter named `self`; a protected
   // type's members and some `impl` members leave it implicit, and the builder declares it.
   val declaresSelf = site.fn.params.count > 0 and site.fn.params[0].name == "self"
