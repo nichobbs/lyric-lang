@@ -884,6 +884,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The builder gives a value-generic parameter `valueTy` `Int` (the type docs/01 gives it in a body) and builds a bare read of one in a function or a protected-type member as `XValueParam`; the checker already binds it as an `Int` local, so it needed no table (D469).
   - A function value passes for a host functional interface or delegate, and a Lyric record passes as an extern interface it `impl`s, as `CvBoxToHost` conversions (D470).
   - `Exception.typeName` and the `Result`/`Option` `value` and `error` projections are built-in property reads (D471).
+  - A host member's array parameter or result names its element type (the array placeholder applied to it, from the JVM descriptor and the CLR signature), so a slice passes for the host array of its own element type (D472).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

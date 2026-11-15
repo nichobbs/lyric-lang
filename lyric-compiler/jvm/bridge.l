@@ -634,6 +634,12 @@ pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
 // result, and for an array or an unmapped primitive (`short`, `float`) the host
 // name that matches no Lyric type.
 func jvmElemOfDesc(desc: in String): ExternIterElem {
+  // An array of `E` is the array name applied to `E` (D472).
+  if desc.length > 1 and desc.substring(0, 1) == "[" {
+    val elem: List[ExternIterElem] = newList()
+    elem.add(jvmElemOfDesc(desc.substring(1, desc.length - 1)))
+    return EIEHost(hostName = "an array, pointer or by-reference type", args = elem)
+  }
   match jvmMemberTypeOfDesc(desc) {
     case Some(EMTType(elem)) -> elem
     case _ -> if desc == "F" {
