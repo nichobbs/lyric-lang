@@ -406,14 +406,12 @@ diff -u "$work/e_tir.out" "$work/e_asan.out"
 echo "by-value elements under AddressSanitizer: clean"
 
 # Record patterns (docs/70 phase 4a): `match` arms and destructuring `val` on a by-value and a heap
-# record, from TIR (tried before the AST lowering), then under AddressSanitizer.
+# record lowered from TIR, then under AddressSanitizer.  The AST lowering has no record patterns, so
+# there is no plain build to compare with: the output is the specified one.
 rpsrc=scripts/ci/native-via-tir/recpat.l
-"$lyric_bin" build --target native "$rpsrc" -o "$work/rp_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$rpsrc" -o "$work/rp_tir" 2> "$work/rp_census.txt" >/dev/null
 cat "$work/rp_census.txt"
-"$work/rp_ast" > "$work/rp_ast.out"
 "$work/rp_tir" > "$work/rp_tir.out"
-diff -u "$work/rp_ast.out" "$work/rp_tir.out"
 printf '7\n300\n7\nR4\nleaf!\nleaf2\n42\n8\n' | diff -u - "$work/rp_tir.out"
 grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/rp_census.txt" || {
   echo "::error::expected every function of recpat.l to be lowered from TIR"

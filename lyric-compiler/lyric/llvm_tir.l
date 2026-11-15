@@ -4986,9 +4986,10 @@ func lowerMatch(c: in LCtx, e: in TExpr, scrutE: in TExpr, arms: in List[TArm], 
     case None -> None
   }
   val isTuple = match scrutE.ty { case TTuple(_) -> true; case _ -> false }
-  val scrut = if isStringN(scrut0.ty) or isTuple { borrow(c, scrut0) } else { scrut0 }
+  val isRecord = match scrutE.ty { case TNamed(rs, _) -> c.env.recs.containsKey(rs.id); case _ -> false }
+  val scrut = if isStringN(scrut0.ty) or isTuple or isRecord { borrow(c, scrut0) } else { scrut0 }
   val isUnion = match us { case Some(_) -> true; case None -> false }
-  if isRefN(scrut.ty) and not isUnion and not isStringN(scrut.ty) and not isTuple {
+  if isRefN(scrut.ty) and not isUnion and not isStringN(scrut.ty) and not isTuple and not isRecord {
     return unsupported(c, "a match on a reference value")
   }
   val wantRef = match tyToN(c.env, e.ty) { case Some(nt) -> isRefN(nt); case None -> false }
