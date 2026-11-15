@@ -51,6 +51,9 @@ pub record BuildEnv {
   /// The symbol of the member being built (empty or one entry): a method, an `impl` member or
   /// a protected entry has no top-level function symbol for `symTableFuncSymOf` to find.
   symOverride: List[SymbolId] = newList()
+  /// The unions `retypeValue` is rebuilding, innermost last: a payload that holds the same union
+  /// would need an unbounded match.
+  retyping: List[Int] = newList()
   /// The type of the member's receiver (empty or one entry): the body's `self`, declared as the
   /// leading parameter.
   recvTy: List[Ty] = newList()
@@ -3331,7 +3334,10 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
       case None -> match taskAsHostTask(t.ty, ty) {
         case Some(k) -> Some(value = convertNode(env, t, ty, k))
-        case None -> retypeConstruct(env, t, ty)
+        case None -> match retypeConstruct(env, t, ty) {
+          case Some(c) -> Some(value = c)
+          case None -> retypeValue(env, t, ty)
+        }
       }
     }
   }
@@ -3370,6 +3376,74 @@ func retypeConstruct(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     }
     case _ -> None
   }
+}
+
+/// A value of a union used at the same union with other type arguments (a `Result[English, String]`
+/// where a `Result[Greeter, String]` is wanted): a `match` over every case of the union that builds
+/// the case again at the arguments of `ty`, each payload converted to its type there.  None when
+/// the types are not one union at different arguments, or a payload does not convert.
+func retypeValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val outer = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+  for u in env.retyping {
+    if u == outer.id {
+      return None
+    }
+  }
+  env.retyping.add(outer.id)
+  val built = retypeValueCases(env, t, ty)
+  env.retyping.removeAt(env.retyping.count - 1)
+  built
+}
+
+func retypeValueCases(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val parent = match t.ty { case TNamed(p, _) -> p; case _ -> return None }
+  val haveArgs = match t.ty { case TNamed(_, a) -> a; case _ -> return None }
+  val wantParent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val want = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  if parent.id != wantParent.id or haveArgs.count != want.count or want.count == 0 {
+    return None
+  }
+  val cases = match mapGet(caseSymbolsByParent(env.ctx.tbl), parent.id) { case Some(c) -> c; case None -> return None }
+  if cases.count == 0 {
+    return None
+  }
+  val arms: List[TArm] = newList()
+  for cs in cases {
+    noteCaseSym(env, cs)
+    val en = match mapGet(env.syms, cs.id) { case Some(x) -> x; case None -> return None }
+    val sig = match en.sig { case Some(x) -> x; case None -> return None }
+    pushScope(env)
+    val pats: List[TPat] = newList()
+    val fields: List[TExpr] = newList()
+    var i = 0
+    while i < sig.params.count {
+      val haveTy = substOwnerArgs(sig.params[i].ty, parent, haveArgs)
+      val wantTy = substOwnerArgs(sig.params[i].ty, parent, want)
+      val d = declareLocal(env, "__covariant" + toString(i), haveTy, false)
+      pats.add(TPat(id = freshNodeId(env), ty = haveTy, span = t.span, kind = TpBind(decl = d, inner = None)))
+      val read = TExpr(id = freshNodeId(env), ty = haveTy, span = t.span, kind = XLocal(local = d.id))
+      match convertValue(env, read, wantTy) {
+        case Some(c) -> fields.add(c)
+        case None -> {
+          popScope(env)
+          return None
+        }
+      }
+      i = i + 1
+    }
+    popScope(env)
+    val pat = TPat(id = freshNodeId(env), ty = t.ty, span = t.span, kind = TpCtor(sym = cs, args = pats))
+    val body = TExpr(id = freshNodeId(env), ty = ty, span = t.span, kind = XConstruct(sym = cs, fields = fields))
+    arms.add(TArm(pat = pat, guard = None, body = body))
+  }
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = ty,
+      span = t.span,
+      kind = XMatch(scrutinee = t, arms = arms, exhaustive = true)
+    )
+  )
 }
 
 /// A value of a declared type used where an interface is expected: the checker accepts
