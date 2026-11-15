@@ -1475,6 +1475,7 @@ static void test_connect_bounded_failures(void) {
     lyric_sock_close(wfd);
 }
 
+#if !defined(_WIN32)
 /* ── Name lookups in flight are capped (#9137, D608) ───────────────────
  * A resolver that never answers leaves one abandoned helper thread per
  * attempt.  The lookup is swapped for one that blocks until released, so the
@@ -1575,6 +1576,7 @@ static void test_resolve_inflight_cap(void) {
     lyric_resolve_lookup_hook = getaddrinfo;
     lyric_sock_close(listen_fd);
 }
+#endif /* !_WIN32: the Windows lookup has no test seam yet */
 
 #if defined(__linux__)
 /* A connect that the peer never answers.  Linux drops a SYN that arrives
@@ -1914,7 +1916,9 @@ int main(void) {
     test_sock_shutdown_before_read();
     test_connect_bounded_ok();
     test_connect_bounded_failures();
+#if !defined(_WIN32)
     test_resolve_inflight_cap();
+#endif
 #if defined(__linux__)
     test_connect_bounded_deadline();
 #endif

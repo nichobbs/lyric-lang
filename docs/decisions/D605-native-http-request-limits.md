@@ -75,7 +75,8 @@ have been applied) from a failed connection (it was not) by this.
    swaps the lookup through an internal function pointer
    (`lyric_resolve_lookup_hook`, defaulting to `getaddrinfo`) to hold lookups
    open, reaches the cap, sees the error, releases, and sees lookups succeed
-   again.
+   again. That test is built on Linux and macOS only: the Windows lookup has
+   no such seam yet, so the Windows cap compiles but is not exercised (#9159).
 
 ## Not supported, and said so
 
