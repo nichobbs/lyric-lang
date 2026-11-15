@@ -2696,7 +2696,7 @@ func linesStarting(lines: in List[String], prefix: in String): Int {
 
 test "the census lists each body by its DefPath key, built or not (D474)" {
   val c = censusOf("package App\nfunc good(): Int { 1 }\nfunc bad(): Int { nowhere }\n")
-  assertEqualInt(linesStarting(c.bodyLines, "built\tApp|"), 1, "good is built")
-  assertEqualInt(linesStarting(c.bodyLines, "unbuilt\tApp|"), 1, "bad is not")
-  assertTrue(linesStarting(c.bodyLines, "kind\tApp|") >= 1, "bad's uncovered kind is listed under its key")
+  assertEqualInt(linesStarting(c.bodyLines, "built\tApp::good"), 1, "good is built")
+  assertEqualInt(linesStarting(c.bodyLines, "unbuilt\tApp::bad"), 1, "bad is not")
+  assertTrue(linesStarting(c.bodyLines, "kind\tApp::bad") >= 1, "bad's uncovered kind is listed under its key")
 }

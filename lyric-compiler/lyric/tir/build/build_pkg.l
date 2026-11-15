@@ -145,7 +145,16 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
             }
             case None -> {
               val fsym = symTableFuncSymOf(tbl, decl)
-              failed.add(FnBuildFailure(name = decl.name, sym = fsym, messages = env.errors, path = defPathKey(tbl, fsym), uncovered = env.uncovered, sites = env.sites))
+              failed.add(
+                FnBuildFailure(
+                  name = decl.name,
+                  sym = fsym,
+                  messages = env.errors,
+                  path = defPathKey(tbl, fsym),
+                  uncovered = env.uncovered,
+                  sites = env.sites
+                )
+              )
             }
           }
           absorbEnv(env, syms, sums, sites)
@@ -175,7 +184,16 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
       }
       case None -> {
         val msym = memberSymOf(tbl, pkgName, site)
-        failed.add(FnBuildFailure(name = site.name, sym = msym, messages = env.errors, path = defPathKey(tbl, msym), uncovered = env.uncovered, sites = env.sites))
+        failed.add(
+          FnBuildFailure(
+            name = site.name,
+            sym = msym,
+            messages = env.errors,
+            path = defPathKey(tbl, msym),
+            uncovered = env.uncovered,
+            sites = env.sites
+          )
+        )
         // The member still has a signature: describe it by its declaration, so a call site's
         // instantiated signature is not taken for it.
         match buildMemberSig(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {

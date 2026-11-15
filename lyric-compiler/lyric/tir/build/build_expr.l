@@ -2040,7 +2040,7 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
 
 /// The census's per-body lines (D474): `built<TAB>key` for a built body, `unbuilt<TAB>key` for
 /// one that did not build, then `kind<TAB>key<TAB>count<TAB>line:column<TAB>kind` for each kind
-/// of node an unbuilt body has no case for.  The key is the symbol's DefPath key, or `~name`
+/// of node an unbuilt body has no case for.  The key is the symbol's DefPath key (`Pkg::name(...)`), or `~name`
 /// when the checker has none.
 pub func bodyCensusLines(pb: in PackageBuild): List[String] {
   val res: List[String] = newList()

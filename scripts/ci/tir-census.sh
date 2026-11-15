@@ -107,7 +107,7 @@ collect_bodies() {
   awk -F'\t' -v prog="$prog" '
     $1 == "TIR body" {
       key = $3
-      pk = key; sub(/[|].*/, "", pk)
+      pk = key; sub(/::.*/, "", pk)
       if (substr(key, 1, 1) == "~" || pk !~ /^(Std|Lyric|Msil|Jvm)([.]|$)/) key = prog "::" key
       if ($2 == "kind") print $2 "\t" key "\t" $4 "\t" $5 "\t" $6
       else print $2 "\t" key
