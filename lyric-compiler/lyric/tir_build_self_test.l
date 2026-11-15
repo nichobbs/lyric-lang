@@ -2683,3 +2683,20 @@ test "a method calling a sibling method through self passes the owner's paramete
   )
   assertBuildsAndVerifies(pb, 2, "Cell.get and twice")
 }
+
+func linesStarting(lines: in List[String], prefix: in String): Int {
+  var n = 0
+  for l in lines {
+    if l.startsWith(prefix) {
+      n = n + 1
+    }
+  }
+  n
+}
+
+test "the census lists each body by its DefPath key, built or not (D474)" {
+  val c = censusOf("package App\nfunc good(): Int { 1 }\nfunc bad(): Int { nowhere }\n")
+  assertEqualInt(linesStarting(c.bodyLines, "built\tApp::good"), 1, "good is built")
+  assertEqualInt(linesStarting(c.bodyLines, "unbuilt\tApp::bad"), 1, "bad is not")
+  assertTrue(linesStarting(c.bodyLines, "kind\tApp::bad") >= 1, "bad's uncovered kind is listed under its key")
+}

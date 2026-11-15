@@ -23,6 +23,10 @@ pub record FnBuildFailure {
   /// The key of the symbol's DefPath (`pkg|segments`) when it has one: the name a consumer can
   /// match against `PackageBuild.names` without the display `name`.
   path: Option[String] = None
+  /// The nodes of each kind the builder had no case for in this body, and where each kind was
+  /// first met (`line:column`): the per-body part of the `--verify-ir` census (D474).
+  uncovered: Map[String, Int] = newMap()
+  sites: Map[String, String] = newMap()
 }
 
 /// The outcome of building a file.  `pkg.funcs` holds one `TFnDecl` per built function,
@@ -141,7 +145,16 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
             }
             case None -> {
               val fsym = symTableFuncSymOf(tbl, decl)
-              failed.add(FnBuildFailure(name = decl.name, sym = fsym, messages = env.errors, path = defPathKey(tbl, fsym)))
+              failed.add(
+                FnBuildFailure(
+                  name = decl.name,
+                  sym = fsym,
+                  messages = env.errors,
+                  path = defPathKey(tbl, fsym),
+                  uncovered = env.uncovered,
+                  sites = env.sites
+                )
+              )
             }
           }
           absorbEnv(env, syms, sums, sites)
@@ -171,7 +184,16 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
       }
       case None -> {
         val msym = memberSymOf(tbl, pkgName, site)
-        failed.add(FnBuildFailure(name = site.name, sym = msym, messages = env.errors, path = defPathKey(tbl, msym)))
+        failed.add(
+          FnBuildFailure(
+            name = site.name,
+            sym = msym,
+            messages = env.errors,
+            path = defPathKey(tbl, msym),
+            uncovered = env.uncovered,
+            sites = env.sites
+          )
+        )
         // The member still has a signature: describe it by its declaration, so a call site's
         // instantiated signature is not taken for it.
         match buildMemberSig(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {

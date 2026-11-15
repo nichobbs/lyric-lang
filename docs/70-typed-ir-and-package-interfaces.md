@@ -886,6 +886,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `Exception.typeName` and the `Result`/`Option` `value` and `error` projections are built-in property reads (D471).
   - A host member's array parameter or result names its element type (the array placeholder applied to it, from the JVM descriptor and the CLR signature), so a slice passes for the host array of its own element type (D472).
   - An `@externTarget` function is a declaration with no TIR body: its placeholder source body (`= ()`) is never built (D473).
+  - The census counts a body shared by several programs once (D474): `LYRIC_TIR_CENSUS_BODIES=1` prints a `TIR body` line per body and `scripts/ci/tir-census.sh` reports unique bodies and kinds, and names an area it did not run.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

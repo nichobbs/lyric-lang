@@ -25,6 +25,16 @@
 # census only counts: it never gates, because phase 3a has not driven those
 # areas to zero yet (docs/70 §13); the standard-library gate above is unchanged.
 #
+# Bodies are counted once.  A package that several programs share (the standard library's
+# JVM kernels are source-loaded into each program, the compiler's packages into each
+# self-test) has the same function bodies in every one of those builds, so a per-build sum
+# counts one body once per program.  With LYRIC_TIR_CENSUS_BODIES=1 the checker prints one
+# `TIR body` line per body (built or not, with its DefPath key and, for a body it could not
+# build, each uncovered kind with its count and first site); this script keys a body of
+# `Std.*`, `Lyric.*`, `Msil.*` or `Jvm.*` by that path alone and any other body by its
+# program as well, and reports the unique bodies beside the raw per-build totals.  A body
+# seen built in one program and not in another counts as not built.
+#
 # TIR_CENSUS_STATE=<dir> makes the wide census resumable: each build's log and exit code
 # are kept under <dir>, and a rerun with the same <dir> reuses the ones already there, so a
 # run killed part-way (the self-tests area takes hours) continues instead of restarting.
@@ -73,6 +83,7 @@ target_of() {
   esac
 }
 
+export LYRIC_TIR_CENSUS_BODIES=1
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 i0003=0
@@ -87,6 +98,47 @@ declare -A samples
 declare -A a_built a_total a_i0003 a_judged a_tried
 declare -A a_kinds a_samples a_unchecked
 
+# Appends the body identities of one build log to the area's file (see the header): one
+# tab-separated line per body (`built` or `unbuilt`, key) and per uncovered kind of an
+# unbuilt body (`kind`, key, count, line:column, kind).  A body of a package every program
+# shares is keyed by its path alone; any other body also by the program that declares it.
+collect_bodies() {
+  local area="$1" prog="$2" log="$3"
+  awk -F'\t' -v prog="$prog" '
+    $1 == "TIR body" {
+      key = $3
+      pk = key; sub(/::.*/, "", pk)
+      if (substr(key, 1, 1) == "~" || pk !~ /^(Std|Lyric|Msil|Jvm)([.]|$)/) key = prog "::" key
+      if ($2 == "kind") print $2 "\t" key "\t" $4 "\t" $5 "\t" $6
+      else print $2 "\t" key
+    }' "$log" >>"$OUT/bodies.$area"
+}
+
+# The unique-body totals of one area: `<unique> <built>` on the first line, then one line
+# per uncovered kind, `<count> <kind>\t<first site>`.  A body counted twice with different
+# outcomes is not built; a kind of one body counts once however many programs repeat it.
+unique_bodies() {
+  local f="$OUT/bodies.$1"
+  [[ -s "$f" ]] || return 0
+  awk -F'\t' '
+    $1 == "built" { b[$2] = 1 }
+    $1 == "unbuilt" { u[$2] = 1 }
+    $1 == "kind" {
+      id = $2 SUBSEP $5
+      if (!(id in seen)) {
+        seen[id] = 1; n[$5] += $3
+        if (!($5 in site)) site[$5] = $2 " " $4
+      }
+    }
+    END {
+      nu = 0; nb = 0
+      for (x in u) nu++
+      for (x in b) if (!(x in u)) nb++
+      print nb + nu, nb
+      for (c in n) print n[c] " " c "\t" site[c]
+    }' "$f"
+}
+
 # Reads the census lines of one build log into the totals under the area name.  A
 # project build prints one census per package, so every line counts, not only the first.
 absorb_log() {
@@ -98,6 +150,7 @@ absorb_log() {
     if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit $rc) "; fi
     return 0
   fi
+  collect_bodies "$area" "$name" "$log"
   judged=$((judged + 1))
   a_judged[$area]=$(( ${a_judged[$area]:-0} + 1 ))
   while IFS= read -r l; do
@@ -159,6 +212,10 @@ for f in "${FILES[@]}"; do
 done
 
 echo "TIR census over ${#FILES[@]} file(s): $built of $total function bodies built, $((total - built)) not yet (I0002), $i0003 I0003 diagnostic(s)"
+if [[ -s "$OUT/bodies.stdlib-tests" ]]; then
+  read -r ub bb < <(unique_bodies stdlib-tests | head -1)
+  echo "  unique bodies: $bb of $ub built (a body shared by several programs counted once)"
+fi
 for r in "${!rules[@]}"; do echo "  I0003 rule $r: ${rules[$r]}"; done
 # Sorted by the count that follows the first colon; the "(e.g. file:L:C)" suffix adds
 # colons but the numeric key reads only the leading count.
@@ -172,6 +229,12 @@ fi
 # judged fewer than half of its programs fails.
 if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
   echo "TIR census judged only $judged of ${#FILES[@]} program(s): the census line is missing from the build output" >&2
+  exit 1
+fi
+# The unique-body counts rest on the `TIR body` lines (D474); if the checker stops printing
+# them the counts would silently fall back to nothing, so their absence is a failure.
+if [[ ! -s "$OUT/bodies.stdlib-tests" ]]; then
+  echo "TIR census: no 'TIR body' line in any build output (LYRIC_TIR_CENSUS_BODIES=1)" >&2
   exit 1
 fi
 gate_rc=0
@@ -252,12 +315,19 @@ echo
 echo "Wide TIR census (counts only, not gated):"
 for area in stdlib-tests compiler ecosystem self-tests; do
   tried="${a_tried[$area]:-0}"
-  [[ "$tried" -eq 0 ]] && continue
-  echo "  [$area] ${a_built[$area]:-0} of ${a_total[$area]:-0} bodies built, $(( ${a_total[$area]:-0} - ${a_built[$area]:-0} )) not yet (I0002), ${a_i0003[$area]:-0} I0003; ${a_judged[$area]:-0} of $tried build(s) judged"
-  for k in "${!a_kinds[@]}"; do
-    [[ "${k%%|*}" == "$area" ]] || continue
-    echo "    I0002 kind ${k#*|}: ${a_kinds[$k]}${a_samples[$k]:+ (e.g. ${a_samples[$k]})}"
-  done | sort -t: -k2 -n -r | head -15
+  if [[ "$tried" -eq 0 ]]; then
+    echo "  [$area] not run here (TIR_CENSUS_AREAS=${TIR_CENSUS_AREAS:-compiler ecosystem self-tests}); its bodies are not in these totals"
+    continue
+  fi
+  echo "  [$area] ${a_built[$area]:-0} of ${a_total[$area]:-0} bodies built over all builds, ${a_i0003[$area]:-0} I0003; ${a_judged[$area]:-0} of $tried build(s) judged"
+  if [[ -s "$OUT/bodies.$area" ]]; then
+    mapfile -t ub < <(unique_bodies "$area")
+    read -r utotal ubuilt <<<"${ub[0]}"
+    echo "    unique bodies: $ubuilt of $utotal built, $((utotal - ubuilt)) not yet (I0002)"
+    [[ ${#ub[@]} -gt 1 ]] && printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
+      echo "    I0002 kind ${head#* }: ${head%% *} (e.g. ${site})"
+    done
+  fi
   if [[ -n "${a_unchecked[$area]:-}" ]]; then
     echo "    unchecked builds: $(wc -w <<<"${a_unchecked[$area]}")"
     # shellcheck disable=SC2086

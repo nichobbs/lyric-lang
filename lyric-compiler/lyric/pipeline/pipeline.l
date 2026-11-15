@@ -1821,6 +1821,11 @@ func pipeReportTirCensus(
   for line in TirBuild.buildCensusLines(built, 12) {
     Console.error("  no builder case: " + line)
   }
+  if Environment.getVarOrDefault("LYRIC_TIR_CENSUS_BODIES", "") == "1" {
+    for line in built.bodyLines {
+      Console.error("TIR body\t" + line)
+    }
+  }
   pipeReportVerifyCensus(label, built.pkg, tcRes.symbols)
   var k = 0
   while k < built.firstErrors.count and k < 60 {
