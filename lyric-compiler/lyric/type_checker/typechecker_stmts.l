@@ -792,8 +792,11 @@ pub func checkStatement(
       // Erase unresolved type variables (a `List[T]` / `slice[T]` element inside
       // a generic function) to the lenient wildcard: `TyParam` passes `typeEquiv`
       // but not `isNumericType`, so binding it raw would trip false T0030s on
-      // arithmetic the where-bounds make valid.
-      bindPattern(sc, tbl, sigs, pat, eraseTyParams(elemType))
+      // arithmetic the where-bounds make valid.  The enclosing generic's own
+      // parameters are rigid and in scope, so the variable keeps them, as a
+      // parameter or a pattern binding of that type does (`for x in a.many` over a
+      // `List[D]` binds `x: D`).
+      bindPattern(sc, tbl, sigs, pat, eraseTyParamsExcept(elemType, sc.genericNames))
       // A generator's elements reach the loop through an erased iterator
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a
