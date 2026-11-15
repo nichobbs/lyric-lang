@@ -231,6 +231,12 @@ if [[ $((judged * 2)) -lt ${#FILES[@]} || $judged -eq 0 ]]; then
   echo "TIR census judged only $judged of ${#FILES[@]} program(s): the census line is missing from the build output" >&2
   exit 1
 fi
+# The unique-body counts rest on the `TIR body` lines (D474); if the checker stops printing
+# them the counts would silently fall back to nothing, so their absence is a failure.
+if [[ ! -s "$OUT/bodies.stdlib-tests" ]]; then
+  echo "TIR census: no 'TIR body' line in any build output (LYRIC_TIR_CENSUS_BODIES=1)" >&2
+  exit 1
+fi
 gate_rc=0
 if [[ $i0003 -gt 0 || ${#unchecked[@]} -gt 0 ]]; then gate_rc=1; fi
 # A call that leaves out an argument another package's function or record declares (D482).
@@ -318,7 +324,7 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     mapfile -t ub < <(unique_bodies "$area")
     read -r utotal ubuilt <<<"${ub[0]}"
     echo "    unique bodies: $ubuilt of $utotal built, $((utotal - ubuilt)) not yet (I0002)"
-    printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
+    [[ ${#ub[@]} -gt 1 ]] && printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
       echo "    I0002 kind ${head#* }: ${head%% *} (e.g. ${site})"
     done
   fi
