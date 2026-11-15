@@ -556,6 +556,36 @@ func propagateOperandTy(env: in BuildEnv, inner: in Expr, yielded: in Ty): Optio
   None
 }
 
+/// What `Ok(x)?` and `Some(x)?` yield when the checker left the whole `?` untyped (the construction's
+/// other type argument is open): the payload's own type.  `Err(x)?` and `None?` yield what their
+/// position expects, which only a context fixes.
+func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val inner = match e.kind { case EPropagate(i) -> unparen(i); case _ -> return None }
+  match inner.kind {
+    case ECall(fn, cargs) -> {
+      val name = match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1]; case _ -> return None }
+      if cargs.count != 1 or (name != "Ok" and name != "Some") {
+        return None
+      }
+      val x = match cargs[0] { case CAPositional(v) -> v; case CANamed(_, v, _) -> v }
+      match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> Some(value = t)
+        case Err(_) -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The type of an expression the checker left untyped, when its own shape gives it: a read of a
+/// local declared at a type, or `Ok(x)?` and `Some(x)?`.
+func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match openLocalTy(env, e) {
+    case Some(t) -> Some(value = t)
+    case None -> openPropagateYield(env, e)
+  }
+}
+
 /// The type of a read of a local whose own type the checker left open at the read (`o` after
 /// `val o = None`): the type the local was declared at.
 func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
@@ -595,7 +625,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case Ok(t) -> t
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
-      case None -> match openLocalTy(env, e) {
+      case None -> match openHoleTy(env, e) {
         case Some(t) -> t
         case None -> {
           // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
