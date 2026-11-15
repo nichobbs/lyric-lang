@@ -3029,6 +3029,19 @@ func singleTExpr(t: in TExpr): List[TExpr] {
   xs
 }
 
+/// Whether `name` is the contract projection of the real `Std.Core` `Result` (`value`, `error`) or `Option`
+/// (`value`): a read of the payload of the `Ok`, `Err` or `Some` case that holds the receiver.
+func stdCoreProjection(env: in BuildEnv, id: in SymbolId, hd: in String, name: in String): Bool {
+  val wanted = (hd == "Result" and (name == "value" or name == "error")) or (hd == "Option" and name == "value")
+  if not wanted {
+    return false
+  }
+  match symTableTypeSymbolOf(env.ctx.tbl, id) {
+    case Some(ts) -> ts.originPackage == "Std.Core"
+    case None -> false
+  }
+}
+
 /// The built-in a property read names: a stdlib collection's `count` and a string's
 /// `length`, as the checker names the built-in members (`List.count`).  A user type
 /// that happens to be named `List` is not the stdlib's.
@@ -3038,9 +3051,16 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
     case TyArray(_, _, _) -> if name == "length" { return Some(value = "array.length") }
-    case TyException -> if name == "message" { return Some(value = "Exception.message") }
+    case TyException -> if name == "message" {
+      return Some(value = "Exception.message")
+    } else if name == "typeName" {
+      return Some(value = "Exception.typeName")
+    }
     case TyUser(id, hd, _) -> if name == "length" and symbolIdEq(id, builtinBufferTypeId()) {
       return Some(value = "buffer.length")
+    } else if stdCoreProjection(env, id, hd, name) {
+      // `r.value`, `r.error` and `o.value`: the partial projection a contract states under `isOk`/`isSome`.
+      return Some(value = hd + "." + name)
     } else if name == "count" and (hd == "List" or hd == "Map" or hd == "Set") {
       val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
         case Some(ts) -> ts.originPackage.startsWith("Std.")
