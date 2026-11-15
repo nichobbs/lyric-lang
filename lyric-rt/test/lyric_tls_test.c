@@ -27,7 +27,10 @@
 #include <stdio.h>
 #include <string.h>
 #if !defined(_WIN32)
+#include <netdb.h>
+#include <pthread.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -1472,6 +1475,107 @@ static void test_connect_bounded_failures(void) {
     lyric_sock_close(wfd);
 }
 
+/* ── Name lookups in flight are capped (#9137, D608) ───────────────────
+ * A resolver that never answers leaves one abandoned helper thread per
+ * attempt.  The lookup is swapped for one that blocks until released, so the
+ * cap is reached without a real blocking resolver. */
+extern int (*lyric_resolve_lookup_hook)(const char*, const char*, const struct addrinfo*, struct addrinfo**);
+
+/* LYRIC_RESOLVE_MAX_INFLIGHT in src/lyric_tls.c. */
+#define RESOLVE_CAP 32
+
+static pthread_mutex_t hook_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t hook_cv = PTHREAD_COND_INITIALIZER;
+static int hook_release = 0;
+static int hook_entered = 0;
+static int hook_returned = 0;
+
+static int blocking_lookup(const char* host, const char* port, const struct addrinfo* hints, struct addrinfo** res) {
+    (void)host;
+    pthread_mutex_lock(&hook_mu);
+    hook_entered++;
+    while (!hook_release) pthread_cond_wait(&hook_cv, &hook_mu);
+    pthread_mutex_unlock(&hook_mu);
+    int rc = getaddrinfo("127.0.0.1", port, hints, res);
+    pthread_mutex_lock(&hook_mu);
+    hook_returned++;
+    pthread_mutex_unlock(&hook_mu);
+    return rc;
+}
+
+static void test_resolve_inflight_cap(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    lyric_resolve_lookup_hook = blocking_lookup;
+
+    /* Each lookup outlives its waiter's short deadline and stays in flight.
+     * Helpers an earlier test abandoned may still be finishing and hold slots
+     * too, so the cap is reached in at most RESOLVE_CAP + 1 calls. */
+    int calls = 0;
+    int capped = 0;
+    while (calls <= RESOLVE_CAP && !capped) {
+        int rc = lyric_sock_connect_bounded("held.invalid", port, deadline_in_ms(20), -1);
+        if (rc == -1) {
+            capped = 1;
+            CHECK(last_error_contains("too many name lookups in flight"));
+        } else {
+            CHECK(rc == -2);
+        }
+        calls++;
+    }
+    CHECK(capped);
+
+    /* A further name fails at once, whatever its deadline. */
+    int64_t start = mono_ms();
+    CHECK(lyric_sock_connect_bounded("held.invalid", port, deadline_in_ms(30000), -1) == -1);
+    CHECK(mono_ms() - start < 5000);
+    CHECK(last_error_contains("too many name lookups in flight"));
+
+    /* An address literal never goes to a helper, so the cap does not touch it. */
+    int fd = lyric_sock_connect_bounded("127.0.0.1", port, deadline_in_ms(5000), -1);
+    CHECK(fd >= 0);
+    int server_fd = lyric_sock_accept(listen_fd);
+    CHECK(server_fd >= 0);
+    lyric_sock_close(fd);
+    lyric_sock_close(server_fd);
+
+    /* Let the held lookups return: each frees its slot, and a name resolves. */
+    pthread_mutex_lock(&hook_mu);
+    hook_release = 1;
+    pthread_cond_broadcast(&hook_cv);
+    pthread_mutex_unlock(&hook_mu);
+    int resolved = -1;
+    for (int attempt = 0; attempt < 500 && resolved < 0; attempt++) {
+        resolved = lyric_sock_connect_bounded("released.invalid", port, deadline_in_ms(5000), -1);
+        if (resolved < 0) {
+            CHECK(last_error_contains("too many name lookups in flight"));
+            struct timespec ts = {0, 10 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+        }
+    }
+    CHECK(resolved >= 0);
+    server_fd = lyric_sock_accept(listen_fd);
+    CHECK(server_fd >= 0);
+    lyric_sock_close(resolved);
+    lyric_sock_close(server_fd);
+
+    /* The abandoned helpers finish and free their jobs before the process
+     * (and a leak checker) looks. */
+    for (int attempt = 0; attempt < 500; attempt++) {
+        pthread_mutex_lock(&hook_mu);
+        int done = hook_returned == hook_entered;
+        pthread_mutex_unlock(&hook_mu);
+        if (done) break;
+        struct timespec ts = {0, 10 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    struct timespec settle = {0, 200 * 1000 * 1000};
+    nanosleep(&settle, NULL);
+    lyric_resolve_lookup_hook = getaddrinfo;
+    lyric_sock_close(listen_fd);
+}
+
 #if defined(__linux__)
 /* A connect that the peer never answers.  Linux drops a SYN that arrives
  * while the listener's accept queue is full, so once enough connections sit
@@ -1810,6 +1914,7 @@ int main(void) {
     test_sock_shutdown_before_read();
     test_connect_bounded_ok();
     test_connect_bounded_failures();
+    test_resolve_inflight_cap();
 #if defined(__linux__)
     test_connect_bounded_deadline();
 #endif

@@ -60,7 +60,7 @@ The filter matches on the full test name, including any grouping prefix you esta
 | `assertPanics(label, fn)` | Fails unless `fn()` panics — for pinning documented panic behaviour |
 | `assertPanicsWith(label, expectedSubstring, fn)` | Like `assertPanics`, additionally checks the panic message contains `expectedSubstring` |
 
-`assertPanics` and `assertPanicsWith` catch the panic, which `--target native` cannot do (a panic ends the process there): a test that calls either builds for dotnet and the JVM only, and a native build of it stops with `N0007`, naming `assertPanics` in `Std.Testing`.
+`--target native` cannot unwind, so there `assertPanics` and `assertPanicsWith` run `fn` in a forked child process and read how it ended (D608). A body that panics passes, one that returns fails with the same message, and the test run carries on. Three things differ from dotnet and the JVM: what `fn` changes in memory (a `var` it assigns, a list it fills) is not visible to the test afterwards; a body that ends the process some other way (`exitCode`, a crash) fails the assertion rather than counting as a panic; and Windows and wasm32-wasi, which have no `fork`, fail the assertion with a message saying so.
 
 A complete test block using several of these:
 

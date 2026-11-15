@@ -57,6 +57,26 @@ have been applied) from a failed connection (it was not) by this.
    built and fails each request with `ConnectionFailed` naming the gap; it
    used to panic at construction, which native cannot catch.
 
+7. **Name lookups in flight are capped (#9137).** A name is looked up with
+   `getaddrinfo` on a detached helper thread, which cannot be interrupted, so
+   a waiter whose deadline passes abandons its helper until the resolver
+   returns. Against a resolver that never answers, one thread per attempt
+   used to pile up without bound. At most `LYRIC_RESOLVE_MAX_INFLIGHT` (32)
+   lookups are in flight at once, abandoned ones included (a helper counts
+   until `getaddrinfo` returns, not until its waiter stops waiting); a bounded
+   connect to a name beyond that fails at once with `LYRIC_BOUNDED_ERROR` and
+   "resolve <host>: too many name lookups in flight", which `Std.Http` reports
+   as `ConnectionFailed` like any other lookup failure. Address literals never
+   use a helper and are unaffected. Identical in-flight lookups are not
+   coalesced: the cap alone bounds the cost, and coalescing would have to
+   share one result between waiters with different deadlines. The Windows twin
+   (`lyric_sock_win32.c`, an interlocked counter) is written the same way and,
+   like the rest of that file, has not been compiled. `lyric_tls_test.c`
+   swaps the lookup through an internal function pointer
+   (`lyric_resolve_lookup_hook`, defaulting to `getaddrinfo`) to hold lookups
+   open, reaches the cap, sees the error, releases, and sees lookups succeed
+   again.
+
 ## Not supported, and said so
 
 - Sends without a token have no limit, as on the JVM (.NET alone applies

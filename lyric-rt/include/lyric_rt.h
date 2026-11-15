@@ -123,6 +123,18 @@ typedef struct {
 #define LYRIC_STRING_DATA(s) ((uint8_t*)((LyricString*)(s) + 1))
 
 LyricString* lyric_string_from_literal(const uint8_t* data, int64_t len);
+
+/* Panic trap (Std.PanicTrapHost, D608): `Std.Testing.assertPanics` on native.
+ * lyric_panic_trap_enter forks like fork(2): 0 in the child (its panics now
+ * report to the parent instead of aborting), a positive handle in the parent,
+ * -1 when the pipe cannot be made, -2 when fork fails, -3 when the target has
+ * no fork.  The child runs the body, then calls lyric_panic_trap_child_done.
+ * The parent calls lyric_panic_trap_join(handle), which returns a string whose
+ * first byte is 'R' (body returned), 'P' (panicked; the rest is the message) or
+ * 'F' (the body killed the process some other way; the rest says how). */
+int64_t lyric_panic_trap_enter(void);
+_Noreturn void lyric_panic_trap_child_done(void);
+LyricString* lyric_panic_trap_join(int64_t handle);
 LyricString* lyric_string_concat(LyricString* a, LyricString* b);
 int64_t      lyric_string_len(LyricString* s);
 uint8_t      lyric_string_byte_at(LyricString* s, int64_t idx);

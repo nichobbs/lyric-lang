@@ -8,9 +8,11 @@
 //!   * `assertEqualLong(actual, expected, label)` — long variant.
 //!   * `assertTrue(cond, label)` — generic predicate assertion.
 //!   * `assertFalse(cond, label)` — panics when condition is true.
-//!   * `assertPanics(label, fn)` — runs `fn()` inside a `try` and
-//!     asserts that it panicked (raised a `Bug`); fails the test
-//!     when `fn()` returns normally.
+//!   * `assertPanics(label, fn)` — runs `fn()` under `Std.PanicTrapHost`
+//!     and asserts that it panicked (raised a `Bug`); fails the test
+//!     when `fn()` returns normally.  On `--target native`, which cannot
+//!     unwind, `fn()` runs in a forked child process (D608): its
+//!     in-memory effects are not visible afterwards.
 //!   * `assertPanicsWith(label, expectedSubstring, fn)` — like
 //!     `assertPanics`, additionally checks that the panic message
 //!     contains `expectedSubstring`.
@@ -27,6 +29,7 @@ package Std.Testing
 
 import Std.File
 import Std.Core
+import Std.PanicTrapHost
 
 // Intentionally NOT importing `Std.String` here: it exports `join /
 // contains / startsWith / …` symbols that collide with same-named
@@ -102,41 +105,24 @@ pub func assertFalse(cond: in Bool, label: in String): Unit {
 ///     The two together let us catch the panic and recover.
 ///   * On the JVM target the same shape lowers to a Throwable catch via
 ///     `Std.JvmExceptionHost`; the user-visible contract is identical.
+///   * `--target native` cannot unwind (D-N-003), so `Std.PanicTrapHost`'s
+///     native twin runs `fn()` in a forked child and reads its verdict from
+///     the child's exit (D608).  The pass/fail contract and the panic text
+///     are the same; `fn`'s effects on the caller's memory are not (a
+///     list it fills stays empty), and Windows and wasm32-wasi,
+///     which have no fork, fail the assertion with a message saying so.
 @stable(since = "1.0")
 pub func assertPanics(label: in String, fn: in () -> Unit): Unit {
-  val didPanic = try {
-    fn()
-    false
-  } catch Bug as _ {
-    true
-  }
-  if not didPanic {
-    panic("assertPanics '" + label + "' failed: function returned normally, expected a panic")
-  }
-}
-
-/// Internal carrier for `assertPanicsWith` — a non-generic local
-/// union sidesteps the in-process codegen's pattern-arm type-
-/// propagation gap for `Result[Unit, String]` / `Option[String]`,
-/// where the bound `msg` in `case Err(msg)` arrives as `Object`
-/// rather than `String` and `msg.contains(...)` then fails E0012.
-/// Tracked: #1271.
-union PanicTry {
-  case PtRan
-  case PtPanicked(message: String)
-}
-
-/// Wrap the try/catch in a helper so the call site matches on the
-/// helper's *return* value rather than on a `val` bound to a
-/// try-expression — the latter currently yields `Object` instead of
-/// `PanicTry` and breaks `case PtPanicked(...)` pattern resolution
-/// (E11 codegen: unknown constructor pattern).  Tracked: #1270.
-func runAndCapturePanic(fn: in () -> Unit): PanicTry {
-  return try {
-    fn()
-    PtRan
-  } catch Bug as b {
-    PtPanicked(message = b.message)
+  match trapPanic(fn) {
+    case PtRan -> {
+      panic("assertPanics '" + label + "' failed: function returned normally, expected a panic")
+    }
+    case PtPanicked(_) -> {
+      ()
+    }
+    case PtFailed(why) -> {
+      panic("assertPanics '" + label + "' failed: " + why)
+    }
   }
 }
 
@@ -147,9 +133,12 @@ func runAndCapturePanic(fn: in () -> Unit): PanicTry {
 /// (typically a unique identifier from the assertion site).
 @stable(since = "1.0")
 pub func assertPanicsWith(label: in String, expectedSubstring: in String, fn: in () -> Unit): Unit {
-  match runAndCapturePanic(fn) {
+  match trapPanic(fn) {
     case PtRan -> {
       panic("assertPanicsWith '" + label + "' failed: function returned normally, expected a panic")
+    }
+    case PtFailed(why) -> {
+      panic("assertPanicsWith '" + label + "' failed: " + why)
     }
     case PtPanicked(msg) -> {
       if not msg.contains(expectedSubstring) {

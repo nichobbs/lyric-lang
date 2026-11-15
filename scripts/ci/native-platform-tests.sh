@@ -128,6 +128,7 @@ for t in \
   lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
+  lyric-stdlib/tests/assert_panics_native_tests.l \
   lyric-stdlib/tests/char_native_tests.l \
   lyric-stdlib/tests/path_tests.l \
   lyric-stdlib/tests/directory_tests.l \
