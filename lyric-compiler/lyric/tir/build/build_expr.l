@@ -469,20 +469,39 @@ func exprNeverCompletes(e: in Expr): Bool {
   }
 }
 
+/// The type of a read of a local whose own type the checker left open at the read (`o` after
+/// `val o = None`): the type the local was declared at.
+func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match lookupLocal(env, p.segments[0]) {
+        case Some(d) -> if d.id.id >= 0 { Some(value = d.ty) } else { None }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
 /// Build the expression `e`, or `None` after recording why in `env.errors`.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> match mapGet(env.settled, e.nodeId) {
       case Some(t) -> t
-      case None -> {
-        // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
-        // join type to record: it never completes.
-        if exprNeverCompletes(e) {
-          TirT.TNever
-        } else {
-          env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
-          return None
+      case None -> match openLocalTy(env, e) {
+        case Some(t) -> t
+        case None -> {
+          // A `match` or `if` whose every branch leaves (`return`, `throw`, `break`, `continue`) has no
+          // join type to record: it never completes.
+          if exprNeverCompletes(e) {
+            TirT.TNever
+          } else {
+            env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+            return None
+          }
         }
       }
     }
@@ -1046,6 +1065,21 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
   if not env.settled.containsKey(x.nodeId) {
     env.settled.add(x.nodeId, ty)
+  }
+  // A tuple's elements take the tuple's element types (`(None, 5)` as `(Option[Int], Int)`).
+  match x.kind {
+    case ETuple(xs) -> match ty {
+      case TTuple(ts) -> if xs.count == ts.count {
+        var i = 0
+        while i < xs.count {
+          settleHole(env, xs[i], ts[i])
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case EParen(inner) -> settleHole(env, inner, ty)
+    case _ -> ()
   }
 }
 
