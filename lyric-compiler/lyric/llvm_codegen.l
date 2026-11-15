@@ -143,6 +143,9 @@ pub record CodegenUnit {
   // a bare function name that several packages declare to the one the caller
   // imports (`bareSig`).
   imports: List[String]
+  // The packages this unit's source file re-exports whole (`pub use P`,
+  // docs/01 §9.3): `Ctx.reexportAlias` is built from them.
+  reexports: List[String] = newList()
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
@@ -215,6 +218,9 @@ record NRecInfo {
   fieldNames: List[String]
   fieldTys: List[NType]
   fieldDefaults: List[Option[Expr]]
+  // The package that declares the record ("" for a tuple): a field default
+  // is written there and is lowered in its scope (`enterDeclaringPkg`).
+  declPkg: String = ""
   // docs/67 §4.2: a record with no `var` field whose fields are all by-value
   // lowers to a plain LLVM struct VALUE (no ARC header, no allocation, no
   // destructor); every other record is the shared heap form behind a pointer.
@@ -446,6 +452,13 @@ record Ctx {
   // first (`Std.Char.toLower` versus `Std.String.toLower`).
   sigAlts: Map[String, List[NFuncSig]]
   pkgImports: Map[String, List[String]]
+  // `<facade>.<name>` to `<declaring package>.<name>` for each top-level name
+  // a package re-exports with `pub use` (docs/01 §9.3), through any chain of
+  // re-exports: `Lib.configFromEnv` where `Lib` has `pub use Lib.Client`
+  // (`buildReexportAlias`).  The registries key a declaration by its
+  // declaring package only, so a path written through the facade is spelled
+  // through this before it is looked up (`canonReexport`).
+  reexportAlias: Map[String, String]
   // The parameter count of the method each call leaving out a defaulted
   // argument resolved to, keyed `<pkg>|<methodCallSiteKey>` (each unit's
   // `methodCallArities` under its package): a method call looks its
@@ -464,6 +477,9 @@ record Ctx {
   // resolutions are keyed `<pkg>|<origin>|<methodCallSiteKey>`
   // (`Lyric.Pipeline.foreignMethodCallArities`).
   curOrigin: List[String]
+  // Source name of the function being lowered (singleton list, empty outside
+  // one), for a diagnostic that says where an unsupported construct is.
+  curFn: List[String]
   // Return type of the function being lowered (singleton list).
   curRet: List[NType]
   // Module-level `val`/`const` bindings by name (#5977 part 2), for use-site
@@ -1315,7 +1331,7 @@ func qualifiedPathJoin(ctx: in Ctx, path: in ModulePath): String {
   if path.segments.count == 1 and ctx.curPkg.count > 0 {
     ctx.curPkg[0] + "." + path.segments[0]
   } else {
-    modulePathJoin(path.segments)
+    canonReexport(ctx, modulePathJoin(path.segments))
   }
 }
 
@@ -1414,7 +1430,7 @@ val nonEnumScrutHint = "#nonenum"
 func enumNameOfTypeExpr(ctx: in Ctx, te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> {
-      val joined = modulePathJoin(path.segments)
+      val joined = canonReexport(ctx, modulePathJoin(path.segments))
       val bare = lastSeg(path)
       if ctx.enumDefs.containsKey(joined + ".__enum") or ctx.enumDefs.containsKey(bare + ".__enum") {
         bare
@@ -2341,6 +2357,178 @@ func buildPkgImports(units: in List[CodegenUnit]): Map[String, List[String]] {
   m
 }
 
+/// The packages `pkg` re-exports, directly or through the re-exports of those
+/// (`pub use` chains), nearest first; `pkg` itself is not among them.
+pub func reexportClosureOf(reexports: in Map[String, List[String]], pkg: in String): List[String] {
+  val closure: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  seen.add(pkg, true)
+  val work: List[String] = newList()
+  work.add(pkg)
+  var wi = 0
+  while wi < work.count {
+    val cur = work[wi]
+    wi = wi + 1
+    match mapGet(reexports, cur) {
+      case Some(rs) -> {
+        for r in rs {
+          if not seen.containsKey(r) {
+            seen.add(r, true)
+            closure.add(r)
+            work.add(r)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  closure
+}
+
+/// The top-level names a unit declares: what a path `<package>.<name>` can
+/// name.  A union or enum case is one (`Pkg.Some`), and so is a dot-named
+/// function or a method lowered as one (`Type.method`).
+func unitDeclaredNames(u: in CodegenUnit, names: in Map[String, Bool]): Unit {
+  for fn in u.fns {
+    names[fn.name] = true
+  }
+  for ef in u.externs {
+    names[ef.name] = true
+  }
+  for rd in u.records {
+    names[rd.name] = true
+  }
+  for ud in u.unions {
+    names[ud.name] = true
+    for c in ud.cases {
+      names[c.name] = true
+    }
+  }
+  for ed in u.enums {
+    names[ed.name] = true
+    for c in ed.cases {
+      names[c.name] = true
+    }
+  }
+  for dd in u.distincts {
+    names[dd.name] = true
+  }
+  for idl in u.interfaces {
+    names[idl.name] = true
+  }
+  for pd in u.protecteds {
+    names[pd.name] = true
+  }
+  for mv in u.moduleVals {
+    names[mv.name] = true
+  }
+}
+
+/// `Ctx.reexportAlias` for a bundle: for each package with a `pub use`, each
+/// name of a package it re-exports (through any chain) under the facade's own
+/// name.  A name the facade declares itself is the facade's, a nearer
+/// re-export wins over a further one, and `<facade>.<name>` that is itself a
+/// package of the bundle stays that package.
+func buildReexportAlias(units: in List[CodegenUnit]): Map[String, String] {
+  val alias: Map[String, String] = newMap()
+  val reexports: Map[String, List[String]] = newMap()
+  var any = false
+  for u in units {
+    if u.reexports.count > 0 {
+      any = true
+      match mapGet(reexports, u.pkgName) {
+        case Some(have) -> {
+          for r in u.reexports {
+            if not have.contains(r) {
+              have.add(r)
+            }
+          }
+        }
+        case None -> {
+          val copy: List[String] = newList()
+          for r in u.reexports {
+            copy.add(r)
+          }
+          reexports.add(u.pkgName, copy)
+        }
+      }
+    }
+  }
+  if not any {
+    return alias
+  }
+  val declared: Map[String, Map[String, Bool]] = newMap()
+  for u in units {
+    val names: Map[String, Bool] = match mapGet(declared, u.pkgName) {
+      case Some(m) -> m
+      case None -> {
+        val m: Map[String, Bool] = newMap()
+        declared.add(u.pkgName, m)
+        m
+      }
+    }
+    unitDeclaredNames(u, names)
+  }
+  for facade in mapKeys(reexports) {
+    val own: Map[String, Bool] = match mapGet(declared, facade) {
+      case Some(m) -> m
+      case None -> {
+        val none: Map[String, Bool] = newMap()
+        none
+      }
+    }
+    for target in reexportClosureOf(reexports, facade) {
+      match mapGet(declared, target) {
+        case Some(names) -> {
+          for n in mapKeys(names) {
+            val key = facade + "." + n
+            if not own.containsKey(n) and not alias.containsKey(key) and not declared.containsKey(key) {
+              alias.add(key, target + "." + n)
+            }
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  alias
+}
+
+/// `dotted` with its longest prefix that `alias` (`Ctx.reexportAlias`) holds
+/// replaced by the declaring package's spelling: `Lib.Config.describe` gives
+/// `Lib.Client.Config.describe` when `Lib` re-exports `Lib.Client`.  Any other
+/// path is returned as written.
+pub func reexportCanonical(alias: in Map[String, String], dotted: in String): String {
+  if alias.count == 0 {
+    return dotted
+  }
+  var cut = dotted.length
+  while cut > 0 {
+    match mapGet(alias, Str.substring(dotted, 0, cut)) {
+      case Some(target) -> return target + Str.substring(dotted, cut, dotted.length - cut)
+      case None -> ()
+    }
+    cut = Str.lastIndexOfRaw(Str.substring(dotted, 0, cut), ".")
+  }
+  dotted
+}
+
+func canonReexport(ctx: in Ctx, dotted: in String): String {
+  reexportCanonical(ctx.reexportAlias, dotted)
+}
+
+/// `canonReexport` for a registry key that ends in `/<arity>`.
+func canonReexportKey(ctx: in Ctx, key: in String): String {
+  if ctx.reexportAlias.count == 0 {
+    return key
+  }
+  val slash = Str.lastIndexOfRaw(key, "/")
+  if slash <= 0 {
+    return canonReexport(ctx, key)
+  }
+  canonReexport(ctx, Str.substring(key, 0, slash)) + Str.substring(key, slash, key.length - slash)
+}
+
 /// The `genericFnDefs` key of a generic function a package this one imports
 /// declares under `key`, when `sig` (found by the bare name) is from a package
 /// that is neither this one nor imported by it: the caller cannot be naming
@@ -2473,11 +2661,11 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
     return None
   }
   val written = Str.substring(key, 0, slash)
-  // A callee written with a package prefix names exactly the site's package; a
-  // bare one names a function the caller sees bare.  A default expression of
-  // another package is lowered in the caller's context with its own source
-  // offsets, which can match an unrelated caller entry: that entry's package
-  // fails this check and the name lookups answer instead.
+  // A callee written with a package prefix names exactly the site's package
+  // (`key` is already spelled through any facade, `canonReexportKey`); a bare
+  // one names a function the caller sees bare.  A default expression is
+  // lowered as the package that declares it (`enterDeclaringPkg`), so its
+  // source offsets are looked up among that package's sites.
   // The declaration the site names has its own parameter count, which the
   // arguments written do not give when two overloads both take them (#8880).
   val declared = if Str.contains(name, ".") { defPathParamCount(rest) } else { -1 }
@@ -3303,7 +3491,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     case ELiteral(lit) -> lowerLiteral(ctx, insns, lit)
     case EInterpolated(segments) -> lowerInterpolated(ctx, insns, segments)
     case EPath(path) -> {
-      val joined = modulePathJoin(path.segments)
+      val joined = canonReexport(ctx, modulePathJoin(path.segments))
       if path.segments.count == 1 {
         if ctx.varTypes.containsKey(path.segments[0]) {
           return loadLocal(ctx, insns, path.segments[0])
@@ -3983,7 +4171,7 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
   val memberRecvSegs = packageQualifiedMemberSegs(ctx, receiver)
   if isPackagePathExpr(ctx, receiver) or memberRecvSegs.count > 0 {
     val rsegs = match receiver.kind { case EPath(rpath) -> rpath.segments; case _ -> memberRecvSegs }
-    val joined = modulePathJoin(rsegs) + "." + memberName
+    val joined = canonReexport(ctx, modulePathJoin(rsegs) + "." + memberName)
     match enumCaseIdx(ctx, 2, joined) {
       case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
       case None -> {
@@ -4895,7 +5083,9 @@ func bindCallArgs(
       val dflt = if pi2 < sig.paramDefaults.count { sig.paramDefaults[pi2] } else { None }
       match dflt {
         case Some(dex) -> {
+          val dscope = enterDeclaringPkg(ctx, sig.pkg)
           vals.add(lowerArgAgainst(ctx, insns, sig, dex, pi2))
+          leaveDeclaringPkg(ctx, dscope)
           slots.add(pi2)
           found = vals.count - 1
         }
@@ -5668,7 +5858,7 @@ func lowerCallEx(
           if tp.segments.count == 1 {
             tname = tp.segments[0]
           }
-          gname = modulePathJoin(tp.segments)
+          gname = canonReexport(ctx, modulePathJoin(tp.segments))
         }
         case _ -> {
         }
@@ -5736,7 +5926,7 @@ func lowerCallEx(
           if ip.segments.count == 1 {
             iname = ip.segments[0]
           } else if ip.segments.count > 1 {
-            qname = modulePathJoin(ip.segments)
+            qname = canonReexport(ctx, modulePathJoin(ip.segments))
           }
         }
         case _ -> {
@@ -5835,7 +6025,7 @@ func lowerCallEx(
     case _ -> ()
   }
   // Static function call through the registry.
-  val key = callKeyOf(fnExpr, freeCallArity(ctx, fnExpr, args.count))
+  val key = canonReexportKey(ctx, callKeyOf(fnExpr, freeCallArity(ctx, fnExpr, args.count)))
   if key.length == 0 {
     // No name: the callee is an expression whose value is the function
     // (`makeAdder(1)(2)`, `(if c { f } else { g })(x)`).
@@ -5985,7 +6175,7 @@ func tryLowerQualifiedCallee(
   if segs.count < 2 {
     return None
   }
-  val plainName = modulePathJoin(segs)
+  val plainName = canonReexport(ctx, modulePathJoin(segs))
   val key = plainName + "/" + freeCallArity(ctx, fnExpr, args.count).toString()
   val selfKey = ctx.curPkg[0] + "." + key
   var sigOpt = sitedSig(ctx, fnExpr, key)
@@ -6026,7 +6216,10 @@ func lowerConstructCall(
   retWant: in Option[NType],
 ): NVal {
   val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
-  val name = match flattenMemberPathSegs(inner) { case Some(segs) -> modulePathJoin(segs); case None -> "" }
+  val name = match flattenMemberPathSegs(inner) {
+    case Some(segs) -> canonReexport(ctx, modulePathJoin(segs))
+    case None -> ""
+  }
   if name.length > 0 {
     // Bare `toString(x)` (the prelude free-function spelling the type
     // checker admits alongside the `.toString()` method form, D-N-003's
@@ -6927,6 +7120,8 @@ record NByValState {
   failed: Map[String, Bool]
   visiting: Map[String, Bool]
   typeDefs: List[NTypeDefn]
+  // `Ctx.reexportAlias`, for a field type written through a facade.
+  reexportAlias: Map[String, String]
   // Non-generic unions: declarations by qualified and bare name, and the ones
   // that classify as inline (docs/67 §4.2) by IR name.
   unionDecls: Map[String, UnionDecl]
@@ -7003,11 +7198,11 @@ func isByValueFieldNType(t: in NType): Bool {
   }
 }
 
-func byValuePathKey(pkg: in String, path: in ModulePath): String {
+func byValuePathKey(st: in NByValState, pkg: in String, path: in ModulePath): String {
   if path.segments.count == 1 {
     pkg + "." + path.segments[0]
   } else {
-    modulePathJoin(path.segments)
+    reexportCanonical(st.reexportAlias, modulePathJoin(path.segments))
   }
 }
 
@@ -7058,7 +7253,7 @@ func classifyByValueFieldEnv(
           return res
         }
       }
-      val joined = byValuePathKey(pkg, path)
+      val joined = byValuePathKey(st, pkg, path)
       val bare = lastSeg(path)
       // The same precedence as `lookupHeapType`: records (protected types
       // included), unions, enums, distinct types, interfaces — each tried by
@@ -7253,6 +7448,7 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
       fieldNames = names,
       fieldTys = tys,
       fieldDefaults = dflts,
+      declPkg = pkg,
       byValue = true,
       fieldCallbackTys = callbackTys
     )
@@ -7275,7 +7471,7 @@ func classifyGenericApp(
   envTys: in List[NType],
 ): List[NType] {
   val res: List[NType] = newList()
-  val joined = modulePathJoin(head.segments)
+  val joined = reexportCanonical(st.reexportAlias, modulePathJoin(head.segments))
   val bare = lastSeg(head)
   if bare == "NativePtr" or bare == "NativeWeak" {
     return res
@@ -7447,7 +7643,14 @@ func classifyGenericRecordInst(
     st.failed.add(instName, true)
     return false
   }
-  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = true)
+  val ri = NRecInfo(
+    irName = instName,
+    fieldNames = names,
+    fieldTys = tys,
+    fieldDefaults = dflts,
+    declPkg = pkg,
+    byValue = true
+  )
   st.results.add(instName, ri)
   st.instRecs.add(ri)
   recordInstMeta(st, instName, gkey, argTys)
@@ -7605,6 +7808,7 @@ func classifyByValueRecords(
     failed = newMap(),
     visiting = newMap(),
     typeDefs = typeDefs,
+    reexportAlias = buildReexportAlias(units),
     unionDecls = newMap(),
     unionPkgs = newMap(),
     uresults = newMap(),
@@ -8832,6 +9036,7 @@ func registerRecordLayout(
     fieldNames = names,
     fieldTys = tys,
     fieldDefaults = dflts,
+    declPkg = pkg,
     byValue = false,
     customDtor = customDtor
   )
@@ -11725,7 +11930,7 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
       typeToNOpt(ctx, te)
     }
     case TGenericApp(head, args) -> {
-      val joined = modulePathJoin(head.segments)
+      val joined = canonReexport(ctx, modulePathJoin(head.segments))
       val bare = lastSeg(head)
       if bare == "NativePtr" and args.count == 1 {
         match args[0] {
@@ -12049,7 +12254,14 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
     dflts.add(noDflt)
   }
   val byValue = if isProtected { false } else { genericRecordByValue(ctx, gkey, rd, tys) }
-  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = byValue)
+  val ri = NRecInfo(
+    irName = instName,
+    fieldNames = names,
+    fieldTys = tys,
+    fieldDefaults = dflts,
+    declPkg = match mapGet(ctx.genericDeclPkg, gkey) { case Some(gp) -> gp; case None -> "" },
+    byValue = byValue
+  )
   ctx.recordDefs.remove(instName)
   ctx.recordDefs.add(instName, ri)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
@@ -12209,6 +12421,9 @@ func lowerGenericRecordConstruct(
 ): NVal {
   val rd = mustGetGenericRecord(ctx, gkey)
   val fields = recFieldsOf(rd)
+  // A field default is lowered in the package that declares the record.
+  val declPkg = match mapGet(ctx.genericDeclPkg, gkey) { case Some(gp) -> gp; case None -> "" }
+  val isDefault: List[Bool] = newList()
   val argFieldIdx: List[Int] = newList()
   val argFieldExpr: List[Expr] = newList()
   var positionalIdx = 0
@@ -12276,12 +12491,15 @@ func lowerGenericRecordConstruct(
     // (`var item: Option[T] = None`) is lowered like a lambda: after the
     // parameters are bound, against the field's type (#7864).
     val deferDefault = found2 < 0 and not isBareTypeParamRef(fields[fi2].ty, genericParamNamesOf(rd.generics))
+    isDefault.add(found2 < 0)
     if isLambdaExpr(fexpr) or deferDefault {
       deferredLambda.add(true)
       rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
     } else {
       deferredLambda.add(false)
+      val dscope = if found2 < 0 { enterDeclaringPkg(ctx, declPkg) } else { noDeclScope() }
       rawVals.add(lowerExpr(ctx, insns, fexpr))
+      leaveDeclaringPkg(ctx, dscope)
     }
     fi2 = fi2 + 1
   }
@@ -12325,7 +12543,9 @@ func lowerGenericRecordConstruct(
   while dli < fields.count {
     if deferredLambda[dli] {
       val lamExpr = match fieldExprs[dli] { case Some(x) -> x; case None -> panic("unreachable") }
-      match typeToNEnvOpt(ctx, fields[dli].ty, boundNames, boundTys) {
+      val wantOpt = typeToNEnvOpt(ctx, fields[dli].ty, boundNames, boundTys)
+      val dscope = if isDefault[dli] { enterDeclaringPkg(ctx, declPkg) } else { noDeclScope() }
+      match wantOpt {
         case Some(want) -> {
           rawVals[dli] = lowerExprExpecting(ctx, insns, lamExpr, want)
         }
@@ -12340,6 +12560,7 @@ func lowerGenericRecordConstruct(
           }
         }
       }
+      leaveDeclaringPkg(ctx, dscope)
       unifyTyArg(ctx, fields[dli].ty, rawVals[dli].ty, envNames, boundNames, boundTys)
     }
     dli = dli + 1
@@ -12389,7 +12610,7 @@ func fnRefLambdaWant(ctx: in Ctx, e: in Expr): Option[NType] {
         case _ -> return None
       }
       val segs = match callee.kind { case EPath(p) -> p.segments; case _ -> return None }
-      val sig = match mapGet(ctx.sigs, modulePathJoin(segs) + "/" + lps.count.toString()) {
+      val sig = match mapGet(ctx.sigs, canonReexport(ctx, modulePathJoin(segs)) + "/" + lps.count.toString()) {
         case Some(sg) -> sg
         case None -> return None
       }
@@ -12951,6 +13172,7 @@ func lowerGenericFnCallWith(
   val rawVals: List[NVal] = newList()
   val deferredLambdas: List[Int] = newList()
   val deferredLambdaExprs: List[Expr] = newList()
+  val deferredIsDefault: List[Bool] = newList()
   val fnTyParamNames = genericParamNamesOf(fd.generics)
   val seedNames: List[String] = newList()
   val seedTys: List[NType] = newList()
@@ -12999,6 +13221,10 @@ func lowerGenericFnCallWith(
         }
       }
       val ax = argExpr[found]
+      // A default (appended after the written arguments) is lowered in the
+      // package that declares the function.
+      val axIsDefault = found >= args.count
+      val dscope = if axIsDefault { enterDeclaringPkg(ctx, pkg) } else { noDeclScope() }
       if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) or isUntypedCollectionCtorExpr(ctx, ax) {
         // A lambda needs its function type before it can be lowered. Take
         // it from the parameter type under the type arguments the earlier
@@ -13011,6 +13237,7 @@ func lowerGenericFnCallWith(
           case None -> {
             deferredLambdas.add(pi)
             deferredLambdaExprs.add(ax)
+            deferredIsDefault.add(axIsDefault)
             rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
           }
         }
@@ -13036,6 +13263,7 @@ func lowerGenericFnCallWith(
           case None -> rawVals.add(lowerExpr(ctx, insns, ax))
         }
       }
+      leaveDeclaringPkg(ctx, dscope)
     }
     pi = pi + 1
   }
@@ -13070,7 +13298,9 @@ func lowerGenericFnCallWith(
       val dpi = deferredLambdas[di]
       match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames, seedNames, seedTys) {
         case Some(w) -> {
+          val dscope = if deferredIsDefault[di] { enterDeclaringPkg(ctx, pkg) } else { noDeclScope() }
           rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[di], w)
+          leaveDeclaringPkg(ctx, dscope)
           progressed = true
         }
         case None -> still.add(di)
@@ -13105,7 +13335,9 @@ func lowerGenericFnCallWith(
         val upi = deferredLambdas[ui]
         match lambdaParamWantAt(ctx, fd, upi, rawVals, fnTyParamNames, seedNames, seedTys) {
           case Some(w) -> {
+            val dscope = if deferredIsDefault[ui] { enterDeclaringPkg(ctx, pkg) } else { noDeclScope() }
             rawVals[upi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[ui], w)
+            leaveDeclaringPkg(ctx, dscope)
           }
           case None -> unresolved.add(ui)
         }
@@ -14207,6 +14439,7 @@ func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, wa
   if refName.length == 0 {
     return None
   }
+  refName = canonReexport(ctx, refName)
   // A local shadows a case name.
   if ctx.varTypes.containsKey(refName) {
     return None
@@ -15196,8 +15429,49 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, dtorName
   obj
 }
 
+/// What `enterDeclaringPkg` replaced, for `leaveDeclaringPkg`.
+record NDeclScope {
+  switched: Bool
+  pkg: String
+  origin: List[String]
+}
+
+func noDeclScope(): NDeclScope {
+  NDeclScope(switched = false, pkg = "", origin = newList())
+}
+
+/// Makes `declPkg` the package being lowered, for a default expression: it is
+/// written in the package that declares the field or parameter and means that
+/// package's names (its own declarations, its imports, the callees its check
+/// recorded), whichever package builds the record or makes the call (#9136).
+/// A no-op when `declPkg` is "" or already the current package.
+func enterDeclaringPkg(ctx: in Ctx, declPkg: in String): NDeclScope {
+  if declPkg.length == 0 or ctx.curPkg.count == 0 or ctx.curPkg[0] == declPkg {
+    return noDeclScope()
+  }
+  val origin: List[String] = newList()
+  for o in ctx.curOrigin {
+    origin.add(o)
+  }
+  val saved = NDeclScope(switched = true, pkg = ctx.curPkg[0], origin = origin)
+  ctx.curPkg[0] = declPkg
+  ctx.curOrigin.clear()
+  saved
+}
+
+func leaveDeclaringPkg(ctx: in Ctx, saved: in NDeclScope): Unit {
+  if not saved.switched {
+    return
+  }
+  ctx.curPkg[0] = saved.pkg
+  ctx.curOrigin.clear()
+  for o in saved.origin {
+    ctx.curOrigin.add(o)
+  }
+}
+
 /// Resolve construction args (named/positional/defaults) to the field
-/// declaration order and lower each.
+/// declaration order and lower each.  A default is lowered in `declPkg`.
 func resolveFieldArgs(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -15205,6 +15479,7 @@ func resolveFieldArgs(
   fieldNames: in List[String],
   fieldTys: in List[NType],
   fieldDefaults: in List[Option[Expr]],
+  declPkg: in String,
   args: in List[CallArg],
 ): List[NVal] {
   val provided: Map[String, Expr] = newMap()
@@ -15235,12 +15510,14 @@ func resolveFieldArgs(
     // var-mutation shape (stage-0 value-position-match lowering gap,
     // #4631: the rewrapped Option falls through as None).
     var ex: Option[Expr] = None
+    var dscope = noDeclScope()
     match mapGet(provided, fieldNames[fi]) {
       case Some(e) -> {
         ex = Some(value = e)
       }
       case None -> {
         ex = fieldDefaults[fi]
+        dscope = enterDeclaringPkg(ctx, declPkg)
       }
     }
     match ex {
@@ -15259,6 +15536,7 @@ func resolveFieldArgs(
       }
       case None -> panic("Lyric.LlvmCodegen: missing field '" + fieldNames[fi] + "' constructing " + what)
     }
+    leaveDeclaringPkg(ctx, dscope)
     fi = fi + 1
   }
   outV
@@ -15266,7 +15544,16 @@ func resolveFieldArgs(
 
 func lowerRecordConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, args: in List[CallArg]): NVal {
   val noDflts: List[Option[Expr]] = ri.fieldDefaults
-  val vals = resolveFieldArgs(ctx, insns, "record '" + ri.irName + "'", ri.fieldNames, ri.fieldTys, noDflts, args)
+  val vals = resolveFieldArgs(
+    ctx,
+    insns,
+    "record '" + ri.irName + "'",
+    ri.fieldNames,
+    ri.fieldTys,
+    noDflts,
+    ri.declPkg,
+    args
+  )
   lowerRecordConstructVals(ctx, insns, ri, vals)
 }
 
@@ -15395,6 +15682,7 @@ func lowerUnionConstruct(
     ci.fieldNames,
     ci.fieldTys,
     noDflts,
+    "",
     args
   )
   lowerUnionConstructVals(ctx, insns, ui, caseIdx, vals)
@@ -16019,7 +16307,7 @@ func emitConstructorTest(
   bindNames: in List[String],
   bindVals: in List[NVal],
 ): Unit {
-  val joined = modulePathJoin(head.segments)
+  val joined = canonReexport(ctx, modulePathJoin(head.segments))
   // Enum case pattern: scrutinee is the i32 discriminant itself. Gated on
   // the scrutinee's actual runtime representation (`sv.ty == NI32`), not
   // just a name match in `ctx.enumDefs` (#6753): this function is also
@@ -16641,6 +16929,18 @@ func appendInsns(dest: in List[NInsn], src: in List[NInsn]): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Statements and blocks.
 // ─────────────────────────────────────────────────────────────────────────────
+/// The N0007 text for a construct native cannot lower, with where it is: the
+/// line and column (`Lyric.Emitter.parsePanicSpan` reads them back into the
+/// diagnostic's span), the function and the package.  A dependency's function
+/// reaches codegen only when the build's reachability walk kept it, so the
+/// package named is often not the one being built.
+func unsupportedAt(ctx: in Ctx, sp: in Span, what: in String): String {
+  val fnPart = if ctx.curFn.count > 0 { "function '" + ctx.curFn[0] + "' of " } else { "" }
+  val pkgPart = if ctx.curPkg.count > 0 { "package '" + ctx.curPkg[0] + "'" } else { "the package being built" }
+  "error[N0007] " + sp.startPos.line.toString() + ":" + sp.startPos.column.toString() + ": " + what + ", in " + fnPart +
+    pkgPart
+}
+
 func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
   match stmt.kind {
     case SLocal(binding) -> {
@@ -16840,9 +17140,19 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
       insns.add(NBr(label = bodyL))
       insns.add(NLabel(name = exitL))
     }
-    case SThrow(_) -> panic("Lyric.LlvmCodegen: 'throw' is not supported for --target native (D-N-003: panics abort)")
+    case SThrow(_) -> panic(
+      unsupportedAt(
+        ctx,
+        stmt.span,
+        "'throw' is not supported for --target native (D-N-003: panics abort)"
+      )
+    )
     case STry(_, _, _) -> panic(
-      "Lyric.LlvmCodegen: try/catch is not supported for --target native (D-N-003: no unwinding)"
+      unsupportedAt(
+        ctx,
+        stmt.span,
+        "try/catch is not supported for --target native (D-N-003: no unwinding)"
+      )
     )
     case SDefer(body) -> {
       // Registers into the innermost scope; runs via `runDeferredScopeAt` at scope exit, not inline here (D-N-020; a panic still bypasses it per D-N-003).
@@ -17554,6 +17864,10 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
   for o in mod.curOrigin {
     curOrigin.add(o)
   }
+  val curFn: List[String] = newList()
+  for f in mod.curFn {
+    curFn.add(f)
+  }
   val curRet: List[NType] = newList()
   curRet.add(retTy)
   Ctx(
@@ -17576,10 +17890,12 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     pkgImportsStdString = mod.pkgImportsStdString,
     sigAlts = mod.sigAlts,
     pkgImports = mod.pkgImports,
+    reexportAlias = mod.reexportAlias,
     methodCallArities = mod.methodCallArities,
     calleeSites = mod.calleeSites,
     curPkg = curPkg,
     curOrigin = curOrigin,
+    curFn = curFn,
     curRet = curRet,
     moduleVals = mod.moduleVals,
     mvInits = mod.mvInits,
@@ -17897,6 +18213,8 @@ func lowerFunctionEnv(
     panic("Lyric.LlvmCodegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
   }
   val ctx0 = freshFnCtx(modCtx, pkg, NVoid)
+  ctx0.curFn.clear()
+  ctx0.curFn.add(fn.name)
   ctx0.curOrigin.clear()
   val origin = originPkgOf(fn.annotations)
   if origin.length > 0 and origin != pkg {
@@ -19313,10 +19631,12 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     pkgImportsStdString = pkgImportsStdString,
     sigAlts = buildSigAlts(units, sigs),
     pkgImports = buildPkgImports(units),
+    reexportAlias = buildReexportAlias(units),
     methodCallArities = methodCallArities,
     calleeSites = calleeSites,
     curPkg = newList(),
     curOrigin = newList(),
+    curFn = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
     mvInits = newList(),
@@ -21551,7 +21871,14 @@ func registerProtectedLayout(
   tys.add(NPtr(pointee = NI8))
   val noDflt: Option[Expr] = None
   dflts.add(noDflt)
-  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = false)
+  val ri = NRecInfo(
+    irName = irName,
+    fieldNames = names,
+    fieldTys = tys,
+    fieldDefaults = dflts,
+    declPkg = pkg,
+    byValue = false
+  )
   replaceRecKey(ctx, pkg + "." + pd.name, ri)
   replaceRecKey(ctx, pd.name, ri)
   if not ctx.protectedRecNames.containsKey(ri.irName) {
@@ -21713,7 +22040,16 @@ func lowerProtectedConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
     userDflts.add(ri.fieldDefaults[i])
     i = i + 1
   }
-  val userVals = resolveFieldArgs(ctx, insns, "protected type '" + ri.irName + "'", userNames, userTys, userDflts, args)
+  val userVals = resolveFieldArgs(
+    ctx,
+    insns,
+    "protected type '" + ri.irName + "'",
+    userNames,
+    userTys,
+    userDflts,
+    ri.declPkg,
+    args
+  )
   val mutexBuf = emitMutexBuf(ctx, insns)
   val allVals: List[NVal] = newList()
   var vi = 0
@@ -23435,7 +23771,11 @@ func lowerIfaceDispatch(
     if not slotFilled[di] {
       match paramDefaults[di] {
         case Some(dex) -> {
+          // The default is written in the package that declares the interface.
+          val keyDot = lastDotIndex(ii.key)
+          val dscope = enterDeclaringPkg(ctx, if keyDot > 0 { Str.substring(ii.key, 0, keyDot) } else { "" })
           slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di], paramByRef[di], anyByRef)
+          leaveDeclaringPkg(ctx, dscope)
         }
         case None -> panic(
           (if paramSelfByRef[di] { "error[N0023]: " } else { "" }) +

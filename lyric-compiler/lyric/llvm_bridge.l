@@ -173,10 +173,15 @@ func collectCallKeys(e: in Expr, acc: in List[String], rc: in Map[String, String
           // edge — over-inclusive (any same-named/arity method anywhere in
           // the bundle also matches) but never under-inclusive, mirroring
           // `Lyric.LlvmCodegen.lowerUfcsCall`'s own bare-name fallback.
-          if key.length == 0 or isLocalLikeReceiver(recv) {
-            // The checker's class of the receiver (#8413) narrows which
-            // same-named candidates this call can name; see `reachKey`.
-            val cls = match mapGet(rc, recordCopySiteKey(recv.span)) { case Some(c) -> "@" + c; case None -> "" }
+          // The checker's class of the receiver (#8413) narrows which
+          // same-named candidates this call can name; see `reachKey`.  It is
+          // recorded only for a receiver that is a value, so its presence
+          // also says the callee is a method, whatever the receiver's shape:
+          // `client.retry.decide(n)` flattens to a dotted path like a
+          // package-qualified call, and was traced as one only (#9136).
+          val recvCls = mapGet(rc, recordCopySiteKey(recv.span))
+          if key.length == 0 or isSome(recvCls) or isLocalLikeReceiver(recv) {
+            val cls = match recvCls { case Some(c) -> "@" + c; case None -> "" }
             acc.add(memberName + "/" + (args.count + 1).toString() + cls)
           }
         }
@@ -223,21 +228,26 @@ func collectCallKeys(e: in Expr, acc: in List[String], rc: in Map[String, String
   }
 }
 
-/// A bare lower-case identifier receiver (`sb.append(x)`) is almost always a
-/// local or parameter, but `callKeyOf` cannot tell it apart from a
-/// `pkg.func(args)` static call and keys it as "sb.append/1", which names
-/// nothing. Such a call also gets the bare member-name key so the method it
-/// actually dispatches to is traced (#7257). Type and package heads are
-/// capitalised by convention and keep the exact static-call key only.
+/// A bare lower-case identifier receiver (`sb.append(x)`), or a field chain
+/// on one (`client.retry.decide(n)`), is almost always a local or parameter,
+/// but `callKeyOf` cannot tell it apart from a `pkg.func(args)` static call
+/// and keys it as "sb.append/1", which names nothing. Such a call also gets
+/// the bare member-name key so the method it actually dispatches to is traced
+/// (#7257, #9136). Type and package heads are capitalised by convention and
+/// keep the exact static-call key only, unless the checker recorded a class
+/// for the receiver (`collectCallKeys`).
 func isLocalLikeReceiver(recv: in Expr): Bool {
   match recv.kind {
     case EPath(p) -> {
-      if p.segments.count != 1 {
+      if p.segments.count == 0 {
         return false
       }
       val head = p.segments[0]
       head.length > 0 and head[0] >= 'a' and head[0] <= 'z'
     }
+    // A field chain on such a head (`cfg.identity.rawHandle()`): a bundled
+    // package has no receiver classes from the checker to say so.
+    case EMember(inner, _) -> isLocalLikeReceiver(inner)
     case _ -> false
   }
 }
@@ -1666,17 +1676,21 @@ pub func compileToNativeWithFeatures(
   indexFileRecvClasses(userFile, optsRecvOut, prune1)
   indexNominalNames(userFile, prune1.nominal)
   seedImplMethods(userFile, bodyIndex, pkgOfId, reachable, fnWorklist)
+  seedFieldDefaults(userFile, prune1)
   var bi2 = 0
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
     indexNominalNames(toBundle[bi2], prune1.nominal)
+    seedFieldDefaults(toBundle[bi2], prune1)
     bi2 = bi2 + 1
   }
   val pkgImports: Map[String, List[String]] = newMap()
   addPkgImports(pkgImports, userFile)
+  addPkgReexports(prune1.reexports, userFile)
   var bi3 = 0
   while bi3 < toBundle.count {
     addPkgImports(pkgImports, toBundle[bi3])
+    addPkgReexports(prune1.reexports, toBundle[bi3])
     bi3 = bi3 + 1
   }
   val implTypes: Map[String, BundledImpl] = newMap()
@@ -1942,8 +1956,10 @@ pub func compileProjectToNativeWithShape(
     }
     // Mono erased the package's visible generic functions; put them back so
     // codegen can instantiate them for a call from another package.
-    // A default expression is lowered in the calling package but means the
-    // names of the package that declares it (#8850).
+    // A default expression is lowered where the record is built or the
+    // function called, as the package that declares it
+    // (`Lyric.LlvmCodegen.enterDeclaringPkg`); its callees are also written
+    // package-qualified here (#8850).
     ownFiles.add(lowerConfigBlocksNative(withGenericItems(qualifyDefaultCallees(checked, optsCallees), optsGenericItems)))
     match IfaceBuild.builtBytesOf(optsIface) {
       case Some(bytes) -> ifaceFiles.add(
@@ -2110,6 +2126,7 @@ pub func compileProjectToNativeWithShape(
       indexPrunedFile(ownFiles[ifi], prune, bodyIndex, pkgOfId)
     } else {
       seedImplMethods(ownFiles[ifi], bodyIndex, pkgOfId, reachable, fnWorklist)
+      seedFieldDefaults(ownFiles[ifi], prune)
     }
     ifi = ifi + 1
   }
@@ -2117,6 +2134,7 @@ pub func compileProjectToNativeWithShape(
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
     indexNominalNames(toBundle[bi2], prune.nominal)
+    seedFieldDefaults(toBundle[bi2], prune)
     bi2 = bi2 + 1
   }
 
@@ -2124,11 +2142,13 @@ pub func compileProjectToNativeWithShape(
   var pifi = 0
   while pifi < ownFiles.count {
     addPkgImports(pkgImports, ownFiles[pifi])
+    addPkgReexports(prune.reexports, ownFiles[pifi])
     pifi = pifi + 1
   }
   var bi3 = 0
   while bi3 < toBundle.count {
     addPkgImports(pkgImports, toBundle[bi3])
+    addPkgReexports(prune.reexports, toBundle[bi3])
     bi3 = bi3 + 1
   }
 
@@ -3060,6 +3080,58 @@ pub func addPkgImports(pkgImports: in Map[String, List[String]], f: in SourceFil
   }
 }
 
+/// Record the packages `f` re-exports whole under its package in `reexports`
+/// (`PruneIndex.reexports`).
+func addPkgReexports(reexports: in Map[String, List[String]], f: in SourceFile): Unit {
+  val names = collectReexportNames(f.imports)
+  if names.count == 0 {
+    return
+  }
+  val pkg = dottedPath(f.packageDecl.path)
+  val have: List[String] = match mapGet(reexports, pkg) {
+    case Some(existing) -> existing
+    case None -> {
+      val fresh: List[String] = newList()
+      reexports.add(pkg, fresh)
+      fresh
+    }
+  }
+  for n in names {
+    if not have.contains(n) {
+      have.add(n)
+    }
+  }
+}
+
+/// The function a package-qualified call key names through a facade: `raw`
+/// is `<facade>.<name>/<arity>` and a package the facade re-exports (through
+/// any chain of `pub use`) declares `<name>/<arity>`.  "" when `raw` names no
+/// such function.
+func reexportedTarget(
+  raw: in String, canonical: in Map[String, String], reexports: in Map[String, List[String]]
+): String {
+  if reexports.count == 0 {
+    return ""
+  }
+  val slash = Str.lastIndexOfRaw(raw, "/")
+  val nameEnd = if slash > 0 { slash } else { raw.length }
+  var cut = Str.lastIndexOfRaw(Str.substring(raw, 0, nameEnd), ".")
+  while cut > 0 {
+    val facade = Str.substring(raw, 0, cut)
+    if reexports.containsKey(facade) {
+      val rest = Str.substring(raw, cut, raw.length - cut)
+      for target in reexportClosureOf(reexports, facade) {
+        match mapGet(canonical, target + rest) {
+          case Some(t) -> return t
+          case None -> ()
+        }
+      }
+    }
+    cut = Str.lastIndexOfRaw(Str.substring(raw, 0, cut), ".")
+  }
+  ""
+}
+
 /// BFS transitive closure of packages reachable from `root` via imports
 /// (`root` itself included). Used to narrow `bareTrailing` candidates to
 /// ones the calling package could plausibly have resolved unambiguously
@@ -3178,6 +3250,9 @@ func reachKey(
         target = ""
       }
     }
+  }
+  if target.length == 0 {
+    target = reexportedTarget(raw, canonical, prune.reexports)
   }
   if target.length > 0 and recvCls.length > 0 and not candidateAcceptsClass(target, recvCls, bodyIndex, prune.nominal) {
     target = ""
@@ -4401,6 +4476,59 @@ func seedImplMethods(
   }
 }
 
+/// The call keys of the field defaults of a package's records, opaque types
+/// and protected types, as keys the walk has yet to resolve
+/// (`PruneIndex.pending`), in the package that declares them.  A default is
+/// no function's body, so nothing else traces it: `retry: RetryPolicy =
+/// standardRetry()` left `standardRetry`, a dependency's function, out of the
+/// build unless something else called it (#9136).  For a fully lowered
+/// package and for the bundled standard library, whose types register whole:
+/// any package may construct one, so their defaults are always live.  A
+/// dependency's wait with their type instead (`PruneIndex.typeInits`).
+func seedFieldDefaults(f: in SourceFile, prune: in PruneIndex): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  for item in f.items {
+    match item.kind {
+      case IRecord(decl) -> recordDefaultRootKeys(pkg, decl, prune.pending)
+      case IExposedRec(decl) -> recordDefaultRootKeys(pkg, decl, prune.pending)
+      case IOpaque(decl) -> opaqueDefaultRootKeys(pkg, decl, prune.pending)
+      case IProtected(decl) -> {
+        for m in decl.members {
+          match m {
+            case PMField(pf) -> {
+              match pf {
+                case PFVar(_, _, init, _, _, _) -> optExprRootKeys(init, pkg, prune.pending)
+                case PFLet(_, _, init, _, _, _) -> optExprRootKeys(init, pkg, prune.pending)
+                case PFImmutable(field) -> optExprRootKeys(field.dflt, pkg, prune.pending)
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func opaqueDefaultRootKeys(pkg: in String, decl: in OpaqueTypeDecl, dest: in List[RootKey]): Unit {
+  for m in decl.members {
+    match m {
+      case OMField(fd) -> optExprRootKeys(fd.dflt, pkg, dest)
+      case _ -> ()
+    }
+  }
+}
+
+func recordDefaultRootKeys(pkg: in String, decl: in RecordDecl, dest: in List[RootKey]): Unit {
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> optExprRootKeys(fd.dflt, pkg, dest)
+      case _ -> ()
+    }
+  }
+}
+
 /// The methods of a generic record are not lowered as members (the codegen
 /// instantiates them), so `collectRecordMethods` leaves them out; a stdlib
 /// generic one of them calls (`isSome(self.v)`) must still be linked (#8301).
@@ -4487,6 +4615,9 @@ record PruneIndex {
   /// Bare names of the nominal types (records, unions, enums, opaque,
   /// distinct, protected) the bundle declares, plus the built-in value types.
   nominal: Map[String, Bool]
+  /// Package to the packages it re-exports whole (`pub use P`), for a call
+  /// written through a facade (`Lib.configFromEnv` for `Lib.Client`'s).
+  reexports: Map[String, List[String]]
   /// Call keys that became live and the walk has yet to resolve.
   pending: List[RootKey]
 }
@@ -4510,6 +4641,7 @@ func emptyPruneIndex(): PruneIndex {
     depPkgs = newMap(),
     recvOfId = newMap(),
     nominal = builtinNominalNames(),
+    reexports = newMap(),
     pending = newList()
   )
 }
@@ -4883,6 +5015,8 @@ func indexPrunedFile(
         exprRootKeys(decl.init, pkg, keys)
         addToKeyList(idx.valInits, decl.name, keys)
       }
+      // An opaque type is not a pruned group: its field defaults stay live.
+      case IOpaque(decl) -> opaqueDefaultRootKeys(pkg, decl, idx.pending)
       case IImpl(decl) -> {
         // A generic impl is instantiated by the codegen, and a method with
         // type parameters of its own is specialised per call, so neither is
@@ -5180,6 +5314,7 @@ func unitOf(
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(f),
     imports = fileImportPackages(f),
+    reexports = collectReexportNames(f.imports),
     methodCallArities = arities,
     calleeSites = callees,
     deadProtecteds = deadProtecteds,

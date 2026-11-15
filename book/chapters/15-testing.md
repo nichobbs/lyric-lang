@@ -60,6 +60,8 @@ The filter matches on the full test name, including any grouping prefix you esta
 | `assertPanics(label, fn)` | Fails unless `fn()` panics — for pinning documented panic behaviour |
 | `assertPanicsWith(label, expectedSubstring, fn)` | Like `assertPanics`, additionally checks the panic message contains `expectedSubstring` |
 
+`assertPanics` and `assertPanicsWith` catch the panic, which `--target native` cannot do (a panic ends the process there): a test that calls either builds for dotnet and the JVM only, and a native build of it stops with `N0007`, naming `assertPanics` in `Std.Testing`.
+
 A complete test block using several of these:
 
 ```lyric
