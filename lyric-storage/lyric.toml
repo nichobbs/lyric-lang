@@ -14,6 +14,12 @@ output_assembly = "Storage.dll"
 [project.packages]
 "Storage"            = "src/storage.l"
 "Storage.Aspects"    = "src/storage_aspects.l"
+# Storage.Port is one package in two files: the managed targets catch what
+# the kernels throw, native (no unwinding) is built on the standard library.
+"Storage.Port" = [
+  "src/storage_port_managed.l",
+  "src/storage_port_native.l",
+]
 "Storage.Kernel.Net" = "src/_kernel/net/storage_kernel.l"
 "Storage.Kernel.Jvm" = "src/_kernel/jvm/storage_kernel.l"
 

@@ -189,8 +189,10 @@ dependency itself — `resolveManifestDependencies`/`buildWorkspaceDeps`
 skip it outright for `Native`, matching the pre-existing `Jvm` skip
 (#6815 item 1(a), fixed alongside #6809/#6816). `--triple`/`--opt` CLI
 overrides and `lyric run --manifest ... --target native` (item 3a) are
-also wired now; `lyric test --manifest ... --target native` (item 3b)
-remains rejected.
+also wired now, and so is `lyric test --manifest ... --target native`
+(item 3b): each `[project.tests]` entry is compiled with the project's
+packages and its local dependencies into one native executable and run
+(`docs/01-language-reference.md`, `lyric test`).
 
 ## 4. Compilation pipeline
 

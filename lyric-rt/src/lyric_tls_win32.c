@@ -907,7 +907,7 @@ static int recv_more(TlsConn* t, const char* what) {
 static int send_all(SOCKET s, const uint8_t* p, size_t n, const char* what) {
     while (n > 0) {
         int chunk = n > INT32_MAX ? INT32_MAX : (int)n;
-        int w = send(s, (const char*)p, chunk, 0);
+        int w = lyric_win32_sock_send(s, (const char*)p, chunk);
         if (w <= 0) {
             int e = WSAGetLastError();
             if (w < 0 && e == WSAEINTR) continue;
@@ -1372,6 +1372,47 @@ int64_t lyric_tls_write_bytes(void* conn, void* bytes_list) {
     int64_t rc = lyric_tls_write(conn, buf, n);
     free(buf);
     return rc;
+}
+
+/* The bounded forms run the code above under the calling thread's bound
+ * (lyric_win32_bound_begin): its receives and sends are the only places that
+ * wait. */
+void* lyric_tls_client_connect_bounded(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv,
+                                       int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    if (lyric_win32_bound_begin((uintptr_t)(SOCKET)(intptr_t)fd, deadline_ns, wake_fd) != 0) {
+        *status = LYRIC_BOUNDED_ERROR;
+        return NULL;
+    }
+    void* conn = lyric_tls_client_connect(client_ctx, fd, sni_host, alpn_csv);
+    *status = lyric_win32_bound_end(conn != NULL, "TLS handshake");
+    return conn;
+}
+
+LyricList* lyric_tls_read_bytes_bounded(void* conn, int32_t fd, int64_t max_bytes, int64_t deadline_ns,
+                                        int32_t wake_fd, int32_t* status) {
+    if (!conn || max_bytes <= 0) {
+        *status = LYRIC_BOUNDED_OK;
+        return lyric_list_new(0);
+    }
+    if (lyric_win32_bound_begin((uintptr_t)(SOCKET)(intptr_t)fd, deadline_ns, wake_fd) != 0) {
+        *status = LYRIC_BOUNDED_ERROR;
+        return lyric_list_new(0);
+    }
+    int32_t ok = 0;
+    LyricList* list = lyric_tls_read_bytes(conn, max_bytes, &ok);
+    *status = lyric_win32_bound_end(ok == 1, "TLS read");
+    return list;
+}
+
+int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, int64_t deadline_ns,
+                                      int32_t wake_fd) {
+    if (!conn) {
+        set_err("TLS write: no connection");
+        return LYRIC_BOUNDED_ERROR;
+    }
+    if (lyric_win32_bound_begin((uintptr_t)(SOCKET)(intptr_t)fd, deadline_ns, wake_fd) != 0) return LYRIC_BOUNDED_ERROR;
+    int64_t rc = lyric_tls_write_bytes(conn, bytes_list);
+    return lyric_win32_bound_end(rc >= 0, "TLS write");
 }
 
 int32_t lyric_tls_alpn(void* raw, char* out, int32_t out_cap) {

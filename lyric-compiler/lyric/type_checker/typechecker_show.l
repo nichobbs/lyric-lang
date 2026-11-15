@@ -50,9 +50,46 @@ func showKind(tbl: in SymbolTable, t: in Type): Int {
   }
 }
 
+// True when `e` is a `Char` by its own shape: a `Char` literal or a
+// `.toChar()` conversion, possibly parenthesised.
+func spellsChar(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LChar(_) -> true; case _ -> false }
+    case EParen(inner) -> spellsChar(inner)
+    case ECall(fn, args) -> args.count == 0 and (match fn.kind { case EMember(_, m) -> m == "toChar"; case _ -> false })
+    case _ -> false
+  }
+}
+
+// Record `e`, a stringified operand of type `t`, as a conversion site when
+// `t` is `Char` and the check is for a backend that cannot tell a `Char` from
+// an `Int` (`SymbolTable.markCharOperands`, #9089).  Native lowers both to an
+// `i32` and keeps no static types, so the text of `"" + c`, `c.toString()`,
+// `"${c}"` or `println(c)` (the character, not its code point) depends on the
+// operand saying it is a `Char`.  `Lyric.Mono.desugarCheckedFile` rewrites the
+// site to the identity `e.toChar()`, which that backend recognises, whatever
+// bound the operand: a pattern, a `for`, a lambda parameter, a field, a call.
+func recordCharOperand(tbl: in SymbolTable, t: in Type, e: in Expr): Unit {
+  if tbl.markCharOperands.count == 0 {
+    return
+  }
+  val isChar = match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtChar -> true; case _ -> false }
+    case _ -> false
+  }
+  if not isChar or spellsChar(e) {
+    return
+  }
+  val key = recordCopySiteKey(e.span)
+  if not tbl.argConversionSites.containsKey(key) {
+    tbl.argConversionSites.add(key, ArgConversionSite(method = "toChar", startOffset = e.span.startPos.offset))
+  }
+}
+
 // Record `e`, a stringified operand of type `t`, as a site `Lyric.Pipeline`
 // wraps in the call of the function that renders `t`.
 func recordShowOperand(tbl: in SymbolTable, t: in Type, e: in Expr): Unit {
+  recordCharOperand(tbl, t, e)
   if showKind(tbl, t) == 0 {
     return
   }

@@ -56,6 +56,24 @@ int lyric_win32_sock_timed_out(int wsa_error);
  * WSAETIMEDOUT when SO_RCVTIMEO elapses.  Defined in lyric_sock_win32.c. */
 int lyric_win32_sock_recv(uintptr_t s, char* buf, int len);
 
+/* send() on socket `s` that waits when the socket is non-blocking and full:
+ * the bytes sent, or -1 with the Winsock error set (WSAETIMEDOUT when
+ * SO_SNDTIMEO or the calling thread's bound ends the wait).  Defined in
+ * lyric_sock_win32.c. */
+int lyric_win32_sock_send(uintptr_t s, const char* buf, int len);
+
+/* The bound of a `*_bounded` operation (lyric_rt.h): between
+ * lyric_win32_bound_begin and lyric_win32_bound_end, every
+ * lyric_win32_sock_recv and lyric_win32_sock_send of the calling thread gives
+ * up at `deadline_ns` (0: none) or when the socket `wake_fd` (-1: none)
+ * becomes readable, failing with WSAETIMEDOUT.  begin makes `s` non-blocking,
+ * so a send cannot block past the bound, and returns 0, or -1 with last_error
+ * set.  end takes whether the operation succeeded and returns its
+ * LYRIC_BOUNDED_* status, naming `what` in last_error when the bound ended it.
+ * Defined in lyric_sock_win32.c. */
+int lyric_win32_bound_begin(uintptr_t s, int64_t deadline_ns, int32_t wake_fd);
+int32_t lyric_win32_bound_end(int ok, const char* what);
+
 /* Nanoseconds since the Unix epoch of a FILETIME (100 ns ticks since
  * 1601-01-01). */
 int64_t lyric_win32_filetime_to_unix_nanos(FILETIME ft);

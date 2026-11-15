@@ -11,6 +11,14 @@ Driver-agnostic database access with typed rows, transactions, and pluggable bac
 | `dotnet`     | Npgsql + Microsoft.Data.Sqlite ADO.NET drivers (`Db.Kernel.Net`)          | **Real** (#5407) |
 | `jvm`        | PostgreSQL JDBC + SQLite JDBC (`Db.Kernel.Jvm`, org.postgresql / org.xerial) | **Real** (#8932) |
 
+**Targets:** `dotnet` and `jvm` (`[package] targets`). There is no native
+driver, so building the package, or an application that depends on it, for
+`--target native` fails with `F0054`/`F0055`. A native port needs a driver the
+native backend can call: binding SQLite's C API (`sqlite3_*`, through a
+`_kernel` of `extern func`s and a `[native]` library) is the short path, and
+PostgreSQL needs either libpq the same way or a wire-protocol client over
+`Std.TcpHost`.
+
 `dotnet` and `jvm` are mutually exclusive and select the kernel; `dotnet` is
 in the default feature set, and a `--target jvm` build swaps it for `jvm`
 (docs/24 section 2.2). Build the JVM kernel explicitly with

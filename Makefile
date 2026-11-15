@@ -292,6 +292,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/open_receiver_self_test.l \
 	lyric-compiler/lyric/generic_member_stdlib_native_self_test.l \
 	lyric-compiler/lyric/byte_arithmetic_self_test.l \
+	lyric-compiler/lyric/string_concat_operand_self_test.l \
 	lyric-compiler/lyric/cfg_self_test.l \
 	lyric-compiler/lyric/cfg_single_file_self_test.l \
 	lyric-compiler/lyric/class_encoding_self_test.l \

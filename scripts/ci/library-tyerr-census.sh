@@ -60,8 +60,17 @@ is_native_only() {
   return 1
 }
 
+# A manifest that declares `[package] targets` (D603) is built only for those:
+# a build for any other target stops with F0054 before the checker runs.
+supports_target() {
+  local line
+  line="$(grep -m1 -E '^targets[[:space:]]*=' "$1" || true)"
+  [[ -z "$line" ]] || grep -qF "\"$2\"" <<<"$line"
+}
+
 jobs_list=()
 skipped_native=()
+skipped_target=()
 for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
   [[ -f "$manifest" ]] || continue
   dir="$(dirname "$manifest")"
@@ -71,7 +80,13 @@ for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.
   elif is_native_only "$dir"; then
     skipped_native+=("$dir")
   else
-    jobs_list+=("$manifest|dotnet" "$manifest|jvm")
+    for t in dotnet jvm; do
+      if supports_target "$manifest" "$t"; then
+        jobs_list+=("$manifest|$t")
+      else
+        skipped_target+=("$dir ($t)")
+      fi
+    done
   fi
 done
 
@@ -141,6 +156,9 @@ count=$(grep -c . "$sites_file" || true)
 unchecked=$(grep -c . "$unchecked_file" || true)
 if [[ ${#skipped_native[@]} -gt 0 ]]; then
   echo "::notice::native-only libraries not built here (their native-platforms.yml e2e jobs build them with the real toolchain, where the always-on I0001 fails a silent site): ${skipped_native[*]}"
+fi
+if [[ ${#skipped_target[@]} -gt 0 ]]; then
+  echo "::notice::not built for a target their manifest does not declare ([package] targets): ${skipped_target[*]}"
 fi
 echo "::notice::I0001 silent TyError sites across the library manifests: ${count} (${checked}/${attempted} builds checked, ${unchecked} unchecked)"
 # The sites first: a run with both findings must show where the sites are.

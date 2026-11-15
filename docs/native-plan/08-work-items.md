@@ -1096,9 +1096,10 @@ model) and a native-codegen fix for the bare `toString(x)` prelude call
 `Std.Testing.assertEqualInt`/`assertEqualLong` use it internally). No F#
 anywhere, as directed.
 
-Single-file only: manifest (multi-package) native test suites are rejected
-with a diagnostic, matching `lyric build --target native`'s existing
-restriction. The **existing** `llvm_self_test_n*.l` files are not run
+Manifest test suites (`lyric test --manifest <lyric.toml> --target native`)
+shipped later (#6815 item 3(b), D607): one executable per `[project.tests]`
+entry, built with the project's packages and its local dependencies. The
+**existing** `llvm_self_test_n*.l` files are not run
 through this path — they import `Lyric.*` compiler packages (to drive
 `codegenNativePackage` on ad-hoc program strings and shell out to `clang`
 themselves), which single-file native compilation does not resolve; they

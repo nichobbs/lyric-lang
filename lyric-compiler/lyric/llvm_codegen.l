@@ -415,11 +415,12 @@ record Ctx {
   // annotation (or a `Char`-literal initializer) are recorded here so
   // `.toString()` and `String + Char` concatenation — the two codegen
   // shapes that must actually tell Char and Int apart — can consult the
-  // AST at the use site instead of the erased `NVal`. Best-effort: covers
-  // literals and one level of variable binding, not full type inference
-  // (an unannotated function parameter or a further-removed alias stays
-  // untracked, exactly like every other unannotated binding in this
-  // backend's varTypes/varSlots).
+  // AST at the use site instead of the erased `NVal`. This tracking is the
+  // backend's own and covers only what it can see (literals, annotations,
+  // one level of binding); the complete answer is the type checker's, which
+  // spells every stringified `Char` operand of a native build as the
+  // identity `.toChar()` (`recordCharOperand`, #9089), a shape
+  // `exprIsCharTyped` reads whatever bound the operand.
   varIsChar: Map[String, Bool]
   // #7891 item 4: the non-generic record fields declared `Char`, keyed
   // `<record irName>.<field>`, so `r.c.toString()` and `"${r.c}"` render the
@@ -708,15 +709,13 @@ func charElemKey(name: in String): String {
   name + "[]"
 }
 
-/// Best-effort static "is this expression a `Char`" check, consulted only
-/// where `NVal.ty` alone cannot tell (`Char` and `Int` both erase to
-/// `NI32` — see `Ctx.varIsChar`'s header comment): a `Char` literal, a
-/// parenthesised char expression, or a variable this backend recorded as
-/// char-typed at its binding site (`markVarChar`, called from `SLocal`
-/// lowering and parameter binding). Anything else — an unannotated
-/// parameter, a further call result, a record field — is conservatively
-/// `false`, exactly like this backend's other best-effort local tracking
-/// (`varTypes`/`varSlots` are equally incomplete for exotic shapes).
+/// Static "is this expression a `Char`" check, consulted only where
+/// `NVal.ty` alone cannot tell (`Char` and `Int` both erase to `NI32` — see
+/// `Ctx.varIsChar`'s header comment): a `Char` literal, a parenthesised char
+/// expression, a `.toChar()` conversion (which is also how the type checker
+/// marks a stringified `Char` operand it typed, #9089), or a variable this
+/// backend recorded as char-typed at its binding site (`markVarChar`, called
+/// from `SLocal` lowering and parameter binding). Anything else is `false`.
 func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit { case LChar(_) -> true; case _ -> false }
@@ -3745,35 +3744,12 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
     b = if rhsWantsLhsTy { lowerExprExpecting(ctx, insns, rhs, a.ty) } else { lowerExpr(ctx, insns, rhs) }
   }
   if isStringNType(a.ty) or isStringNType(b.ty) {
-    // `String + Char` / `Char + String` concatenation (#6237): `Char`
-    // erases to the same `NI32` as `Int` with no runtime tag, so
-    // `lowerStringBinop`'s own operand-type check can't tell a bare Char
-    // apart from a bare Int — it must see a real `LyricString*` on both
-    // sides. Widen the non-string operand here, BEFORE that check, using
-    // the syntactic char-ness of the ORIGINAL (unlowered) expression
-    // (`exprIsCharTyped`) — the only place this backend can still tell.
+    // `String + <scalar>` stringifies the scalar (`concatOperand`).
     var a2 = a
     var b2 = b
     if op == BAdd {
-      if not isStringNType(a.ty) and exprIsCharTyped(ctx, lhs) {
-        a2 = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, a.value))
-      }
-      if not isStringNType(b.ty) and exprIsCharTyped(ctx, rhs) {
-        b2 = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, b.value))
-      }
-      // `String + <scalar>` renders the scalar as its `toString` does, as on
-      // MSIL and JVM (#7858); a `Byte` zero-extends, so 128..255 stay
-      // unsigned. An `NI32` operand is left to `lowerStringBinop`'s
-      // rejection: it may be a `Char` the best-effort tracking above did not
-      // recognise, which would print its code point instead of the glyph.
-      // A `UInt` is an `NI32` like `Int` and `Char`, but the type checker
-      // marks it (`isUnsignedExpr`), so it stringifies here too.
-      if isConcatStringifiableNType(a2.ty) or (isUnsignedExpr(lhs) and not isStringNType(a2.ty)) {
-        a2 = emitToString(ctx, insns, a2, isUnsignedExpr(lhs))
-      }
-      if isConcatStringifiableNType(b2.ty) or (isUnsignedExpr(rhs) and not isStringNType(b2.ty)) {
-        b2 = emitToString(ctx, insns, b2, isUnsignedExpr(rhs))
-      }
+      a2 = concatOperand(ctx, insns, a, lhs)
+      b2 = concatOperand(ctx, insns, b, rhs)
     }
     return lowerStringBinop(ctx, insns, op, a2, b2, line)
   }
@@ -3849,11 +3825,59 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   }
 }
 
-/// The scalar operand types `String + x` stringifies on this backend: every
-/// scalar except `NI32`, which `Int` and `Char` share (see `Ctx.varIsChar`).
+/// True inside a generic function this backend instantiated itself (one of
+/// another package, N3.1) with a type parameter bound to an `i32`. Such an
+/// instantiation is keyed by erased types, so it is shared by `Int` and
+/// `Char` arguments and an operand typed by that parameter is not known to be
+/// either; the generics of the package being compiled are specialised by
+/// `Lyric.Mono` and re-checked instead (`MonoResult.charSpecs`).
+func fnBindsTypeParamToI32(ctx: in Ctx): Bool {
+  for t in ctx.fnTyEnvTys {
+    match t {
+      case NI32 -> return true
+      case _ -> ()
+    }
+  }
+  false
+}
+
+/// An operand of a `String` `+` or `+=` as the `String` it concatenates: a
+/// scalar renders as its `toString` does, as on MSIL and JVM (#7858). A
+/// `Char` erases to the same `NI32` as an `Int` with no runtime tag, so it is
+/// told apart by the operand's own shape (`exprIsCharTyped`): the type
+/// checker spells every stringified `Char` operand as `.toChar()` for this
+/// backend (`recordCharOperand`, #9089), whatever bound it, so an `NI32` that
+/// is not one is an `Int` or (marked, `isUnsignedExpr`) a `UInt`; the one
+/// exception is `fnBindsTypeParamToI32`, where it is left for
+/// `lowerStringBinop` to reject. A `Byte` zero-extends, so 128..255 stay
+/// unsigned. Any other value is returned as it is, for `lowerStringBinop`
+/// to accept or reject.
+func concatOperand(ctx: in Ctx, insns: in List[NInsn], v: in NVal, e: in Expr): NVal {
+  if isStringNType(v.ty) {
+    return v
+  }
+  match v.ty {
+    case NI32 -> {
+      if exprIsCharTyped(ctx, e) {
+        return callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, v.value))
+      }
+      if not isUnsignedExpr(e) and fnBindsTypeParamToI32(ctx) {
+        return v
+      }
+    }
+    case _ -> ()
+  }
+  if isConcatStringifiableNType(v.ty) {
+    return emitToString(ctx, insns, v, isUnsignedExpr(e))
+  }
+  v
+}
+
+/// The scalar operand types `String + x` stringifies on this backend.
 func isConcatStringifiableNType(t: in NType): Bool {
   match t {
     case NI8 -> true
+    case NI32 -> true
     case NI64 -> true
     case NI1 -> true
     case NDouble -> true
@@ -3865,6 +3889,16 @@ func isConcatStringifiableNType(t: in NType): Bool {
 
 func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal, line: in Int): NVal {
   if not (isStringNType(a.ty) and isStringNType(b.ty)) {
+    val i32Operand = match a.ty { case NI32 -> true; case _ -> match b.ty { case NI32 -> true; case _ -> false } }
+    if op == BAdd and i32Operand and fnBindsTypeParamToI32(ctx) {
+      panic(
+        "Lyric.LlvmCodegen: 'String + x' where x is an Int or a Char inside a generic function of another package instantiated at Int or Char: --target native shares that instantiation between the two types and cannot tell which one x is (in " +
+          ctx.curPkg[0] +
+          " at line " +
+          line.toString() +
+          ")"
+      )
+    }
     panic(
       "Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly) (in " + ctx.curPkg[0] +
         " at line " +
@@ -5812,13 +5846,21 @@ func lowerCallEx(
   val selfKey = ctx.curPkg[0] + "." + key
   // var-mutation shape (#4631).
   var sigOpt: Option[NFuncSig] = sitedSig(ctx, fnExpr, key)
+  // A record or union case of this package, or of one it imports, is nearer
+  // than a same-named function of a package further away (#9088): the type
+  // checker resolved the call to the constructor, having never seen that
+  // function.
+  val ctorLevel = constructorScopeLevel(ctx, Str.substring(key, 0, Str.lastIndexOfRaw(key, "/")))
   if not isSome(sigOpt) {
     match mapGet(ctx.sigs, selfKey) {
       case Some(s) -> {
         sigOpt = Some(value = s)
       }
       case None -> {
-        sigOpt = bareSig(ctx, key)
+        match bareSig(ctx, key) {
+          case Some(bs) -> if ctorLevel >= pkgScopeLevel(ctx, bs.pkg) { sigOpt = Some(value = bs) }
+          case None -> ()
+        }
       }
     }
   }
@@ -5845,7 +5887,8 @@ func lowerCallEx(
       if ctx.genericFnDefs.containsKey(ctx.curPkg[0] + "." + key) {
         return lowerGenericFnCall(ctx, insns, ctx.curPkg[0] + "." + key, noPre, args, line, wantTask, retWant)
       }
-      if ctx.genericFnDefs.containsKey(key) {
+      val bareGenericLevel = match mapGet(ctx.genericFnPkg, key) { case Some(gp) -> pkgScopeLevel(ctx, gp); case None -> 0 }
+      if ctx.genericFnDefs.containsKey(key) and ctorLevel >= bareGenericLevel {
         return lowerGenericFnCall(ctx, insns, key, noPre, args, line, wantTask, retWant)
       }
       lowerConstructCall(ctx, insns, fnExpr, args, key, line, retWant)
@@ -6287,6 +6330,17 @@ func receiverStructName(t: in NType): String {
   }
 }
 
+/// A record, union case, generic record or distinct type named by a
+/// constructor call (`None` when `name` is none of them).
+///
+/// The registries are keyed bundle-wide, with a first-registered-wins bare
+/// key beside each `<pkg>.<name>` one, so the name is resolved one scope at a
+/// time, as the type checker resolves it: the calling package's own
+/// declaration of any kind, then one of a package it imports, and only then
+/// the key as written. Looking a bare name up one registry at a time instead
+/// let a declaration of another kind in a package the caller cannot even see
+/// capture the call: a union case `Held(freed)` of this package was built as
+/// the record `Held` of an unrelated package (#9088).
 func tryLowerConstruct(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -6295,14 +6349,11 @@ func tryLowerConstruct(
   line: in Int,
   retWant: in Option[NType],
 ): Option[NVal] {
-  match curPkgQualifiedGet(ctx, ctx.recordDefs, name) {
-    case Some(ri) -> {
-      if ctx.protectedRecNames.containsKey(ri.irName) {
-        return Some(value = lowerProtectedConstructArgs(ctx, insns, ri, args))
-      }
-      return Some(value = lowerRecordConstructArgs(ctx, insns, ri, args))
-    }
-    case None -> {
+  val own = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." } else { "" }
+  if own.length > 0 {
+    match tryLowerRecordConstructAt(ctx, insns, own, name, args) {
+      case Some(v) -> return Some(value = v)
+      case None -> ()
     }
   }
   // #8481: two unions of one package may share a case name; `caseRefs`
@@ -6329,7 +6380,67 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  match curPkgQualifiedGet(ctx, ctx.caseRefs, name) {
+  if own.length > 0 {
+    match tryLowerNonRecordConstructAt(ctx, insns, own, name, args, line, retWant) {
+      case Some(v) -> return Some(value = v)
+      case None -> ()
+    }
+    match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+      case Some(imps) -> {
+        for p in imps {
+          match tryLowerRecordConstructAt(ctx, insns, p + ".", name, args) {
+            case Some(v) -> return Some(value = v)
+            case None -> ()
+          }
+          match tryLowerNonRecordConstructAt(ctx, insns, p + ".", name, args, line, retWant) {
+            case Some(v) -> return Some(value = v)
+            case None -> ()
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  match tryLowerRecordConstructAt(ctx, insns, "", name, args) {
+    case Some(v) -> return Some(value = v)
+    case None -> ()
+  }
+  tryLowerNonRecordConstructAt(ctx, insns, "", name, args, line, retWant)
+}
+
+/// `tryLowerConstruct` for a record registered under exactly `prefix + name`
+/// (`prefix` is "" or a package name with its trailing dot).
+func tryLowerRecordConstructAt(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  prefix: in String,
+  name: in String,
+  args: in List[CallArg],
+): Option[NVal] {
+  match mapGet(ctx.recordDefs, prefix + name) {
+    case Some(ri) -> {
+      if ctx.protectedRecNames.containsKey(ri.irName) {
+        return Some(value = lowerProtectedConstructArgs(ctx, insns, ri, args))
+      }
+      Some(value = lowerRecordConstructArgs(ctx, insns, ri, args))
+    }
+    case None -> None
+  }
+}
+
+/// `tryLowerConstruct` for a union case, generic union case, generic record
+/// or distinct type registered under exactly `prefix + name`.
+func tryLowerNonRecordConstructAt(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  prefix: in String,
+  name: in String,
+  args: in List[CallArg],
+  line: in Int,
+  retWant: in Option[NType],
+): Option[NVal] {
+  val key = prefix + name
+  match mapGet(ctx.caseRefs, key) {
     case Some(cref) -> {
       val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
         case Some(u) -> u
@@ -6342,7 +6453,7 @@ func tryLowerConstruct(
   }
   // Generic union case (`Some(5)`): infer type args, instantiate,
   // construct (N3.1).
-  match mapGet(ctx.caseToGenericUnion, name) {
+  match mapGet(ctx.caseToGenericUnion, key) {
     case Some(gkey) -> {
       val dotIdx = lastDotIndex(name)
       val caseName = if dotIdx >= 0 { Str.substring(name, dotIdx + 1, name.length - dotIdx - 1) } else { name }
@@ -6351,10 +6462,10 @@ func tryLowerConstruct(
     case None -> {
     }
   }
-  if ctx.genericRecordDefs.containsKey(name) {
-    return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, name), args, retWant))
+  if ctx.genericRecordDefs.containsKey(key) {
+    return Some(value = lowerGenericRecordConstruct(ctx, insns, genericQualifiedKey(ctx, key), args, retWant))
   }
-  match curPkgQualifiedGet(ctx, ctx.distinctDefs, name) {
+  match mapGet(ctx.distinctDefs, key) {
     case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, name, di, args, line))
     case None -> {
     }
@@ -6362,7 +6473,7 @@ func tryLowerConstruct(
   // `X.from(v)` (language reference §2.3) and the older `X.From(v)`.
   if Str.endsWith(name, ".from") or Str.endsWith(name, ".From") {
     val baseName = Str.substring(name, 0, name.length - 5)
-    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
+    match mapGet(ctx.distinctDefs, prefix + baseName) {
       case Some(di) -> return Some(value = lowerDistinctConstruct(ctx, insns, baseName, di, args, line))
       case None -> {
       }
@@ -6370,13 +6481,68 @@ func tryLowerConstruct(
   }
   if Str.endsWith(name, ".tryFrom") {
     val baseName = Str.substring(name, 0, name.length - 8)
-    match curPkgQualifiedGet(ctx, ctx.distinctDefs, baseName) {
+    match mapGet(ctx.distinctDefs, prefix + baseName) {
       case Some(di) -> return Some(value = lowerDistinctTryFrom(ctx, insns, baseName, di, args, line))
       case None -> {
       }
     }
   }
   None
+}
+
+/// How near the package `pkg` is to the one being lowered: 0 for that package
+/// itself, 1 for one it imports, 2 for any other package of the bundle.
+func pkgScopeLevel(ctx: in Ctx, pkg: in String): Int {
+  if ctx.curPkg.count == 0 {
+    return 2
+  }
+  if pkg == ctx.curPkg[0] {
+    return 0
+  }
+  match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+    case Some(imps) -> {
+      for p in imps {
+        if p == pkg {
+          return 1
+        }
+      }
+    }
+    case None -> ()
+  }
+  2
+}
+
+/// True when `prefix + name` is a constructor in any registry
+/// `tryLowerConstruct` reads.
+func constructorRegisteredAt(ctx: in Ctx, prefix: in String, name: in String): Bool {
+  val key = prefix + name
+  ctx.recordDefs.containsKey(key) or ctx.caseRefs.containsKey(key) or ctx.caseToGenericUnion.containsKey(key) or
+    ctx.genericRecordDefs.containsKey(key) or
+    ctx.distinctDefs.containsKey(key)
+}
+
+/// The scope level (`pkgScopeLevel`) of the nearest record, union case,
+/// generic record or distinct type a constructor call of `name` can mean: 0
+/// when the package being lowered declares one, 1 when a package it imports
+/// does, else 2 (nothing in scope: only the bundle-wide key, if any).
+func constructorScopeLevel(ctx: in Ctx, name: in String): Int {
+  if ctx.curPkg.count == 0 {
+    return 2
+  }
+  if constructorRegisteredAt(ctx, ctx.curPkg[0] + ".", name) {
+    return 0
+  }
+  match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+    case Some(imps) -> {
+      for p in imps {
+        if constructorRegisteredAt(ctx, p + ".", name) {
+          return 1
+        }
+      }
+    }
+    case None -> ()
+  }
+  2
 }
 
 /// UFCS method-call resolution: `recv.name(args)` calls the function
@@ -8949,6 +9115,11 @@ func registerGenericUnion(ctx: in Ctx, pkg: in String, ud: in UnionDecl): Unit {
     }
     if not ctx.caseToGenericUnion.containsKey(qualified + "." + caseName) {
       ctx.caseToGenericUnion.add(qualified + "." + caseName, qualified)
+    }
+    // A case qualified by its package alone, as `registerUnionCaseRefs` keys
+    // a non-generic one: the scoped lookups of `tryLowerConstruct` read it.
+    if not ctx.caseToGenericUnion.containsKey(pkg + "." + caseName) {
+      ctx.caseToGenericUnion.add(pkg + "." + caseName, qualified)
     }
     ci = ci + 1
   }
@@ -17186,7 +17357,7 @@ func lowerAssign(
         case AssEq -> BAdd
       }
       if isStringNType(ty) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty), line)
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, concatOperand(ctx, insns, rhs, value), ty), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, ty)
         match ty {
@@ -17282,7 +17453,7 @@ func lowerFieldAssign(
         case AssEq -> BAdd
       }
       if isStringNType(fieldTy) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, fieldTy), line)
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, concatOperand(ctx, insns, rhs, value), fieldTy), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, fieldTy)
         match fieldTy {

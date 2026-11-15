@@ -1194,9 +1194,15 @@ lyric test <file.l> --fail-fast        # stop after the first file with failing 
                                        # print an early summary and exit 1
 lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar
 lyric test <file.l> --target native    # compile via the LLVM backend and run the binary
-                                       # directly (single-file only; no try/catch isolation
-                                       # per test — a failing assertion aborts the process,
-                                       # D-N-003/D-N-018)
+                                       # directly (no try/catch isolation per test: a failing
+                                       # assertion ends the file's run, D-N-003/D-N-018; the
+                                       # runner prints `not ok <n> - <title>` for the test it
+                                       # stopped in and how many later tests did not run)
+lyric test --manifest lyric.toml --target native
+                                       # run [project.tests] natively: one executable per entry,
+                                       # built with the project's packages and its path and
+                                       # workspace dependencies; same report, summary and exit
+                                       # code as the other targets (#6815)
 lyric test <file.l> --properties       # also run `property` declarations (#677): auto-derived
                                        # sampling + shrinking for Int/Bool/Double forall binders;
                                        # any other binder type still reports `# skip`. Rejected

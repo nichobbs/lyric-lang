@@ -76,7 +76,7 @@ declare -A ECO_DEPS=(
   [ws]="auth"
   [forms]="generator-sdk"
   [ui]="generator-sdk forms auth resilience web ws"
-  [testing]="cache mail storage feature-flags mq session"
+  [testing]="conformance cache mail storage feature-flags mq session jobs search"
   [game]=""
   [unicode]=""
 )

@@ -6,8 +6,9 @@
 //! set of inputs succeeded and lowered nothing, and lets the next build skip it.
 //!
 //! What a hit stands for.  `checkBundledStdlibPackage` returns the package
-//! after the checker's record-arithmetic, record-equality and `array[N, T]`
-//! sites are lowered, and those passes are the identity when the checker
+//! after its stringified `Char` operands are marked (#9089) and the checker's
+//! record-arithmetic, record-equality and `array[N, T]` sites are lowered,
+//! and those passes are the identity when the checker
 //! recorded no such site (`Lyric.Pipeline.stdlibLoweringIsIdentity`).  An entry
 //! is therefore written only for a package whose check reported no error and
 //! recorded no site, and a hit hands the already-parsed package back as the

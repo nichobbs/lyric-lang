@@ -16,6 +16,13 @@ output_assembly = "Jobs.dll"
 "Jobs.Aspects"    = "src/jobs_aspects.l"
 "Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
 "Jobs.Kernel.Jvm" = "src/_kernel/jvm/jobs_kernel.l"
+"Jobs.Kernel.Native" = "src/_kernel/native/jobs_kernel.l"
+# Jobs.Kernel.Guard is one package in two files: the managed targets catch a
+# panicking handler, native (no unwinding) runs it directly.
+"Jobs.Kernel.Guard" = [
+  "src/_kernel/guard_managed.l",
+  "src/_kernel/guard_native.l",
+]
 
 [project.tests]
 "Jobs.JobsTests" = "tests/jobs_tests.l"

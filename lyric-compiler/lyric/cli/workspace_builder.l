@@ -1181,6 +1181,37 @@ pub func nativeUnsupportedDepMessage(depName: in String, kind: in String): Strin
     " dependency; --target native compiles Lyric dependencies from source and supports only path = \"...\" and workspace = true dependencies"
 }
 
+/// The `[native.libs]` of every path and workspace dependency the manifest in
+/// `mfDir` reaches, transitively (D191), for a native build to link beside
+/// the manifest's own.
+func depNativeLibDecls(manifest: in Mf.Manifest, mfDir: in String): List[NativeLibDecl] {
+  val decls: List[NativeLibDecl] = newList()
+  val wsCtxOpt = Ws.findWorkspaceRoot(mfDir)
+  val seenDirs: List[String] = newList()
+  for dep in manifest.deps {
+    match dep.source {
+      case Mf.DepSource.Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+        collectDepNativeLibs(depDir, wsCtxOpt, seenDirs, decls)
+      }
+      case Mf.DepSource.Workspace(_) -> match wsCtxOpt {
+        case None -> ()
+        case Some(wsCtx) -> match Ws.resolveDep(dep.name, wsCtx) {
+          case None -> ()
+          case Some(wsDir) -> collectDepNativeLibs(
+            wsDir,
+            wsCtxOpt,
+            seenDirs,
+            decls
+          )
+        }
+      }
+      case _ -> ()
+    }
+  }
+  decls
+}
+
 /// Resolve every dependency a manifest declares — workspace deps (built
 /// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
 /// `[nuget]` assets that are themselves Lyric packages — into the
@@ -1446,30 +1477,10 @@ pub func resolveManifestDependenciesAs(
     }
   }
 
-  val depNativeLibs: List[NativeLibDecl] = newList()
-  if targetIsNative(target) {
-    val seenNativeDirs: List[String] = newList()
-    for dep in manifest.deps {
-      match dep.source {
-        case Mf.DepSource.Path(dir) -> {
-          val nativeDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
-          collectDepNativeLibs(nativeDepDir, wsCtxOpt, seenNativeDirs, depNativeLibs)
-        }
-        case Mf.DepSource.Workspace(_) -> match wsCtxOpt {
-          case None -> ()
-          case Some(wsCtx) -> match Ws.resolveDep(dep.name, wsCtx) {
-            case None -> ()
-            case Some(wsDir) -> collectDepNativeLibs(
-              wsDir,
-              wsCtxOpt,
-              seenNativeDirs,
-              depNativeLibs
-            )
-          }
-        }
-        case _ -> ()
-      }
-    }
+  val depNativeLibs: List[NativeLibDecl] = if targetIsNative(target) {
+    depNativeLibDecls(manifest, mfDir)
+  } else {
+    newList()
   }
   ResolvedManifestDeps(
     restoredDlls = restoredDlls,

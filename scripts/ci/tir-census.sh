@@ -61,9 +61,13 @@ FILES=("${filtered[@]}")
 
 # The target a program is built for (D466): a JVM-targeted program (its path or name says jvm)
 # names JDK externs the dotnet resolver cannot see, so it is built with --target jvm, whose
-# checker reports the same census.  Everything else is built for dotnet.
+# checker reports the same census.  The two tests of the native-only bounded Std.TcpHost
+# operations (D605) are built with --target native: the checker prints its census before
+# code generation, so the build is judged whether or not the link step has a toolchain.
+# Everything else is built for dotnet.
 target_of() {
   case "$1" in
+    lyric-stdlib/tests/http_timeout_native_tests.l|lyric-stdlib/tests/tcp_host_bounded_native_tests.l) echo native ;;
     lyric-compiler/jvm/*|*_jvm_self_test*.l|*_jvm_tests.l|*jvm_self_test*.l) echo jvm ;;
     *) echo dotnet ;;
   esac

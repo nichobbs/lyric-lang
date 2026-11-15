@@ -339,11 +339,12 @@ func usageText(): String {
     "                [--no-default-features] [--all-features] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--doctests] [--update-snapshots] [--target dotnet|jvm]\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--doctests] [--update-snapshots] [--target dotnet|jvm|native]\n" +
     "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module;\n" +
     "                 a @test_module that declares the package of a [project.packages] entry is merged into it, so its tests reach non-pub items;\n" +
     "                 --doctests also runs the ```lyric blocks of /// doc comments as tests of their package;\n" +
     "                 --fail-fast stops after the first file with failing tests;\n" +
+    "                 --target native builds each test file as one executable for this machine; a failed assertion ends that file's run;\n" +
     "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native);\n" +
     "                 --property-trials N sets the sample count per property (default 100; requires --properties);\n" +
     "                 --seed N sets the RNG seed each property's driver starts from, XOR'd with its declared index so no two properties in a file sample the same sequence (default 1000; requires --properties)\n" +

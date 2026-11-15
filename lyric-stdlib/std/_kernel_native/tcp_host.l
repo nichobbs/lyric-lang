@@ -36,6 +36,14 @@
 //! the resulting `Conn` only through `hostRead`/`hostWrite`/`hostClose`,
 //! same as every other `Std.TcpHost` consumer.
 //!
+//! **Bounded operations (#9090).** `hostConnectBounded`,
+//! `hostUpgradeClientTlsBounded`, `hostReadBounded` and `hostWriteBounded`
+//! (with `WakePipe` and `BoundedError`) give an operation an absolute
+//! deadline and a wake-up another thread can send, and say which of them
+//! ended it. They exist for `Std.HttpHost`'s request limits and have no
+//! dotnet counterpart yet; see the section of that name at the end of this
+//! file.
+//!
 //! ## Representation: why `Listener`/`Conn` are plain records, not `opaque type`
 //!
 //! The issue text (and docs/61 §7 item 4) call for "an opaque type whose
@@ -407,6 +415,28 @@ extern func rtTlsClientConnectRaw(clientCtx: NativePtr[Byte], fd: Int, sniHost: 
 func rtTlsClientConnect(clientCtx: Long, fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte]): Long {
   rtPtrToLong(rtTlsClientConnectRaw(rtLongToPtr(clientCtx), fd, sniHost, alpnCsv))
 }
+
+// The bounded forms (lyric_rt.h, "Bounded operations"): each takes an absolute
+// `lyric_monotonic_nanos` deadline (0 = none) and a wake pipe's read end
+// (-1 = none) and reports a status: 1 done, 0 failed, 2 the deadline passed,
+// 3 the wake pipe was signalled.
+extern func rtSockConnectBounded(host: NativePtr[Byte], port: Int, deadlineNanos: Long, wakeFd: Int): Int = "lyric_sock_connect_bounded"
+
+extern func rtSockReadBytesBounded(fd: Int, maxBytes: Long, deadlineNanos: Long, wakeFd: Int, statusOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes_bounded"
+
+extern func rtSockWriteBytesBounded(fd: Int, bytes: slice[Byte], deadlineNanos: Long, wakeFd: Int): Int = "lyric_sock_write_bytes_bounded"
+
+extern func rtTlsClientConnectBoundedRaw(clientCtx: NativePtr[Byte], fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte], deadlineNanos: Long, wakeFd: Int, statusOut: NativePtr[Int]): NativePtr[Byte] = "lyric_tls_client_connect_bounded"
+
+extern func rtTlsReadBytesBoundedRaw(conn: NativePtr[Byte], fd: Int, maxBytes: Long, deadlineNanos: Long, wakeFd: Int, statusOut: NativePtr[Int]): slice[Byte] = "lyric_tls_read_bytes_bounded"
+
+extern func rtTlsWriteBytesBoundedRaw(conn: NativePtr[Byte], fd: Int, bytes: slice[Byte], deadlineNanos: Long, wakeFd: Int): Int = "lyric_tls_write_bytes_bounded"
+
+val boundedDone: Int = 1
+
+val boundedDeadline: Int = 2
+
+val boundedInterrupted: Int = 3
 
 // The server's ALPN preference list — `h2` first, matching docs/61 §6.4
 // phase 4.4 and the dotnet twin's `setApplicationProtocols`; a peer that
@@ -1080,8 +1110,8 @@ pub func hostConnectTls(
 /// as SNI and verified against the peer's certificate (RFC 6125) — see
 /// `hostConnectTls`'s doc comment for the ordinary case where it equals the
 /// dial host. The underlying socket is closed on every failure path so a
-/// rejected handshake never leaks a connection.
-@unsafe_ffi
+/// rejected handshake never leaks a connection. A socket timeout set with
+/// `hostSetIoTimeout` bounds each socket operation of the handshake.
 @experimental
 pub func hostUpgradeClientTls(
   conn: in Conn,
@@ -1091,34 +1121,248 @@ pub func hostUpgradeClientTls(
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
 ): Result[Conn, TcpError] {
+  match upgradeClientTls(conn, sniHost, trust, clientIdentity, minVersion, alpnCsv, false, 0i64, 0 - 1) {
+    case Ok(c) -> Ok(value = c)
+    case Err(e) -> Err(error = boundedAsTcpError(e))
+  }
+}
+
+// =====================================================================
+// Bounded operations (#9090).
+//
+// The functions above block until the socket is ready, or until the
+// inactivity timeout `hostSetIoTimeout` set passes. A request has two other
+// limits: a point in time by which it must be over, whatever the peer does,
+// and a cancellation that must stop it at once. The `*Bounded` forms take
+// both, as an absolute deadline on the clock of `Std.Time.monotonicNanos()`
+// (`0i64` = none) and the read end of a wake pipe (`-1` = none;
+// `hostWakePipeNew`), and say which of them ended the operation. A connect
+// timeout is `hostConnectBounded(host, port, monotonicNanos() + limit, -1)`;
+// a limit on the client handshake, or separate limits for a read and a
+// write, are the same call with the deadline each one should have.
+//
+// They exist for `Std.HttpHost`'s native client. After `BoundDeadlinePassed`
+// or `BoundInterrupted` the connection may hold half a message: close it.
+// =====================================================================
+/// Why a bounded operation did not complete.
+@experimental
+pub union BoundedError {
+  // The deadline passed first. The monotonic clock has reached it by the
+  // time this is reported, so a token built on the same deadline already
+  // reads as cancelled.
+  case BoundDeadlinePassed
+  // The wake pipe was signalled first.
+  case BoundInterrupted
+  // The operation itself failed, as its unbounded form would.
+  case BoundFailed(error: TcpError)
+}
+
+/// Human-readable message for a BoundedError.
+@pure
+@experimental
+pub func BoundedError.message(e: in BoundedError): String {
+  match e {
+    case BoundDeadlinePassed -> "timed out"
+    case BoundInterrupted -> "interrupted"
+    case BoundFailed(error) -> TcpError.message(error)
+  }
+}
+
+func boundedAsTcpError(e: in BoundedError): TcpError {
+  match e {
+    case BoundFailed(error) -> error
+    case BoundDeadlinePassed -> TransportFailed(message = "timed out")
+    case BoundInterrupted -> TransportFailed(message = "interrupted")
+  }
+}
+
+/// The error for a bounded status other than done; `failed` builds the error
+/// for the plain failure from the seam's message.
+func boundedFailure(status: in Int, failed: in TcpError): BoundedError {
+  if status == boundedDeadline {
+    BoundDeadlinePassed
+  } else if status == boundedInterrupted {
+    BoundInterrupted
+  } else {
+    BoundFailed(error = failed)
+  }
+}
+
+/// A pipe whose read end a bounded operation watches: signalling it from any
+/// thread interrupts the operation. Close it with `hostWakePipeClose` once
+/// no operation uses it.
+@experimental
+pub record WakePipe {
+  readFd: Int
+  writeFd: Int
+}
+
+@unsafe_ffi
+@experimental
+pub func hostWakePipeNew(): Result[WakePipe, TcpError] {
+  var readFd: Int = 0 - 1
+  var writeFd: Int = 0 - 1
+  if rtSockWakePipeNew(nativeAddrOf(readFd), nativeAddrOf(writeFd)) == 0 {
+    Ok(value = WakePipe(readFd = readFd, writeFd = writeFd))
+  } else {
+    Err(error = TransportFailed(message = rtLastErrorString()))
+  }
+}
+
+/// The descriptor to pass as a bounded operation's `wakeFd`.
+@experimental
+pub func hostWakePipeReadFd(p: in WakePipe): Int {
+  p.readFd
+}
+
+/// The descriptor a signaller writes to (`lyric_cancel_wake_register`).
+@experimental
+pub func hostWakePipeWriteFd(p: in WakePipe): Int {
+  p.writeFd
+}
+
+/// Interrupt every bounded operation watching `p`, now and from now on.
+@experimental
+pub func hostWakePipeSignal(p: in WakePipe): Unit {
+  val _ = rtSockWakePipeSignal(p.writeFd)
+}
+
+@experimental
+pub func hostWakePipeClose(p: in WakePipe): Unit {
+  val _r = rtSockClose(p.readFd)
+  val _w = rtSockClose(p.writeFd)
+}
+
+/// `hostConnect` within the limits, name resolution included.
+@unsafe_ffi
+@experimental
+pub func hostConnectBounded(
+  host: in String, port: in Int, deadlineNanos: in Long, wakeFd: in Int
+): Result[Conn, BoundedError] {
+  val c = toC(host)
+  val fd = rtSockConnectBounded(c, port, deadlineNanos, wakeFd)
+  freeC(c)
+  if fd >= 0 {
+    Ok(value = Conn(fd = fd, tlsConnHandle = 0i64, alpn = ""))
+  } else if fd == 0 - 2 {
+    Err(error = BoundDeadlinePassed)
+  } else if fd == 0 - 3 {
+    Err(error = BoundInterrupted)
+  } else {
+    Err(error = BoundFailed(error = TransportFailed(message = rtLastErrorString())))
+  }
+}
+
+/// `hostUpgradeClientTls` within the limits: the whole handshake, however
+/// many records the peer splits it into, is over by the deadline. The socket
+/// is closed on every failure path.
+@experimental
+pub func hostUpgradeClientTlsBounded(
+  conn: in Conn,
+  sniHost: in String,
+  trust: in TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+  deadlineNanos: in Long,
+  wakeFd: in Int,
+): Result[Conn, BoundedError] {
+  upgradeClientTls(conn, sniHost, trust, clientIdentity, minVersion, alpnCsv, true, deadlineNanos, wakeFd)
+}
+
+@unsafe_ffi
+func upgradeClientTls(
+  conn: in Conn,
+  sniHost: in String,
+  trust: in TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+  bounded: in Bool,
+  deadlineNanos: in Long,
+  wakeFd: in Int,
+): Result[Conn, BoundedError] {
   val minVersionNum = tlsVersionNumber(minVersion)
   match buildClientCtx(trust, minVersionNum) {
     case Err(e) -> {
       val _ = rtSockClose(conn.fd)
-      Err(error = e)
+      Err(error = BoundFailed(error = e))
     }
     case Ok(ctx) -> match applyClientIdentity(ctx, clientIdentity) {
       case Err(e) -> {
         rtTlsCtxFree(ctx)
         val _ = rtSockClose(conn.fd)
-        Err(error = e)
+        Err(error = BoundFailed(error = e))
       }
       case Ok(_) -> {
         val sniC = toC(sniHost)
         val alpnC = toC(alpnCsv)
-        val tlsConn = rtTlsClientConnect(ctx, conn.fd, sniC, alpnC)
+        var status: Int = 0
+        val tlsConn = if bounded {
+          rtPtrToLong(
+            rtTlsClientConnectBoundedRaw(rtLongToPtr(ctx), conn.fd, sniC, alpnC, deadlineNanos, wakeFd, nativeAddrOf(status))
+          )
+        } else {
+          rtTlsClientConnect(ctx, conn.fd, sniC, alpnC)
+        }
         freeC(alpnC)
         freeC(sniC)
         rtTlsCtxFree(ctx)
         if tlsConn == 0i64 {
           val msg = rtLastErrorString()
           val _ = rtSockClose(conn.fd)
-          Err(error = TlsHandshakeFailed(message = msg))
+          Err(error = boundedFailure(status, TlsHandshakeFailed(message = msg)))
         } else {
           val alpn = rtTlsAlpnString(tlsConn)
           Ok(value = Conn(fd = conn.fd, tlsConnHandle = tlsConn, alpn = alpn))
         }
       }
     }
+  }
+}
+
+/// `hostRead` within the limits. An empty slice is the end of the stream.
+@unsafe_ffi
+@experimental
+pub func hostReadBounded(
+  c: in Conn, maxBytes: in Int, deadlineNanos: in Long, wakeFd: in Int
+): Result[slice[Byte], BoundedError]
+  requires: maxBytes > 0
+{
+  var status: Int = 0
+  val bytes = if c.tlsConnHandle != 0i64 {
+    rtTlsReadBytesBoundedRaw(
+      rtLongToPtr(c.tlsConnHandle),
+      c.fd,
+      maxBytes.toLong(),
+      deadlineNanos,
+      wakeFd,
+      nativeAddrOf(status)
+    )
+  } else {
+    rtSockReadBytesBounded(c.fd, maxBytes.toLong(), deadlineNanos, wakeFd, nativeAddrOf(status))
+  }
+  if status == boundedDone {
+    Ok(value = bytes)
+  } else {
+    Err(error = boundedFailure(status, TransportFailed(message = rtLastErrorString())))
+  }
+}
+
+/// `hostWrite` within the limits. Part of `bytes` may have been sent when
+/// the result is an error.
+@experimental
+pub func hostWriteBounded(
+  c: in Conn, bytes: in slice[Byte], deadlineNanos: in Long, wakeFd: in Int
+): Result[Unit, BoundedError] {
+  val status = if c.tlsConnHandle != 0i64 {
+    rtTlsWriteBytesBoundedRaw(rtLongToPtr(c.tlsConnHandle), c.fd, bytes, deadlineNanos, wakeFd)
+  } else {
+    rtSockWriteBytesBounded(c.fd, bytes, deadlineNanos, wakeFd)
+  }
+  if status == boundedDone {
+    Ok(value = ())
+  } else {
+    Err(error = boundedFailure(status, TransportFailed(message = rtLastErrorString())))
   }
 }

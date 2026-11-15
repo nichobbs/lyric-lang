@@ -37,6 +37,8 @@ import Std.Iter
 import Std.Char
 import Jobs.Kernel.Net as KernelNet
 import Jobs.Kernel.Jvm as KernelJvm
+import Jobs.Kernel.Native as KernelNative
+import Jobs.Kernel.Guard
 import Std.String as Str
 
 // ─── Platform kernel dispatch ─────────────────────────────────────────────────
@@ -55,6 +57,11 @@ pub func nowMs(): Long {
   KernelJvm.nowMs()
 }
 
+@cfg(target = "native")
+pub func nowMs(): Long {
+  KernelNative.nowMs()
+}
+
 @cfg(feature = "dotnet")
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
@@ -69,6 +76,13 @@ pub func sleepMs(ms: in Int): Unit
   KernelJvm.sleepMs(ms)
 }
 
+@cfg(target = "native")
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
+{
+  KernelNative.sleepMs(ms)
+}
+
 @cfg(feature = "dotnet")
 func generateId(): String {
   KernelNet.generateId()
@@ -77,6 +91,11 @@ func generateId(): String {
 @cfg(feature = "jvm")
 func generateId(): String {
   KernelJvm.generateId()
+}
+
+@cfg(target = "native")
+func generateId(): String {
+  KernelNative.generateId()
 }
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
@@ -547,19 +566,16 @@ impl JobScheduler for InProcessJobScheduler {
   }
 }
 
-/// Run one attempt of `handler.handle(spec)`, catching a handler panic
-/// (`Bug`) and reporting it as an ordinary failed attempt rather than
-/// propagating it — an unhandled panic inside a scheduled job must not take
-/// down the scheduler.
+/// Run one attempt of `handler.handle(spec)`.  On `dotnet` and the JVM a
+/// handler panic (`Bug`) is caught and reported as an ordinary failed attempt
+/// rather than propagated — an unhandled panic inside a scheduled job must
+/// not take down the scheduler.  Native has no unwinding (D-N-003): a handler
+/// that panics there ends the process, so a native handler reports failure
+/// with `Err`.
 func runHandlerAttempt(handler: in JobHandler, spec: in JobSpec): Result[String, String] {
-  try {
-    match handler.handle(spec) {
-      case Ok(output) -> Ok(output)
-      case Err(jobErr) -> Err(jobErr.message)
-    }
-  } catch Bug as b {
-    Err("handler panicked: " + b.message)
-  }
+  guardedAttempt(
+    { -> match handler.handle(spec) { case Ok(output) -> Ok(output); case Err(jobErr) -> Err(jobErr.message) } }
+  )
 }
 
 /// Execute the next pending job using the provided handler, honouring

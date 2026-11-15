@@ -6747,7 +6747,7 @@ jobs:
           - id: ui
             deps: "generator-sdk forms auth resilience web ws"
           - id: testing
-            deps: "cache mail storage feature-flags mq session"
+            deps: "conformance cache mail storage feature-flags mq session jobs search"
           - id: game
             deps: ""
           - id: unicode
@@ -7049,7 +7049,7 @@ jobs:
       - name: Run tests (testing)
         if: matrix.id == 'testing'
         run: |
-          "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+          bash scripts/ci/testing-tests.sh
 
       - name: Set up Java 22 (game, unicode)
         if: matrix.id == 'game' || matrix.id == 'unicode'

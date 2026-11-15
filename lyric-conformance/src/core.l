@@ -3,8 +3,8 @@
 //! A conformance suite is a function that takes a factory for the
 //! implementation under test and exercises the contract the library's
 //! interface documents.  Every in-tree backend runs its suite from
-//! `lyric-testing/tests/`, and an out-of-tree backend runs the same suite from
-//! its own test module:
+//! `lyric-conformance/tests/`, and an out-of-tree backend runs the same suite
+//! from its own test module:
 //!
 //!   import Testing.Conformance
 //!   import Testing.Conformance.Cache as CacheConformance
@@ -14,11 +14,15 @@
 //!     Conformance.requireConformance(checks)
 //!   }
 //!
-//! A suite never aborts at the first failure: each case runs under
-//! `runCase`, which records a failed expectation, or a panic raised by the
-//! backend, against the case's name and carries on with the next case.
-//! `requireConformance` then fails the calling test once, listing every
-//! failed case.
+//! A suite never aborts at the first failed expectation: each case runs under
+//! `runCase`, which records a failed expectation against the case's name and
+//! carries on with the next case.  `requireConformance` then fails the calling
+//! test once, listing every failed case.  A panic raised by the backend is
+//! recorded the same way on `dotnet` and the JVM; on native, which cannot
+//! catch one, it ends the run.
+//!
+//! The suites live in the `Lyric.Conformance` package (`lyric-conformance/`),
+//! which depends only on the interface packages and builds for every target.
 @runtime_checked
 @io
 package Testing.Conformance
@@ -26,6 +30,7 @@ package Testing.Conformance
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Testing.Conformance.Guard
 
 /// The running tally of one suite: how many expectations held and the
 /// description of every one that did not.
@@ -44,17 +49,19 @@ pub func newChecks(suite: in String): Checks {
   return Checks(suite = suite, current = "", passedCount = 0, failureList = newList(), caseCount = 0)
 }
 
-/// Run one named case.  A panic from the body (a contract violation inside
-/// the backend, for instance) is recorded as a failure of this case, not
-/// propagated, so the remaining cases still run.
+/// Run one named case.  On `dotnet` and the JVM a panic from the body (a
+/// contract violation inside the backend, for instance) is recorded as a
+/// failure of this case, not propagated, so the remaining cases still run.
+/// On native a panic ends the process (D-N-003: there is no unwinding), so
+/// the run stops there with the panic's message; every failed expectation is
+/// still collected and reported at the end, as on the other targets.
 @stable(since = "0.1")
 pub func runCase(checks: in Checks, name: in String, body: () -> Unit): Unit {
   checks.current = name
   checks.caseCount = checks.caseCount + 1
-  try {
-    body()
-  } catch Bug as b {
-    recordFailure(checks, "panicked: " + b.message)
+  match guardedCase(body) {
+    case Some(message) -> recordFailure(checks, "panicked: " + message)
+    case None -> ()
   }
   checks.current = ""
 }
