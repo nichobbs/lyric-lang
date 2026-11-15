@@ -1928,6 +1928,15 @@ test "a catch-bound exception's message is a built-in property read" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a catch-bound exception's type name is a built-in property read (D471)" {
+  val c = censusOf(
+    "package App\nfunc f(n: Int): String {\n  var m = \"\"\n  try {\n    m = \"ok\"\n  } catch Exception as e {\n    m = e.typeName\n  }\n  m\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a call under explicit type arguments records them as the call's instantiation" {
   val c = censusOf(
     "package App\nunion Opt[T] { case Nada\n case One(v: T) }\nfunc isNada[T](v: in Opt[T]): Bool { true }\nfunc f(x: in Opt[Int]): Bool { isNada[Int](x) }\n"
