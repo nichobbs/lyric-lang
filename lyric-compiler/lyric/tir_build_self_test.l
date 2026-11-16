@@ -955,6 +955,9 @@ func fakeHost(): FakeHost {
   val ctor: List[ExternMemberSig] = newList()
   ctor.add(fhSig(true, newList(), EMTType(elem = fhHost("System.Text.StringBuilder"))))
   sigs.add(fhKey("System.Text.StringBuilder", "new", 0), ctor)
+  val cmp: List[ExternMemberSig] = newList()
+  cmp.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.String", "compareTo", 1), cmp)
   FakeHost(sigs = sigs)
 }
 
@@ -2787,4 +2790,19 @@ test "Self in a method of a generic record names the generic record (D521)" {
   val c = censusOf("package App\nrecord Box[T] {\n  v: T\n  func same(self: in Self): Self { Box(v = self.v) }\n}\n")
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a host method called on a String value is an extern call with the value as receiver (D493)" {
+  val st = buildFirstFnHost("package App\nfunc f(a: in String, b: in String): Int {\n  a.compareTo(b)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.owner.name == "java.lang.String", "the host string type")
+      assertTrue(not m.isStatic, "an instance member")
+      assertEqualInt(m.params.count, 2, "the receiver and the argument")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "an Int")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
 }
