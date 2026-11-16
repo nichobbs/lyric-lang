@@ -896,6 +896,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A recursive union or a host collection used at other covariant type arguments is a `CvCovariant` conversion node (D524).
   - `forall` and `exists` build as quantifier nodes over their binder locals (D525).
   - The JVM bridge registers the interfaces of restored JARs (`META-INF/lyric/*.lyri`) so a call leaving out their defaults builds on `--target jvm` (D527); the JVM sibling check order, interface-member defaults and the native bridge stay open.
+  - The FFI intrinsic calls (`nativeNullPtr`, `nativeAddrOf`, the byte accessors, callback pins, `externAsObject`) build as built-in calls (D526).
   - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
   - A field read through an instance at the enclosing generic's own type parameters keeps its declared type, and so does a `for` variable over it (D492): the checker erases only the parameters that are not the function's own.
 - **3b** Declaration expansion before body check: derives and the weaver

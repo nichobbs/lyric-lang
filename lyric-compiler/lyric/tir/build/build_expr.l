@@ -2386,7 +2386,37 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match ffiIntrinsicCall(env, fn) {
+    case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// The FFI intrinsics the checker types by name and no table records (`nativeNullPtr()`,
+/// `nativeAddrOf(x)`, the byte accessors and callback pins, `externAsObject(x)`, docs/01 §11.6,
+/// D158, D212, D229): every backend lowers them by name.
+func ffiIntrinsicName(name: in String): Bool {
+  name == "nativeNullPtr" or name == "nativeAddrOf" or name == "NativeWeak" or name == "nativeLoadByte" or
+    name == "nativeStoreByte" or
+    name == "nativeKeepCallback" or
+    name == "nativeReleaseCallback" or
+    name == "externAsObject"
+}
+
+/// The name of the FFI intrinsic `fn` calls: a single bare name that is no local.
+func ffiIntrinsicCall(env: in BuildEnv, fn: in Expr): Option[String] {
+  match fn.kind {
+    case EPath(path) -> if path.segments.count == 1 and ffiIntrinsicName(path.segments[0]) {
+      match lookupLocal(env, path.segments[0]) {
+        case Some(_) -> None
+        case None -> Some(value = path.segments[0])
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
 }
 
 /// A numeric conversion method (`x.toInt()`, `x.toLong()`) on a range-subtype or distinct
@@ -4163,7 +4193,8 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 
 /// The built-ins whose parameter is any `T`: no argument converts.
 func genericBuiltin(name: in String): Bool {
-  name == "println" or name == "print" or name == "toString" or name == "hashCode" or name == "default" or
+  ffiIntrinsicName(name) or name == "println" or name == "print" or name == "toString" or name == "hashCode" or
+    name == "default" or
     Str.endsWith(name, ".wrappingAdd") or
     Str.endsWith(name, ".wrappingSub") or
     Str.endsWith(name, ".wrappingMul") or
