@@ -394,6 +394,28 @@ func has(n: in Int): Int
 func main(): Int = below(5) + has(3)
 LYRIC
 
+# The FFI intrinsics the checker types by name (`nativeNullPtr()`, `nativeAddrOf(x)`, the byte
+# accessors) are built-in calls (D526).  Built and verified only: the dotnet backend does not lower
+# `NativePtr`.
+check ffi_intrinsics "" <<'LYRIC'
+package Shapes13
+import Std.Core
+
+@unsafe_ffi
+func nothing(): NativePtr[Byte] {
+  nativeNullPtr()
+}
+
+@unsafe_ffi
+func touch(): Int {
+  val p = nativeNullPtr()
+  nativeStoreByte(p, 0, 7u8)
+  nativeLoadByte(p, 0).toInt()
+}
+
+func main(): Int = 0
+LYRIC
+
 # An array with no initializer is its zero value, and an array stored from a place is a copy (D489).
 check array_copy_and_zero 27 <<'LYRIC'
 package Shapes12
