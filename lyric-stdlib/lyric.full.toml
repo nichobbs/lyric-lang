@@ -134,7 +134,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # Tier 6 — regex compatibility shim.
 "Std.RegexSafe"        = "std/regex_safe.l"
 
-# Tier 7 — testing utilities + app host.
+# Tier 7 — testing utilities + app host.  Std.PanicTrapHost (the panic trap
+# behind assertPanics, with a native twin, D608) precedes Std.Testing.
+"Std.PanicTrapHost"    = "std/_kernel/panic_trap_host.l"
 "Std.Testing.Mocking"  = "std/testing_mocking.l"
 "Std.Testing"          = "std/testing.l"
 "Std.Testing.Property" = "std/testing_property.l"

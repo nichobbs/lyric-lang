@@ -154,6 +154,96 @@ static void counting_dtor(void* obj) {
     dtor_calls++;
 }
 
+#if !defined(_WIN32) && !defined(__wasi__)
+/* ── Panic trap (Std.PanicTrapHost, D608) ─────────────────────────────── */
+
+static char trap_kind(LyricString* s) {
+    return (char)LYRIC_STRING_DATA(s)[0];
+}
+
+static int trap_rest_is(LyricString* s, const char* want) {
+    size_t n = (size_t)s->len - 1;
+    return n == strlen(want) && memcmp(LYRIC_STRING_DATA(s) + 1, want, n) == 0;
+}
+
+static int trap_rest_has(LyricString* s, const char* needle) {
+    char buf[256];
+    size_t n = (size_t)s->len - 1;
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, LYRIC_STRING_DATA(s) + 1, n);
+    buf[n] = '\0';
+    return strstr(buf, needle) != NULL;
+}
+
+static void test_panic_trap(void) {
+    /* A body that returns. */
+    int64_t h = lyric_panic_trap_enter();
+    if (h == 0) lyric_panic_trap_child_done();
+    CHECK(h > 0);
+    LyricString* r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'R' && r->len == 1);
+    lyric_release(r);
+
+    /* A body that panics: the message arrives, the parent lives on. */
+    h = lyric_panic_trap_enter();
+    if (h == 0) lyric_panic_msg("trapped-marker", "lyric_rt_test.c", __LINE__);
+    CHECK(h > 0);
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'P' && trap_rest_is(r, "trapped-marker"));
+    lyric_release(r);
+
+    /* A panic after allocating reference-counted data. */
+    h = lyric_panic_trap_enter();
+    if (h == 0) {
+        for (int i = 0; i < 1000; i++) (void)lyric_string_from_literal((const uint8_t*)"leaks-in-the-child", 18);
+        lyric_panic_msg("after allocating", "lyric_rt_test.c", __LINE__);
+    }
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'P' && trap_rest_is(r, "after allocating"));
+    lyric_release(r);
+
+    /* A very long message is cut, not lost, and does not block the child. */
+    h = lyric_panic_trap_enter();
+    if (h == 0) {
+        char* big = (char*)malloc(3 << 20);
+        memset(big, 'x', (3 << 20) - 1);
+        big[(3 << 20) - 1] = '\0';
+        lyric_panic_msg(big, "lyric_rt_test.c", __LINE__);
+    }
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'P' && r->len > 1000000);
+    lyric_release(r);
+
+    /* A body that ends the process, and one that crashes, are not panics. */
+    h = lyric_panic_trap_enter();
+    if (h == 0) _exit(3);
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'F' && trap_rest_has(r, "exit status 3"));
+    lyric_release(r);
+    h = lyric_panic_trap_enter();
+    if (h == 0) {
+        signal(SIGABRT, SIG_DFL);
+        abort();
+    }
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'F' && trap_rest_has(r, "signal"));
+    lyric_release(r);
+
+    /* Nested: the outer child traps an inner panic and then returns. */
+    h = lyric_panic_trap_enter();
+    if (h == 0) {
+        int64_t inner = lyric_panic_trap_enter();
+        if (inner == 0) lyric_panic_msg("inner", "lyric_rt_test.c", __LINE__);
+        LyricString* ir = lyric_panic_trap_join(inner);
+        if (trap_kind(ir) != 'P') lyric_panic_msg("inner not trapped", "lyric_rt_test.c", __LINE__);
+        lyric_panic_trap_child_done();
+    }
+    r = lyric_panic_trap_join(h);
+    CHECK(trap_kind(r) == 'R');
+    lyric_release(r);
+}
+#endif
+
 static void test_alloc_retain_release(void) {
     void* raw16 = lyric_alloc(16);
     CHECK(raw16 != NULL);
@@ -4174,6 +4264,9 @@ int main(void) {
     test_thread_ref_slot();
     test_string_ascii_case_compare();
     test_alloc_retain_release();
+#if !defined(_WIN32) && !defined(__wasi__)
+    test_panic_trap();
+#endif
     test_free();
     test_allocated_bytes();
     test_strings();

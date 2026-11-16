@@ -845,6 +845,20 @@ typedef struct {
 
 static pthread_mutex_t g_resolve_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/* The most name lookups that may be in flight at once, abandoned ones
+ * included: a helper counts from the moment its thread starts until its
+ * getaddrinfo returns, not until the waiter stops waiting.  A further bounded
+ * connect to a name fails with LYRIC_BOUNDED_ERROR ("too many name lookups in
+ * flight") until one returns, so a resolver that never answers costs at most
+ * this many threads however many short-deadline requests arrive (#9137, D608).
+ * Guarded by g_resolve_mutex. */
+#define LYRIC_RESOLVE_MAX_INFLIGHT 32
+static int g_resolve_inflight = 0;
+
+/* The lookup the helper thread runs.  Internal test seam: lyric_tls_test.c
+ * swaps it to hold lookups open; nothing else assigns it. */
+int (*lyric_resolve_lookup_hook)(const char*, const char*, const struct addrinfo*, struct addrinfo**) = getaddrinfo;
+
 static void resolve_job_free(resolve_job* j) {
     if (j->res) freeaddrinfo(j->res);
     if (j->done_fd >= 0) close(j->done_fd);
@@ -859,8 +873,9 @@ static void* resolve_main(void* arg) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     struct addrinfo* res = NULL;
-    int gai = getaddrinfo(j->host, j->port, &hints, &res);
+    int gai = lyric_resolve_lookup_hook(j->host, j->port, &hints, &res);
     pthread_mutex_lock(&g_resolve_mutex);
+    g_resolve_inflight--;
     j->res = res;
     j->gai = gai;
     j->done = 1;
@@ -882,7 +897,7 @@ static void* resolve_main(void* arg) {
  * getaddrinfo itself cannot be given a deadline or interrupted.  A helper
  * whose waiter gave up lives until its getaddrinfo returns, so lookups that
  * keep timing out against a resolver that never answers hold one thread each
- * for the resolver's own timeout; there is no cap. */
+ * for the resolver's own timeout, up to LYRIC_RESOLVE_MAX_INFLIGHT. */
 static int resolve_bounded(const char* host, const char* portstr, int64_t deadline_ns, int32_t wake_fd,
                            struct addrinfo** out) {
     struct addrinfo hints;
@@ -910,6 +925,16 @@ static int resolve_bounded(const char* host, const char* portstr, int64_t deadli
     }
     snprintf(j->port, sizeof(j->port), "%s", portstr);
     j->done_fd = fds[1];
+    pthread_mutex_lock(&g_resolve_mutex);
+    int at_cap = g_resolve_inflight >= LYRIC_RESOLVE_MAX_INFLIGHT;
+    if (!at_cap) g_resolve_inflight++;
+    pthread_mutex_unlock(&g_resolve_mutex);
+    if (at_cap) {
+        set_err("resolve %s: too many name lookups in flight", host);
+        close(fds[0]);
+        resolve_job_free(j);
+        return LYRIC_BOUNDED_ERROR;
+    }
     pthread_attr_t attr;
     pthread_t tid;
     pthread_attr_init(&attr);
@@ -917,6 +942,9 @@ static int resolve_bounded(const char* host, const char* portstr, int64_t deadli
     int rc = pthread_create(&tid, &attr, resolve_main, j);
     pthread_attr_destroy(&attr);
     if (rc != 0) {
+        pthread_mutex_lock(&g_resolve_mutex);
+        g_resolve_inflight--;
+        pthread_mutex_unlock(&g_resolve_mutex);
         set_err("resolve %s: cannot start the lookup thread: %s", host, strerror(rc));
         close(fds[0]);
         resolve_job_free(j);

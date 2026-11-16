@@ -2317,3 +2317,58 @@ func main(): Int {
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "an overflowing ULong sum must not return")
   assertTrue(Str.contains(r.stderr, "overflow"), "the panic names the overflow")
 }
+
+test "Native: assertPanics traps a panic after allocating, and the parent stays leak-free (ASan, D608)" {
+  val src = r#"package T
+import Std.Core
+import Std.Collections
+import Std.Testing
+
+func churn(n: in Int): Unit {
+  val items: List[String] = newList()
+  var i = 0
+  while i < n {
+    items.add("item-" + toString(i))
+    i = i + 1
+  }
+  panic("after " + toString(items.count))
+}
+
+func main(): Int {
+  val kept: List[String] = newList()
+  kept.add("parent-owned")
+  var round = 0
+  while round < 3 {
+    assertPanicsWith("churn", "after 200", { -> churn(200) })
+    round = round + 1
+  }
+  assertPanics("an inner failure is itself a panic", { -> assertPanics("returns", { -> () }) })
+  println(kept[0])
+  println(round)
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code (a leak or a use-after-free would fail the ASan run)")
+  assertEqual(r.stdout, "parent-owned\n3\n", "the parent kept its data and ran every round")
+}
+
+test "Native: assertPanics fails the program when the body returns (ASan, D608)" {
+  val src = r#"package T
+import Std.Core
+import Std.Testing
+
+func main(): Int {
+  assertPanics("returns normally", { -> () })
+  println("unreachable")
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 0, "a body that returns must fail the assertion")
+  assertTrue(
+    Str.contains(r.stderr, "assertPanics 'returns normally' failed: function returned normally"),
+    "the message"
+  )
+  assertEqual(r.stdout, "", "nothing ran after the failed assertion")
+}

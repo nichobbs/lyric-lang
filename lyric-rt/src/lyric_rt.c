@@ -169,7 +169,174 @@ void* lyric_long_to_ptr(int64_t v) {
     return (void*)(intptr_t)v;
 }
 
+#if !defined(_WIN32) && !defined(__wasi__)
+/* ── Panic trap (Std.PanicTrapHost, D608) ──────────────────────────────
+ * `--target native` cannot unwind (D-N-003), so `Std.Testing.assertPanics`
+ * runs its body in a forked child.  Only the child ever sets the fd; a panic
+ * there reports its message down the pipe and ends the child, never the
+ * parent.  Written by lyric_panic_trap_enter in the child before the body
+ * runs, read by lyric_panic_msg (possibly on a thread the body started). */
+#include <errno.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#define LYRIC_PANIC_TRAP_STATUS 113
+#define LYRIC_PANIC_TRAP_MAX_MESSAGE (1 << 20)
+
+static volatile int lyric_panic_trap_fd = -1;
+
+static void lyric_panic_trap_write_all(int fd, const char* p, size_t n) {
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        p += (size_t)w;
+        n -= (size_t)w;
+    }
+}
+
+static _Noreturn void lyric_panic_trap_report(int fd, const char* msg) {
+    lyric_panic_trap_fd = -1;
+    if (!msg) msg = "";
+    size_t n = strlen(msg);
+    if (n > LYRIC_PANIC_TRAP_MAX_MESSAGE) n = LYRIC_PANIC_TRAP_MAX_MESSAGE;
+    lyric_panic_trap_write_all(fd, "P", 1);
+    lyric_panic_trap_write_all(fd, msg, n);
+    fflush(NULL);
+    _exit(LYRIC_PANIC_TRAP_STATUS);
+}
+
+static int lyric_panic_trap_cloexec_pipe(int fds[2]) {
+    if (pipe(fds) != 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(fds[i], F_GETFD);
+        if (fl < 0 || fcntl(fds[i], F_SETFD, fl | FD_CLOEXEC) < 0) {
+            close(fds[0]);
+            close(fds[1]);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int64_t lyric_panic_trap_enter(void) {
+    int fds[2];
+    if (lyric_panic_trap_cloexec_pipe(fds) != 0) return -1;
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return -2;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        lyric_panic_trap_fd = fds[1];
+        return 0;
+    }
+    close(fds[1]);
+    return ((int64_t)pid << 32) | (int64_t)(uint32_t)fds[0];
+}
+
+_Noreturn void lyric_panic_trap_child_done(void) {
+    fflush(NULL);
+    _exit(0);
+}
+
+static LyricString* lyric_panic_trap_result(char kind, const char* text, size_t n) {
+    uint8_t* buf = (uint8_t*)malloc(n + 1);
+    if (!buf) lyric_panic_msg("out of memory reading a trapped panic", "lyric_rt.c", __LINE__);
+    buf[0] = (uint8_t)kind;
+    if (n) memcpy(buf + 1, text, n);
+    LyricString* s = lyric_string_from_literal(buf, (int64_t)(n + 1));
+    free(buf);
+    return s;
+}
+
+LyricString* lyric_panic_trap_join(int64_t handle) {
+    pid_t pid = (pid_t)(handle >> 32);
+    int fd = (int)(uint32_t)(handle & 0xFFFFFFFF);
+    size_t cap = 256, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) lyric_panic_msg("out of memory reading a trapped panic", "lyric_rt.c", __LINE__);
+    for (;;) {
+        if (len == cap) {
+            if (cap >= (size_t)LYRIC_PANIC_TRAP_MAX_MESSAGE + 2) {
+                /* Keep draining so the child never blocks on a full pipe. */
+                char sink[4096];
+                ssize_t r = read(fd, sink, sizeof sink);
+                if (r < 0 && errno == EINTR) continue;
+                if (r <= 0) break;
+                continue;
+            }
+            cap *= 2;
+            char* nb = (char*)realloc(buf, cap);
+            if (!nb) {
+                free(buf);
+                lyric_panic_msg("out of memory reading a trapped panic", "lyric_rt.c", __LINE__);
+            }
+            buf = nb;
+        }
+        ssize_t r = read(fd, buf + len, cap - len);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;
+        len += (size_t)r;
+    }
+    close(fd);
+    int status = 0;
+    pid_t w;
+    while ((w = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {
+    }
+    LyricString* out;
+    char text[160];
+    if (w < 0) {
+        out = lyric_panic_trap_result('F', "the isolated process could not be waited for", 44);
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && len == 0) {
+        out = lyric_panic_trap_result('R', "", 0);
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == LYRIC_PANIC_TRAP_STATUS && len >= 1 && buf[0] == 'P') {
+        out = lyric_panic_trap_result('P', buf + 1, len - 1);
+    } else if (WIFEXITED(status)) {
+        int n = snprintf(text, sizeof text, "the body ended the process with exit status %d instead of panicking",
+                         WEXITSTATUS(status));
+        out = lyric_panic_trap_result('F', text, (size_t)n);
+    } else {
+        int n = snprintf(text, sizeof text, "the body crashed with signal %d, which is not a panic",
+                         WTERMSIG(status));
+        out = lyric_panic_trap_result('F', text, (size_t)n);
+    }
+    free(buf);
+    return out;
+}
+#else
+/* No fork on this target (Windows, wasm32-wasi): the trap reports it cannot
+ * start, and Std.PanicTrapHost turns that into a failed assertion. */
+int64_t lyric_panic_trap_enter(void) {
+    return -3;
+}
+
+_Noreturn void lyric_panic_trap_child_done(void) {
+    abort();
+}
+
+LyricString* lyric_panic_trap_join(int64_t handle) {
+    (void)handle;
+    abort();
+}
+#endif
+
 _Noreturn void lyric_panic_msg(const char* msg, const char* file, int32_t line) {
+#if !defined(_WIN32) && !defined(__wasi__)
+    int trap_fd = lyric_panic_trap_fd;
+    if (trap_fd >= 0) lyric_panic_trap_report(trap_fd, msg);
+#endif
     fprintf(stderr, "lyric panic at %s:%d: %s\n",
             file ? file : "<unknown>", line, msg ? msg : "");
     fflush(stderr);

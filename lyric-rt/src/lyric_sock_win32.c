@@ -1020,6 +1020,14 @@ typedef struct {
     volatile LONG refs;
 } resolve_job;
 
+/* The most name lookups that may be in flight at once, abandoned ones
+ * included: a helper counts from the moment its thread starts until
+ * GetAddrInfoW returns.  A further bounded connect to a name fails with
+ * "too many name lookups in flight" until one returns (#9137, D608).  The
+ * Linux twin is LYRIC_RESOLVE_MAX_INFLIGHT in lyric_tls.c. */
+#define LYRIC_RESOLVE_MAX_INFLIGHT 32
+static volatile LONG g_resolve_inflight = 0;
+
 static void resolve_job_release(resolve_job* j) {
     if (InterlockedDecrement(&j->refs) != 0) return;
     if (j->res) FreeAddrInfoW(j->res);
@@ -1033,6 +1041,7 @@ static DWORD WINAPI resolve_thread(LPVOID param) {
     ADDRINFOW* res = NULL;
     int ok = resolve(j->host, j->port, 0, &res) == 0;
     if (!ok) lyric_tls_last_error(j->err, (int32_t)sizeof j->err);
+    InterlockedDecrement(&g_resolve_inflight);
     j->res = res;
     j->ok = ok;
     SetEvent(j->done);
@@ -1088,8 +1097,16 @@ static int resolve_bounded(const char* host, int32_t port, ADDRINFOW** out) {
         }
         return -1;
     }
+    if (InterlockedIncrement(&g_resolve_inflight) > LYRIC_RESOLVE_MAX_INFLIGHT) {
+        InterlockedDecrement(&g_resolve_inflight);
+        lyric_net_set_err("resolve %s: too many name lookups in flight", host);
+        j->refs = 1;
+        resolve_job_release(j);
+        return -1;
+    }
     HANDLE th = CreateThread(NULL, 0, resolve_thread, j, 0, NULL);
     if (!th) {
+        InterlockedDecrement(&g_resolve_inflight);
         lyric_net_set_err("resolve %s: cannot start the lookup thread", host);
         j->refs = 1;
         resolve_job_release(j);
