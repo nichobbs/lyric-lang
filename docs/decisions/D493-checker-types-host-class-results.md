@@ -10,6 +10,10 @@
 
 A host class result is typed as the `extern type` in scope whose host name matches it exactly (the lookup a `for` loop over an extern type already used, `findExternTypeForHost`). A host class with no `extern type` naming it, the root object type, the host string and the primitives Lyric has no type for stay unchecked, as before.
 
+## Behaviour change
+
+A host class result bound at a subtype of its extern type (`val c: JBytes = b.base()` where `base()` returns the base class) is now T0043, like any base class value bound at a subclass; before it was accepted unchecked. `typechecker_self_test.l` pinned the old rule ("bound at a subtype, as a kernel binds a host downcast"); the case now asserts the new one (bound at its own type, and rejected at a subtype). No source in the standard library, the compiler or the 35 ecosystem libraries that build on dotnet relied on it.
+
 ## Results
 
 The standard library census goes from 2434 to 2443 of 2563 function bodies built, 0 I0003, and no program in the census newly fails to type-check, so the downcast case the old comment feared does not occur in the standard library, the compiler or the ecosystem. `tir-builder-shapes-e2e.sh` gains `host_class_result_chain` (a `StringBuilder` chain continued through its `Length` property, exit 3).
