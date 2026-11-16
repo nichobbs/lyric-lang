@@ -4617,7 +4617,7 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
-  val ifaceTy: Option[Type] = if isSome(ifaceSym) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
     case _ -> site.iface
