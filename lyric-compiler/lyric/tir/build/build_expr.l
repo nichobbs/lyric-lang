@@ -4565,6 +4565,38 @@ func isMemberExpr(x: in Expr): Bool {
   }
 }
 
+/// The non-generic interface that declares the method `sym`, when `sym`'s DefPath is
+/// `Pkg::Iface::member`.  A call of a method that a restored package's record implements resolves
+/// to the interface's declaration (the package interface keeps no `impl` member of its own), so
+/// the call is a dispatch on that interface from the receiver, converted up to it.
+func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
+  val tbl = env.ctx.tbl
+  val key = match symTableDefPathKeyOf(tbl, sym) { case Some(k) -> k; case None -> return None }
+  var cut = -1
+  var i = 0
+  while i + 1 < key.length {
+    if key.substring(i, 2) == "::" {
+      cut = i
+    }
+    i = i + 1
+  }
+  if cut <= 0 {
+    return None
+  }
+  val tid = match symbolIdOfKey(tbl.interner, key.substring(0, cut)) { case Some(t) -> t; case None -> return None }
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(ts) -> match ts.kind {
+      case DKInterface(_, decl) -> if isSome(decl.generics) {
+        None
+      } else {
+        Some(value = TyUser(id = tid, name = ts.name, args = newList()))
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 /// A method call `recv.m(args)` or a bare sibling call `m(args)` (on the enclosing `self`):
 /// the receiver first, then the arguments placed by parameter, to the method the checker
 /// resolved (`Direct`, or `Interface` for an interface-typed receiver).  A receiver passed
@@ -4585,6 +4617,12 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
+  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceSym: Option[SymbolId] = match ifaceTy {
+    case Some(TyUser(id, _, _)) -> Some(value = id)
+    case _ -> site.iface
+  }
+  val recvTyDecl: Type = match ifaceTy { case Some(t) -> t; case None -> site.recvTy }
   var isEntry = false
   var isImplMember = false
   var recvMode: Option[ParamMode] = None
@@ -4599,7 +4637,7 @@ func buildMethodCall(
     // on is the receiver, dispatched on its interface.
     case None -> if recvIsProtected(env, site.recvTy) {
       isEntry = true
-    } else if isSome(site.iface) {
+    } else if isSome(ifaceSym) {
       ()
     } else {
       // A member of an `impl Iface for T` block declares no receiver either: `self` is
@@ -4607,7 +4645,7 @@ func buildMethodCall(
       isImplMember = true
     }
   }
-  val declared = match tyOfType(env.ctx, site.recvTy) {
+  val declared = match tyOfType(env.ctx, recvTyDecl) {
     case Ok(t) -> t
     case Err(msg) -> {
       env.errors.add(msg)
@@ -4689,7 +4727,7 @@ func buildMethodCall(
   for a in rest {
     all.add(a)
   }
-  val callee = match site.iface {
+  val callee = match ifaceSym {
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
@@ -4697,13 +4735,13 @@ func buildMethodCall(
     env,
     sym,
     site.sig,
-    Some(value = site.recvTy),
-    if isEntry or isImplMember or (isSome(site.iface) and not isSome(site.sig.recvMode)) {
+    Some(value = recvTyDecl),
+    if isEntry or isImplMember or (isSome(ifaceSym) and not isSome(site.sig.recvMode)) {
       Some(value = PMIn)
     } else {
       site.sig.recvMode
     },
-    if isEntry { TSkEntry } else if isSome(site.iface) { TSkInterfaceMethod } else { TSkFunc },
+    if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
     inst.tyArgs.count
   )
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))

@@ -1834,6 +1834,47 @@ func pipeReportTirCensus(
   }
 }
 
+/// The symbols a verifier message names (`#379`), each with the DefPath key it was interned
+/// from, so a diagnostic about two ids for one declaration shows both keys.
+func pipeNamedSymbols(tbl: in SymbolTable, message: in String): String {
+  var names = ""
+  val seen: Map[Int, Bool] = newMap()
+  var i = 0
+  while i < message.length {
+    if message.substring(i, 1) == "#" {
+      var j = i + 1
+      var v = 0
+      var digits = 0
+      var more = true
+      while more and j < message.length {
+        match "0123456789".indexOf(message.substring(j, 1)) {
+          case Some(dv) -> {
+            v = v * 10 + dv
+            digits = digits + 1
+            j = j + 1
+          }
+          case None -> {
+            more = false
+          }
+        }
+      }
+      if digits > 0 and not seen.containsKey(v) {
+        seen.add(v, true)
+        match defPathKeyOf(tbl.interner, SymbolId(id = v)) {
+          case Some(k) -> {
+            names = names + (if names.length > 0 { ", " } else { "" }) + "#" + toString(v) + " = " + k
+          }
+          case None -> ()
+        }
+      }
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  names
+}
+
 /// The I0003 census of the functions the builder built: the verifier's
 /// diagnostics by rule, most frequent first, and the first few in full.
 func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage, tbl: in SymbolTable): Unit {
@@ -1892,6 +1933,10 @@ func pipeReportVerifyCensus(label: in String, pkg: in Tir.TPackage, tbl: in Symb
       if d.rule == r and shown < 6 {
         val fnKey = match defPathKeyOf(tbl.interner, d.fnSym) { case Some(k) -> k; case None -> "?" }
         Console.error("    e.g. " + TirVerify.renderVerifyDiag("builder", d) + " [" + fnKey + "]")
+        val named = pipeNamedSymbols(tbl, d.message)
+        if named.length > 0 {
+          Console.error("      symbols: " + named)
+        }
         shown = shown + 1
       }
     }
