@@ -686,7 +686,10 @@ func buildServerCtx(cfg: in Tls.TlsServerConfig): Result[Long, TcpError] {
     // type (invariant violation, not a user-reachable error).
     case None -> panic("Std.TcpHost: TlsServerConfig.identity has no private key (invariant violation)")
   }
-  val clientCaPem = match cfg.clientCa { case Some(ca) -> Tls.Certificate.rawHandle(ca).certPem; case None -> "" }
+  val clientCaPem = match cfg.clientCa {
+    case Some(ca) -> TlsHost.hostCertsPem(Tls.Certificate.rawHandles(ca))
+    case None -> ""
+  }
   val requireClientCert = if cfg.requireClientCert { 1 } else { 0 }
   val certC = toC(handle.certPem)
   val keyC = toC(keyPem)

@@ -460,7 +460,8 @@ pub func HttpClientBuilder.withHttpVersion(b: in HttpClientBuilder, version: in 
 
 /// Add `cert` as an ADDITIONAL trust root alongside the platform trust
 /// store (docs/61 §3.2) — the common "internal CA plus public internet"
-/// case. See `withExclusiveCaCertificate` for the trust-REPLACING variant;
+/// case. When `cert` was loaded from a PEM text with several certificates (a
+/// CA bundle), every one of them is a trust root. See `withExclusiveCaCertificate` for the trust-REPLACING variant;
 /// the two have distinct names precisely so the more dangerous semantics
 /// is visible at the call site.
 ///
@@ -492,7 +493,8 @@ pub func HttpClientBuilder.withCaCertificate(b: in HttpClientBuilder, cert: in C
 
 /// REPLACE the platform trust store entirely with `cert` (docs/61 §3.2) —
 /// the service-mesh case, where a peer's certificate is signed by a
-/// private CA and public-internet trust should not apply at all. See
+/// private CA and public-internet trust should not apply at all. Every
+/// certificate of a CA bundle `cert` was loaded from is a trust root. See
 /// `withCaCertificate` for the additive variant.
 ///
 /// **Precedence:** if `withCaCertificate` was also called on this

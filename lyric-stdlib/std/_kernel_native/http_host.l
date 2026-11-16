@@ -191,6 +191,7 @@ import Std.Encoding
 import Std.String as Str
 import Std.Task
 import Std.Tls as Tls
+import Std.TlsHost as TlsHost
 import Std.TcpHost as Tcp
 
 // =====================================================================
@@ -1098,14 +1099,16 @@ func resolveTrust(
     Tcp.TlsTrustInsecure
   } else {
     match exclusiveCaCertificate {
-      // Explicit static-call form (`Tls.Certificate.rawHandle(cert)`), not
-      // UFCS (`cert.rawHandle()`) — see `_kernel_native/tcp_host.l`'s
+      // Explicit static-call form (`Tls.Certificate.rawHandles(cert)`), not
+      // UFCS (`cert.rawHandles()`) — see `_kernel_native/tcp_host.l`'s
       // `buildServerCtx` for the direct-repro writeup of why the UFCS
       // spelling does not resolve an `internal` cross-package function in
       // native's bundled import closure.
-      case Some(cert) -> Tcp.TlsTrustExclusive(caPem = Tls.Certificate.rawHandle(cert).certPem)
+      case Some(cert) -> Tcp.TlsTrustExclusive(caPem = TlsHost.hostCertsPem(Tls.Certificate.rawHandles(cert)))
       case None -> match caCertificate {
-        case Some(cert2) -> Tcp.TlsTrustAdditive(caPem = Tls.Certificate.rawHandle(cert2).certPem)
+        case Some(cert2) -> Tcp.TlsTrustAdditive(
+          caPem = TlsHost.hostCertsPem(Tls.Certificate.rawHandles(cert2))
+        )
         case None -> Tcp.TlsTrustSystemDefault
       }
     }

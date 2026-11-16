@@ -26,20 +26,47 @@
 //! "lying test" the module's honesty policy is written against — so this
 //! suite sticks to the one shape that is genuinely dual-target-reliable.
 //!
-//! Runs via native `lyric test` on both targets (`--target dotnet` and
-//! `--target jvm`), verified manually against the published `lyric` NuGet
-//! tool (0.4.32) in this sandbox (no source-buildable `./bin/lyric` was
-//! available; see the PR description).
+//! Runs via native `lyric test` on `--target dotnet`, `--target jvm` and
+//! `--target native`.
 //!
 //! `TlsServerConfig` is covered separately in `tls_server_config_tests.l`
 //! (both targets). Its default-field-omission behavior has no test on any
 //! target: omitted-default construction currently miscompiles on JVM
 //! (#5908) and dotnet (#5920) — see that file's header and D-progress-689.
+//!
+//! CA bundles (#9146, D610), from `ca1Pem` below on: `Certificate` from PEM
+//! text with several certificates, on every target. A `Certificate` carries EVERY certificate of the PEM text it was loaded
+//! from, and every one is a trust anchor wherever the certificate is used as
+//! a CA (`HttpClientBuilder.withCaCertificate`/`withExclusiveCaCertificate`,
+//! `TlsServerConfig.clientCa`). Before #9146 dotnet and the JVM used only the
+//! first certificate and native trusted all of them.
+//!
+//! Loading rules covered here: text outside the `CERTIFICATE` blocks
+//! (comments, blank lines, other PEM labels) is ignored; a text with no
+//! certificate block is `PemMalformed` as before; a malformed or unterminated
+//! block anywhere in the text is `PemMalformed` naming its position, never
+//! silently skipped.
+//!
+//! The handshake cases use a real `Std.HttpServer.startListenerTls` listener
+//! on a loopback port, served from a `Std.Task` scope thread, and the real
+//! `Std.Http` client. The server certificate is signed by the SECOND CA of
+//! the two-CA bundle: the client trusts it when given the bundle (exclusive
+//! and additive, either order) and rejects it when given only the first CA.
+//!
+//! Fixtures (test only, embedded so the suite is self-contained): two EC
+//! P-256 CAs (`lyric-bundle-test-ca-1`, `-2`) and a server leaf for
+//! `localhost` / 127.0.0.1 signed by CA 2, all valid for a hundred years
+//! from 2026-11-16. Generated with `openssl req -x509` / `openssl x509 -req`.
+//!
 @test_module
 package Std.Tls.Tests
 
 import Std.Core
+import Std.Errors
 import Std.File
+import Std.Http
+import Std.HttpServer
+import Std.Task as Task
 import Std.Tls
 import Std.Testing
 import Std.Uuid
@@ -307,4 +334,312 @@ test "TlsError.message renders every case" {
     TlsError.message(Unsupported(path = "/x", message = "bad")).contains("bad"),
     "Unsupported message carries the detail"
   )
+}
+
+val ca1Pem = """
+-----BEGIN CERTIFICATE-----
+MIIBqTCCAU+gAwIBAgIUQMSJNbrszCRGfZfUDlXLx4zX6bUwCgYIKoZIzj0EAwIw
+ITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRlc3QtY2EtMTAgFw0yNjExMTYwMDE4
+MTdaGA8yMTI2MTAyMzAwMTgxN1owITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRl
+c3QtY2EtMTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEqH7D8su5uvNuR6UVeC
+fAX3Qbn+lpYQkimYrRcyKjCH/mXW5V+GuMGKecakoBqrpidY8lisG4Qj/1SytYw1
+/PujYzBhMB8GA1UdIwQYMBaAFIRCwQuYgmnPNkuSvVXe1gaHHkuYMA8GA1UdEwEB
+/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBSEQsELmIJpzzZLkr1V
+3tYGhx5LmDAKBggqhkjOPQQDAgNIADBFAiA+vkLNGRLGwSZn/5XeAy95UpgbZ8Vp
+IgcXXFBen5UpDgIhAOIVlkR/ZwPWdMXG3VH8SwI820DGqevb7gIrve6eFcnl
+-----END CERTIFICATE-----
+"""
+
+val ca2Pem = """
+-----BEGIN CERTIFICATE-----
+MIIBqjCCAU+gAwIBAgIUNT9Id19t1i97kgYA5nM0ZKpgNnQwCgYIKoZIzj0EAwIw
+ITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRlc3QtY2EtMjAgFw0yNjExMTYwMDE4
+MTdaGA8yMTI2MTAyMzAwMTgxN1owITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRl
+c3QtY2EtMjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMGYMydRUKs3h8nNVOu/
+JnB5aBf1DZB3S16ruyu2tR+qk80xNjWDWrQig6kJCJJzjMieelFkD8Ss4i8dQGoE
+PIOjYzBhMB8GA1UdIwQYMBaAFChzv1YQfxRSd3A5/c/hTQodInLrMA8GA1UdEwEB
+/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBQoc79WEH8UUndwOf3P
+4U0KHSJy6zAKBggqhkjOPQQDAgNJADBGAiEApVhrwWiaQ7KZMPturx3sXcWrL0uo
+rTah2hjjNPSbRBMCIQCCVTlAyMhEBDjx1Ohug0wt3hfDRvgbPF3vkZ1SBb0tCw==
+-----END CERTIFICATE-----
+"""
+
+val serverCertPem = """
+-----BEGIN CERTIFICATE-----
+MIIBxzCCAWygAwIBAgIUHb1bb6Vf0Ybv+2M67K2/nqcoe80wCgYIKoZIzj0EAwIw
+ITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRlc3QtY2EtMjAgFw0yNjExMTYwMDE4
+MTdaGA8yMTI2MTAyMzAwMTgxN1owFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYH
+KoZIzj0CAQYIKoZIzj0DAQcDQgAEdFkYB9r1fhi5f77ryrU/ofFmAv3o+7Y2B05h
+3z0nQ/Kk+abZlOrwwjG3RXveeOevU4x8D2UVcTnw8zBWg3aLA6OBjDCBiTAaBgNV
+HREEEzARgglsb2NhbGhvc3SHBH8AAAEwCQYDVR0TBAIwADALBgNVHQ8EBAMCB4Aw
+EwYDVR0lBAwwCgYIKwYBBQUHAwEwHQYDVR0OBBYEFOzzVzJKz0sxYTzycf/ATnCW
+g4GcMB8GA1UdIwQYMBaAFChzv1YQfxRSd3A5/c/hTQodInLrMAoGCCqGSM49BAMC
+A0kAMEYCIQCg6SbDko7PVQcRReBL6u03ALKYG8nBs3o8PATyUTBEjAIhAIhvjEwC
+pBUWnQNdiNeqm08UELQdRPGQsSRY8Rw97RTN
+-----END CERTIFICATE-----
+"""
+
+val serverKeyPem = """
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgUk3ErC5rXxcn9UIU
+jJUn6WT3GZFA2APUjAC9ksbgf8ihRANCAAR0WRgH2vV+GLl/vuvKtT+h8WYC/ej7
+tjYHTmHfPSdD8qT5ptmU6vDCMbdFe954569TjHwPZRVxOfDzMFaDdosD
+-----END PRIVATE KEY-----
+"""
+
+val clientCertPem = """
+-----BEGIN CERTIFICATE-----
+MIIBtzCCAV2gAwIBAgIUHb1bb6Vf0Ybv+2M67K2/nqcoe84wCgYIKoZIzj0EAwIw
+ITEfMB0GA1UEAwwWbHlyaWMtYnVuZGxlLXRlc3QtY2EtMjAgFw0yNjExMTYwMDI2
+MjFaGA8yMTI2MTAyMzAwMjYyMVowIzEhMB8GA1UEAwwYbHlyaWMtYnVuZGxlLXRl
+c3QtY2xpZW50MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7gWhtMgNwRlqo7xT
+3BA1AV0liiHQf9S6338ya4zLq4m0IIQNAIzdg0JPTkfV36p8sL/KDNaXtbrxb1wO
+dF/zhaNvMG0wCQYDVR0TBAIwADALBgNVHQ8EBAMCB4AwEwYDVR0lBAwwCgYIKwYB
+BQUHAwIwHQYDVR0OBBYEFJ42Wq614YYG3MPzx+rMfoWnPblFMB8GA1UdIwQYMBaA
+FChzv1YQfxRSd3A5/c/hTQodInLrMAoGCCqGSM49BAMCA0gAMEUCIDOJIUEtsJsT
+rPVN/B0SZNxDfk0JUGRj4XH1jjZm01F+AiEA7EK4JGB6YHVb3/WNGFJmGXeih3th
+O3qTCOzizyA4Cmg=
+-----END CERTIFICATE-----
+"""
+
+val clientKeyPem = """
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg6w8bz/v9YVTdhzLz
+ZT/y2KjkPmy2OeO7jr55MiwMKEyhRANCAATuBaG0yA3BGWqjvFPcEDUBXSWKIdB/
+1LrffzJrjMuribQghA0AjN2DQk9OR9Xfqnywv8oM1pe1uvFvXA50X/OF
+-----END PRIVATE KEY-----
+"""
+
+func bundleOf(first: in String, second: in String): String {
+  first.trim() + "\n" + second.trim() + "\n"
+}
+
+func certOrPanic(pem: in String): Certificate {
+  match Certificate.fromPem(pem) {
+    case Ok(c) -> c
+    case Err(e) -> panic("Certificate.fromPem failed: " + TlsError.message(e))
+  }
+}
+
+func serverIdentity(): Identity {
+  match Identity.fromPem(serverCertPem, serverKeyPem) {
+    case Ok(i) -> i
+    case Err(e) -> panic("Identity.fromPem failed: " + TlsError.message(e))
+  }
+}
+
+func startServer(port: in Int): HttpListener {
+  val cfg = TlsServerConfig(identity = serverIdentity())
+  match startListenerTls("127.0.0.1", port, cfg) {
+    case Ok(l) -> l
+    case Err(_) -> panic("startListenerTls failed on port " + port.toString())
+  }
+}
+
+func serveOne(l: in HttpListener): Unit {
+  val ctx = nextContext(l)
+  respondText(ctx, 200, "bundle-ok")
+}
+
+// "ok" when the TLS exchange and the request succeeded with the expected
+// body; otherwise "error: ..." with the client's error text.
+func fetchOutcome(client: in HttpClient, port: in Int): String {
+  match await client.get("https://localhost:" + port.toString() + "/bundle") {
+    case Err(e) -> "error: " + HttpError.message(e)
+    case Ok(resp) -> match await resp.bodyText() {
+      case Ok(t) -> if resp.statusCode() == 200 and t == "bundle-ok" {
+        "ok"
+      } else {
+        "unexpected response " + t
+      }
+      case Err(_) -> "error: response body unreadable"
+    }
+  }
+}
+
+// Serve exactly one request when `serve` is set (a client that trusts the
+// server connects), and report what the client saw. A client that rejects the
+// certificate never delivers a request, so no serving thread is started for
+// it (it would block in `nextContext` forever).
+func trustOutcome(builder: in HttpClientBuilder, port: in Int, serve: in Bool): String {
+  val l = startServer(port)
+  val sc = Task.makeScope()
+  if serve {
+    Task.scopeSpawn(sc, { -> serveOne(l) })
+  }
+  val outcome = fetchOutcome(builder.build(), port)
+  // A serving thread whose request never came (the client rejected the
+  // certificate, i.e. the test is about to fail) is abandoned, not awaited:
+  // awaiting it would turn a failed assertion into a hang.
+  if serve and outcome == "ok" {
+    val _ = await Task.awaitAll(sc);
+    ()
+  }
+  stopListener(l)
+  outcome
+}
+
+test "a bundle's second CA is trusted: exclusive bundle, CA 2 second" {
+  val ca = certOrPanic(bundleOf(ca1Pem, ca2Pem))
+  assertEqual(trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19711, true), "ok", "bundle CA1+CA2")
+}
+
+test "a bundle's second CA is trusted: exclusive bundle, CA 2 first" {
+  val ca = certOrPanic(bundleOf(ca2Pem, ca1Pem))
+  assertEqual(trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19712, true), "ok", "bundle CA2+CA1")
+}
+
+test "a bundle's second CA is trusted: additive bundle" {
+  val ca = certOrPanic(bundleOf(ca1Pem, ca2Pem))
+  assertEqual(trustOutcome(HttpClientBuilder.new().withCaCertificate(ca), 19713, true), "ok", "additive bundle CA1+CA2")
+}
+
+test "the server is rejected when only the first CA of the bundle is trusted" {
+  val ca = certOrPanic(ca1Pem)
+  val outcome = trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19714, false)
+  assertTrue(outcome.startsWith("error:"), "CA 1 alone must not trust a CA 2 leaf: " + outcome)
+}
+
+test "the server is rejected when only the first CA is trusted additively" {
+  val ca = certOrPanic(ca1Pem)
+  val outcome = trustOutcome(HttpClientBuilder.new().withCaCertificate(ca), 19715, false)
+  assertTrue(outcome.startsWith("error:"), "CA 1 alone must not trust a CA 2 leaf: " + outcome)
+}
+
+test "a single certificate still trusts a server it signed" {
+  val ca = certOrPanic(ca2Pem)
+  assertEqual(trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19716, true), "ok", "CA2 alone")
+}
+
+test "comments, blank lines and other PEM blocks around the certificates are ignored" {
+  val text = "# trust bundle for the tests\n\n" + ca1Pem.trim() + "\n\n# the second one\n   \n" +
+    "-----BEGIN PRIVATE KEY-----\nQUJD\n-----END PRIVATE KEY-----\n" +
+    ca2Pem.trim() +
+    "\n   \n\n"
+  val ca = certOrPanic(text)
+  assertEqual(
+    trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19717, true),
+    "ok",
+    "annotated bundle"
+  )
+}
+
+test "a bundle read from a file trusts its second CA" {
+  val path = "/tmp/lyric-tls-bundle-" + Uuid.uuidToString(Uuid.newUuid()) + ".pem"
+  match File.writeText(path, bundleOf(ca1Pem, ca2Pem)) {
+    case Ok(_) -> ()
+    case Err(_) -> panic("could not write the bundle fixture")
+  }
+  val ca = match Certificate.fromPemFile(path) {
+    case Ok(c) -> c
+    case Err(e) -> panic("Certificate.fromPemFile failed: " + TlsError.message(e))
+  }
+  val outcome = trustOutcome(HttpClientBuilder.new().withExclusiveCaCertificate(ca), 19718, true)
+  val _ = File.deleteFile(path)
+  assertEqual(outcome, "ok", "bundle file CA1+CA2")
+}
+
+// A copy of `pem` whose base64 body is replaced by `garbage` characters of
+// the same length: still a well-formed PEM block, not a certificate.
+func corrupted(pem: in String): String {
+  val lines = pem.trim().split("\n")
+  var acc = ""
+  var i = 0
+  for line in lines {
+    if i == 3 {
+      acc = acc +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".substring(
+          0,
+          line.length
+        ) +
+        "\n"
+    } else {
+      acc = acc + line + "\n"
+    }
+    i = i + 1
+  }
+  acc
+}
+
+func assertMalformed(r: in Result[Certificate, TlsError], needle: in String, what: in String): Unit {
+  match r {
+    case Ok(_) -> panic(what + ": expected PemMalformed, the text was accepted")
+    case Err(PemMalformed(_, msg)) -> assertTrue(
+      msg.contains(needle),
+      what + ": message names '" + needle + "': " + msg
+    )
+    case Err(e) -> panic(what + ": expected PemMalformed, got: " + TlsError.message(e))
+  }
+}
+
+test "a malformed second certificate is an error, not ignored" {
+  val text = ca1Pem.trim() + "\n" + corrupted(ca2Pem)
+  assertMalformed(Certificate.fromPem(text), "certificate 2 of 2", "corrupt second")
+}
+
+test "a malformed first certificate in a bundle is an error" {
+  val text = corrupted(ca1Pem) + ca2Pem.trim() + "\n"
+  assertMalformed(Certificate.fromPem(text), "certificate 1 of 2", "corrupt first")
+}
+
+test "an unterminated certificate block after a good one is an error" {
+  val cut = ca2Pem.trim().replace("-----END CERTIFICATE-----", "")
+  assertMalformed(Certificate.fromPem(ca1Pem.trim() + "\n" + cut), "certificate 2", "unterminated second")
+}
+
+test "a text with no certificate block is still PemMalformed" {
+  assertMalformed(Certificate.fromPem("# only a comment\n"), "", "no certificate")
+  assertMalformed(
+    Certificate.fromPem("-----BEGIN PRIVATE KEY-----\nQUJD\n-----END PRIVATE KEY-----\n"),
+    "",
+    "key block only"
+  )
+}
+
+test "an Identity keeps working with a certificate chain: the first certificate is the leaf" {
+  val chainPem = serverCertPem.trim() + "\n" + ca2Pem.trim() + "\n"
+  match Identity.fromPem(chainPem, serverKeyPem) {
+    case Ok(_) -> assertTrue(true, "leaf + CA certificate text loads as an identity")
+    case Err(e) -> panic("Identity.fromPem with a chain failed: " + TlsError.message(e))
+  }
+}
+
+func clientIdentity(): Identity {
+  match Identity.fromPem(clientCertPem, clientKeyPem) {
+    case Ok(i) -> i
+    case Err(e) -> panic("client Identity.fromPem failed: " + TlsError.message(e))
+  }
+}
+
+// Mutual TLS: the server pins `clientCa` and requires a client certificate
+// signed by CA 2. Where the listener cannot be built with a client CA (the
+// JVM `HttpsServer` kernel rejects mTLS at construction, #5930; the context
+// path is covered by `tls_server_jvm_tests.l`) there is no handshake to run.
+func mtlsOutcome(clientCa: in Certificate, port: in Int): String {
+  val cfg = TlsServerConfig(identity = serverIdentity(), clientCa = Some(value = clientCa), requireClientCert = true)
+  match startListenerTls("127.0.0.1", port, cfg) {
+    case Err(_) -> "unsupported"
+    case Ok(l) -> {
+      val sc = Task.makeScope()
+      Task.scopeSpawn(sc, { -> serveOne(l) })
+      val client = HttpClientBuilder.new().withExclusiveCaCertificate(certOrPanic(ca2Pem)).withClientIdentity(clientIdentity()).build()
+      val result = fetchOutcome(client, port)
+      if result == "ok" {
+        val _ = await Task.awaitAll(sc);
+        ()
+      }
+      stopListener(l)
+      result
+    }
+  }
+}
+
+test "mTLS: a client certificate signed by the second CA of the server's clientCa bundle is accepted" {
+  val outcome = mtlsOutcome(certOrPanic(bundleOf(ca1Pem, ca2Pem)), 19721)
+  assertTrue(outcome == "ok" or outcome == "unsupported", "mTLS with a clientCa bundle: " + outcome)
+}
+
+test "mTLS: a client certificate signed by a CA outside the server's clientCa is rejected" {
+  val outcome = mtlsOutcome(certOrPanic(ca1Pem), 19722)
+  assertTrue(outcome != "ok", "CA 1 alone must not accept a CA 2 client certificate: " + outcome)
 }

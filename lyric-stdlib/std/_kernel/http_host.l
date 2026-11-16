@@ -776,7 +776,13 @@ func buildCustomChain(cert: in TlsHost.CertHandle, ca: in Tls.Certificate): Bool
   val policy = chainPolicyOf(chain)
   chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
   chainPolicySetRevocationMode(policy, revocationModeNoCheck())
-  val _ = x2CollectionAdd(chainPolicyCustomTrustStoreOf(policy), ca.rawHandle())
+  val store = chainPolicyCustomTrustStoreOf(policy)
+  val anchors = ca.rawHandles()
+  var i = 0
+  while i < anchors.count {
+    val _ = x2CollectionAdd(store, anchors[i])
+    i = i + 1
+  }
   chainBuild(chain, cert)
 }
 

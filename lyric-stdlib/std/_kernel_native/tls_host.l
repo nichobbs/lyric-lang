@@ -53,6 +53,7 @@
 package Std.TlsHost
 
 import Std.Core
+import Std.Collections
 import Std.Encoding
 
 /// See the two other targets' twins for the discriminator this maps to
@@ -65,7 +66,7 @@ pub union HostLoadError {
 /// The PEM text this identity/certificate was loaded from (module
 /// header). `keyPem` is `None` for a certificate-only load. `pub` fields:
 /// `_kernel_native/tcp_host.l` (a different package) reads them through
-/// `Std.Tls`'s `internal Identity.rawHandle`/`Certificate.rawHandle`
+/// `Std.Tls`'s `internal Identity.rawHandle`/`Certificate.rawHandles`
 /// kernel-boundary accessors, the same cross-package reach the JVM twin's
 /// module header documents for its own `pub cert`/`pub key` fields.
 pub record CertHandle {
@@ -84,6 +85,19 @@ extern func rtValidateKeyPem(pem: NativePtr[Byte]): Int = "lyric_tls_validate_ke
 extern func rtValidateIdentityPem(certPem: NativePtr[Byte], keyPem: NativePtr[Byte]): Int = "lyric_tls_validate_identity_pem"
 
 extern func rtLastErrorString(): String = "lyric_tls_last_error_string"
+
+/// The PEM text of every handle of a `Std.Tls.Certificate` (one per
+/// certificate of the text it was loaded from), concatenated in order: the
+/// trust-anchor text `lyric_tls_*` takes, which trusts every certificate in it.
+pub func hostCertsPem(handles: in List[CertHandle]): String {
+  var text = ""
+  var i = 0
+  while i < handles.count {
+    text = text + handles[i].certPem
+    i = i + 1
+  }
+  text
+}
 
 /// Parse (validate) a certificate (no private key) from raw PEM bytes.
 @unsafe_ffi

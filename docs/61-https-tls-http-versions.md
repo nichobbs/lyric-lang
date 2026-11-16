@@ -79,7 +79,8 @@ consume its types, so PEM parsing exists exactly once.
 ```lyric
 package Std.Tls
 
-/// A parsed X.509 certificate (leaf or chain), loaded from PEM.
+/// The parsed X.509 certificates of one PEM text (one, or a CA bundle's
+/// many), loaded from PEM. Every one is a trust anchor (D610).
 pub opaque type Certificate { ... }
 
 /// A certificate plus its private key — a server or client identity.
@@ -101,6 +102,17 @@ pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identit
 `TlsError` is a typed enum (`FileNotFound`, `PemMalformed`, `KeyMismatch`,
 `Unsupported`) — loading failures are data, matching the stdlib's
 Result-based error discipline.
+
+**CA bundles (D610, #9146).** `Certificate.fromPem`/`fromPemFile` load every
+`CERTIFICATE` block of the text, in order, and every one is a trust anchor
+wherever the value is used as a CA (`withCaCertificate`,
+`withExclusiveCaCertificate`, `TlsServerConfig.clientCa`), identically on
+dotnet, the JVM and native. Text outside the blocks (comments, blank lines,
+blocks with another label) is skipped; a block that is malformed or has no END
+line is `PemMalformed` with its position ("certificate 2 of 3: ..."), never
+skipped; a text with no certificate block is `PemMalformed`. An `Identity` is
+a leaf and its key: the first `CERTIFICATE` block of its text is the leaf and
+further blocks (a chain file's intermediates) are ignored.
 
 **Why PEM everywhere.** .NET loads PEM natively
 (`X509Certificate2.CreateFromPemFile`). On the JVM, `CertificateFactory`

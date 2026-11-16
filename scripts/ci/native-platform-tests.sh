@@ -125,6 +125,7 @@ echo "=== stdlib suites (--target native) ==="
 for t in \
   lyric-stdlib/tests/task_native_tests.l \
   lyric-stdlib/tests/http_timeout_native_tests.l \
+  lyric-stdlib/tests/tls_tests.l \
   lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \

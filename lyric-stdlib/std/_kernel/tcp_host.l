@@ -533,7 +533,13 @@ func buildServerOptions(cfg: in Tls.TlsServerConfig): SslServerAuthOptions {
       val policy = newChainPolicy()
       chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
       chainPolicySetRevocationMode(policy, revocationModeNoCheck())
-      val _ = trustStoreAdd(chainPolicyCustomTrustStore(policy), ca.rawHandle())
+      val store = chainPolicyCustomTrustStore(policy)
+      val anchors = ca.rawHandles()
+      var i = 0
+      while i < anchors.count {
+        val _ = trustStoreAdd(store, anchors[i])
+        i = i + 1
+      }
       optionsSetChainPolicy(opts, policy)
     }
     case None -> ()
