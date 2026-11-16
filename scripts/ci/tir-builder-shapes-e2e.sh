@@ -270,7 +270,7 @@ func main(): Int = viaArgument(10) + describe(viaTail(7)) + viaBinding() + 8
 LYRIC
 
 # A generic record value used at the same record with other type arguments, and a recursive union
-# whose conversion stays counted (a first version of the union rule never finished building) (D488).
+# (a first version of the union rule never finished building, D488) is a covariant conversion node (D524).
 check covariant_record_values 17 <<'LYRIC'
 package Shapes10
 import Std.Core
@@ -301,7 +301,7 @@ func viaBinding(): Int {
 func main(): Int = viaArgument(5) + viaBinding() + 4
 LYRIC
 
-check_counted covariant_recursive_union_stays_counted <<'LYRIC'
+check covariant_recursive_union_values 3 <<'LYRIC'
 package Shapes11
 import Std.Core
 
@@ -329,6 +329,46 @@ func main(): Int {
     case Leaf(g) -> g.greet()
     case Node(_, _) -> 0
   }
+}
+LYRIC
+
+# A collection of unions used at a collection of the interface-typed unions (D524).
+check covariant_collection_values 5 <<'LYRIC'
+package Shapes11b
+import Std.Core
+import Std.Collections
+
+interface Greeter {
+  func greet(self: in Greeter): Int
+}
+
+record English { n: Int }
+
+impl Greeter for English {
+  func greet(self: in English): Int = self.n
+}
+
+func okEnglish(n: in Int): Result[English, String] = Ok(value = English(n = n))
+
+func total(xs: in List[Result[Greeter, String]]): Int {
+  var sum = 0
+  for r in xs {
+    match r {
+      case Ok(g) -> {
+        sum = sum + g.greet()
+      }
+      case Err(_) -> {
+      }
+    }
+  }
+  sum
+}
+
+func main(): Int {
+  val xs: List[Result[English, String]] = newList()
+  xs.add(okEnglish(2))
+  xs.add(okEnglish(3))
+  total(xs)
 }
 LYRIC
 

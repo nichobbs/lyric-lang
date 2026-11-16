@@ -133,6 +133,13 @@ pub union ConvKind {
   case CvLiftNullable
   /// An expression of type `Never` used where a value is expected.
   case CvFromNever
+  /// A value used at the same generic type with other type arguments each of which the
+  /// original's converts to (covariant conversion, language reference 2.11): a recursive
+  /// union (`Tree[English]` as `Tree[Greeter]`), a collection (`List[Result[English, String]]`
+  /// as `List[Result[Greeter, String]]`).  The node type and the operand's have the same head
+  /// and arity; how a backend represents the result (the same value, or one rebuilt per
+  /// argument) is its own choice.
+  case CvCovariant
 }
 
 pub union ShortOp {

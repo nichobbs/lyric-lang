@@ -135,6 +135,7 @@ func convText(it: in DefPathInterner, k: in ConvKind): String {
     case CvToList -> "tolist"
     case CvLiftNullable -> "lift"
     case CvFromNever -> "fromnever"
+    case CvCovariant -> "covariant"
   }
 }
 

@@ -878,7 +878,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The JVM resolver answers member signatures with array, `float` and `short` results, a `String` passes for a host supertype, a slice of bytes or of host values passes for a host array, and a host call the checker settles at a supertype takes an upcast (D468).
   - A default the source-loaded stdlib declares as a bare case or a suffixed integer builds from the parameter's type (D485).
   - A binding, scrutinee or pattern the checker left open (`val o = None`, `match (None, 5)`) takes the type the checker resolved from its uses (D486).
-  - A union value used at the same union with other type arguments (covariant conversion) is a `match` over its cases that rebuilds each at the target arguments, a recursive union staying counted (D487).
+  - A union value used at the same union with other type arguments (covariant conversion) is a `match` over its cases that rebuilds each at the target arguments, a recursive union and a host collection are one `CvCovariant` node (D524).
   - A generic record value used at other type arguments is bound once and built again at the target arguments, each field converted, a record with a `var` field staying counted (D488).
   - A value-generic parameter is read in the TIR by `XValueParam(owner, index)`, typed by the parameter's `valueTy`, verified by the `value-param` rule, and monomorphised away in phase 3c with the type parameters (D467; the owner chose a kinded TIR parameter over specialising first).
   - The builder gives a value-generic parameter `valueTy` `Int` (the type docs/01 gives it in a body) and builds a bare read of one in a function or a protected-type member as `XValueParam`; the checker already binds it as an `Int` local, so it needed no table (D469).
@@ -893,6 +893,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A compound assignment to a host property binds the receiver once and reads, applies the operator and writes; a write to a public host field is an `HMFieldSet` call (D478).
   - `Self` inside a record or protected type member is the owner type too (D521), not only in an `impl` member.
   - A call of a method a restored record implements dispatches on the interface that declares it (D522): the receiver is converted up and the call is an interface call; the last I0003 of the census.
+  - A recursive union or a host collection used at other covariant type arguments is a `CvCovariant` conversion node (D524).
   - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
