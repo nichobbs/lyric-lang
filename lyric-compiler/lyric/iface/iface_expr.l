@@ -229,6 +229,7 @@ func putConv(w: in IfaceWriter, it: in DefPathInterner, k: in ConvKind) {
     case CvToList -> putU(w, 9)
     case CvLiftNullable -> putU(w, 10)
     case CvFromNever -> putU(w, 11)
+    case CvCovariant -> putU(w, 12)
   }
 }
 
@@ -256,6 +257,7 @@ func readConv(r: in IfaceReader, it: in DefPathInterner): ConvKind {
     case 9 -> CvToList
     case 10 -> CvLiftNullable
     case 11 -> CvFromNever
+    case 12 -> CvCovariant
     case _ -> {
       readFail(r, "unknown conversion tag " + toString(tag))
       CvRangeCheck

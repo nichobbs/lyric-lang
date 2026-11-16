@@ -619,3 +619,31 @@ test "a conversion to a host type has that host type; one already of it is repor
   assertEqualInt(oneFn(entries(), boxFn(TExtern(host = obj), obj)).count, 0, "an Int boxed to object")
   assertTrue(rulesOf(oneFn(entries(), boxFn(tyInt(), obj))).contains("convert-type"), "wrong node type")
 }
+
+func covariantFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
+  val x = local(1, "x", fromTy, false)
+  val inner = ex(3, fromTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvCovariant, inner = inner)))
+}
+
+test "a covariant conversion takes a generic type to the same one at other arguments" {
+  val box = SymbolId(id = 70)
+  val other = SymbolId(id = 71)
+  val one: List[Ty] = newList()
+  one.add(tyInt())
+  val two: List[Ty] = newList()
+  two.add(tyString())
+  assertFalse(
+    rulesOf(oneFn(entries(), covariantFn(TNamed(sym = box, args = one), TNamed(sym = box, args = two)))).contains(
+      "convert-type"
+    ),
+    "Box[Int] as Box[String] has one head"
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), covariantFn(TNamed(sym = box, args = one), TNamed(sym = other, args = two)))).contains(
+      "convert-type"
+    ),
+    "another declaration"
+  )
+  assertTrue(rulesOf(oneFn(entries(), covariantFn(tyInt(), tyString()))).contains("convert-type"), "not generic types")
+}

@@ -698,6 +698,22 @@ func branchTy(c: in Ctx, id: in NodeId, branch: in TExpr, nodeTy: in Ty, what: i
   }
 }
 
+/// Whether `a` and `b` are one generic type (the same declaration or host type, the same
+/// non-zero number of type arguments).
+func sameGenericHead(a: in Ty, b: in Ty): Bool {
+  match a {
+    case TNamed(x, xs) -> match b {
+      case TNamed(y, ys) -> x.id == y.id and xs.count == ys.count and xs.count > 0
+      case _ -> false
+    }
+    case TExtern(h) -> match b {
+      case TExtern(g) -> h.name == g.name and h.args.count == g.args.count and h.args.count > 0
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 func visitExpr(c: in Ctx, e: in TExpr): Unit {
   noteNode(c, e.id)
   checkTy(c, e.id, e.ty, "expression")
@@ -820,6 +836,15 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
           if tyEq(inner.ty, e.ty) {
             report(c, e.id, "convert-type", "CvBoxToHost applied to a value already of the host type")
           }
+        }
+        case CvCovariant -> if not sameGenericHead(inner.ty, e.ty) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvCovariant takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) +
+              ", which are not one generic type at other arguments"
+          )
         }
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))

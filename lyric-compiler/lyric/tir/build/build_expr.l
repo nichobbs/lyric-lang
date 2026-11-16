@@ -3694,11 +3694,90 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
         case Some(k) -> Some(value = convertNode(env, t, ty, k))
         case None -> match retypeConstruct(env, t, ty) {
           case Some(c) -> Some(value = c)
-          case None -> retypeValue(env, t, ty)
+          case None -> match retypeValue(env, t, ty) {
+            case Some(c) -> Some(value = c)
+            case None -> match covariantKind(env, t.ty, ty) {
+              case Some(k) -> Some(
+                value = convertNode(
+                  env,
+                  t,
+                  ty,
+                  k
+                )
+              )
+              case None -> None
+            }
+          }
         }
       }
     }
   }
+}
+
+/// Whether a value of `from` is used at `to`: equal, an interface upcast, a nullable of such,
+/// or covariantly converted (`covariantKind`).
+func argRelated(env: in BuildEnv, from: in Ty, to: in Ty): Bool {
+  if tyEq(from, to) {
+    return true
+  }
+  match upcastKind(env, from, to) {
+    case Some(_) -> return true
+    case None -> ()
+  }
+  match from {
+    case TNullable(a) -> match to { case TNullable(b) -> return argRelated(env, a, b); case _ -> () }
+    case _ -> ()
+  }
+  isSome(covariantKind(env, from, to))
+}
+
+/// The conversion of a value of the generic type `from` to the same type at other arguments
+/// that each convert (a recursive union such as `Tree[English]` as `Tree[Greeter]`, which has no
+/// finite `match`, or a host collection such as `List[Result[English, String]]`).  A record with
+/// a `var` field has identity and stays counted, as in `retypeRecord`.
+func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
+  var haveArgs: List[Ty] = newList()
+  var wantArgs: List[Ty] = newList()
+  match from {
+    case TNamed(a, xs) -> match to {
+      case TNamed(b, ys) -> {
+        if a.id != b.id or xs.count == 0 or xs.count != ys.count {
+          return None
+        }
+        val sym = match symbolOfDefId(env.ctx.tbl, a) { case Some(x) -> x; case None -> return None }
+        match sym.kind {
+          case DKUnion(_, _) -> ()
+          case DKRecord(_, _) -> if varFieldNames(env.ctx.tbl, a).count > 0 { return None }
+          case _ -> return None
+        }
+        haveArgs = xs
+        wantArgs = ys
+      }
+      case _ -> return None
+    }
+    case TExtern(h) -> match to {
+      case TExtern(g) -> {
+        if h.name != g.name or h.args.count == 0 or h.args.count != g.args.count {
+          return None
+        }
+        if not h.name.startsWith("System.Collections.Generic.") {
+          return None
+        }
+        haveArgs = h.args
+        wantArgs = g.args
+      }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  var i = 0
+  while i < haveArgs.count {
+    if not argRelated(env, haveArgs[i], wantArgs[i]) {
+      return None
+    }
+    i = i + 1
+  }
+  Some(value = CvCovariant)
 }
 
 /// A union-case construction used at the same union with other type arguments (`Some(value = x)`
