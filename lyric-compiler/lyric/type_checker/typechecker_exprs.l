@@ -5042,7 +5042,7 @@ func externMemberResult(
     case None -> tyErrorHost()
     case Some(EMTVoid) -> TyPrim(pt = PtUnit)
     case Some(EMTType(elem)) -> {
-      if isHostObjectElem(elem) or isHostClassElem(elem) {
+      if isHostObjectElem(elem) {
         return tyErrorHost()
       }
       val missing: List[String] = newList()
