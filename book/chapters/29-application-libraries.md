@@ -448,9 +448,9 @@ entity and context).
 | `Lyric.Jobs.QuartzNet` | `Jobs.JobScheduler` | Quartz.NET 3 (RAM job store) | real | not supported (`F0054`) | no | Quartz.NET through NuGet and auto-FFI; same API as `Lyric.Jobs.Quartz` |
 | `Lyric.Jobs.Hangfire` | `Jobs.JobScheduler` | Hangfire 1.8 (in-memory or PostgreSQL storage) | real | not supported (`F0054`) | no | Hangfire through NuGet and auto-FFI; jobs survive a restart on the PostgreSQL storage |
 | `Lyric.Redis` | none (client) | Redis 6 and later | real | real | real | pure Lyric: RESP2 and RESP3 over TCP or TLS |
-| `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | not yet (#9141) | on `Lyric.Redis` |
-| `Lyric.Cache.Memcached` | `Cache.CacheStore` | memcached 1.6.10 and later | real | real | not yet (#9141) | pure Lyric: meta protocol on `Lyric.Net`; `clear()` replaces a per-store generation |
-| `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | not yet (#9141) | on `Lyric.Redis`; every read-modify-write is one script |
+| `Lyric.Cache.Redis` | `Cache.CacheStore` | Redis | real | real | real | on `Lyric.Redis` |
+| `Lyric.Cache.Memcached` | `Cache.CacheStore` | memcached 1.6.10 and later | real | real | real | pure Lyric: meta protocol on `Lyric.Net`; `clear()` replaces a per-store generation |
+| `Lyric.Session.Redis` | `Session.SessionStore` | Redis | real | real | real | on `Lyric.Redis`; every read-modify-write is one script |
 | `Lyric.Mq.ActiveMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Apache ActiveMQ Classic | real | real | not yet | pure Lyric: STOMP 1.2 over TCP or TLS |
 | `Lyric.Mq.RabbitMq` | `Mq.MessageQueue`, `Mq.QueueConsumer` | RabbitMQ 3.12 and 4.0 | real | real | not yet | pure Lyric: AMQP 0-9-1 over TCP or TLS |
 | `Lyric.Mq.Sqs` | `Mq.MessageQueue`, `Mq.QueueConsumer` | Amazon SQS | real; verified against ElasticMQ and AWS Emulator, not yet against AWS | real; verified against ElasticMQ and AWS Emulator, not yet against AWS | real; verified against ElasticMQ and AWS Emulator | pure Lyric: AWS JSON 1.0 over `Std.Http`, SigV4; credential chain and retries from `Lyric.Aws.Credentials` |
@@ -484,16 +484,18 @@ never opened always, a 5xx or a timeout only for idempotent requests, so a
 send to a standard SQS queue is not repeated after an unknown outcome.
 
 `Lyric.Net`, `Lyric.Redis`, `Lyric.Aws.SigV4`, `Lyric.Aws.Credentials`,
-`Lyric.Storage.S3` and `Lyric.Mq.Sqs` also build for `--target native`
-(Linux; OpenSSL 3 at run time for TLS), and their suites run there, the S3 and
-SQS ones against MinIO, ElasticMQ and AWS Emulator. Two things differ on
-native: a panic cannot be caught (D-N-003), so a credential provider that
-panics or a violated `requires:` ends the process, and a PEM text with several
-certificates trusts all of them where the managed targets read the first only
-(#9146). "not yet" in the Native column means a pure-Lyric package that has
-not been taken there; the three marked #9141 wait for
-`Std.Testing.assertPanics`, which their tests use and native does not have.
-"no" means the backend is an SDK of a managed runtime.
+`Lyric.Storage.S3`, `Lyric.Mq.Sqs`, `Lyric.Cache.Redis`, `Lyric.Session.Redis`
+and `Lyric.Cache.Memcached` also build for `--target native` (Linux x86-64;
+OpenSSL 3 at run time for TLS), and their suites run there, against Redis,
+memcached, MinIO, ElasticMQ and AWS Emulator as each package needs. Two things
+differ on native: a panic cannot be caught in place (D-N-003), so a credential
+provider that panics or a violated `requires:` ends the process (a test's
+`assertPanics` runs its body in a forked child instead, D608, so its in-memory
+effects are not visible afterwards), and the text of a failed TLS handshake is
+OpenSSL's. "not yet" in the Native column means a pure-Lyric package that has
+not been taken to native. "no" means the backend is an SDK of a managed
+runtime: Quartz and Quartz.NET (the JVM and .NET schedulers) and Hangfire
+(.NET only).
 
 Two things differ between backends of one interface and are worth reading in
 the package README before choosing: what `nack` without requeue does (ActiveMQ

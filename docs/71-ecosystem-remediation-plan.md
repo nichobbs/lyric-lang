@@ -73,6 +73,10 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   `Lyric.Storage.S3` and `Lyric.Mq.Sqs` claim `native`, with their conformance
   and integration suites run there
   (docs/progress/2026-11-15-ecosystem-s3-sqs-native.md).
+  Then the Redis and memcached backends (`Lyric.Cache.Redis`,
+  `Lyric.Session.Redis`, `Lyric.Cache.Memcached`) on native, once
+  `Std.Testing.assertPanics` worked there
+  (docs/progress/2026-11-16-ecosystem-redis-memcached-native.md).
 
 ## 4. Open questions
 
