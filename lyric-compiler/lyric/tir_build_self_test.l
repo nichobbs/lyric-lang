@@ -2806,3 +2806,9 @@ test "a host method called on a String value is an extern call with the value as
     case None -> assertTrue(false, "an extern call")
   }
 }
+
+test "a String method the host metadata does not declare stays counted (D493)" {
+  val st = buildFirstFnHost("package App\nfunc f(a: in String, b: in String): Int {\n  a.noSuchHostMethod(b)\n}\n")
+  assertTrue(st.env.errors.count > 0, "an I0002 for the call no host string type declares")
+  assertTrue(isNone(externCallOf(st.body)), "no extern call is built")
+}
