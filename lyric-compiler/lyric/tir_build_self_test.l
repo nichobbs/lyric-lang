@@ -2314,11 +2314,27 @@ test "a host property write is a call of its setter, receiver then value, of typ
   }
 }
 
-test "a compound assignment to a host property is counted, not guessed (D598)" {
+test "a compound assignment to a host property binds the receiver once, then reads and writes (D478)" {
   val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
   val st = buildFirstFnMsil(head + "func f(sb: in SB): Unit {\n  sb.Length += 1\n}\n")
-  assertTrue(st.env.errors.count > 0, "an I0002")
-  assertTrue(st.env.errors[0].contains("a compound assignment"), st.env.errors[0])
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  assertTrue(st.body.isSome(), "the body builds")
+}
+
+test "a write to a public host field is a field write, receiver then value (D478)" {
+  val head = "package App\nextern type Sla = \"System.Runtime.InteropServices.StructLayoutAttribute\"\n"
+  val st = buildFirstFnMsil(head + "func f(a: in Sla): Unit {\n  a.Pack = 4\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOfStatement(st.body) {
+    case Some(m) -> {
+      assertTrue(m.kind == HMFieldSet, "a field write")
+      assertEqualInt(m.params.count, 2, "receiver and value")
+      assertTrue(tyEq(m.ret, tyUnit()), "Unit")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
 }
 
 test "a slice of Byte passed for a host byte array builds as a host call (D599)" {

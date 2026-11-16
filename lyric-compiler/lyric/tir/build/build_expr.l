@@ -3065,9 +3065,10 @@ func isHostValue(env: in BuildEnv, r: in Expr): Bool {
   }
 }
 
-/// `recv.name = value` where `recv` is a host value: a call of the property's setter, `recv` and then the
-/// value converted to the setter's parameter, of type `Unit`.  A compound assignment, a field and a member
-/// the metadata does not give a setter for are counted.
+/// `recv.name = value` where `recv` is a host value: a call of the property's setter, or a write of
+/// the public field of that name, `recv` and then the value converted to the parameter, of type
+/// `Unit`.  A compound assignment (`recv.n += 1`) binds the receiver once and reads, applies the
+/// operator and writes (D478).  A member the metadata gives neither a setter nor a field for is counted.
 func buildHostPropertySet(
   env: in BuildEnv,
   e: in Expr,
@@ -3085,36 +3086,139 @@ func buildHostPropertySet(
     case None -> return uncoveredExprDetail(env, target, kind, shown)
   }
   match op {
-    case AssEq -> ()
-    case _ -> return uncoveredExprDetail(env, target, kind, shown + " (a compound assignment)")
-  }
-  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, "set_" + name, 1, false) {
-    case Some(c) -> c
-    case None -> return uncoveredExprDetail(env, target, kind, shown + " (no setter)")
-  }
-  var found: Option[ExternMemberSig] = None
-  for c in cands {
-    if not c.isStatic and c.params.count == 1 and not isSome(found) {
-      found = Some(value = c)
+    case AssEq -> {
+      val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
+      hostWriteCall(env, e, target, rt, host, name, vt, NodeId(id = e.nodeId), e.span)
     }
+    case _ -> buildHostCompoundSet(env, e, target, rt, host, name, op, value)
   }
-  val sig = match found {
+}
+
+/// `recv.name op= value`: `{ val r = recv; r.name = r.name op value }`, the receiver evaluated once.
+func buildHostCompoundSet(
+  env: in BuildEnv,
+  e: in Expr,
+  target: in Expr,
+  rt: in TExpr,
+  host: in HostTypeRef,
+  name: in String,
+  op: in AssignOp,
+  value: in Expr,
+): Option[TExpr] {
+  val shown = renderTy(rt.ty) + "." + name
+  val kind = "an assignment to a member that is not a record field"
+  val pty = match exprTy(env.ctx, target.nodeId) {
+    case Ok(t) -> t
+    case Err(_) -> return uncoveredExprDetail(env, target, kind, shown + " (a compound assignment to a member the checker did not type)")
+  }
+  val bop = match op {
+    case AssPlus -> IoAdd
+    case AssMinus -> IoSub
+    case AssStar -> IoMul
+    case AssSlash -> IoDiv
+    case AssPercent -> IoMod
+    case AssEq -> return None
+  }
+  if not isPrimTy(pty) {
+    return uncoveredExprDetail(env, target, kind, shown + " (a compound assignment to a member that is not a primitive)")
+  }
+  val d = declareLocal(env, "__hostrecv" + toString(env.nextLocal[0] + 1), rt.ty, false)
+  val bindPat = TPat(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = TpBind(decl = d, inner = None))
+  val recvStmt = TStmt(id = freshNodeId(env), span = rt.span, kind = TsLet(pat = bindPat, init = rt))
+  val readRecv = TExpr(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = XLocal(local = d.id))
+  val current = match buildHostPropertyRead(env, target, pty, readRecv, name) {
     case Some(c) -> c
-    case None -> return uncoveredExprDetail(env, target, kind, shown + " (no setter)")
+    case None -> return uncoveredExprDetail(env, target, kind, shown + " (the read half of a compound assignment)")
   }
   val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
-  val want = match hostElemTy(sig.params[0], host.args, vt.ty) {
-    case Some(t) -> t
-    case None -> return uncoveredExprDetail(env, target, kind, shown + " (a setter parameter the builder cannot type)")
+  val appended = match op {
+    case AssPlus -> match pty { case TPrim(TPString) -> stringPart(env, vt); case _ -> vt }
+    case _ -> vt
   }
-  val v = match hostArgConv(env, vt, want) { case Some(x) -> x; case None -> return None }
+  val rhs = match coerceArg(env, appended, pty) { case Some(c) -> c; case None -> return None }
+  val operands: List[TExpr] = newList()
+  operands.add(current)
+  operands.add(rhs)
+  val combined = TExpr(id = freshNodeId(env), ty = pty, span = e.span, kind = intrinsicCall(bop, operands))
+  val writeRecv = TExpr(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = XLocal(local = d.id))
+  val write = match hostWriteCall(env, e, target, writeRecv, host, name, combined, freshNodeId(env), e.span) {
+    case Some(w) -> w
+    case None -> return None
+  }
+  val stmts: List[TStmt] = newList()
+  stmts.add(recvStmt)
+  Some(value = mkExpr(e, tyUnit(), XBlock(stmts = stmts, tail = Some(value = write))))
+}
+
+/// The call that writes `vt` to the member `name` of the host value `rt`: the property's setter
+/// (`set_<name>`), else the public field of that name.  `node` is the call's own node id.
+func hostWriteCall(
+  env: in BuildEnv,
+  e: in Expr,
+  target: in Expr,
+  rt: in TExpr,
+  host: in HostTypeRef,
+  name: in String,
+  vt: in TExpr,
+  node: in NodeId,
+  span: in Span,
+): Option[TExpr] {
+  val shown = renderTy(rt.ty) + "." + name
+  val kind = "an assignment to a member that is not a record field"
+  val resolver = env.ctx.tbl.externIterResolver[0]
+  var kindOf = HMPropertySet
+  var found: Option[ExternMemberSig] = None
+  match resolver.resolveMemberSigs(host.name, "set_" + name, 1, false) {
+    case Some(cands) -> {
+      for c in cands {
+        if not c.isStatic and c.params.count == 1 and not isSome(found) {
+          found = Some(value = c)
+        }
+      }
+    }
+    case None -> ()
+  }
+  var want: Option[Ty] = None
+  match found {
+    case Some(sig) -> {
+      want = hostElemTy(sig.params[0], host.args, vt.ty)
+    }
+    case None -> match resolver.resolveMemberSigs(host.name, name, 0, true) {
+      case Some(cands) -> {
+        for c in cands {
+          if c.isField and not c.isStatic and c.params.count == 0 and not isSome(found) {
+            found = Some(value = c)
+          }
+        }
+        match found {
+          case Some(sig) -> match sig.ret {
+            case EMTType(el) -> {
+              kindOf = HMFieldSet
+              want = hostElemTy(el, host.args, vt.ty)
+            }
+            case EMTVoid -> ()
+          }
+          case None -> ()
+        }
+      }
+      case None -> ()
+    }
+  }
+  if not isSome(found) {
+    return uncoveredExprDetail(env, target, kind, shown + " (no setter or public field)")
+  }
+  val ty = match want {
+    case Some(t) -> t
+    case None -> return uncoveredExprDetail(env, target, kind, shown + " (a member type the builder cannot type)")
+  }
+  val v = match hostArgConv(env, vt, ty) { case Some(x) -> x; case None -> return None }
   val params: List[TParamTy] = newList()
   params.add(TParamTy(mode = TMIn, ty = rt.ty))
-  params.add(TParamTy(mode = TMIn, ty = want))
+  params.add(TParamTy(mode = TMIn, ty = ty))
   val member = HostMemberRef(
     owner = host,
     name = name,
-    kind = HMPropertySet,
+    kind = kindOf,
     isStatic = false,
     params = params,
     ret = tyUnit()
@@ -3122,7 +3226,9 @@ func buildHostPropertySet(
   val args: List[TArg] = newList()
   args.add(TArgIn(value = rt))
   args.add(TArgIn(value = v))
-  Some(value = mkExpr(e, tyUnit(), XCall(callee = Extern(member = member), args = args)))
+  Some(
+    value = TExpr(id = node, ty = tyUnit(), span = span, kind = XCall(callee = Extern(member = member), args = args))
+  )
 }
 
 /// The field `name` of the record type `ty` declares, by its position among the record's
