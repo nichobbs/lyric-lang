@@ -497,6 +497,17 @@ func main(): Int {
 }
 LYRIC
 
+# A host member whose result is a host class an `extern type` in scope names is typed as that
+# type (D493), so a chain continues from it.
+check host_class_result_chain 3 <<'LYRIC'
+package Shapes13
+extern type SB = "System.Text.StringBuilder"
+
+func main(): Int {
+  SB.new().Append("ab").Append("c").Length
+}
+LYRIC
+
 # The TIR builds a write to a public host field (D478); the MSIL emitter does not lower one yet
 # (T0120), so the program is judged by the census alone and not run.
 check host_field_write "" <<'LYRIC'

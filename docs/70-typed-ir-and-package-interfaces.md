@@ -897,6 +897,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `forall` and `exists` build as quantifier nodes over their binder locals (D525).
   - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
   - A field read through an instance at the enclosing generic's own type parameters keeps its declared type, and so does a `for` variable over it (D492): the checker erases only the parameters that are not the function's own.
+  - A host member call whose result is a host class with an `extern type` naming it exactly is typed as that type (D493), so a chain of host calls has a recorded callee at every step; a host `String` result and a class no `extern type` names stay untyped.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
