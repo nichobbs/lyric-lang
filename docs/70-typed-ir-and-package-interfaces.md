@@ -902,6 +902,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A field read through an instance at the enclosing generic's own type parameters keeps its declared type, and so does a `for` variable over it (D492): the checker erases only the parameters that are not the function's own.
   - `TIR_CENSUS_PARTIAL=1` aggregates the builds a stopped or running wide census has kept, without building (D528).
   - A host method called on a `String` value (`a.compareTo(b)`, the JVM kernels' calls on `java.lang.String`) is an extern call with the value as receiver, found through the host metadata (D493).
+- A function ending in a `while true` or `loop` with no `break` out of it, and a generator body ending in `try`, build as branches (D440).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
