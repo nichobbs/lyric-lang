@@ -891,6 +891,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `Self` inside an `impl` member is the impl's target type (D476): a member that spells its receiver or result `Self` builds instead of recording I0002.
   - A qualified enum or nullary union case read as a value (`Lv.Trace`) is a reference the checker records, built as the case (D477), not a field read of the type name.
   - A compound assignment to a host property binds the receiver once and reads, applies the operator and writes; a write to a public host field is an `HMFieldSet` call (D478).
+  - `Self` inside a record or protected type member is the owner type too (D480), not only in an `impl` member.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
