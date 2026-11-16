@@ -760,6 +760,11 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
     }
     case EBinop(op, lhs, rhs) -> {
+      // `a + b` on a record that derives `Add`/`Sub` is applied field by field (D155): the AST
+      // lowering does that, and TIR has no node for it yet, so the body stays counted.
+      if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
+        return uncoveredExpr(env, e, "record arithmetic")
+      }
       val l = buildExpr(env, lhs)
       // `x == None`: the checker leaves the bare right operand untyped, and equality
       // takes its type from the left one.
@@ -1581,6 +1586,9 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       built
     }
     case SAssign(t, op, v) -> {
+      if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(s.span)) {
+        return uncoveredStmt(env, s, "record arithmetic")
+      }
       val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
         case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
@@ -3549,6 +3557,18 @@ func convertNode(env: in BuildEnv, t: in TExpr, to: in Ty, k: in ConvKind): TExp
 func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if tyEq(t.ty, ty) {
     return Some(value = t)
+  }
+  // A float literal where a `Float` is expected is a `Float` literal (the checker accepts it as
+  // one): the same literal retyped, which a backend rounds to 32 bits, not a conversion.
+  match t.kind {
+    case XLit(TLFloat(_)) -> match t.ty {
+      case TPrim(TPDouble) -> match ty {
+        case TPrim(TPFloat) -> return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
   }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
