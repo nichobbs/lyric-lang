@@ -371,6 +371,7 @@ func main(): Int {
   xs.add(okEnglish(3))
   total(xs)
 }
+LYRIC
 
 # `forall` and `exists` in contract clauses are built as quantifier nodes over their binder locals
 # (D525).  A runtime-checked build skips the quantifier conjunct, so the program still runs.
