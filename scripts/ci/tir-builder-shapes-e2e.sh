@@ -419,6 +419,27 @@ func sum(): Float {
 func main(): Int = if sum() > 3.0 { 1 } else { 0 }
 LYRIC
 
+check host_compound_and_field_writes 6 <<'LYRIC'
+package Shapes12
+extern type SB = "System.Text.StringBuilder"
+extern type Sla = "System.Runtime.InteropServices.StructLayoutAttribute"
+
+func grow(sb: in SB): Unit {
+  sb.Length += 3
+}
+
+func pack(a: in Sla): Unit {
+  a.Pack = 4
+}
+
+func main(): Int {
+  val sb = SB.new()
+  grow(sb)
+  grow(sb)
+  sb.Length
+}
+LYRIC
+
 mkdir -p "$WORK/proj/src/a" "$WORK/proj/src/b"
 cat > "$WORK/proj/lyric.toml" <<'TOML'
 [package]
