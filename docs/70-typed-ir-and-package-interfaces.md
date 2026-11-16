@@ -895,6 +895,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A call of a method a restored record implements dispatches on the interface that declares it (D522): the receiver is converted up and the call is an interface call; the last I0003 of the census.
   - A recursive union or a host collection used at other covariant type arguments is a `CvCovariant` conversion node (D524).
   - `forall` and `exists` build as quantifier nodes over their binder locals (D525).
+  - The JVM bridge registers the interfaces of restored JARs (`META-INF/lyric/*.lyri`) so a call leaving out their defaults builds on `--target jvm` (D527); the JVM sibling check order, interface-member defaults and the native bridge stay open.
   - The FFI intrinsic calls (`nativeNullPtr`, `nativeAddrOf`, the byte accessors, callback pins, `externAsObject`) build as built-in calls (D526).
   - The self-tests census judges a `func main` self-test through `LYRIC_LOAD_COMPILER=1 lyric run` (D523), so none is left unchecked.
   - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
