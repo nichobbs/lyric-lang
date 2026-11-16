@@ -1837,7 +1837,7 @@ func pipeReportTirCensus(
 /// The symbols a verifier message names (`#379`), each with the DefPath key it was interned
 /// from, so a diagnostic about two ids for one declaration shows both keys.
 func pipeNamedSymbols(tbl: in SymbolTable, message: in String): String {
-  var out = ""
+  var names = ""
   val seen: Map[Int, Bool] = newMap()
   var i = 0
   while i < message.length {
@@ -1862,7 +1862,7 @@ func pipeNamedSymbols(tbl: in SymbolTable, message: in String): String {
         seen.add(v, true)
         match defPathKeyOf(tbl.interner, SymbolId(id = v)) {
           case Some(k) -> {
-            out = out + (if out.length > 0 { ", " } else { "" }) + "#" + toString(v) + " = " + k
+            names = names + (if names.length > 0 { ", " } else { "" }) + "#" + toString(v) + " = " + k
           }
           case None -> ()
         }
@@ -1872,7 +1872,7 @@ func pipeNamedSymbols(tbl: in SymbolTable, message: in String): String {
       i = i + 1
     }
   }
-  out
+  names
 }
 
 /// The I0003 census of the functions the builder built: the verifier's
