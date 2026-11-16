@@ -2906,38 +2906,48 @@ func buildExternCall(
   var bestParams: List[Ty] = newList()
   var bestScore = -1
   var ambiguous = false
-  for c in cands {
-    if c.params.count == argTys.count {
-      match scoreOverload(env, c, targs, argTys) {
-        case Some(fit) -> {
-          val ps = fit.params
-          val sc = fit.score
-          if sc > bestScore {
-            bestScore = sc
-            bestSig = Some(value = c)
-            bestParams = ps
-            ambiguous = false
-          } else if sc == bestScore {
-            var same = bestParams.count == ps.count
-            var k = 0
-            while same and k < ps.count {
-              if not tyEq(bestParams[k], ps[k]) {
-                same = false
+  // A call through a value (`recv.m(x)`) takes an instance overload: a same-named static one is
+  // passed over unless no instance overload fits (D479, the rule #6765 gave the emit path).
+  val viaValue = match exprTy(env.ctx, recvExpr.nodeId) {
+    case Ok(rty) -> match rty { case TExtern(_) -> true; case _ -> false }
+    case Err(_) -> false
+  }
+  var pass = 0
+  while pass < 2 and not isSome(bestSig) {
+    for c in cands {
+      if c.params.count == argTys.count and not (pass == 0 and viaValue and c.isStatic) {
+        match scoreOverload(env, c, targs, argTys) {
+          case Some(fit) -> {
+            val ps = fit.params
+            val sc = fit.score
+            if sc > bestScore {
+              bestScore = sc
+              bestSig = Some(value = c)
+              bestParams = ps
+              ambiguous = false
+            } else if sc == bestScore {
+              var same = bestParams.count == ps.count
+              var k = 0
+              while same and k < ps.count {
+                if not tyEq(bestParams[k], ps[k]) {
+                  same = false
+                }
+                k = k + 1
               }
-              k = k + 1
-            }
-            match bestSig {
-              case Some(b) -> if b.isStatic != c.isStatic { same = false }
-              case None -> ()
-            }
-            if not same {
-              ambiguous = true
+              match bestSig {
+                case Some(b) -> if b.isStatic != c.isStatic { same = false }
+                case None -> ()
+              }
+              if not same {
+                ambiguous = true
+              }
             }
           }
+          case None -> ()
         }
-        case None -> ()
       }
     }
+    pass = pass + 1
   }
   val sig = match bestSig {
     case Some(c) -> c
