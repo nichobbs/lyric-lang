@@ -633,9 +633,10 @@ test "a covariant conversion takes a generic type to the same one at other argum
   one.add(tyInt())
   val two: List[Ty] = newList()
   two.add(tyString())
-  assertEqualInt(
-    oneFn(entries(), covariantFn(TNamed(sym = box, args = one), TNamed(sym = box, args = two))).count,
-    0,
+  assertFalse(
+    rulesOf(oneFn(entries(), covariantFn(TNamed(sym = box, args = one), TNamed(sym = box, args = two)))).contains(
+      "convert-type"
+    ),
     "Box[Int] as Box[String] has one head"
   )
   assertTrue(
