@@ -7,11 +7,14 @@ without real infrastructure.
 
 ## Targets
 
-`dotnet`. The mocks cover every library interface, including `lyric-db` and
-`lyric-mail`, which have no native backend, and the `Testing` package does not
-compile for the JVM (a code generator defect, J002). `[package] targets` says
-so, so a build for another target stops with `F0054`/`F0055` rather than in
-the middle of a dependency.
+`dotnet` and `jvm`. The mocks cover every library interface, including
+`lyric-db` and `lyric-mail`, which have no native backend. `[package] targets`
+says so, so a build for native stops with `F0054`/`F0055` rather than in the
+middle of a dependency. The JVM build once failed with J002 in
+`MockMessageQueue` (D609). On the JVM the Maven dependencies of `lyric-db` and
+`lyric-mail` are restored first (`lyric restore --manifest
+lyric-testing/lyric.toml --target jvm`); `scripts/ci/testing-tests.sh` runs
+both targets.
 
 ## Packages
 

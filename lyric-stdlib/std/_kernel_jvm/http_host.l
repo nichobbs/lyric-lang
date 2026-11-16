@@ -643,11 +643,23 @@ func systemTrustAnchors(): slice[JCertificate] {
   result.toArray()
 }
 
+// Every certificate of a `Std.Tls.Certificate` (a CA bundle carries several)
+// as its own trusted-certificate entry, under `aliasPrefix` plus its index.
+func addTrustedCertificates(ks: in JKeyStore, aliasPrefix: in String, certs: in List[CertHandle]): Unit {
+  var i = 0
+  while i < certs.count {
+    val handle: CertHandle = certs[i]
+    val c: JCertificate = handle.cert
+    ks.setCertificateEntry(aliasPrefix + i.toString(), c)
+    i = i + 1
+  }
+}
+
 // ADDITIVE trust (`withCaCertificate`): `extraCa` plus every platform trust
 // anchor — a chain valid against either set is accepted.
-func buildAdditiveTrustKeyStore(extraCa: in JCertificate): JKeyStore {
+func buildAdditiveTrustKeyStore(extraCa: in List[CertHandle]): JKeyStore {
   val ks = newEmptyPkcs12KeyStore()
-  ks.setCertificateEntry("lyric-extra-ca", extraCa)
+  addTrustedCertificates(ks, "lyric-extra-ca-", extraCa)
   val anchors = systemTrustAnchors()
   var i = 0
   while i < anchors.length {
@@ -659,9 +671,9 @@ func buildAdditiveTrustKeyStore(extraCa: in JCertificate): JKeyStore {
 
 // EXCLUSIVE trust (`withExclusiveCaCertificate`): ONLY `onlyCa` — the
 // platform trust store is never consulted.
-func buildExclusiveTrustKeyStore(onlyCa: in JCertificate): JKeyStore {
+func buildExclusiveTrustKeyStore(onlyCa: in List[CertHandle]): JKeyStore {
   val ks = newEmptyPkcs12KeyStore()
-  ks.setCertificateEntry("lyric-exclusive-ca", onlyCa)
+  addTrustedCertificates(ks, "lyric-exclusive-ca-", onlyCa)
   ks
 }
 
@@ -852,13 +864,13 @@ func buildClientSslContext(
     val tmf = match resolveCaMode(caCertificate, exclusiveCaCertificate) {
       case ExclusiveCa -> match exclusiveCaCertificate {
         case Some(cert) -> trustManagerFactoryFor(
-          buildExclusiveTrustKeyStore(Certificate.rawHandle(cert).cert)
+          buildExclusiveTrustKeyStore(Certificate.rawHandles(cert))
         )
         case None -> defaultTrustManagerFactory()
       }
       case AdditiveCa -> match caCertificate {
         case Some(cert) -> trustManagerFactoryFor(
-          buildAdditiveTrustKeyStore(Certificate.rawHandle(cert).cert)
+          buildAdditiveTrustKeyStore(Certificate.rawHandles(cert))
         )
         case None -> defaultTrustManagerFactory()
       }

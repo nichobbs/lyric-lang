@@ -16963,6 +16963,101 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
+// The scope a bare name written in `fctx` is resolved in: the package the code
+// was written in (the declaring package of a specialised generic).
+func scopePkgMsil(fctx: in FuncCtx): String {
+  if fctx.originPkg.length > 0 {
+    fctx.originPkg
+  } else {
+    fctx.pkgName
+  }
+}
+
+// The package that declares the union case `caseFqn` (the package of its
+// parent union), or the one that declares the record `caseFqn` when no union
+// is registered for it.
+func caseDeclPkgMsil(cctx: in CodegenCtx, caseFqn: in String): String {
+  val owner = match mapGet(cctx.caseParentUnion, caseFqn) { case Some(parentFqn) -> parentFqn; case None -> caseFqn }
+  val cut = String.lastIndexOfRaw(owner, ".")
+  if cut > 0 {
+    owner.substring(0, cut)
+  } else {
+    ""
+  }
+}
+
+// How near the package `pkg` is to the scope of `fctx` for the bare name
+// `name` (`altName`, the union a case belongs to, for a selective import that
+// names the union): 0 for the package itself, 1 for one of its imports that
+// admits the name, 2 for any other package of the bundle.
+func pkgScopeLevelMsil(cctx: in CodegenCtx, fctx: in FuncCtx, pkg: in String, name: in String, altName: in String): Int {
+  val scopePkg = scopePkgMsil(fctx)
+  if pkg == scopePkg {
+    return 0
+  }
+  if bareImportListForNameMsil(cctx, scopePkg, name).contains(pkg) or (altName.length > 0 and bareImportListForNameMsil(cctx, scopePkg, altName).contains(pkg)) {
+    if bareImportAdmitsMsil(cctx, scopePkg, pkg, name, altName) {
+      return 1
+    }
+  }
+  2
+}
+
+// The scope level (`pkgScopeLevelMsil`) of the nearest candidate of
+// `unionCaseCtorByName[name]`: 0 when the package being lowered declares one,
+// 1 when one of its imports does, else 2 (nothing in scope).
+func caseCandidatesLevelMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: in String, candidates: in List[String]): Int {
+  var best = 2
+  for cand in candidates {
+    val unionName = match mapGet(cctx.caseParentUnion, cand) {
+      case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
+      case None -> ""
+    }
+    val lvl = pkgScopeLevelMsil(cctx, fctx, caseDeclPkgMsil(cctx, cand), caseSimpleNameMsil(cand, unionName), unionName)
+    if lvl < best {
+      best = lvl
+    }
+  }
+  best
+}
+
+// The candidates of `unionCaseCtorByName[name]` a bare `name` means: those at
+// the nearest scope level that has one, or all of them when none is in scope
+// (the key as written).  The type checker resolves a bare name one scope at a
+// time, so a case of a package the caller cannot see must not capture a call
+// whose own package or imports declare something else of that name (#9130).
+func scopedCaseCandidatesMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, name: in String, candidates: in List[String]
+): List[String] {
+  val level = caseCandidatesLevelMsil(cctx, fctx, name, candidates)
+  if level == 2 {
+    return candidates
+  }
+  val nearest: List[String] = newList()
+  for cand in candidates {
+    val unionName = match mapGet(cctx.caseParentUnion, cand) {
+      case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
+      case None -> ""
+    }
+    if pkgScopeLevelMsil(cctx, fctx, caseDeclPkgMsil(cctx, cand), caseSimpleNameMsil(cand, unionName), unionName) == level {
+      nearest.add(cand)
+    }
+  }
+  nearest
+}
+
+// True when the checker resolved the call whose callee is at `siteKey` to a
+// function (D336): such a call is never a record or union case construction,
+// whatever else of that name the bundle declares.  Unlike `sitedCalleeFqnMsil`
+// this does not need the function's package to be registered yet.
+func callResolvedToFunctionMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, funcName: in String): Bool {
+  if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    return siteCalleeCandidatesInMsil(cctx.originCalleeSites, fctx.pkgName, fctx.originPkg + "|" + siteKey, funcName).count >
+      0
+  }
+  siteCalleeCandidatesInMsil(cctx.calleeSites, fctx.pkgName, siteKey, funcName).count > 0
+}
+
 // The package and the declared name in the checker's rendered callee DefPath
 // (`Pkg::name(P1,P2)`), "" when `dp` is not of that form (D336).
 func calleePkgOfDefPathMsil(dp: in String): String {
@@ -21373,7 +21468,12 @@ func lowerBuiltinOrStaticCallMsil(
     // cross-package qualified-constructor regression).
     val fullQualifiedCtorKey = qualifiedRecordCtorKeyMsil(cctx, path.segments)
     val qualifiedCaseKey = qualifiedCaseCtorKeyMsil(cctx, fctx, path.segments)
-    val ctorKey = if fullQualifiedCtorKey.length > 0 {
+    // A call the checker resolved to a function is never a construction,
+    // whatever a package out of scope declares under that name (#9130).
+    val resolvedToFunction = callResolvedToFunctionMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
+    val ctorKey = if resolvedToFunction {
+      ""
+    } else if fullQualifiedCtorKey.length > 0 {
       fullQualifiedCtorKey
     } else if qualifiedCaseKey.length > 0 {
       qualifiedCaseKey
@@ -21382,8 +21482,27 @@ func lowerBuiltinOrStaticCallMsil(
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
         // A qualified call (`Color.CaseName(...)`, `Pkg.CaseName(...)`)
-        // prefers the case its qualifier names (#3349).
-        case Some(candidates) -> pickCaseFqnByQualifier(cctx, fctx, candidates, qualifierOfPathMsil(path.segments))
+        // prefers the case its qualifier names (#3349).  A bare name takes the
+        // nearest scope that declares a case, and a record of a nearer scope
+        // beats a case of a farther one (#9130).
+        case Some(candidates) -> if path.segments.count == 1 {
+          val caseLevel = caseCandidatesLevelMsil(cctx, fctx, funcName, candidates)
+          val inScopeCases = scopedCaseCandidatesMsil(cctx, fctx, funcName, candidates)
+          val recordFqn = resolveTypeFqn(cctx, fctx.pkgName, funcName)
+          val recordLevel = if cctx.recordCtorTokens.containsKey(recordFqn) {
+            val cut = String.lastIndexOfRaw(recordFqn, ".")
+            pkgScopeLevelMsil(cctx, fctx, if cut > 0 { recordFqn.substring(0, cut) } else { "" }, funcName, "")
+          } else {
+            3
+          }
+          if recordLevel < caseLevel {
+            recordFqn
+          } else {
+            pickCaseFqnByQualifier(cctx, fctx, inScopeCases, "")
+          }
+        } else {
+          pickCaseFqnByQualifier(cctx, fctx, candidates, qualifierOfPathMsil(path.segments))
+        }
         case None -> {
           // Cross-package record: resolve the simple name to its FQN with the
           // import-aware scope-tier resolver (mirrors the type checker), NOT the

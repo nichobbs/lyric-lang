@@ -11,6 +11,23 @@
 //! a missing file, malformed PEM, an unsupported key format, or a
 //! certificate/private-key mismatch are data (`TlsError`), not exceptions.
 //!
+//! A `Certificate` carries EVERY certificate of the PEM text it is loaded
+//! from, so a CA bundle (`ca-bundle.crt`, the file `SSL_CERT_FILE` names) can
+//! be loaded as one value and each certificate in it is a trust anchor
+//! wherever the `Certificate` is used as a CA (`HttpClientBuilder`'s CA
+//! options, `TlsServerConfig.clientCa`). Only the `CERTIFICATE` blocks count:
+//! comments, blank lines and blocks with another label are skipped. A text
+//! with no `CERTIFICATE` block, or with a block that is unterminated or does
+//! not parse (reported with its 1-based position, "certificate 2 of 3: ..."),
+//! is `PemMalformed`; no block is ever silently dropped. This is the same on
+//! every target (#9146; before it dotnet and the JVM used only the first
+//! certificate and native used all).
+//!
+//! An `Identity` is different: the text it takes is a leaf certificate, and
+//! its first `CERTIFICATE` block is the leaf (the one the private key must
+//! match). Further blocks, such as the intermediates of a chain file, are
+//! ignored by `Identity` on every target; the peer is sent the leaf alone.
+//!
 //! Only unencrypted PKCS8 private keys ("-----BEGIN PRIVATE KEY-----") are
 //! supported. A PKCS1/SEC1 key ("RSA PRIVATE KEY" / "EC PRIVATE KEY") or an
 //! encrypted PKCS8 key ("ENCRYPTED PRIVATE KEY") is rejected as
@@ -43,6 +60,7 @@
 package Std.Tls
 
 import Std.Core
+import Std.Collections
 import Std.String as Str
 import Std.File
 import Std.Encoding
@@ -51,10 +69,15 @@ import Std.TlsHost as Host
 // ---------------------------------------------------------------------------
 // Core types.
 // ---------------------------------------------------------------------------
-/// A parsed X.509 certificate (no private key), loaded from PEM.
+/// The parsed X.509 certificates of one PEM text (no private key). Usually
+/// one; a CA bundle (`ca-bundle.crt`, `SSL_CERT_FILE`) carries many, and
+/// every one of them is a trust anchor wherever the value is used as a CA
+/// (`HttpClientBuilder.withCaCertificate`/`withExclusiveCaCertificate`,
+/// `TlsServerConfig.clientCa`). The list is never empty and keeps the order
+/// of the text.
 @stable(since = "1.0")
 pub opaque type Certificate {
-  handle: Host.CertHandle
+  handles: List[Host.CertHandle]
 }
 
 /// A certificate plus its private key — a server or client identity.
@@ -176,17 +199,81 @@ func checkKeyPemSupported(pem: in String): Option[String] {
 // #5903's sibling finding, tracked separately). Unwrapping `Err(e)` first
 // and matching `e` on its own line avoids the nested-pattern shape
 // entirely and is correct on both targets.
-func certFromBytes(path: in String, bytes: in slice[Byte]): Result[Certificate, TlsError] {
-  match Host.hostCertFromPemBytes(bytes) {
-    case Ok(handle) -> Ok(value = Certificate(handle = handle))
-    case Err(hostError) -> match hostError {
-      case Host.HostMalformed(msg) -> Err(error = PemMalformed(path = path, message = msg))
-      // Unreachable for a cert-only load — only the identity/pairing path
-      // produces HostMismatch — but HostLoadError is shared with that path,
-      // so this arm exists purely to keep the match exhaustive (#5922).
-      case Host.HostMismatch(msg) -> Err(error = PemMalformed(path = path, message = msg))
+func certMalformed(path: in String, hostError: in Host.HostLoadError, what: in String): TlsError {
+  match hostError {
+    case Host.HostMalformed(msg) -> PemMalformed(path = path, message = what + msg)
+    // Unreachable for a cert-only load — only the identity/pairing path
+    // produces HostMismatch — but HostLoadError is shared with that path,
+    // so this arm exists purely to keep the match exhaustive (#5922).
+    case Host.HostMismatch(msg) -> PemMalformed(path = path, message = what + msg)
+  }
+}
+
+val certBeginMarker = "-----BEGIN CERTIFICATE-----"
+
+val certEndMarker = "-----END CERTIFICATE-----"
+
+// The `CERTIFICATE` blocks of `pem`, each as a PEM text of its own, in text
+// order. Everything outside the blocks (comments, blank lines, blocks with
+// another label such as a private key) is not part of any certificate and is
+// skipped, as OpenSSL's `SSL_CTX_load_verify_locations` skips it. A block with
+// no END line is `Err` with the 1-based position of the block.
+func certificateBlocks(pem: in String): Result[List[String], String] {
+  val blocks: List[String] = newList()
+  var from = 0
+  var more = true
+  while more {
+    val begin = Str.indexOfFromRaw(pem, certBeginMarker, from)
+    if begin < 0 {
+      more = false
+    } else {
+      val stop = Str.indexOfFromRaw(pem, certEndMarker, begin + certBeginMarker.length)
+      if stop < 0 {
+        return Err(error = "certificate " + (blocks.count + 1).toString() + " has no " + certEndMarker + " line")
+      }
+      val blockEnd = stop + certEndMarker.length
+      blocks.add(pem.substring(begin, blockEnd - begin) + "\n")
+      from = blockEnd
     }
   }
+  Ok(value = blocks)
+}
+
+// One handle per `CERTIFICATE` block of a text with several. A text with at
+// most one block (including DER bytes, which have no PEM markers, and text
+// the kernel itself must classify) goes to the kernel exactly as given, so a
+// single certificate loads and fails as it always has.
+func certFromBytes(path: in String, bytes: in slice[Byte]): Result[Certificate, TlsError] {
+  val blocks: List[String] = match tryDecodeUtf8(bytes) {
+    case None -> newList()
+    case Some(text) -> match certificateBlocks(text) {
+      case Ok(found) -> found
+      case Err(message) -> return Err(error = PemMalformed(path = path, message = message))
+    }
+  }
+  val handles: List[Host.CertHandle] = newList()
+  if blocks.count <= 1 {
+    match Host.hostCertFromPemBytes(bytes) {
+      case Ok(handle) -> handles.add(handle)
+      case Err(hostError) -> return Err(error = certMalformed(path, hostError, ""))
+    }
+    return Ok(value = Certificate(handles = handles))
+  }
+  var i = 0
+  while i < blocks.count {
+    match Host.hostCertFromPemBytes(encodeUtf8(blocks[i])) {
+      case Ok(handle) -> handles.add(handle)
+      case Err(hostError) -> return Err(
+        error = certMalformed(
+          path,
+          hostError,
+          "certificate " + (i + 1).toString() + " of " + blocks.count.toString() + ": "
+        )
+      )
+    }
+    i = i + 1
+  }
+  Ok(value = Certificate(handles = handles))
 }
 
 func identityFromBytes(
@@ -223,11 +310,13 @@ func identityFromBytes(
 // ---------------------------------------------------------------------------
 // Certificate constructors.
 // ---------------------------------------------------------------------------
-/// Load a certificate (no private key) from a PEM file.
+/// Load a certificate (no private key) from a PEM file. A file with several
+/// certificates (a CA bundle) loads all of them; see the module header.
 ///
 /// # Errors
 /// - `CertFileNotFound`: the file does not exist or could not be read.
-/// - `PemMalformed`: the file does not contain a parseable certificate.
+/// - `PemMalformed`: the file does not contain a parseable certificate, or
+///   one of its certificates is malformed or unterminated.
 @stable(since = "1.0")
 pub func Certificate.fromPemFile(path: in String): Result[Certificate, TlsError]
   requires: path.length > 0
@@ -238,11 +327,13 @@ pub func Certificate.fromPemFile(path: in String): Result[Certificate, TlsError]
   }
 }
 
-/// Load a certificate (no private key) from PEM text already in memory.
+/// Load a certificate (no private key) from PEM text already in memory. Text
+/// with several certificates (a CA bundle) loads all of them; see the module
+/// header.
 ///
 /// # Errors
 /// - `PemMalformed`: `pem` is empty or does not contain a parseable
-///   certificate. PEM text usually comes from an environment variable or a
+///   certificate, or one of its certificates is malformed or unterminated. PEM text usually comes from an environment variable or a
 ///   secret store, so an empty value is an error, not a precondition (#7251).
 @stable(since = "1.0")
 pub func Certificate.fromPem(pem: in String): Result[Certificate, TlsError] {
@@ -307,15 +398,16 @@ pub func Identity.fromPem(certPem: in String, keyPem: in String): Result[Identit
 // published `Lyric.Contract` surface, so these never appear as part of
 // Std.Tls's external API.
 // ---------------------------------------------------------------------------
-/// Kernel-boundary accessor for `Certificate`'s underlying host handle.
-/// Not part of the certificate-loading surface application code calls —
-/// see the module-header note above.
-internal func Certificate.rawHandle(c: in Certificate): Host.CertHandle {
-  c.handle
+/// Kernel-boundary accessor for `Certificate`'s underlying host handles,
+/// one per certificate of the PEM text, in text order, never empty. Not part
+/// of the certificate-loading surface application code calls — see the
+/// module-header note above.
+internal func Certificate.rawHandles(c: in Certificate): List[Host.CertHandle] {
+  c.handles
 }
 
 /// Kernel-boundary accessor for `Identity`'s underlying host handle. Same
-/// rationale as `Certificate.rawHandle`.
+/// rationale as `Certificate.rawHandles`.
 internal func Identity.rawHandle(id: in Identity): Host.CertHandle {
   id.handle
 }

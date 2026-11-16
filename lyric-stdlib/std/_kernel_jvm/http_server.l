@@ -65,7 +65,7 @@
 //! `startListenerTls`'s `SSLContext` construction (below `TlsListenError`)
 //! reaches into `Std.Tls`'s `Identity` via the existing `internal`
 //! `Identity.rawHandle` kernel-boundary accessor (`std/tls.l`, shipped
-//! alongside `Certificate.rawHandle` for docs/61 §3.2 phase 1.2's client
+//! alongside `Certificate.rawHandles` for docs/61 §3.2 phase 1.2's client
 //! TLS wiring, and explicitly anticipating "the future server-side
 //! kernels phase 2/3 add") rather than a second same-package file: a
 //! `_kernel_jvm/tls_server_jvm.l` declaring `package Std.Tls` was tried
@@ -120,6 +120,7 @@ import Std.Char
 import Std.Collections
 import Std.EncodingHost
 import Std.Tls
+import Std.TlsHost
 import Std.String
 
 // =====================================================================
@@ -455,12 +456,17 @@ pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVer
 // argument here is an array, so this calls straight through auto-FFI with
 // no `java.lang.reflect` bridging needed (module header).
 func buildClientCaKeyStore(clientCa: in Certificate): JKeyStore {
-  val handle = clientCa.rawHandle()
-  val cert: JCertificate = handle.cert
+  val handles = clientCa.rawHandles()
   val ks: JKeyStore = JKeyStore.getInstance("PKCS12")
   val nullStream = nullOfClass("java.io.InputStream")
   val _load = invoke2(ks, "load", nullStream, emptyCharArrayObj())
-  ks.setCertificateEntry("lyric-client-ca", cert)
+  var i = 0
+  while i < handles.count {
+    val handle: CertHandle = handles[i]
+    val cert: JCertificate = handle.cert
+    ks.setCertificateEntry("lyric-client-ca-" + i.toString(), cert)
+    i = i + 1
+  }
   ks
 }
 

@@ -4630,9 +4630,62 @@ func resolveGeneralFuncSigExact(
   // unconditionally regardless of visibility, since same-package access to
   // a package-private function is always legal.
   match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
-    case Some(sig) -> Some(value = sig)
-    case None -> mapGet(ctx.funcSigs, scopedKey)
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
   }
+  match mapGet(ctx.funcSigs, scopedKey) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  importedFuncSigJvm(ctx, funcName, argcSuffix)
+}
+
+// The function a bare name means through the file's imports, for a call the
+// checker recorded no site for (a contract clause an `impl` inherits from an
+// interface of another package, whose spans belong to that package's file):
+// a selectively imported name, then a package imported whole, then one those
+// reach, as the checker ranks them (docs/01 §9.2).  The first package that
+// declares it wins; a name no import declares stays unresolved.
+func importedFuncSigJvm(ctx: in FuncCtx, funcName: in String, argcSuffix: in String): Option[JvmFuncSig] {
+  match mapGet(ctx.externTypes, "~ctor-import~" + funcName) {
+    case Some(scopedName) -> {
+      val cut = scopedName.indexOf("::")
+      match cut {
+        case Some(c) -> {
+          val key = scopedName.substring(0, c) + "/" + scopedName.substring(c + 2, scopedName.length - c - 2)
+          match mapGet(ctx.funcSigs, key + argcSuffix) {
+            case Some(sig) -> return Some(value = sig)
+            case None -> ()
+          }
+          match mapGet(ctx.funcSigs, key) {
+            case Some(sig) -> return Some(value = sig)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    case None -> ()
+  }
+  val scopeKeys: List[String] = newList()
+  scopeKeys.add("~ctor-pkgs~")
+  scopeKeys.add("~ctor-tpkgs~")
+  for scopeKey in scopeKeys {
+    val pkgs = match mapGet(ctx.externTypes, scopeKey) { case Some(v) -> v; case None -> "" }
+    if pkgs.length > 0 {
+      for p in split(pkgs, ",") {
+        match mapGet(ctx.funcSigs, p + "/" + funcName + argcSuffix) {
+          case Some(sig) -> return Some(value = sig)
+          case None -> ()
+        }
+        match mapGet(ctx.funcSigs, p + "/" + funcName) {
+          case Some(sig) -> return Some(value = sig)
+          case None -> ()
+        }
+      }
+    }
+  }
+  None
 }
 
 // A call to a generic function the monomorphizer left generic, with at
@@ -4754,9 +4807,30 @@ func lowerGeneralStaticCall(
       case None -> ()
     }
   }
-  match ctorClassForExpecting(ctx, funcName) {
-    case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
-    case None -> ()
+  // A call the checker resolved to a function is never a construction, and a
+  // constructor only the bundle-wide name table knows (a package this file
+  // does not see) does not capture a function the file's own package or
+  // imports declare (#9130).
+  val callIsFunction = match siteFuncSigJvm(ctx, funcName, path, args.count) {
+    case Some(_) -> true
+    case None -> false
+  }
+  if not callIsFunction {
+    match ctorClassForExpectingScoped(ctx, funcName) {
+      case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+      case None -> ()
+    }
+    val functionInScope = path.segments.count == 1 and
+      match mapGet(ctx.funcSigs, ctx.pkgName + "::" + funcName) {
+        case Some(_) -> true
+        case None -> false
+      }
+    if not functionInScope {
+      match bundleCtorFallback(ctx, funcName) {
+        case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+        case None -> ()
+      }
+    }
   }
 
   // Bare sibling call inside an impl / record / protected-type method body

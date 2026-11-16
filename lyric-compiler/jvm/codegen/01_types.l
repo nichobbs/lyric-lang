@@ -2531,6 +2531,18 @@ func uniqueCtorInPkgsJvm(ctx: in FuncCtx, key: in String, name: in String): Opti
 // the one the call actually expects (#5976).  Still tries the current
 // package's own declaration first, exactly like `ctorClassFor`.
 pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String] {
+  match ctorClassForExpectingScoped(ctx, name) {
+    case Some(cls) -> Some(value = cls)
+    case None -> bundleCtorFallback(ctx, name)
+  }
+}
+
+// `ctorClassForExpecting` without the bundle-wide bare-name last resort: the
+// constructor a bare `name` means through the current package, the expected
+// type and the file's imports alone.  A call whose name nothing in scope
+// declares as a constructor may still be a function in scope, which the
+// bundle-wide entry of an unrelated package must not capture (#9130).
+pub func ctorClassForExpectingScoped(ctx: in FuncCtx, name: in String): Option[String] {
   // #8481: two unions of one package may share a case name, and the
   // `<pkg>::<name>` entry below holds only the last one declared. The
   // directly-enclosing expectation names the union the checker resolved, so
@@ -2559,11 +2571,7 @@ pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String]
       }
     }
   }
-  match ctorClassFromImports(ctx, name) {
-    case Some(cls3) -> return Some(value = cls3)
-    case None -> ()
-  }
-  bundleCtorFallback(ctx, name)
+  ctorClassFromImports(ctx, name)
 }
 
 // Cross-package enum case-name collision fix (#5995), extended for the

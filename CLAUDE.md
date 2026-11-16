@@ -1165,7 +1165,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   locale fallback chain; JSON-based translation loading; BCP 47 locale
   parsing.
 - `lyric-testing/` — `lyric-testing` library: test helpers and mocks
-  (`Lyric.Testing`, `targets = ["dotnet"]`). `MockMailSender`, `MockStorageBucket`,
+  (`Lyric.Testing`, `targets = ["dotnet", "jvm"]`). `MockMailSender`, `MockStorageBucket`,
   `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
   `TestContext` factory; `assertOk`/`assertErr`/`assertSome`/`assertEq`/
   `assertTrue`/`assertFalse` assertion helpers.
