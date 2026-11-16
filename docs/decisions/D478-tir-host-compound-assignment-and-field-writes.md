@@ -14,4 +14,4 @@ D598 built `recv.p = v` on a host value as a call of the property's setter. It c
 
 ## Not covered
 
-An indexer write and a static property or field write are still counted.
+An indexer write and a static property or field write are still counted. The MSIL emitter does not lower a write to a public host field yet (T0120, "does not resolve to a property setter"), so `host_field_write` in `tir-builder-shapes-e2e.sh` is judged by the census and not run; the compound property write runs (`host_compound_write`).
