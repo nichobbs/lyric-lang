@@ -45,6 +45,11 @@
 # run killed part-way (the self-tests area takes hours) continues instead of restarting.
 # Delete <dir> (or use a new one) after rebuilding ./bin/lyric.
 #
+# TIR_CENSUS_PARTIAL=1 (with TIR_CENSUS_STATE and --wide) builds nothing: it aggregates only the
+# builds already kept under the state directory, skips the standard-library phase and the e2e
+# shape scripts, reports how many wide builds had no kept result, and never gates.  It lets the
+# table be posted from a run that is still going or was stopped at a time limit.
+#
 # Usage: tir-census.sh [path/to/lyric] [--wide] [file.l ...]
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -192,6 +197,7 @@ absorb_log() {
   done < <(grep -E '^  no builder case: ' "$log" || true)
 }
 
+partial_missing=0
 # Runs one wide-census build into $log, or reuses the kept result (see TIR_CENSUS_STATE).
 # Sets rc.  Usage: run_cached <key> <timeout> <command...>
 run_cached() {
@@ -202,12 +208,17 @@ run_cached() {
     keep="$TIR_CENSUS_STATE/$(tr '/ ' '__' <<<"$key")"
     if [[ -f "$keep.rc" ]]; then cp "$keep.log" "$log"; rc="$(cat "$keep.rc")"; return 0; fi
   fi
+  if [[ "${TIR_CENSUS_PARTIAL:-0}" == 1 ]]; then : >"$log"; rc=255; partial_missing=$((partial_missing + 1)); return 0; fi
   rc=0
   timeout "$tmo" "$@" >"$log" 2>&1 || rc=$?
   if [[ -n "$keep" ]]; then cp "$log" "$keep.log"; echo "$rc" >"$keep.rc"; fi
 }
 
 cd "$REPO_ROOT"
+if [[ "${TIR_CENSUS_PARTIAL:-0}" == 1 && ( $WIDE -eq 0 || -z "${TIR_CENSUS_STATE:-}" ) ]]; then
+  echo "TIR_CENSUS_PARTIAL=1 needs --wide and TIR_CENSUS_STATE" >&2; exit 2
+fi
+if [[ "${TIR_CENSUS_PARTIAL:-0}" != 1 ]]; then
 for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
   "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/out.dll" >"$log" 2>&1
@@ -248,6 +259,7 @@ if [[ $i0003 -gt 0 || ${#unchecked[@]} -gt 0 ]]; then gate_rc=1; fi
 bash "$REPO_ROOT/scripts/ci/tir-foreign-defaults-e2e.sh" "$LYRIC" || gate_rc=1
 # Source shapes the builder must build (D483).
 bash "$REPO_ROOT/scripts/ci/tir-builder-shapes-e2e.sh" "$LYRIC" || gate_rc=1
+fi
 
 if [[ $WIDE -eq 0 ]]; then exit $gate_rc; fi
 
@@ -287,8 +299,7 @@ import Std.Math
 import Std.Testing.Mocking
 func main(): Unit { }
 DRIVER
-rc=0
-LYRIC_VERIFY_IR=1 timeout 3000 "$LYRIC" --internal-perpackage-build "$OUT/compiler-driver/driver.l" "$OUT/compiler-out" --target dotnet >"$log" 2>&1 || rc=$?
+run_cached "compiler-driver" 3000 env LYRIC_VERIFY_IR=1 "$LYRIC" --internal-perpackage-build "$OUT/compiler-driver/driver.l" "$OUT/compiler-out" --target dotnet
 sed -i "s|$REPO_ROOT/||g" "$log"
 absorb_log compiler "Lyric.Cli closure" "$log" "$rc"
 fi
@@ -356,4 +367,8 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     printf '      %s\n' ${a_unchecked[$area]} | head -10
   fi
 done
+if [[ "${TIR_CENSUS_PARTIAL:-0}" == 1 ]]; then
+  echo "  partial: $partial_missing wide build(s) had no kept result and are not counted"
+  exit 0
+fi
 exit $gate_rc
