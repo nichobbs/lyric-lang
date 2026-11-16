@@ -217,24 +217,23 @@ pub func buildMemberDefaults(
 func buildMemberWith(
   env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, mode: in Int
 ): Option[TFnDecl] {
-  // Inside an `impl`, `Self` is the impl's target type (D476).
+  // Inside a member, `Self` is the type the member belongs to: an `impl`'s target (D476), a
+  // record's or protected type's own type (D480).
   var pushed = false
-  if isSome(site.implTarget) {
-    val target = if site.owner.names.count > 0 {
-      match memberSymOf(tbl, pkg, site) {
-        case Some(s) -> genericRecvOf(env, tbl, site, s)
-        case None -> None
-      }
-    } else {
-      site.recv
+  val target = if site.owner.names.count > 0 {
+    match memberSymOf(tbl, pkg, site) {
+      case Some(s) -> genericRecvOf(env, tbl, site, s)
+      case None -> None
     }
-    match target {
-      case Some(t) -> {
-        env.ctx.implSelf.add(t)
-        pushed = true
-      }
-      case None -> ()
+  } else {
+    site.recv
+  }
+  match target {
+    case Some(t) -> {
+      env.ctx.implSelf.add(t)
+      pushed = true
     }
+    case None -> ()
   }
   val res = buildMemberInner(env, tbl, pkg, site, mode)
   if pushed {
