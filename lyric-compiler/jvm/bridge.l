@@ -11,6 +11,9 @@ import Std.String as Str
 import Std.Console as Console
 import Std.Encoding as Encoding
 import Std.Path as Path
+import Std.File as File
+import Std.Zip as Zip
+import Lyric.Tir.Build as TirBuild
 import Lyric.BuildDefines as BD
 import Lyric.ContractMeta as Meta
 import Lyric.AnnotationMetaEmit as AnnotationMeta
@@ -824,6 +827,7 @@ func runMiddleEnd(
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
   buildInterface: in Bool = false,
   calleesOut: in Map[String, String] = newMap(),
+  depDefaults: in TirBuild.DepDefaults = pipeNewDepDefaults(),
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   val opts = jvmMiddleEndOptions(
@@ -840,12 +844,51 @@ func runMiddleEnd(
     externIter,
     ifaceOut,
     buildInterface,
-    calleesOut
+    calleesOut,
+    depDefaults
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
     case Some(f) -> Some(value = pipeCBindingsToFuncs(f))
     case None -> None
+  }
+}
+
+/// Make the package interfaces the restored JARs embed (`META-INF/lyric/<Pkg>.lyri`, docs/70 §9.6)
+/// readable to the packages checked against them: a call that leaves out an argument a restored
+/// package declares takes the default its interface carries (D482).  A JAR that cannot be read, or
+/// carries none, contributes nothing: the call is then counted.
+func registerRestoredInterfacesJvm(store: in TirBuild.DepDefaults, restoredArtifacts: in List[SynthesisedArtifact]) {
+  val prefix = "META-INF/lyric/"
+  val limits = Zip.ZipLimits(
+    maxEntries = 65535,
+    maxEntrySize = 536870912i64,
+    maxTotalSize = 4294967296i64,
+    maxRatio = 1000i64
+  )
+  for ra in restoredArtifacts {
+    if Str.endsWith(ra.dllPath, ".jar") {
+      match File.readBytes(ra.dllPath) {
+        case Ok(jar) -> match Zip.readZipDirectory(jar, limits) {
+          case Ok(entries) -> {
+            for e in entries {
+              if Str.startsWith(e.name, prefix) and Str.endsWith(e.name, ".lyri") {
+                match Zip.readZipEntry(jar, e) {
+                  case Ok(bytes) -> TirBuild.registerInterface(
+                    store,
+                    e.name.substring(prefix.length, e.name.length - prefix.length - 5),
+                    bytes
+                  )
+                  case Err(_) -> ()
+                }
+              }
+            }
+          }
+          case Err(_) -> ()
+        }
+        case Err(_) -> ()
+      }
+    }
   }
 }
 
@@ -867,6 +910,7 @@ func jvmMiddleEndOptions(
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
   buildInterface: in Bool = false,
   calleesOut: in Map[String, String] = newMap(),
+  depDefaults: in TirBuild.DepDefaults = pipeNewDepDefaults(),
 ): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
   MiddleEndOptions(
@@ -895,7 +939,8 @@ func jvmMiddleEndOptions(
     sink = sink,
     buildInterface = buildInterface,
     interfaceTargets = jvmInterfaceTarget(),
-    interfaceOut = ifaceOut
+    interfaceOut = ifaceOut,
+    depDefaults = depDefaults
   )
 }
 
@@ -3545,6 +3590,8 @@ pub func checkProjectTypesJvm(
     }
   }
   val checkIterIx = newJvmHostIterIndex(buildAutoFfiCtx())
+  val checkDepDefaults = pipeNewDepDefaults()
+  registerRestoredInterfacesJvm(checkDepDefaults, restoredArtifacts)
   for f in checked {
     val name = dottedPath(f.packageDecl.path)
     val label = match mapGet(fe.pkgPathByName, name) { case Some(p) -> p; case None -> name }
@@ -3559,7 +3606,8 @@ pub func checkProjectTypesJvm(
       unwrapOr(mapGet(ioForbiddenByPkg, name), ""),
       contractsEnabled,
       fe.depPkgNames.containsKey(name),
-      externIter = jvmIterResolver(checkIterIx)
+      externIter = jvmIterResolver(checkIterIx),
+      depDefaults = checkDepDefaults
     )
     val _ = pipeCheckFront(arrayTypedOrSelf(fe.arrayTypedByPkg, f), fe.importedPkgs, opts, sink)
   }
@@ -3750,6 +3798,10 @@ pub func compileProjectToJarBundledWithRestored(
   val importedPkgs = fe.importedPkgs
   val stdlibFiles = fe.stdlibFiles
   val projectOwners = fe.projectOwners
+  // One store for the whole build: the interfaces of the restored JARs now, and of each package as
+  // it is built (D482), so a call that leaves out another package's defaulted argument can take it.
+  val projDepDefaults = pipeNewDepDefaults()
+  registerRestoredInterfacesJvm(projDepDefaults, restoredArtifacts)
 
   // Extern-type map per parsed package (parallel lists), so signatures and
   // descriptors written against an imported extern type resolve through
@@ -4386,7 +4438,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userCallArities: Map[String, Int] = newMap()
   val userCallees: Map[String, String] = newMap()
   val userIface: List[IfaceBuild.IfaceOutcome] = newList()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx), userIface, true, calleesOut = userCallees) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx), userIface, true, calleesOut = userCallees, depDefaults = projDepDefaults) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4563,7 +4615,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx), siblingIface, isProjectPkg, calleesOut = siblingCallees) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx), siblingIface, isProjectPkg, calleesOut = siblingCallees, depDefaults = projDepDefaults) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.

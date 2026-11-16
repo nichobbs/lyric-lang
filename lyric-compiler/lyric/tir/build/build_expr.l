@@ -2390,6 +2390,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
     case None -> ()
   }
+  match buildHostMethodOnString(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
 }
 
@@ -2417,6 +2421,54 @@ func ffiIntrinsicCall(env: in BuildEnv, fn: in Expr): Option[String] {
     }
     case _ -> None
   }
+}
+
+func isHostStringName(name: in String): Bool {
+  name == "System.String" or name == "java.lang.String"
+}
+
+/// `s.compareTo(t)`, `s.startsWith(p)` and the other host methods a `String` value is called with where the
+/// checker records no callee (the host's string is the language's `String`, so the receiver is the value
+/// itself): an extern call on whichever host string type declares the method, found through the host
+/// metadata.  None, counting nothing, when the callee is not a member of a `String`, the metadata cannot be
+/// read, or no host string type declares the member.
+func buildHostMethodOnString(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if tbl.externIterResolver.count == 0 {
+    return None
+  }
+  val parts = match fn.kind {
+    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
+      case Ok(rt) -> match rt {
+        case TPrim(TPString) -> Some(value = name)
+        case _ -> None
+      }
+      case Err(_) -> None
+    }
+    case _ -> None
+  }
+  val name = match parts { case Some(n) -> n; case None -> return None }
+  val names: List[String] = newList()
+  names.add("java.lang.String")
+  names.add("System.String")
+  for host in names {
+    match tbl.externIterResolver[0].resolveMemberSigs(host, name, args.count, false) {
+      case Some(_) -> return Some(
+        value = buildExternCall(
+          env,
+          e,
+          ty,
+          ExternCallSite(hostType = host, targs = newList(), name = name, argCount = args.count),
+          fn,
+          args
+        )
+      )
+      case None -> ()
+    }
+  }
+  None
 }
 
 /// A numeric conversion method (`x.toInt()`, `x.toLong()`) on a range-subtype or distinct
@@ -2939,7 +2991,7 @@ func buildExternCall(
   // A call through a value (`recv.m(x)`) takes an instance overload: a same-named static one is
   // passed over unless no instance overload fits (D479, the rule #6765 gave the emit path).
   val viaValue = match exprTy(env.ctx, recvExpr.nodeId) {
-    case Ok(rty) -> match rty { case TExtern(_) -> true; case _ -> false }
+    case Ok(rty) -> match rty { case TExtern(_) -> true; case TPrim(TPString) -> true; case _ -> false }
     case Err(_) -> false
   }
   var pass = 0
@@ -3018,7 +3070,8 @@ func buildExternCall(
   val targsOut: List[TArg] = newList()
   if not sig.isStatic {
     val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
-    val want = TExtern(host = owner)
+    // The host's string is the language's `String`, so a `String` value is its own receiver.
+    val want = if isHostStringName(site.hostType) { TPrim(kind = TPString) } else { TExtern(host = owner) }
     if not tyEq(rt.ty, want) {
       return uncoveredExpr(env, e, "an extern call on a receiver that is not the host type itself")
     }
