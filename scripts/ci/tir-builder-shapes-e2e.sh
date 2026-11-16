@@ -371,6 +371,26 @@ func main(): Int {
   xs.add(okEnglish(3))
   total(xs)
 }
+
+# `forall` and `exists` in contract clauses are built as quantifier nodes over their binder locals
+# (D525).  A runtime-checked build skips the quantifier conjunct, so the program still runs.
+check quantifier_clauses 7 <<'LYRIC'
+package Shapes12
+import Std.Core
+
+func below(n: in Int): Int
+  requires: n > 0 and forall (i: Int) where i > 0 and i < n { i < n }
+{
+  n - 1
+}
+
+func has(n: in Int): Int
+  ensures: exists (k: Int) k == n
+{
+  n
+}
+
+func main(): Int = below(5) + has(3)
 LYRIC
 
 # An array with no initializer is its zero value, and an array stored from a place is a copy (D489).

@@ -854,8 +854,8 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
     }
     case ETry(_) -> uncoveredExpr(env, e, "a try expression")
     case ETypeApp(_, _) -> uncoveredExpr(env, e, "a type application")
-    case EForall(_, _, _, _) -> uncoveredExpr(env, e, "a quantifier")
-    case EExists(_, _, _, _) -> uncoveredExpr(env, e, "a quantifier")
+    case EForall(binders, whereExpr, body, _) -> buildQuantifier(env, e, ty, binders, whereExpr, body, true)
+    case EExists(binders, whereExpr, body, _) -> buildQuantifier(env, e, ty, binders, whereExpr, body, false)
     case EError -> uncoveredExpr(env, e, "an error node")
   }
 }
@@ -4824,6 +4824,50 @@ func buildMethodCall(
     inst.tyArgs.count
   )
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
+}
+
+/// `forall` and `exists`: the binders are locals of the quantifier's own scope, typed by their
+/// annotations, the `where` guard and the body are `Bool` expressions over them.
+func buildQuantifier(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  binders: in List[PropertyBinder],
+  whereExpr: in Option[Expr],
+  body: in Expr,
+  isForall: in Bool,
+): Option[TExpr] {
+  pushScope(env)
+  val decls: List[LocalDecl] = newList()
+  for b in binders {
+    match annotatedTy(env, b.ty) {
+      case Some(t) -> decls.add(declareLocal(env, b.name, t, false))
+      case None -> {
+        popScope(env)
+        return None
+      }
+    }
+  }
+  var guard: Option[TExpr] = None
+  match whereExpr {
+    case Some(we) -> match buildExpr(env, we) {
+      case Some(g) -> {
+        guard = Some(value = g)
+      }
+      case None -> {
+        popScope(env)
+        return None
+      }
+    }
+    case None -> ()
+  }
+  val b = match buildExpr(env, body) { case Some(x) -> x; case None -> { popScope(env); return None } }
+  popScope(env)
+  if isForall {
+    Some(value = mkExpr(e, ty, XForall(binders = decls, whereExpr = guard, body = b)))
+  } else {
+    Some(value = mkExpr(e, ty, XExists(binders = decls, whereExpr = guard, body = b)))
+  }
 }
 
 /// A record or union-case construction: the fields in declaration order, placed and
