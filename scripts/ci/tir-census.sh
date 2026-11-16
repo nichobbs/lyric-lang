@@ -35,6 +35,11 @@
 # program as well, and reports the unique bodies beside the raw per-build totals.  A body
 # seen built in one program and not in another counts as not built.
 #
+# A `func main` self-test that imports compiler packages cannot be built by `lyric build`; the
+# self-tests area runs it as scripts/run-numbered-self-tests.sh does (`LYRIC_LOAD_COMPILER=1 lyric
+# run`) and reads the census lines of that run (D523), so no self-test is left unjudged for want of
+# a path.
+#
 # TIR_CENSUS_STATE=<dir> makes the wide census resumable: each build's log and exit code
 # are kept under <dir>, and a rerun with the same <dir> reuses the ones already there, so a
 # run killed part-way (the self-tests area takes hours) continues instead of restarting.
@@ -309,9 +314,17 @@ while IFS= read -r f; do
     # links them as restored dependencies; the census line is the same.  The tests run too
     # (about 25 s each), so CI, which leaves the self-tests area out, is unaffected, and
     # TIR_CENSUS_LINKED=0 turns it off.  A program that is not a @test_module has no such
-    # path and stays unchecked (it is a `func main` program no gate builds; D475).
+    # path of its own and goes through `lyric run` below (D523).
     # target_of answers native only for two named stdlib tests, never for a compiler self-test.
     run_cached "stl-$f" 600 env LYRIC_VERIFY_IR=1 LYRIC_TIR_CENSUS_BODIES=1 "$LYRIC" test --target "$(target_of "$f")" "$f"
+  elif ! grep -q '^TIR build census' "$log" && [[ "${TIR_CENSUS_LINKED:-1}" == 1 ]] && grep -q '^func main' "$f"; then
+    # A `func main` self-test that imports compiler packages (the numbered
+    # lyric-compiler/msil/msil_self_test_m*.l and lyric-compiler/jvm/self_test_b*.l programs)
+    # runs through `LYRIC_LOAD_COMPILER=1 lyric run`, the path
+    # scripts/run-numbered-self-tests.sh judges it by (docs/59 §9.5 H8).  The checker's census
+    # lines are the same; the program runs too (about 12 s each), and its own pass or fail is
+    # that script's business, so only the census lines are read here.
+    run_cached "str-$f" 600 env LYRIC_LOAD_COMPILER=1 LYRIC_VERIFY_IR=1 LYRIC_TIR_CENSUS_BODIES=1 "$LYRIC" run "$f"
   fi
   absorb_log self-tests "$f" "$log" "$rc"
 done < <(if [[ -n "${TIR_CENSUS_SELFTESTS:-}" ]]; then tr ' ' '\n' <<<"$TIR_CENSUS_SELFTESTS"; else find lyric-compiler -name '*self_test*.l' -not -path '*/testdata/*' | sort; fi)
