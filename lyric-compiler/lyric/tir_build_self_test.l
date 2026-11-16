@@ -2775,7 +2775,7 @@ test "a local named like an enum is read as a field, not as a case (D477)" {
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
 
-test "Self in a record method names the record (D611)" {
+test "Self in a record method names the record (D521)" {
   val c = censusOf(
     "package App\nrecord Counter {\n  var n: Int\n  func inc(self: inout Self): Unit {\n    self.n = self.n + 1\n  }\n  func get(self: in Self): Int { self.n }\n  func copyOf(self: in Self): Self { Counter(n = self.n) }\n}\n"
   )
@@ -2783,7 +2783,7 @@ test "Self in a record method names the record (D611)" {
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
 
-test "Self in a method of a generic record names the generic record (D611)" {
+test "Self in a method of a generic record names the generic record (D521)" {
   val c = censusOf("package App\nrecord Box[T] {\n  v: T\n  func same(self: in Self): Self { Box(v = self.v) }\n}\n")
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")

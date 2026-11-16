@@ -1,4 +1,4 @@
-# D611 - `Self` inside a record or protected type member is the owner type in the TIR (docs/70 phase 3a, #8613)
+# D521 - `Self` inside a record or protected type member is the owner type in the TIR (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D476.
 
