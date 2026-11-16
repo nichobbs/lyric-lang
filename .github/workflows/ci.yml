@@ -7046,17 +7046,16 @@ jobs:
           # A real desktop window under Xvfb (docs/65 U5).
           bash scripts/ci/ui-desktop-e2e.sh --target dotnet
 
-      - name: Run tests (testing)
-        if: matrix.id == 'testing'
-        run: |
-          bash scripts/ci/testing-tests.sh
-
-      - name: Set up Java 22 (game, unicode)
-        if: matrix.id == 'game' || matrix.id == 'unicode'
+      - name: Set up Java 22
+        if: matrix.id == 'game' || matrix.id == 'unicode' || matrix.id == 'testing'
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
         with:
           distribution: temurin
           java-version: '22'
+      - name: Run tests (testing)
+        if: matrix.id == 'testing'
+        run: bash scripts/ci/testing-tests.sh
+
       - name: Run tests (game, dotnet and jvm)
         if: matrix.id == 'game'
         run: bash scripts/ci/game-managed-tests.sh

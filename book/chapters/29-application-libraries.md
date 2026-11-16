@@ -535,7 +535,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
 | lyric-validation | stable | stable | stable | — |
-| lyric-testing | stable | stable | — | mocks and assertion helpers; `targets = ["dotnet"]`, the conformance suites are `lyric-conformance` (D604) |
+| lyric-testing | stable | stable | stable (suites pass) | mocks and assertion helpers; `targets = ["dotnet", "jvm"]` (D609), the conformance suites are `lyric-conformance` (D604) |
 | lyric-conformance | stable | stable | stable (suite passes) | the `Testing.Conformance.*` suites; every target (D604) |
 | lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
 | lyric-db | experimental | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056; `targets = ["dotnet", "jvm"]` |
