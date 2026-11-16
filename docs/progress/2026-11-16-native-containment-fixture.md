@@ -1,0 +1,3 @@
+# 2026-11-16 - Native codegen-refusal containment fixture through valid source (#7452)
+
+docs/70 phase 3a, #8613. D492 removed the native `coerceTo` containment test because its source relied on an erased field read the checker now rejects (T0043). The replacement in `emitter_project_self_test.l` reaches the same containment, `emit(target = Native)` returning a failed `EmitResult` with an N0007 diagnostic instead of throwing, through valid source: `"e".normalize()` type-checks and the native backend refuses it deliberately (the Unicode normalization tables are not ported to `lyric-rt`). The JVM twin (J009) is unchanged.

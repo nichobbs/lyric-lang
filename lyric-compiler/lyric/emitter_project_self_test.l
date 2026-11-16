@@ -1272,6 +1272,60 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
   }
 }
 
+// #7452: the native twin of the J009 containment test above.  `emitNativeInProcess` wraps its call
+// into `Lyric.LlvmBridge`/`Lyric.LlvmCodegen` in a `try`/`catch`, so a codegen-time panic surfaces as
+// a contained `EmitResult` failure carrying an N0007 diagnostic, not a raw unhandled exception with a
+// host stack trace.  The source is valid: `String.normalize()` type-checks, and native refuses it
+// deliberately (the Unicode normalization tables are not ported to `lyric-rt`).  The earlier fixture
+// reached the same containment through an erased field read, which the checker now rejects (D492).
+test "emit(target = Native) contains a codegen refusal as an EmitResult failure, not a thrown exception (#7452)" {
+  val dir = freshTempDir("native-contain-n0007")
+  val source = "package ContainN0007.App\n" + "\n" + "import Std.Core\n" + "import Std.String\n" + "\n" +
+    "func main(): Int {\n" +
+    "  val s = \"e\".normalize()\n" +
+    "  if s.length > 0 { 0 } else { 1 }\n" +
+    "}\n"
+  val noDefines: List[String] = newList()
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = "ContainN0007",
+    outputPath = Path.join(dir, "ContainN0007"),
+    target = Emitter.Native,
+    packageVersion = "",
+    defines = noDefines,
+    path = "",
+    contractsEnabled = true
+  )
+  var threw = false
+  val result = try {
+    Emitter.emit(req)
+  } catch Bug as b {
+    threw = true
+    Emitter.EmitResult(outputPath = None, diagnostics = newList())
+  }
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(threw, "the native codegen refusal must be contained inside emit, never thrown to the caller")
+  match result.outputPath {
+    case None -> assertTrue(true, "no output artifact on a contained failure")
+    case Some(p) -> assertTrue(false, "emit must fail (got outputPath " + p + ")")
+  }
+  assertTrue(result.diagnostics.count > 0, "the contained failure carries a diagnostic for the CLI to render")
+  var diagText = ""
+  var ndi = 0
+  while ndi < result.diagnostics.count {
+    diagText = diagText + result.diagnostics[ndi].code + ": " + result.diagnostics[ndi].message + "\n"
+    ndi = ndi + 1
+  }
+  assertTrue(
+    Str.contains(diagText, "N0007"),
+    "the contained refusal carries its N0007 code in EmitResult.diagnostics (got: " + diagText + ")"
+  )
+  assertTrue(Str.contains(diagText, "normalize"), "the diagnostic names the refused member (got: " + diagText + ")")
+}
+
 // #6464: direct unit coverage for `Emitter.parsePanicSpan` — the T0119
 // message shape (`error[T0119] <line>:<col>: <text>`, no dotted-package
 // prefix ahead of the location, unlike J007's `Pkg.File:line:col:`) has no
