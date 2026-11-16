@@ -892,6 +892,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A qualified enum or nullary union case read as a value (`Lv.Trace`) is a reference the checker records, built as the case (D477), not a field read of the type name.
   - A compound assignment to a host property binds the receiver once and reads, applies the operator and writes; a write to a public host field is an `HMFieldSet` call (D478).
   - `Self` inside a record or protected type member is the owner type too (D521), not only in an `impl` member.
+  - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
