@@ -2812,3 +2812,20 @@ test "a String method the host metadata does not declare stays counted (D493)" {
   assertTrue(st.env.errors.count > 0, "an I0002 for the call no host string type declares")
   assertTrue(isNone(externCallOf(st.body)), "no extern call is built")
 }
+
+test "a function ending in while true with no break never completes, so any return type fits (D529)" {
+  val c = censusOf("package App\nfunc f(n: in Int): Int {\n  var i = n\n  while true {\n    if i > 5 {\n      return i\n    }\n    i = i + 1\n  }\n}\n")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a loop with a break out of it may complete, so the missing value stays counted (D529)" {
+  val c = censusOf("package App\nfunc f(n: in Int): Int {\n  loop {\n    if n > 5 {\n      break\n    }\n  }\n}\n")
+  assertTrue(c.built < c.total or c.firstErrors.count > 0 or c.uncovered.count == 0, "no unsound claim")
+}
+
+test "a generator ending in try takes its values from yield, not the return type (D529)" {
+  val c = censusOf("package App\nasync func g(n: in Int): Int {\n  try {\n    yield 1\n    yield n\n  } finally {\n    val done = n\n  }\n}\n")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}

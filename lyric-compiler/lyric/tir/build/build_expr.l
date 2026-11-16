@@ -2060,7 +2060,8 @@ func buildFnCore(
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
-        val known: Option[Ty] = if not isUnitTy(ret) and blockEndsInTry(b) { Some(value = ret) } else { None }
+        // A generator's body is `Unit`: its `yield`s carry the values.
+        val known: Option[Ty] = if not isUnitTy(ret) and not functionIsGenerator(fn) and blockEndsInTry(b) { Some(value = ret) } else { None }
         res = buildBlock(env, b, known, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
@@ -4142,6 +4143,73 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
 }
 
+/// Whether `t` is the literal `true`.
+func isTrueLiteral(t: in TExpr): Bool {
+  match t.kind {
+    case XLit(TLBool(v)) -> v
+    case _ -> false
+  }
+}
+
+/// Whether a `break` inside `t` can leave the loop labelled `lbl`: an unlabelled one at loop `depth` 0,
+/// or one naming `lbl`.  Loops nested in `t` shield unlabelled breaks.
+func blockMayBreak(t: in TExpr, lbl: in Option[String], depth: in Int): Bool {
+  match t.kind {
+    case XBlock(stmts, tail) -> {
+      for s in stmts {
+        if stmtMayBreak(s, lbl, depth) {
+          return true
+        }
+      }
+      match tail {
+        case Some(x) -> blockMayBreak(x, lbl, depth)
+        case None -> false
+      }
+    }
+    case XIf(_, a, b) -> blockMayBreak(a, lbl, depth) or (match b { case Some(x) -> blockMayBreak(x, lbl, depth); case None -> false })
+    case XMatch(_, arms, _) -> {
+      for arm in arms {
+        if blockMayBreak(arm.body, lbl, depth) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func breakTargetsUs(b: in Option[String], lbl: in Option[String], depth: in Int): Bool {
+  match b {
+    case None -> depth == 0
+    case Some(n) -> match lbl { case Some(m) -> n == m; case None -> false }
+  }
+}
+
+func stmtMayBreak(s: in TStmt, lbl: in Option[String], depth: in Int): Bool {
+  match s.kind {
+    case TsBreak(b) -> breakTargetsUs(b, lbl, depth)
+    case TsExpr(x) -> blockMayBreak(x, lbl, depth)
+    case TsScope(_, body) -> blockMayBreak(body, lbl, depth)
+    case TsDefer(body) -> blockMayBreak(body, lbl, depth)
+    case TsTry(body, catches, fin) -> {
+      if blockMayBreak(body, lbl, depth) {
+        return true
+      }
+      for c in catches {
+        if blockMayBreak(c.body, lbl, depth) {
+          return true
+        }
+      }
+      match fin { case Some(x) -> blockMayBreak(x, lbl, depth); case None -> false }
+    }
+    case TsFor(_, _, _, body) -> blockMayBreak(body, lbl, depth + 1)
+    case TsWhile(_, _, body) -> blockMayBreak(body, lbl, depth + 1)
+    case TsLoop(_, body) -> blockMayBreak(body, lbl, depth + 1)
+    case _ -> false
+  }
+}
+
 /// Whether control never reaches the end of `t`: a block with no tail value whose last
 /// statement always leaves it (`return`, `throw`, `break`, `continue`, a `scope` or an
 /// expression statement that never completes), an `if` with an `else` whose branches
@@ -4159,6 +4227,8 @@ func neverCompletes(t: in TExpr): Bool {
         case TsContinue(_) -> true
         case TsScope(_, body) -> neverCompletes(body)
         case TsExpr(x) -> neverCompletes(x)
+        case TsLoop(l, body) -> not blockMayBreak(body, l, 0)
+        case TsWhile(lbl, cond, body) -> isTrueLiteral(cond) and not blockMayBreak(body, lbl, 0)
         case _ -> false
       }
     }
