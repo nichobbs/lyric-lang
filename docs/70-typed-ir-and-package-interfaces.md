@@ -893,6 +893,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A compound assignment to a host property binds the receiver once and reads, applies the operator and writes; a write to a public host field is an `HMFieldSet` call (D478).
   - `Self` inside a record or protected type member is the owner type too (D521), not only in an `impl` member.
   - An instance call of a host method passes over a same-named static overload unless no instance overload fits (D479), so the built call agrees with the checker's result type.
+  - A field read through an instance at the enclosing generic's own type parameters keeps its declared type, and so does a `for` variable over it (D492): the checker erases only the parameters that are not the function's own.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

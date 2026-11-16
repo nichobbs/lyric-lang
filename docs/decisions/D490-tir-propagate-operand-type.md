@@ -4,7 +4,7 @@
 
 ## Context
 
-`Ok(value = "bb")?`, `Err(error = x)?` and `None?` apply `?` to a construction that leaves a type argument open: the success type of an `Err`, the error type of an `Ok`. The checker records no type for the operand node or for the `?` expression, so the builder counted the body (`propagate_ctor_operand_self_test.l`: 31 of 58 bodies). The checker does record the closed type separately, as a source type keyed by the operand's span (`SymbolTable.hoistOperandTypeSites`, #8181), for the lowering that binds the operand to an annotated local.
+`Ok(value = "bb")?`, `Err(error = x)?` and `None?` apply `?` to a construction that leaves a type argument open: the success type of an `Err`, the error type of an `Ok`. The checker records no type for the operand node or for the `?` expression, so the builder counted the body (`propagate_ctor_operand_self_test.l`: 31 of its 58 bodies counted). The checker does record the closed type separately, as a source type keyed by the operand's span (`SymbolTable.hoistOperandTypeSites`, #8181), for the lowering that binds the operand to an annotated local.
 
 ## Decision
 
