@@ -865,7 +865,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A member whose body does not build is still described by its declaration, as a body-less signature, not by a call site's instantiated one (D595).
   - A function that yields is a `TFnDecl` with `isGenerator`: its `ret` is the yield type and its body is the generator's `Unit` code (D590); `s += x` on a `String` appends `toString(x)`, a bare sibling call is called on the enclosing `self`, and `default()` and `wrapping*` are builtins (D590).
   - An or-pattern's alternatives bind the first alternative's locals, `@NAME` is `TpConst`, a shorthand record field is a typed binding, and an `inout`/`out` receiver is a place argument (D591).
-  - A constructor pattern names every field of its case (T0229, D480), so `TpCtor` carries exactly the sub-patterns written and the builder pads none.
+  - A constructor pattern names every field of its case (T0229, D611), so `TpCtor` carries exactly the sub-patterns written and the builder pads none.
   - When names reorder a call's arguments, a name read before a later call argument is bound to a temporary in source order (D481).
   - A default declared in another package is read from that package's interface (format 5 carries the declarations a default names and record field defaults), renumbered into the consumer's symbols, and converted to the parameter's type at the call (D482).
   - A generic call whose type arguments the checker left open reads them from the type its context fixes, an annotated binding settles its initializer, a `match` whose branches all leave is `Never`, and a branch or construction converts like an argument (D483).
@@ -891,7 +891,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `Self` inside an `impl` member is the impl's target type (D476): a member that spells its receiver or result `Self` builds instead of recording I0002.
   - A qualified enum or nullary union case read as a value (`Lv.Trace`) is a reference the checker records, built as the case (D477), not a field read of the type name.
   - A compound assignment to a host property binds the receiver once and reads, applies the operator and writes; a write to a public host field is an `HMFieldSet` call (D478).
-  - `Self` inside a record or protected type member is the owner type too (D480), not only in an `impl` member.
+  - `Self` inside a record or protected type member is the owner type too (D611), not only in an `impl` member.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

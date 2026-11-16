@@ -218,7 +218,7 @@ func buildMemberWith(
   env: in BuildEnv, tbl: in SymbolTable, pkg: in String, site: in MemberSite, mode: in Int
 ): Option[TFnDecl] {
   // Inside a member, `Self` is the type the member belongs to: an `impl`'s target (D476), a
-  // record's or protected type's own type (D480).
+  // record's or protected type's own type (D611).
   var pushed = false
   val target = if site.owner.names.count > 0 {
     match memberSymOf(tbl, pkg, site) {
