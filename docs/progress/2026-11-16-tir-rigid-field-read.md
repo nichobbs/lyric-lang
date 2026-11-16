@@ -1,0 +1,3 @@
+# 2026-11-16 - Checker: field reads at the enclosing generic's own parameters keep their type (D492)
+
+docs/70 phase 3a, #8613. Inside a function generic over `T`, `box.items` (`items: List[T]`, `box: Box[T]`) and a `for` over it were typed with the type parameters erased, which the builder cannot take. `rigidRecordFieldType` and the `for` loop binding now keep the enclosing function's own parameters and erase only the others (refines D274 item 6, whose MSIL `==` reason is fixed). Shape `rigid_nested_field` in `tir-builder-shapes-e2e.sh`. Wide census: stdlib 2422 of 2545 bodies built, compiler 12858 of 12925, ecosystem 3135 of 3208, 0 I0003 there; two I0003 in the self-tests area are recorded in D492 and open.

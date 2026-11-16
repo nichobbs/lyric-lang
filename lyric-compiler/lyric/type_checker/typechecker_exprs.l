@@ -3944,6 +3944,42 @@ func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, ge
   }
 }
 
+// The type of the field `name` of the record instance `recv` when it mentions the enclosing
+// generic's own type parameters (`genericNames`): the field's declared type under the instance's
+// arguments, every other parameter erased as `fieldsOfRecordInstantiated` does.  None for a read
+// through a concrete or under-instantiated receiver, whose erased type is already the answer, and
+// for a field that is the bare parameter (`rigidTypeParamField`, D274).
+func rigidRecordFieldType(
+  tbl: in SymbolTable, recv: in Type, name: in String, genericNames: in List[String]
+): Option[Type] {
+  if genericNames.count == 0 {
+    return None
+  }
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      if targs.count == 0 {
+        return None
+      }
+      val gnames = recordGenericNamesOf(tbl, tid)
+      for f in fieldsOfRecord(tbl, tid) {
+        if f.name == name {
+          match f.ty {
+            case TyParam(_, _) -> return None
+            case _ -> ()
+          }
+          val kept = eraseTyParamsExcept(substituteTyParams(f.ty, gnames, targs), genericNames)
+          if typeMentionsTyParam(kept) {
+            return Some(value = kept)
+          }
+          return None
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 // A field of an opaque type declared in this package, instantiated against
 // the receiver's arguments: its representation is visible here, so a read
 // is typed like a record field's, `array[N, Int]` at the instance's length
@@ -21588,7 +21624,14 @@ func inferExprCore(
         case _ -> ()
       }
       checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
-      val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
+      val memberTy0 = inferMember(tbl, sigs, diag, rt, name, e.span)
+      // A field read through an instance at the enclosing generic's own parameters keeps them: the
+      // field's type mentions only rigid parameters in scope (`List[D]` for `many: List[D]` on an
+      // `A[D]` inside a function generic over `D`), so it is that type, not an erased one.
+      val memberTy = match rigidRecordFieldType(tbl, rt, name, sc.genericNames) {
+        case Some(t) -> t
+        case None -> memberTy0
+      }
       recordMonadAccessorCallee(tbl, sigs, rt, name, e.nodeId)
       val readTy = match memberTy {
         case TyError(_) -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
