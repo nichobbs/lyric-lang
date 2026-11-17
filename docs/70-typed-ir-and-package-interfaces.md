@@ -908,6 +908,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A list literal the checker typed as a slice, used where `array[N, T]` of the same length is expected, is an array literal with each element converted (D495).
   - An array, slice, string or list index of any integer primitive keeps its own type; a backend range checks and narrows it (D496).
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
+  - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
