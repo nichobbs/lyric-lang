@@ -2188,7 +2188,10 @@ pub func symTableFuncDefPathKey(
       match s.kind {
         case DKFunc(decl) -> {
           val key = defPathKey(funcDefPath(s.originPackage, s.name, decl.params))
-          if spanKey(s.declSpan) == spanKey(sig.span) {
+          // `declSpan` is the item's span, which starts at its doc comment and annotations; the
+          // signature's span is the declaration's own (`decl.span`), so a documented function
+          // matches only by the latter.
+          if spanKey(decl.span) == spanKey(sig.span) or spanKey(s.declSpan) == spanKey(sig.span) {
             return Some(value = key)
           }
           if decl.params.count == sig.params.count and not sameArity.contains(key) {

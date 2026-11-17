@@ -55,6 +55,24 @@ check_counted() {
   echo "ok   $name"
 }
 
+# A function with a doc comment, passed by name as a value before its declaration: the item's span
+# starts at the doc comment, the signature's at `func`, and the reference must still resolve to the
+# function (the builder counted it "a name that is not a local", #8613).
+check documented_function_value 9 <<'LYRIC'
+package Shapes0
+func apply(f: in (Int) -> Int, x: in Int): Int = f(x)
+
+func main(): Int {
+  apply(triple, 3)
+}
+
+/// Three times `n`.
+/// A second line of documentation.
+func triple(n: in Int): Int {
+  n * 3
+}
+LYRIC
+
 check collection_arguments 7 <<'LYRIC'
 package Shapes1
 import Std.Core
