@@ -1873,6 +1873,13 @@ test "a range subtype's from builds as a range check of the argument" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a Nat-backed range subtype's from takes a Long argument" {
+  val c = censusOf("package App\ntype Score = Nat range 0 ..= 1000\nfunc f(n: Long): Score { Score.from(n) }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
