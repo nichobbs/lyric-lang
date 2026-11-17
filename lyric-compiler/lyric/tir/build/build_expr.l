@@ -679,14 +679,19 @@ func hostChainResult(
       case EMTVoid -> return None
       case EMTType(el) -> match el {
         case EIEHost(rname, _) -> {
-          // A result the checker types as a Lyric type (an array as a slice, a string, a boxed number, a
-          // task, the root object) is not a plain host class: the checker's own type applies there.
-          if not isPlainHostResult(rname) {
-            return None
-          }
-          match hostElemTy(el, host.args, TirT.TNever) {
-            case Some(x) -> x
-            case None -> return None
+          if isHostStringName(rname) {
+            // The checker types a host call's string as `String?` (the host may return null).
+            TNullable(TPrim(kind = TPString))
+          } else {
+            // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
+            // the root object) is not a plain host class: the checker's own type applies there.
+            if not isPlainHostResult(rname) {
+              return None
+            }
+            match hostElemTy(el, host.args, TirT.TNever) {
+              case Some(x) -> x
+              case None -> return None
+            }
           }
         }
         case _ -> return None
