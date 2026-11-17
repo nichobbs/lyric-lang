@@ -1,0 +1,3 @@
+# 2026-11-17: the builder types static host members, string results and type-parameter receivers (D445)
+
+Static host field reads and call chains on an `extern type` name, a host call's string as `String?` (and a `String?` argument for a host string parameter), `getClass()` on a value of a type parameter's type, a root-`Object` result, an untyped host array result as a slice, and a host result flowing into a more specific declared host class are typed by the builder from the host's metadata. The checker is unchanged. `tir-builder-shapes-e2e.sh` gains `jvm_host_static_shapes`. Standard-library census: 2590 of 2651 bodies built, 0 I0003. Docs/70 status updated.
