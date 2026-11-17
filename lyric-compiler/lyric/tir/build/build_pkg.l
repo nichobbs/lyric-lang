@@ -431,7 +431,11 @@ pub func buildPackageDefaults(
       case _ -> ()
     }
   }
-  for site in memberSites(ctx, tbl, file) {
+  val sites = memberSites(ctx, tbl, file)
+  for isite in interfaceDefaultSites(ctx, tbl, file) {
+    sites.add(isite)
+  }
+  for site in sites {
     if declaresDefault(site.fn) {
       val env = newBuildEnvSharing(ctx, counter)
       match buildMemberDefaults(env, tbl, pkgName, site) {

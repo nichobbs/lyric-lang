@@ -2870,3 +2870,34 @@ test "an array indexed by a Long keeps the Long index (D496)" {
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+test "an interface method's parameter default is written to the package defaults (D442)" {
+  val file = renumberNodeIds(parse("package App\ninterface Shape {\n  func area(self: in Shape, scale: in Int = 2): Int\n}\nrecord Sq { side: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, scale: in Int = 3): Int { self.side * scale }\n}\n").file).file
+  val cr = check(file)
+  val ds = buildPackageDefaults(newTyConvCtx(cr.symbols), cr.symbols, file)
+  var iface = 0
+  var impls = 0
+  for k in mapKeys(ds) {
+    if Str.contains(k, "Shape") and not Str.contains(k, "impl") {
+      iface = iface + 1
+    }
+    if Str.contains(k, "impl") {
+      impls = impls + 1
+    }
+  }
+  assertEqualInt(iface, 1, "the interface method carries its default")
+  assertEqualInt(impls, 1, "the impl method carries its own")
+}
+
+test "an interface method's default expression is numbered with the file's nodes (D442)" {
+  val numbered = renumberNodeIds(
+    parse("package App\ninterface Shape {\n  func area(self: in Shape, scale: in Int = 2): Int\n}\n").file
+  )
+  var zeros = 0
+  for id in nodeIdsOf(numbered.file) {
+    if id == 0 {
+      zeros = zeros + 1
+    }
+  }
+  assertEqualInt(zeros, 0, "no node is left unnumbered")
+}

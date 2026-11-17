@@ -175,6 +175,64 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
   res
 }
 
+/// The interface methods of `file` that declare a default for a parameter, as body-less member sites:
+/// the defaults a call through the interface takes (D442).  A generic interface is left out.
+pub func interfaceDefaultSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): List[MemberSite] {
+  val res: List[MemberSite] = newList()
+  val pkg = modulePathJoin(file.packageDecl.path.segments)
+  for it in file.items {
+    match it.kind {
+      case IInterface(decl) -> {
+        val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
+        val owner = ownerOf(decl.name, tsym, decl.generics)
+        if owner.names.count == 0 {
+          for m in decl.members {
+            match m {
+              case IMSig(sig) -> {
+                var declares = false
+                for p in sig.params {
+                  if isSome(p.dflt) {
+                    declares = true
+                  }
+                }
+                if declares {
+                  res.add(
+                    MemberSite(
+                      name = decl.name + "." + sig.name,
+                      fn = FunctionDecl(
+                        docComments = sig.docComments,
+                        annotations = newList(),
+                        visibility = None,
+                        isAsync = sig.isAsync,
+                        name = sig.name,
+                        generics = sig.generics,
+                        params = sig.params,
+                        ret = sig.ret,
+                        whereClause = sig.whereClause,
+                        contracts = sig.contracts,
+                        body = None,
+                        span = sig.span
+                      ),
+                      ownerName = decl.name,
+                      recv = plainRecv(tsym, owner),
+                      implTarget = None,
+                      isEntry = false,
+                      owner = owner
+                    )
+                  )
+                }
+              }
+              case _ -> ()
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
 /// The symbol of `site`, which the resolver gave its declaration.
 pub func memberSymOf(tbl: in SymbolTable, pkg: in String, site: in MemberSite): Option[SymbolId] {
   symTableMethodDeclId(tbl, pkg, site.fn.name, site.fn.span, site.ownerName)
