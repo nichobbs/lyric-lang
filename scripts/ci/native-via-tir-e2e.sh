@@ -374,9 +374,9 @@ cat "$work/pr_census.txt"
 "$work/pr_ast" > "$work/pr_ast.out"
 "$work/pr_tir" > "$work/pr_tir.out"
 diff -u "$work/pr_ast.out" "$work/pr_tir.out"
-printf '3\n7\ntotal\ntotal=7\n7\n' | diff -u - "$work/pr_tir.out"
-grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/pr_census.txt" || {
-  echo "::error::expected every function of protected.l (the four bodies and the constructing main) to be lowered from TIR"
+printf '3\n7\ntotal\ntotal=7\n7\n50\n' | diff -u - "$work/pr_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/pr_census.txt" || {
+  echo "::error::expected every function of protected.l (the five bodies, seed and the constructing main) to be lowered from TIR"
   exit 1
 }
 clang -O1 -g -fsanitize=address -Wno-override-module "$work/pr_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/pr_asan"
