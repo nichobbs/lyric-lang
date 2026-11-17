@@ -2832,6 +2832,7 @@ test "a generator ending in try takes its values from yield, not the return type
   )
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
 
 test "a closure passed to a C callback parameter is a callback conversion (D494)" {
   val c = censusOf(
