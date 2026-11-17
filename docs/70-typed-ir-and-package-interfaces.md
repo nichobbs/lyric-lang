@@ -912,6 +912,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
+  - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
