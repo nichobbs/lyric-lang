@@ -409,6 +409,7 @@ pub func compileToJar(
   val recvClasses: Map[String, String] = newMap()
   val callArities: Map[String, Int] = newMap()
   val callees: Map[String, String] = newMap()
+  // The shared options (#7198: `awaitInTryIsHazard` is off on the JVM; see `jvmMiddleEndOptions`).
   val opts = jvmMiddleEndOptions(
     tcFatal = true,
     pkgLabel = "",
