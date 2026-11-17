@@ -2862,7 +2862,8 @@ test "a list literal of another length than the array stays counted (D495)" {
   val c = censusOf(
     "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8, 9], 1)\n}\n"
   )
-  assertTrue(c.built < c.total or c.firstErrors.count > 0, "no unsound claim")
+  assertTrue(c.built < c.total, "the body stays counted")
+  assertTrue(c.firstErrors.count > 0, "an I0002 names the conversion")
 }
 
 test "an array indexed by a Long keeps the Long index (D496)" {
