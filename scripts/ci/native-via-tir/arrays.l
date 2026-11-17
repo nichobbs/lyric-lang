@@ -90,14 +90,14 @@ func zeroRecords(): Int {
     total = total + c.age
   }
   cs[1] = Cell(alive = true, age = 7, w = 1.5)
-  cs[2].age = cs[2].age + 4
+  cs[2] = Cell(alive = cs[2].alive, age = cs[2].age + 4, w = cs[2].w)
   total + cs[1].age * 10 + cs[2].age + cs.length
 }
 
 func zeroNested(): Int {
   var g: array[2, array[2, Vec]]
-  g[1][0].x = 5
-  g[0][1].y = 6
+  g[1][0] = Vec(x = 5, y = 0)
+  g[0][1] = Vec(x = 0, y = 6)
   g[1][0].x + g[0][1].y + g[0][0].x + g[1][1].y
 }
 
