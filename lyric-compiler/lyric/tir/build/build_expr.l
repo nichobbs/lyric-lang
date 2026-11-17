@@ -706,6 +706,11 @@ func isPlainHostResult(name: in String): Bool {
 }
 
 /// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
+/// This applies only to a result the checker left untyped (`openHostChainTy`): where the checker types the call it
+/// types a host array as a slice itself and the chain is not consulted (D444).  `Object[]` is safe to expose here
+/// because the slice of host objects keeps the array's own representation (`hostArrayAccepts` takes a host
+/// `Object` element for any host value), while an array of a Lyric value (`String[]`, `int[]`) would need an
+/// element conversion the builder does not make.
 func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   match el {
     case EIEHost(_, aargs) -> {
@@ -2710,6 +2715,8 @@ func buildHostMethodOnChain(
 
 /// `target.getClass()` where `target` has a type parameter's type: the member of the host's root object
 /// class the call names, found through the host metadata (the receiver is boxed to it by `buildExternCall`).
+/// Both root names are tried, but the metadata resolver is the active target's own (the JVM resolver reads
+/// JDK classes, the dotnet one reference assemblies), so only that target's root class resolves.
 func hostMethodOnTypeParam(env: in BuildEnv, fn: in Expr, argc: in Int): Option[HostChainCall] {
   match fn.kind {
     case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {

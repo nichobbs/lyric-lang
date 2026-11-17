@@ -695,7 +695,23 @@ func methodName(m: in JMethod): Bool {
   m.getName() == "length"
 }
 
+extern type JArrayList = "java.util.ArrayList"
+extern type JKeyStore = "java.security.KeyStore"
+
+// A host call's string passed for a host string parameter: `getDefaultType()` is `String?`.
+func defaultKeyStoreType(): JKeyStore {
+  JKeyStore.getInstance(JKeyStore.getDefaultType())
+}
+
+// An untyped host array result (`toArray()`) passed on as a slice.
+func arrayOf(l: in JArrayList): slice[JObject] {
+  l.toArray()
+}
+
 func main(): Int {
+  if defaultKeyStoreType().getType() == "" {
+    return 4
+  }
   if primitiveChar().getName() != "char" {
     return 1
   }
