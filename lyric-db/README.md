@@ -141,7 +141,7 @@ the package that declares them, so a consumer cannot override this
 library's own feature selection — see `docs/24-build-features.md` §2.2)
 links both drivers. Only the features you activate are linked; `postgres`
 and `sqlite` can be active simultaneously, whereas the `dotnet`/`jvm` kernel
-features are mutually exclusive, like `lyric-session`'s.
+features are mutually exclusive.
 
 ### Feature combinations
 

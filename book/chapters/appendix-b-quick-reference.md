@@ -873,11 +873,11 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 > **Stability framing (Tier 5 — #367).** Per-library stability is now
 > declared in each library's module doc-comment:
 >
-> - **`@stable(since="0.1")`** — `lyric-auth`, `lyric-mq`, `lyric-aws-secrets`.
+> - **`@stable(since="0.1")`** — `lyric-auth`, `lyric-mq`.
 >   Public API covered by the SemVer guarantee.  Tested.
-> - **`@experimental` + WARNING banner** — `lyric-session`, `lyric-storage`.
->   Surface compiles and has tests, but the production backend (Redis,
->   S3/Azure Blob) has not been driven against a live provider in CI.
+> - **`@experimental` + WARNING banner** — `lyric-storage`.
+>   Surface compiles and has tests, but the production backend (S3/Azure
+>   Blob) has not been driven against a live provider in CI.
 > - **`@experimental`** — every other `lyric-*` package in the table below.
 >   Public API may change without a SemVer major bump until v1.0; test
 >   coverage is uneven; cross-target (.NET / JVM) parity is incomplete.
@@ -904,7 +904,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Mail` *(lyric-mail)* | Email sending | `MailSender`, `EmailMessage`, `sendSimple`, `sendHtml`, `connectSmtp` |
 | `Mq` *(lyric-mq)* | Message queuing | `MessageQueue`, `QueueConsumer`, `publish`, `publishBatch`, `subscribe` |
 | `Search` *(lyric-search)* | Search engine client | `SearchClient`, `SearchResult`, `IndexResult`, `search`, `index` |
-| `Session` *(lyric-session)* | Distributed session management | `SessionStore`, `SessionData`, `newSession`, `loadSession`, `get`, `set` |
+| `Session` *(lyric-session)* | Session store interface and in-process store | `SessionStore`, `SessionData`, `newSession`, `loadSession`, `get`, `set` |
 | `Validation` *(lyric-validation)* | Input validation | `ValidationError`, `required`, `minLength`, `email`, `url`, `all`, `toResult` |
 | `Ws` *(lyric-ws)* | WebSocket server | `WsHandler`, `WsRegistry`, `WsMessage`, `startServer`, `createEndpoint` (listener-less, for `Web.addWebSocket`), `send`, `broadcast` |
 | `Flags` *(lyric-feature-flags)* | Runtime feature toggles | `FlagStore`, `isEnabled`, `getBool`, `getString`, `getInt`, `Registry.checkFlag` |
@@ -929,7 +929,7 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 | `lyric-mq` | `Mq`, `Mq.Aspects` | Message queuing over RabbitMQ/ASB/SQS/Kafka; `Idempotent`/`DeadLetter` aspect templates | — |
 | `lyric-otel` | `OTel`, `OTel.Otlp` | OpenTelemetry tracing, metrics, and OTLP export | 19 |
 | `lyric-search` | `Search` | Elasticsearch/Meilisearch integration; `SearchClient`; typed result model | — |
-| `lyric-session` | `Session` | Distributed session management; Redis-backed and in-process stores; UUID session IDs | — |
+| `lyric-session` | `Session` | `SessionStore` interface, in-process store, cookie configuration; UUID session IDs. The Redis backend is `Lyric.Session.Redis` in `lyric-ecosystem` | — |
 | `lyric-storage` | `Storage`, `Storage.Aspects` | Object storage (local filesystem); `StorageBucket`; `AuditAccess`/`ValidateKey` aspects. **Note:** `presignedUrl` requires `expiresInSeconds <= 604800` (7 days); larger values violate the contract at runtime. | — |
 | `lyric-testing` | `Testing` | Mock implementations (`MockMailSender`, `MockStorageBucket`, `MockSessionStore`, `MockFlagStore`, …); `TestContext`; assertion helpers | — |
 | `lyric-validation` | `Validation` | Composable input validators returning `[ValidationError]`; string/numeric combinators; `toResult` helper | — |

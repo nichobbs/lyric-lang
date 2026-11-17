@@ -817,7 +817,7 @@ wrong parent path), and re-decide or re-affirm the cap.
 Ecosystem violations of "externs only in kernel files":
 `lyric-web/src/web.l:72-96`, `lyric-web/tests/dispatch_tests.l:31-46`,
 `lyric-db/src/db.l:41`, `lyric-proto/src/proto_main.l:52-101`,
-`lyric-mail/src/mail.l:48-49`, `lyric-aws-xray/src/xray.l:72-178` (which has
+`lyric-mail/src/mail.l:48-49`, `lyric-aws-xray/src/xray.l:72-178` (now in `lyric-ecosystem`, D620; it has
 a `src/_kernel/` yet declares its main extern surface outside it). If
 `import extern` outside kernels is intended to be legal post-D116, write the
 exemption into docs/14/Decision F — today the rule says it isn't.

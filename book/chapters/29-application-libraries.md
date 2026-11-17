@@ -533,7 +533,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
 | lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet`, Hangfire in `Lyric.Jobs.Hangfire` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
-| lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
+| lyric-session | stable | stable | stable (`InProcessSessionStore` real, suite in CI); the Redis backend is `Lyric.Session.Redis` in `lyric-ecosystem`; `targets = ["dotnet", "jvm", "native"]` | D-progress-631, D614 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
 | lyric-validation | stable | stable | stable | — |
@@ -547,10 +547,13 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-forms | experimental | experimental | experimental | D137; see Chapter 31 |
 | lyric-mcp | experimental | experimental, real (stdio, spawned-child round trips) | experimental, real | D129, D133 |
 | lyric-docker | experimental | Unix-socket client real | Unix-socket client real (JDK 16+); named pipes planned | D056, D-progress-541 |
-| lyric-lambda | experimental | experimental; `aws` and `local` runtimes, six event sources and authorizers real; no HTTP entry point and no response streaming (withdrawn) | experimental; same dispatch, no Maven dependencies | D062, D063, D064, D552 |
-| lyric-aws-secrets | incomplete | `local` and `aws` real | `jvm` real | D064, D230, D552; the annotation path is not declared on `--target native` (no annotation metadata, #8524) |
-| lyric-aws-xray | experimental | experimental; real SDK binding | experimental; SDK binding real, `Tracing` aspect broken (B′-mode weaver, docs/71 phase 1) | D064 |
 | lyric-ui | experimental | experimental | experimental | D137, D139; see Chapter 31 |
+
+The AWS libraries (Lambda handlers, Secrets Manager and Parameter Store config
+annotations, X-Ray tracing) are not in this repository: they bind to AWS SDKs,
+so they live in `nichobbs/lyric-ecosystem` as the packages `Lyric.Lambda`,
+`Lyric.AwsSecrets` and `Lyric.AwsXRay` (D620). The `@secretsManager` and
+`@parameterStore` annotations still work through `Std.AnnotationMeta`.
 
 **Native (`--target native`).** The table's columns are the two managed
 targets. On native, as of D604: `lyric-storage` (local filesystem; its

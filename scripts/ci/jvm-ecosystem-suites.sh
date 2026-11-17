@@ -45,10 +45,9 @@
 #   jobs        InProcessJobScheduler (a `List[JobSpec]` queue field read back
 #               through the erased ArrayList) and the Retryable aspect
 #   session     InProcessSessionStore (`Map[String, Record]` values) and the
-#               Lettuce-backed kernel; Lettuce is Maven-restored first
+#               threaded concurrency suite
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
 #               (`__LyricBModeCallContext` on the JVM, #4600)
-#   aws-xray    the `AwsXRay.Tracing` B'-mode aspect over the X-Ray recorder
 #   ws          frames, handshake and the WsSecurity aspects; the dotnet-only
 #               `Ws.WsDotnetE2eTests` suite (it dials Std.TcpHost, which has
 #               no JVM kernel) is left out with --suite
@@ -90,21 +89,21 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth aws-xray ws logging db otel)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc search jobs session auth ws logging db otel)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
   # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
-  # `session` (Lettuce), `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
+  # `ws` (Undertow) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|session|aws-xray|ws|db)
+    web|mail|grpc|ws|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac

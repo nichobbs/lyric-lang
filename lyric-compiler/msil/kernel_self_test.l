@@ -70,7 +70,7 @@ pub func main(): Int {
   check("bufU4_neg1", byteAt(w6, 0) == 255 and byteAt(w6, 1) == 255 and byteAt(w6, 2) == 255 and byteAt(w6, 3) == 255)
 
   val w7 = bufNew()
-  bufU4(w7, 0x80000000)
+  bufU4(w7, 0 - 2147483647 - 1)
   check("bufU4_0x80000000", byteAt(w7, 0) == 0 and byteAt(w7, 1) == 0 and byteAt(w7, 2) == 0 and byteAt(w7, 3) == 128)
 
   // #1824 endianness guard predicate.

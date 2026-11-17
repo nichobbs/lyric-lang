@@ -24,14 +24,13 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 |---|---|---|---|---|
 | `lyric-stdlib` (`Std.*`) | Supported | Supported | Supported | Full cross-target standard library (`String.normalize` / `isNormalized` require `.NET` or `JVM`) |
 | `lyric-web` / `lyric-ws` | Supported | Supported | Supported (`web`) | HTTP/1.1, HTTP/2 (`dotnet`), TLS/mTLS, WebSocket, OpenAPI |
-| `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, Redis/in-memory session |
+| `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, in-memory session (Redis: `Lyric.Session.Redis` in lyric-ecosystem) |
 | `lyric-cache` / `lyric-resilience` | Supported | Supported | Pure-Lyric subset | Redis/in-memory cache, retry/circuit-breaker/rate-limiter |
 | `lyric-logging` / `lyric-otel` / `lyric-health` | Supported | Supported | Pure-Lyric subset | Structured logging, OpenTelemetry spans/metrics, health checks |
 | `lyric-validation` / `lyric-forms` / `lyric-i18n` | Supported | Supported | Supported | Pure-Lyric schema validation, form models, locale bundles |
 | `lyric-unicode` / `lyric-search` | Supported | Supported | Supported | Pure-Lyric UAX #9 bidi / UAX #14 line breaking / UAX #29 word boundaries, BM25/inverted-index search |
 | `lyric-text` | — | — | Supported | Native-only FreeType / HarfBuzz text shaping and layout |
 | `lyric-proto` / `lyric-grpc` / `lyric-mcp` | Supported | Supported | Pure-Lyric (`proto`, `mcp`) | Protobuf wire codec, gRPC over HTTP/2, Model Context Protocol |
-| `lyric-lambda` / `lyric-aws-secrets` / `lyric-aws-xray` | Supported | Supported | — | AWS Lambda runtime API, Secrets Manager, X-Ray tracing |
 | `lyric-mail` / `lyric-jobs` / `lyric-feature-flags` / `lyric-docker` | Supported | Supported | Pure-Lyric subset | SMTP/SES mail, cron/job runner, feature flags, Docker Engine API |
 | `lyric-db` | Supported (Postgres, SQLite) | Returns `NOT_SUPPORTED_ON_TARGET` | — | JDBC kernel tracked separately |
 | `lyric-mq` | Supported (`inmemory`) | Returns `NOT_SUPPORTED_ON_TARGET` | — | Broker drivers (`redis://`, `amqp://`, `sqs://`) return explicit `Err` |

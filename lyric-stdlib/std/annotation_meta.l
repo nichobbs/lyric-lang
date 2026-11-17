@@ -6,7 +6,7 @@
 //! managed resource on .NET, a `Lyric.AnnotationMeta.<Pkg>` JAR entry on the
 //! JVM).  This module reads those documents back from the running program
 //! and decodes them, so a library can discover which fields carry its own
-//! annotation without reflection of its own.  `lyric-aws-secrets` uses it to
+//! annotation without reflection of its own.  `AwsSecrets` (lyric-ecosystem) uses it to
 //! find `@secretsManager` / `@parameterStore` fields.
 //!
 //! Scope: `config { }` field annotations only, every package of every

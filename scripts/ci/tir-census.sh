@@ -84,10 +84,13 @@ FILES=("${filtered[@]}")
 # checker reports the same census.  The two tests of the native-only bounded Std.TcpHost
 # operations (D605) are built with --target native: the checker prints its census before
 # code generation, so the build is judged whether or not the link step has a toolchain.
+# The two JVM-bridge tests that drive `Jvm.Bridge` in process are .NET programs that import
+# compiler packages (CI runs them without --target), so they are built for dotnet.
 # Everything else is built for dotnet.
 target_of() {
   case "$1" in
     lyric-stdlib/tests/http_timeout_native_tests.l|lyric-stdlib/tests/tcp_host_bounded_native_tests.l) echo native ;;
+    lyric-compiler/jvm/cross_package_generics_jvm_self_test.l|lyric-compiler/lyric/field_access_list_of_slice_add_jvm_self_test.l) echo dotnet ;;
     lyric-compiler/jvm/*|*_jvm_self_test*.l|*_jvm_tests.l|*jvm_self_test*.l) echo jvm ;;
     *) echo dotnet ;;
   esac
@@ -306,13 +309,28 @@ fi
 
 if [[ "$AREAS" == *" ecosystem "* ]]; then
 # The ecosystem libraries, dotnet only (the JVM build reports the same checker census).
-for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
-  [[ -f "$manifest" ]] || continue
+# A library whose manifest names a path dependency needs that dependency's DLL built first, so each
+# manifest's path dependencies are built before it (a depth-first walk with a visited set); built
+# in glob order, `lyric-access` ran before `lyric-ui/native` and `lyric-unicode-dict` before
+# `lyric-unicode`, and both failed with "local dep not built" and were listed unchecked.
+declare -A eco_seen=()
+eco_build() {
+  local manifest="$1" dir dep depdir
+  [[ -f "$manifest" ]] || return 0
+  [[ -n "${eco_seen[$manifest]:-}" ]] && return 0
+  eco_seen[$manifest]=1
   dir="$(dirname "$manifest")"
-  [[ "$dir" == "lyric-compiler/lyric" || "$dir" == lyric-compiler/* ]] && continue
-  is_native_only "$dir" && continue
+  [[ "$dir" == "lyric-compiler/lyric" || "$dir" == lyric-compiler/* ]] && return 0
+  is_native_only "$dir" && return 0
+  while IFS= read -r dep; do
+    depdir="$(realpath -m --relative-to="$REPO_ROOT" "$REPO_ROOT/$dir/$dep")"
+    eco_build "$depdir/lyric.toml"
+  done < <(grep -oE 'path *= *"[^"]+"' "$manifest" | sed -E 's/path *= *"([^"]+)"/\1/')
   run_cached "eco-$manifest" 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet
   absorb_log ecosystem "$manifest" "$log" "$rc"
+}
+for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
+  eco_build "$manifest"
 done
 fi
 

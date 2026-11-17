@@ -1,6 +1,6 @@
 # 35 — lyric-lambda and lyric-aws-secrets library design
 
-**Status:** Specced in D062, D063, D064. Partly withdrawn under D552 item 2 (see below).
+**Status:** Specced in D062, D063, D064. Partly withdrawn under D552 item 2 (see below). **Moved:** `lyric-lambda`, `lyric-aws-secrets` and `lyric-aws-xray` no longer live in this repository; D620 moved them to `nichobbs/lyric-ecosystem` (packages `Lyric.Lambda`, `Lyric.AwsSecrets`, `Lyric.AwsXRay`) as part of docs/71 phase 4. This document keeps the design; paths below that name `lyric-lambda/`, `lyric-aws-secrets/` or `lyric-aws-xray/` refer to those packages in the new repository.
 
 > **Withdrawn (D552 item 2, 2026-11).** Two parts of this design were never
 > implemented and were removed from the public API of `lyric-lambda` rather than
