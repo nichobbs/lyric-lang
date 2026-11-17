@@ -3568,7 +3568,10 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
   val idx = if keepsOwnType {
     it
   } else {
-    match coerceArg(env, it, keyTy) { case Some(c) -> c; case None -> return None }
+    match coerceArg(env, it, keyTy) {
+      case Some(c) -> c
+      case None -> return None
+    }
   }
   Some(value = IndexParts(recv = rt, idx = idx, how = how))
 }
@@ -3891,8 +3894,7 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
 /// gave it no array context) used where a fixed-length array is wanted: the same elements
 /// as an array literal of that type, each converted to the element type.  None unless the
-/// literal has exactly the array's length (or the array's length is unsized) and its
-/// elements convert.
+/// literal has exactly the array's known length and its elements convert.
 func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   val elems = match t.kind { case XListLit(es) -> es; case _ -> return None }
   match t.ty {
