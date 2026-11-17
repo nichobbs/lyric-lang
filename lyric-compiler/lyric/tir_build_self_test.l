@@ -2850,6 +2850,13 @@ test "a loop that breaks from inside a let initializer may complete, so the miss
   assertTrue(c.built < c.total, "the body stays counted")
 }
 
+test "a record that impls an extern interface is that interface as a function's value (D441)" {
+  val st = buildFirstFnHost(
+    "package App\nextern type Disp = \"System.IDisposable\"\nrecord R { x: Int }\nimpl Disp for R {\n  func Dispose(): Unit { () }\n}\nfunc mk(): Disp {\n  R(x = 1)\n}\n"
+  )
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+}
+
 test "a list literal typed as a slice and used as a fixed array is an array literal (D495)" {
   val c = censusOf(
     "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8], 1)\n}\n"
@@ -2862,7 +2869,8 @@ test "a list literal of another length than the array stays counted (D495)" {
   val c = censusOf(
     "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8, 9], 1)\n}\n"
   )
-  assertTrue(c.built < c.total or c.firstErrors.count > 0, "no unsound claim")
+  assertTrue(c.built < c.total, "the body stays counted")
+  assertTrue(c.firstErrors.count > 0, "an I0002 names the conversion")
 }
 
 test "an array indexed by a Long keeps the Long index (D496)" {
@@ -2900,4 +2908,12 @@ test "an interface method's default expression is numbered with the file's nodes
     }
   }
   assertEqualInt(zeros, 0, "no node is left unnumbered")
+}
+
+test "an array indexed by a range subtype is indexed by its underlying integer (D497)" {
+  val c = censusOf(
+    "package App\ntype Slot = Int range 0 ..= 2\n\nfunc slotAt(a: in array[3, Int], s: in Slot): Int {\n  a[s]\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }

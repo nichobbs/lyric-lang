@@ -687,3 +687,17 @@ test "a callback conversion adds exactly one userdata slot to a closure type" {
     "another result"
   )
 }
+
+func indexFn(idxTy: in Ty): TFnDecl {
+  val x = local(1, "x", idxTy, false)
+  val arr = TArray(len = ALKnown(n = 3), element = tyInt())
+  val recv = ex(4, arr, XZeroValue(ty = arr))
+  val idx = ex(3, idxTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), tyInt(), ex(2, tyInt(), XIndex(recv = recv, idx = idx, how = IkArray)))
+}
+
+test "a positional index must be an integer primitive of any width" {
+  assertFalse(rulesOf(oneFn(entries(), indexFn(tyInt()))).contains("index-type"), "an Int index")
+  assertFalse(rulesOf(oneFn(entries(), indexFn(TPrim(kind = TPLong)))).contains("index-type"), "a Long index")
+  assertTrue(rulesOf(oneFn(entries(), indexFn(tyString()))).contains("index-type"), "a String index")
+}
