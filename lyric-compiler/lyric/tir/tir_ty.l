@@ -230,6 +230,14 @@ pub func isUserdataSlotTy(t: in Ty): Bool {
   }
 }
 
+/// Whether a value of type `closure` is passed as the userdata pointer `ptr`.
+pub func isClosureAsPointer(closure: in Ty, ptr: in Ty): Bool {
+  match closure {
+    case TFunc(_, _, _) -> isUserdataSlotTy(ptr)
+    case _ -> false
+  }
+}
+
 /// Whether `callback` is the C callback type of closure type `closure`: the same result and
 /// the same parameters with one userdata slot added, anywhere in the list (SDL3 puts it first).
 pub func isCallbackOf(closure: in Ty, callback: in Ty): Bool {

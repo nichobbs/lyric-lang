@@ -2832,6 +2832,14 @@ test "a generator ending in try takes its values from yield, not the return type
   )
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+
+test "a closure passed to a C callback parameter is a callback conversion (D494)" {
+  val c = censusOf(
+    "package App\nimport Std.Ffi\n\n@library(\"lyriccbtest\")\nextern func cbtSum(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = \"cbt_sum\"\n\n" +
+      "func total(n: Int): Int {\n  val f: (Int) -> Int = { v: Int -> v }\n  cbtSum(f, f, n)\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertTrue(c.built >= 1, "total builds")
 }
 
 test "a loop that breaks from inside a let initializer may complete, so the missing value stays counted (D440)" {

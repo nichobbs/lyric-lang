@@ -145,6 +145,9 @@ pub union ConvKind {
   /// userdata slot (`NativeUserdata`, or a trailing `NativePtr[Byte]`).  The slot is where a
   /// backend puts the closure's own pointer.
   case CvCallback
+  /// A closure passed as the userdata pointer of a C callback API (`NativeUserdata` or
+  /// `NativePtr[Byte]`): the pointer is the closure itself.
+  case CvClosureAsPointer
 }
 
 pub union ShortOp {
