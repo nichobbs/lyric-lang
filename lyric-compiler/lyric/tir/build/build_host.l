@@ -138,6 +138,13 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
         // A function value passed for a host functional interface or delegate (`Thread.new({ -> ... })`):
         // the host adapts it; the operand keeps its function type.
         case TFunc(_, _, _) -> if isHostValueClass(h.name) { None } else { Some(value = CvBoxToHost(host = h)) }
+        // A possibly null string passed for a host string (`getInstance(getDefaultAlgorithm())`): the host
+        // takes the reference, null included.
+        case TNullable(TPrim(TPString)) -> if h.name == "System.String" or h.name == "java.lang.String" {
+          Some(value = CvBoxToHost(host = h))
+        } else {
+          None
+        }
         case TPrim(f) -> {
           val narrows = isNarrowHostInt(h.name) and (match f { case TPInt -> true; case TPLong -> true; case _ -> false })
           val single = h.name == "System.Single" and (match f { case TPFloat -> true; case _ -> false })

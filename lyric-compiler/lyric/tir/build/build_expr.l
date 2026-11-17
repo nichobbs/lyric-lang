@@ -2638,7 +2638,10 @@ func buildHostMethodOnChain(
     }
     case _ -> None
   }
-  val hc = match recvAndName { case Some(x) -> x; case None -> return None }
+  val hc = match recvAndName {
+    case Some(x) -> x
+    case None -> match hostMethodOnTypeParam(env, fn, args.count) { case Some(x) -> x; case None -> return None }
+  }
   // A generic host class takes its type arguments from the checker's site, which a chain has none of.
   if hc.host.args.count > 0 {
     return None
@@ -2660,6 +2663,29 @@ func buildHostMethodOnChain(
       )
     )
     case None -> None
+  }
+}
+
+/// `target.getClass()` where `target` has a type parameter's type: the member of the host's root object
+/// class the call names, found through the host metadata (the receiver is boxed to it by `buildExternCall`).
+func hostMethodOnTypeParam(env: in BuildEnv, fn: in Expr, argc: in Int): Option[HostChainCall] {
+  match fn.kind {
+    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
+      case Ok(rt) -> match rt {
+        case TParam(_, _) -> {
+          for obj in ["java.lang.Object", "System.Object"] {
+            match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(obj, name, argc, false) {
+              case Some(_) -> return Some(value = HostChainCall(host = HostTypeRef(name = obj, args = newList()), name = name))
+              case None -> ()
+            }
+          }
+          None
+        }
+        case _ -> None
+      }
+      case Err(_) -> None
+    }
+    case _ -> None
   }
 }
 
@@ -3287,11 +3313,16 @@ func buildExternCall(
     } else {
       TExtern(host = owner)
     }
-    if not tyEq(rt.ty, want) {
+    // A value of a type parameter's type is the host's root object for a call of one of its members.
+    val recvArg = if tyEq(rt.ty, want) {
+      rt
+    } else if isHostObject(site.hostType) and (match rt.ty { case TParam(_, _) -> true; case _ -> false }) {
+      convertNode(env, rt, want, CvBoxToHost(host = owner))
+    } else {
       return uncoveredExpr(env, e, "an extern call on a receiver that is not the host type itself")
     }
     params.add(TParamTy(mode = TMIn, ty = want))
-    targsOut.add(TArgIn(value = rt))
+    targsOut.add(TArgIn(value = recvArg))
   }
   var i = 0
   while i < built.count {
