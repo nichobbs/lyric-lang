@@ -412,11 +412,48 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
         case Some(bf) -> Some(value = mkExpr(e, ty, XField(recv = bf.recv, field = bf.field)))
         case None -> match valueParamRead(env, e) {
           case Some(v) -> Some(value = v)
-          case None -> uncoveredExpr(env, e, "a name that is not a local")
+          case None -> match sharedCaseRead(env, e, ty) {
+            case Some(v) -> Some(value = v)
+            case None -> uncoveredExpr(env, e, "a name that is not a local")
+          }
         }
       }
     }
   }
+}
+
+/// A bare case name several enums share (`On` of `Beam` and `Ray`), read where the expected type decided which
+/// enum it is: the checker settled the node's type at that enum and recorded no reference (the name alone does not
+/// say), so the case is the one of that enum with the name.  None when the type is not a type with such a case.
+func sharedCaseRead(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
+  val name = match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  val owner = match ty {
+    case TNamed(did, targs) -> if targs.count == 0 { did } else { return None }
+    case _ -> return None
+  }
+  for cand in symTableTryFindAllNamed(env.ctx.tbl, name) {
+    val parent = match cand.kind {
+      case DKEnumCase(pid, _) -> Some(value = pid)
+      case DKUnionCase(pid, uc) -> if uc.fields.count == 0 { Some(value = pid) } else { None }
+      case _ -> None
+    }
+    match parent {
+      case Some(pid) -> if symbolIdEq(pid, owner) {
+        match caseSymbolId(env.ctx.tbl, cand, pid, name) {
+          case Some(id) -> {
+            noteCaseSym(env, id)
+            return Some(value = mkExpr(e, ty, XConstruct(sym = id, fields = newList())))
+          }
+          case None -> ()
+        }
+      }
+      case None -> ()
+    }
+  }
+  None
 }
 
 /// Whether control never reaches the end of the block `b`.
@@ -706,6 +743,11 @@ func isPlainHostResult(name: in String): Bool {
 }
 
 /// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
+/// This applies only to a result the checker left untyped (`openHostChainTy`): where the checker types the call it
+/// types a host array as a slice itself and the chain is not consulted (D444).  `Object[]` is safe to expose here
+/// because the slice of host objects keeps the array's own representation (`hostArrayAccepts` takes a host
+/// `Object` element for any host value), while an array of a Lyric value (`String[]`, `int[]`) would need an
+/// element conversion the builder does not make.
 func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   match el {
     case EIEHost(_, aargs) -> {
@@ -2710,6 +2752,8 @@ func buildHostMethodOnChain(
 
 /// `target.getClass()` where `target` has a type parameter's type: the member of the host's root object
 /// class the call names, found through the host metadata (the receiver is boxed to it by `buildExternCall`).
+/// Both root names are tried, but the metadata resolver is the active target's own (the JVM resolver reads
+/// JDK classes, the dotnet one reference assemblies), so only that target's root class resolves.
 func hostMethodOnTypeParam(env: in BuildEnv, fn: in Expr, argc: in Int): Option[HostChainCall] {
   match fn.kind {
     case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
