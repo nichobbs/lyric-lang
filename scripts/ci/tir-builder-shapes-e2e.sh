@@ -695,7 +695,26 @@ func methodName(m: in JMethod): Bool {
   m.getName() == "length"
 }
 
+extern type JArrayList = "java.util.ArrayList"
+extern type JKeyStore = "java.security.KeyStore"
+
+// A host call's string passed for a host string parameter: `getDefaultType()` is `String?`.
+func defaultKeyStoreType(): JKeyStore {
+  JKeyStore.getInstance(JKeyStore.getDefaultType())
+}
+
+// An untyped host array result (`toArray()`) passed on as a slice.
+func arrayOf(l: in JArrayList): slice[JObject] {
+  l.toArray()
+}
+
 func main(): Int {
+  if defaultKeyStoreType().getType() != JKeyStore.getDefaultType() {
+    return 4
+  }
+  if arrayOf(JArrayList.new()).length != 0 {
+    return 5
+  }
   if primitiveChar().getName() != "char" {
     return 1
   }
@@ -717,5 +736,35 @@ elif ! grep -q "^I0003 census \[.*jvm_host_static_shapes.l\]: 0 diagnostic" "$WO
 else
   (cd "$WORK" && java -jar jvm_host_static_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_static_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_static_shapes"; fi
+fi
+# Host chains the builder does not type stay counted and the verifier reports nothing: a chain on a
+# result that is a Lyric value (a string, a boxed number), and a member the host class has no overload
+# for.  The JVM build must finish and every body that builds must verify (D444, D445).
+cat > "$WORK/jvm_host_chain_counted.l" <<'LYRIC'
+package JvmHostChainCounted
+extern type JString = "java.lang.String"
+extern type JInteger = "java.lang.Integer"
+extern type JArrayList = "java.util.ArrayList"
+
+func lengthOfValue(): Int {
+  JString.valueOf(12345).length()
+}
+
+func boxedHash(): Int {
+  JInteger.valueOf(7).hashCode()
+}
+
+func firstOfEmpty(): Int {
+  val l: JArrayList = JArrayList.new()
+  l.toArray().length
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_chain_counted.l" -o "$WORK/jvm_host_chain_counted.jar" >"$WORK/jvm_host_chain_counted.log" 2>&1)
+if ! grep -q "^I0003 census \[.*jvm_host_chain_counted.l\]: 0 diagnostic" "$WORK/jvm_host_chain_counted.log"; then
+  echo "FAIL (jvm_host_chain_counted): the verifier rejected a built body or the build did not finish"; grep "I0003" "$WORK/jvm_host_chain_counted.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_chain_counted"
 fi
 exit $fail
