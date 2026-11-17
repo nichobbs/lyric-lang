@@ -455,7 +455,7 @@ impl Session.SessionStore for MockSessionStore {
     key: in String,
     value: in String,
   ): Result[Unit, Session.SessionError] {
-    // SECURITY: mirror NativeSessionStore / InProcessSessionStore —
+    // SECURITY: mirror InProcessSessionStore and `Lyric.Session.Redis` —
     // refuse to auto-create a session for a caller-supplied id.  See
     // lyric-lang #316 / #436.  Diverging here means tests written
     // against this mock would silently miss a regression of the

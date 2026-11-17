@@ -6694,7 +6694,7 @@ jobs:
           - id: auth
             deps: ""
           - id: session
-            deps: "cache"
+            deps: ""
           - id: health
             deps: ""
           - id: cache
@@ -6930,7 +6930,7 @@ jobs:
       # lyric-grpc's dotnet kernel has mandatory NuGet deps (Grpc.Net.Client,
       # Grpc.AspNetCore, System.Threading.RateLimiting) whose extern types/
       # ctors resolve from package metadata at compile time — restore first,
-      # like lyric-db/lyric-session.
+      # like lyric-db.
       - name: Run tests (grpc)
         if: matrix.id == 'grpc'
         run: |
@@ -6943,7 +6943,7 @@ jobs:
 
       # lyric-db's dotnet kernel has mandatory NuGet deps (Npgsql +
       # Microsoft.Data.Sqlite) whose extern ctors resolve from package
-      # metadata at compile time — restore first, like lyric-session.
+      # metadata at compile time — restore first, like lyric-grpc.
       # The SQLite native asset (libe_sqlite3.so) is not deployed by the
       # bundler yet (#5573), so point the loader at the NuGet cache.
       - name: Run tests (db)

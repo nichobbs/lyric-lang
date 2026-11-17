@@ -77,6 +77,11 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   `Lyric.Session.Redis`, `Lyric.Cache.Memcached`) on native, once
   `Std.Testing.assertPanics` worked there
   (docs/progress/2026-11-16-ecosystem-redis-memcached-native.md).
+  Then the Redis backend of `lyric-session` (`connectRedis()`, its two
+  kernels, the `dotnet`/`jvm` features and the NuGet/Maven tables) was removed
+  in favour of `Lyric.Session.Redis`; `lyric-session` is pure Lyric and claims
+  `dotnet`, `jvm` and `native` (D614,
+  docs/progress/2026-11-17-session-redis-extracted.md).
 
 ## 4. Open questions
 

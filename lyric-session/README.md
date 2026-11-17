@@ -2,75 +2,29 @@
 
 **Stability:** `stable`
 
-Distributed session management with pluggable backends (Redis, in-process).
+Session management for Lyric web applications: the `SessionStore` interface,
+the in-process store, and the cookie and lifetime configuration helpers.
+Distributed backends are separate packages that implement `SessionStore`;
+the Redis one is `Lyric.Session.Redis` in lyric-ecosystem (see
+"Migrating from `connectRedis()`" below).
 
 ## Platform parity
 
-| Feature flag | Backend                                              | Status    |
-|--------------|-------------------------------------------------------|-----------|
-| `dotnet`     | StackExchange.Redis (`Session.Kernel.Net`)            | Available |
-| `jvm`        | Lettuce (`io.lettuce:lettuce-core`, `Session.Kernel.Jvm`) | Available |
-| `InProcessSessionStore` (both targets) | pure Lyric, no kernel | Available on both targets |
+| Target | Status |
+|---|---|
+| `dotnet` | Available |
+| `jvm` | Available |
+| `native` | Available (pure Lyric, no kernel; the `Session.SessionConcurrency*Tests` modules are gated to `dotnet` / `jvm`) |
 
-Both kernels bind their respective Redis client directly via `extern
-type` + auto-FFI — no F#/Java host shim, no `extern package` (that
-mechanism never generated a real binding in either the type checker or
-MSIL/JVM codegen). `dotnet` and `jvm` are **mutually exclusive**:
-activating both leaves two definitions of `Session`'s Redis dispatch
-functions in the bundle (ambiguous-symbol build error). Select exactly
-one, matching `--target`:
-
-```sh
-lyric build --manifest lyric-session/lyric.toml --features dotnet
-lyric build --manifest lyric-session/lyric.toml --target jvm --no-default-features --features jvm
-```
-
-Neither feature is a default — unlike `lyric-auth`/`lyric-storage`'s
-NuGet-free `dotnet` default, this library's kernels have a genuine
-mandatory external dependency (StackExchange.Redis / Lettuce), so a
-plain `lyric build`/`lyric test` with no `--features` flag builds only
-the kernel-free `Session` package (safe for use as a workspace
-dependency with no prior `lyric restore`). The `dotnet` feature needs
-`StackExchange.Redis` resolved via `lyric restore` (the `[nuget]` table
-in `lyric.toml`); the `jvm` feature needs `io.lettuce:lettuce-core`
-resolved via `lyric restore` (the `[maven]` table in `lyric.toml`);
-`lyric-resolver.jar`
-must be on `PATH`/beside the `lyric` binary/`$LYRIC_MAVEN_RESOLVER` (see
-`docs/31-maven-linking.md`).
-
-There is no host-backed in-memory store on either target — the earlier
-JVM kernel's `lyric.session.InMemoryStore` `extern package` block was
-dead code (the mechanism is a confirmed no-op) and was removed rather
-than ported. `InProcessSessionStore` below is pure Lyric, needs no
-kernel, and works on both targets: its `Map[String, SessionData]` values
-read back as `SessionData` on the JVM (#5451 is fixed), and the JVM suite
-runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`.
-
-`lyric test --target jvm` now correctly injects the `[maven]`-restored
-classpath (`cli_test.l` runs the compiled test JAR with `java -cp
-<maven-jars>:<jar>` when Maven deps are present, instead of a bare
-`java -jar` that can't see them) — `lyric restore` followed by `lyric
-test --manifest lyric-session/lyric.toml --target jvm --no-default-features
---features jvm` runs the real Lettuce Redis test suite directly, no
-manual classpath assembly needed. `lyric run --target jvm` for a
-standalone program still execs a plain `java -jar` and needs the
-classpath from `target/restore/jvm-classpath.txt` appended manually if
-it uses `[maven]` deps, e.g.:
-
-```sh
-lyric restore --manifest lyric-session/lyric.toml
-lyric build --manifest lyric-session/lyric.toml --target jvm --no-default-features --features jvm
-CP="lyric-session/bin/Session.dll:$(tr '\n' ':' < lyric-session/target/restore/jvm-classpath.txt)"
-LYRIC_CONFIG_SESSION_REDISSESSION_URL="redis://127.0.0.1:6379" java -cp "$CP" YourMainClass
-```
+The package is pure Lyric with no third-party dependency, no kernel and no
+feature flags: `lyric build` and `lyric test` need no `--features` flag and no
+`lyric restore`. It declares `targets = ["dotnet", "jvm", "native"]`.
 
 ## Packages
 
 | Package | Purpose |
 |---|---|
-| `Session` | Core types, `SessionStore` interface, in-process implementation, and public API |
-| `Session.Kernel.Net` | StackExchange.Redis-backed session store (`dotnet` feature) |
-| `Session.Kernel.Jvm` | Lettuce-backed session store (`jvm` feature) |
+| `Session` | Core types, `SessionStore` interface, in-process implementation, cookie configuration and public API |
 
 ## Quick start
 
@@ -118,8 +72,9 @@ pub interface SessionStore {
 }
 ```
 
-The v1 implementation is `InProcessSessionStore` (in-memory, single-process).
-For distributed systems, use `NativeSessionStore` (Redis-backed, `dotnet` or `jvm` feature).
+The bundled implementation is `InProcessSessionStore` (in-memory,
+single-process). For distributed systems use a backend package that implements
+`SessionStore`, such as `Lyric.Session.Redis` (lyric-ecosystem).
 
 ## Backends
 
@@ -128,39 +83,57 @@ For distributed systems, use `NativeSessionStore` (Redis-backed, `dotnet` or `jv
 `Session.inMemory()` stores sessions in-memory. Best for single-server
 development. Works on both `--target dotnet` and `--target jvm`.
 
-### Redis (`dotnet` / `jvm` feature)
+### Distributed stores
 
-`Session.connectRedis()` connects to Redis, reading connection settings from
-the environment (`Session`'s `RedisSession` config block):
+A multi-instance deployment needs a store shared between instances. Backends
+live outside this package and implement `SessionStore`, so application code
+that takes a `SessionStore` is unchanged. For Redis use `Lyric.Session.Redis`
+(`session-redis` in lyric-ecosystem), which runs on `dotnet`, `jvm` and
+`native` and re-exports `Session`.
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `LYRIC_CONFIG_SESSION_REDISSESSION_URL` | (required) | Redis connection string |
-| `LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX` | `"session:"` | Prefix for session keys |
-| `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` | `3600` | Session TTL in seconds |
+## Migrating from `connectRedis()`
 
-**The connection-string format differs by backend** — each kernel passes
-`LYRIC_CONFIG_SESSION_REDISSESSION_URL` straight through to its client
-library's own parser, and the two are not interchangeable:
+`Session.connectRedis()`, `NativeSessionStore`, the `dotnet` and `jvm`
+features, `Session.Kernel.Net` / `Session.Kernel.Jvm`, and the
+`LYRIC_CONFIG_SESSION_REDISSESSION_URL` / `_KEYPREFIX` variables were removed
+(D614; the extraction phase of docs/71). Replace them with
+`Lyric.Session.Redis`:
 
-- `dotnet` (`Session.Kernel.Net`, StackExchange.Redis): the library's
-  native `host:port[,option=value...]` configuration-string syntax, e.g.
-  `127.0.0.1:6379` or `127.0.0.1:6379,password=secret`. **Not** a
-  `redis://` URI — StackExchange.Redis does not parse URI schemes, and
-  passing one produces a confusing "was not possible to connect to the
-  redis server(s)" failure rather than a parse error.
-- `jvm` (`Session.Kernel.Jvm`, Lettuce): a `redis://` (or `rediss://` for
-  TLS) URI, e.g. `redis://127.0.0.1:6379`, per Lettuce's `RedisURI`
-  parser.
+```lyric
+import Session
+import Session.Redis as RedisSessions
 
-Note: `NativeSessionStore` is `@experimental` pending atomic Redis operations.
+// before: val store = Session.connectRedis()?   (reads the environment)
+val url = Env.getVarOrDefault("APP_SESSION_REDIS_URL", "")
+val store = RedisSessions.connect(url, RedisSessions.options("session:", 3600))?
+```
+
+| `connectRedis()` | `Lyric.Session.Redis` |
+|---|---|
+| `LYRIC_CONFIG_SESSION_REDISSESSION_URL` | the `url` argument of `connect`; a `redis://` / `rediss://` URL on every target (the old `dotnet` kernel took a StackExchange `host:port,password=...` string) |
+| `LYRIC_CONFIG_SESSION_REDISSESSION_KEYPREFIX` | `options(keyPrefix, ttlSeconds)`, `keyPrefix` (required, not empty) |
+| `LYRIC_CONFIG_SESSION_SESSION_TTLSECONDS` | `options(..., ttlSeconds)`; the package reads no environment variable, so pass `Session.sessionConfigFromEnv().ttlSeconds` to keep the cookie and store lifetimes equal |
+| `Err(MISSING_REDIS_URL)` | not returned; an unusable URL is `Err(CONNECT_FAILED)` |
+| `Err(CONNECT_FAILED)` | the same code; the message never contains the password |
+
+Existing sessions do not carry over. The old store kept each session as one
+JSON string under `<keyPrefix><uuid>`; `Lyric.Session.Redis` keeps a Redis hash
+under `<keyPrefix><64 hex characters>`, and answers a key of another type under
+its prefix with an error, not a missing session. Choose a new prefix, or delete
+the old keys before the first deployment
+(`redis-cli --scan --pattern 'session:*' | xargs redis-cli del`); either way
+every signed-in user signs in again once. Session ids issued before that point
+(hyphenated UUIDs, or the no-dash form of the pre-#3022 F# shim) are valid
+ids (`isValidSessionId`) but name no session in the new store. Unlike the old
+store, every read-modify-write there is one Lua script, so concurrent requests
+on one session lose no update.
 
 ## Session configuration
 
 Session lifetime and cookie settings are read from the environment via
 `Session.sessionConfigFromEnv()`, which returns a plain `SessionConfig`
 record (not a `config` block — this library reads its env vars directly,
-the same way `connectRedis()` does):
+the same way `inMemory()` does):
 
 ```lyric
 pub record SessionConfig {
@@ -213,7 +186,6 @@ write the response header for you.
 
 ```lyric
 Session.inMemory()                                 // SessionStore
-Session.connectRedis(url)                          // SessionStore
 Session.create(store)                              // String (session ID)
 Session.load(store, sessionId)                     // Option[SessionData]
 Session.save(store, sessionId, data)               // Unit
@@ -254,8 +226,8 @@ the UUIDs `create()` issues) before touching its backend:
   is a no-op;
 - saving one returns `Err(INVALID_SESSION_ID)`.
 
-A request carrying `LYRIC_SESSION=` used to reach a Redis kernel
-precondition and crash.
+A request carrying `LYRIC_SESSION=` used to reach a store precondition
+and crash.
 
 ### Secure cookie defaults
 
@@ -271,4 +243,5 @@ framework's response automatically.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D057 and `docs/10-bootstrap-progress.md`.
+See `docs/03-decision-log.md` D057, `docs/decisions/D614-session-redis-extracted.md`
+and `docs/10-bootstrap-progress.md`.

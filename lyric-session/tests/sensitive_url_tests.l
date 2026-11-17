@@ -1,19 +1,12 @@
-//! tests/sensitive_url_tests.l — regression for RedisSession.url @sensitive (#357/#477/#1071).
+//! tests/sensitive_url_tests.l — credential-masking checks (#357/#477/#1071).
 //!
-//! The RedisSession.url field is annotated @sensitive so the config framework
-//! masks it in log/diagnostic output.  Because the config-layer masking is
-//! enforced at the framework level (not in pure Lyric), this file tests the
-//! observable consequences along two axes:
-//!
-//!   1. `InProcessSessionStore` produces error messages that never embed
-//!      a credential substring (defensive belt-and-suspenders check).
-//!   2. The pure `maskUrlCredentials` rewriter — the function the
-//!      Redis-backed `connectRedis()` routes kernel errors through —
-//!      strips the password component of a connection URL while leaving
-//!      every other component intact, across the URL shapes
-//!      StackExchange.Redis is known to surface.  Exercising the function
-//!      directly lets us verify the Redis URL path without standing up a
-//!      live Redis (#1071).
+//! 1. `InProcessSessionStore` produces error messages that never embed a
+//!    credential substring (defensive belt-and-suspenders check).
+//! 2. The pure `maskUrlCredentials` rewriter, which a distributed backend
+//!    routes connection errors through, strips the password component of a
+//!    connection URL while leaving every other component intact, across the
+//!    URL shapes a Redis client is known to surface.  Exercising the function
+//!    directly needs no live server (#1071).
 @test_module
 package Session.SensitiveUrlTests
 
