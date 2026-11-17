@@ -286,6 +286,8 @@ pub union TExprKind {
   /// array of zero elements, or a record of zero fields (not an all-zero bit pattern: a record
   /// element may hold a reference).
   case XZeroValue(ty: Ty)
+  /// The index of an array, slice, string, list or buffer is `Int` or any other integer primitive
+  /// (`Long`, `Byte`, `UInt`, `ULong`), which a backend range checks before narrowing.
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])
