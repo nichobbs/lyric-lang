@@ -705,6 +705,30 @@ func isPlainHostResult(name: in String): Bool {
     not Str.startsWith(name, "java.util.concurrent.")
 }
 
+/// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
+func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
+  match el {
+    case EIEHost(_, aargs) -> {
+      if aargs.count != 1 {
+        return None
+      }
+      val elemOk = match aargs[0] {
+        case EIEPrim(n) -> n == "Byte"
+        case EIEHost(n, _) -> isPlainHostResult(n) or isHostObject(n)
+        case _ -> false
+      }
+      if not elemOk {
+        return None
+      }
+      match hostElemTy(aargs[0], targs, TirT.TNever) {
+        case Some(t) -> Some(value = TirT.TSlice(t))
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv, host: in HostTypeRef, name: in String, argc: in Int, isProperty: in Bool, wantStatic: in Bool
@@ -722,7 +746,14 @@ func hostChainResult(
       case EMTVoid -> return None
       case EMTType(el) -> match el {
         case EIEHost(rname, _) -> {
-          if isHostStringName(rname) {
+          if rname == hostArrayName() {
+            // The array the checker types as a slice where it types the call at all: bytes and host
+            // objects (`Object[] toArray()`), a slice of them.
+            match hostArrayAsSlice(el, host.args) {
+              case Some(t) -> t
+              case None -> return None
+            }
+          } else if isHostStringName(rname) {
             // The checker types a host call's string as `String?` (the host may return null).
             TirT.TNullable(TPrim(kind = TPString))
           } else {
