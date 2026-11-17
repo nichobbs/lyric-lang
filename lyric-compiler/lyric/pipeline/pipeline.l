@@ -4196,6 +4196,86 @@ func specMayRender(decl: in FunctionDecl): Bool {
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
 }
 
+func declAsFile(decl: in FunctionDecl): SourceFile {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  SourceFile(
+    files = newList(),
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+}
+
+/// The generic functions of `decls` whose specialisation must be checked with
+/// its type arguments bound for a backend that cannot tell a `Char` from an
+/// `Int` (native, #9131): those whose body may stringify a value
+/// (`specMayRender`) and, to a fixpoint, those that call one of them by name,
+/// so a type argument reaches the renderer through every generic in between.
+/// Every other generic is kept for inference only (its signature, no body), so
+/// the type of a call to it inside a kept body is still known and it is left
+/// to the code generator to instantiate. A private non-generic helper carried
+/// with a generic (`__priv_...`) is kept as it is; it is specialised only
+/// where a kept body calls it. A generic with a defaulted parameter is not
+/// kept (see `hasDefaultedParam`).
+pub func pipeRenderingGenerics(decls: in List[FunctionDecl]): List[FunctionDecl] {
+  // Keyed by declaring package and name, so a same-named generic of another
+  // package is judged on its own body; `names` is what a call site can say.
+  val included: Map[String, Bool] = newMap()
+  val names: Map[String, Bool] = newMap()
+  var changed = true
+  while changed {
+    changed = false
+    for d in decls {
+      val key = originPkgOf(d.annotations) + "." + d.name
+      if isGenericDecl(d) and not hasDefaultedParam(d) and not included.containsKey(key) {
+        val f = declAsFile(d)
+        if anyExprInFile(f, { e: Expr -> mayRenderStructure(e) }) or anyExprInFile(f, { e: Expr -> match e.kind { case ECall(fn, _) -> calleeMethodName(fn, names); case _ -> false } }) {
+          included.add(key, true)
+          names.add(d.name, true)
+          changed = true
+        }
+      }
+    }
+  }
+  val kept: List[FunctionDecl] = newList()
+  for d in decls {
+    if not isGenericDecl(d) or included.containsKey(originPkgOf(d.annotations) + "." + d.name) {
+      kept.add(d)
+    } else {
+      kept.add(pipeInferenceOnlyFuncDecl(d))
+    }
+  }
+  kept
+}
+
+func isGenericDecl(d: in FunctionDecl): Bool {
+  match d.generics {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// A default expression is written in the declaring package's scope and a
+// specialisation is lowered in the consuming package's, so a generic with a
+// defaulted parameter stays with the code generator, which fills the default
+// as the declaring package (`enterDeclaringPkg`).
+func hasDefaultedParam(d: in FunctionDecl): Bool {
+  for p in d.params {
+    match p.dflt {
+      case Some(_) -> return true
+      case None -> ()
+    }
+  }
+  false
+}
+
 func calleeMethodName(callee: in Expr, names: in Map[String, Bool]): Bool {
   match callee.kind {
     case EParen(inner) -> calleeMethodName(inner, names)

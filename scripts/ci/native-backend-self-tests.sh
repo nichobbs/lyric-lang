@@ -183,6 +183,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
 # D169, D173: a value-generic record is usable in its own package and from
 # another.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+# #9131, D613: a generic of another package rendering a Char type argument.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/generic-char-e2e.sh native
 # #8179: `inout` receivers and generic `inout` parameters across packages.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 # #8279: indexed callees beside `?` and `await` named from another package.

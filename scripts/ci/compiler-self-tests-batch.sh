@@ -400,6 +400,13 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh dotnet jvm
   ran="$ran value-generic-record-e2e"
 fi
+# #9131, D613: a generic of one package that renders its type argument prints the same text for a Char and an Int on every target.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/generic-char-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/generic-char-e2e.sh dotnet jvm
+  ran="$ran generic-char-e2e"
+fi
 # #8179: a sibling package's or a dependency's `inout` receivers, both
 # targets (Java 21, as above).
 idx=$((idx + 1))

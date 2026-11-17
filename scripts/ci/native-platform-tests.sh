@@ -190,6 +190,7 @@ run_suite "fixed-array-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-arr
 # #8031, D169, D173, #8179, #8279: refinement, value generics and inout across packages.
 run_suite "range-refinement-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
 run_suite "value-generic-record-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+run_suite "generic-char-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/generic-char-e2e.sh native
 run_suite "inout-receiver-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 run_suite "hoisted-callee-cross-package-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
 # #6815 item 3(b): `lyric test --manifest --target native`.

@@ -1,0 +1,17 @@
+# examples/char-generics/lyric.toml - a generic of one package rendering a type
+# argument, called from another package with a Char and with an Int (#9131).
+# scripts/ci/generic-char-e2e.sh builds it for dotnet, the JVM and native and
+# compares the output.
+
+[package]
+name    = "CharGenerics"
+version = "0.1.0"
+
+[project]
+name            = "CharGenerics"
+output          = "single"
+output_assembly = "CharGenerics.dll"
+
+[project.packages]
+"CharGenLib" = "src/lib.l"
+"CharGenApp" = "src/app.l"
