@@ -638,4 +638,30 @@ else
   (cd "$WORK" && java -jar jvm_host_chain.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_chain): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_chain"; fi
 fi
+# A host array result (`readAllBytes()`) is the checker's slice, not a plain host class, so a chain on a
+# host value does not type it as the host array (D444): the verifier must report nothing.
+cat > "$WORK/jvm_host_array_result.l" <<'LYRIC'
+package JvmHostArrayResult
+extern type JFIS = "java.io.FileInputStream"
+
+func readAll(path: in String): slice[Byte] {
+  val fis = JFIS.new(path)
+  try {
+    val all = fis.readAllBytes()
+    fis.close()
+    all
+  } catch Bug as b {
+    fis.close()
+    panic(b.message)
+  }
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_array_result.l" -o "$WORK/jvm_host_array_result.jar" >"$WORK/jvm_host_array_result.log" 2>&1)
+if ! grep -q "^I0003 census \[.*jvm_host_array_result.l\]: 0 diagnostic" "$WORK/jvm_host_array_result.log"; then
+  echo "FAIL (jvm_host_array_result): the verifier rejected a built body"; grep "I0003" "$WORK/jvm_host_array_result.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_array_result"
+fi
 exit $fail

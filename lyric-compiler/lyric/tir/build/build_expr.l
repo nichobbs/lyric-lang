@@ -655,6 +655,13 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
   }
 }
 
+/// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
+func isPlainHostResult(name: in String): Bool {
+  not isHostObject(name) and not isHostValueClass(name) and name != hostArrayName() and
+    not Str.startsWith(name, "System.Threading.Tasks.") and
+    not Str.startsWith(name, "java.util.concurrent.")
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv, host: in HostTypeRef, name: in String, argc: in Int, isProperty: in Bool
@@ -671,9 +678,16 @@ func hostChainResult(
     val t = match c.ret {
       case EMTVoid -> return None
       case EMTType(el) -> match el {
-        case EIEHost(_, _) -> match hostElemTy(el, host.args, TirT.TNever) {
-          case Some(x) -> x
-          case None -> return None
+        case EIEHost(rname, _) -> {
+          // A result the checker types as a Lyric type (an array as a slice, a string, a boxed number, a
+          // task, the root object) is not a plain host class: the checker's own type applies there.
+          if not isPlainHostResult(rname) {
+            return None
+          }
+          match hostElemTy(el, host.args, TirT.TNever) {
+            case Some(x) -> x
+            case None -> return None
+          }
         }
         case _ -> return None
       }
