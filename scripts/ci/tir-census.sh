@@ -84,10 +84,13 @@ FILES=("${filtered[@]}")
 # checker reports the same census.  The two tests of the native-only bounded Std.TcpHost
 # operations (D605) are built with --target native: the checker prints its census before
 # code generation, so the build is judged whether or not the link step has a toolchain.
+# The two JVM-bridge tests that drive `Jvm.Bridge` in process are .NET programs that import
+# compiler packages (CI runs them without --target), so they are built for dotnet.
 # Everything else is built for dotnet.
 target_of() {
   case "$1" in
     lyric-stdlib/tests/http_timeout_native_tests.l|lyric-stdlib/tests/tcp_host_bounded_native_tests.l) echo native ;;
+    lyric-compiler/jvm/cross_package_generics_jvm_self_test.l|lyric-compiler/lyric/field_access_list_of_slice_add_jvm_self_test.l) echo dotnet ;;
     lyric-compiler/jvm/*|*_jvm_self_test*.l|*_jvm_tests.l|*jvm_self_test*.l) echo jvm ;;
     *) echo dotnet ;;
   esac

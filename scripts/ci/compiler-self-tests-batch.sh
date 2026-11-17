@@ -126,6 +126,7 @@ for t in \
   lyric-compiler/lyric/extern_upcast_self_test.l \
   lyric-compiler/lyric/enum_msil_self_test.l \
   lyric-compiler/lyric/contract_meta_self_test.l \
+  lyric-compiler/lyric/contract_meta_emit_self_test.l \
   lyric-compiler/lyric/annotation_meta_emit_self_test.l \
   lyric-compiler/lyric/restored_packages_self_test.l \
   lyric-compiler/lyric/restored_stdlib_async_self_test.l \

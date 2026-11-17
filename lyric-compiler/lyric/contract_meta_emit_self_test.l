@@ -4,9 +4,8 @@
 //! Lyric.ContractMetaEmit package's ability to emit contract metadata v3
 //! with SHA-256 integrity hashing.
 //!
-//! **Not currently wired into CI** — awaiting issue #2580 (in-process MSIL
-//! bridge support for self-hosted compiler packages). The test suite can be
-//! run manually once the infrastructure is ready.
+//! Runs through `lyric test`, which links the staged compiler bundle
+//! (`Lyric.ContractMetaEmit` is named in `scripts/stage-selfhosted-compiler.sh`).
 @test_module
 package Lyric.ContractMetaEmit.Tests
 
@@ -15,7 +14,7 @@ import Std.Testing
 import Lyric.ContractMeta as Meta
 import Lyric.ContractMetaEmit as Emit
 
-func testEmitSimpleContract(): Unit {
+test "an emitted contract carries its package name, hash and format version" {
   // Create a minimal contract for testing
   val decl = Meta.ContractDecl(
     kind = "func",
@@ -41,6 +40,8 @@ func testEmitSimpleContract(): Unit {
     dependencies = [],
     imports = [],
     wholeImports = [],
+    // Passed because a cross-package default of newList() builds a List[Object] (#9204).
+    reexports = [],
     selectedImports = [],
     contractHash = ""
   )
@@ -57,7 +58,7 @@ func testEmitSimpleContract(): Unit {
   assertTrue(json.contains("\"formatVersion\":3"), "JSON contains formatVersion 3")
 }
 
-func testHashConsistency(): Unit {
+test "identical contracts emit identical JSON" {
   // Create two identical contracts and verify they produce the same hash
   val decl = Meta.ContractDecl(
     kind = "func",
@@ -83,6 +84,8 @@ func testHashConsistency(): Unit {
     dependencies = [],
     imports = [],
     wholeImports = [],
+    // Passed because a cross-package default of newList() builds a List[Object] (#9204).
+    reexports = [],
     selectedImports = [],
     contractHash = ""
   )
@@ -97,6 +100,8 @@ func testHashConsistency(): Unit {
     dependencies = [],
     imports = [],
     wholeImports = [],
+    // Passed because a cross-package default of newList() builds a List[Object] (#9204).
+    reexports = [],
     selectedImports = [],
     contractHash = ""
   )

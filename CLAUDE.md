@@ -845,9 +845,10 @@ need direction and have nothing else productive to do**.  Specifically:
     hash embedded.  Public entry point: `emitContractMetadata(contract): String`.
   - `contract_meta_emit_self_test.l` — `@test_module` covering the two-pass
     hashing protocol and JSON structure consistency (`testEmitSimpleContract`,
-    `testHashConsistency`).  **Currently not wired into CI** — requires the
-    in-process MSIL bridge to load `Lyric.ContractMeta` (a compiler package)
-    when running via `lyric test`.  Tracked in issue #2580.
+    `testHashConsistency`).  Runs in CI through
+    `scripts/ci/compiler-self-tests-batch.sh` (`lyric test`, with
+    `Lyric.ContractMetaEmit` named in the staged compiler bundle's driver,
+    D450).
   - `restored_packages.l` — `Lyric.RestoredPackages` package
     (#1229 Phase A.3.2, D-progress-303).  Composes the contract-meta
     in-process readers into a single
