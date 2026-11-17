@@ -15,10 +15,8 @@
 //! declares its *Lyric* return type as the shared `DbConn` (bound to
 //! `System.Data.Common.DbConnection`), which is CLR-assignment-compatible
 //! with both concrete connection classes (both extend `DbConnection`) — the
-//! same narrower-ctor/wider-declared-type pattern already used by
-//! `Session.Kernel.Net.connect` (`ConnectionMultiplexer.Connect` returns the
-//! concrete class; the Lyric wrapper declares the `IConnectionMultiplexer`
-//! interface as its return type).
+//! same narrower-ctor/wider-declared-type pattern as any wrapper whose ctor
+//! returns a concrete class while the Lyric declaration names the interface.
 //!
 //! Handles are real object references (`DbConn` / `DbTransaction`), not
 //! integer registry handles — the previous design's `Int` handle table and

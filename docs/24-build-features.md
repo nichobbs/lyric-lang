@@ -140,7 +140,7 @@ and the single-file path — all through one `resolveManifestFeatures`):
    and — only when such a mismatched platform default was removed — the
    active target's own *declared* feature is swapped in. The swap never
    invents a target feature for a manifest that activates none: a package
-   with a deliberately empty default set (e.g. lyric-session, whose platform
+   with a deliberately empty default set (a package whose platform
    kernels carry mandatory NuGet/Maven deps) keeps its opt-out on every
    target. An explicitly passed feature is never removed.
 

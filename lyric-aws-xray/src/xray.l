@@ -260,8 +260,8 @@ func kernel_currentSubsegment(): SubsegmentHandle {
 // backend to resolve interfaces at all and emit `invokeinterface` instead of
 // the class-only `invokevirtual` — landed in `lyric-compiler/jvm/
 // class_reader.l` / `lyric-compiler/jvm/codegen/04_calls.l` /
-// `lyric-compiler/jvm/auto_ffi.l` as part of `lyric-session`'s Lettuce
-// Redis kernel work (D-progress-631), which needed the same fix plus a
+// `lyric-compiler/jvm/auto_ffi.l` as part of the Lettuce Redis kernel work
+// (D-progress-631; that kernel has since been removed, D614), which needed the same fix plus a
 // recursive superinterface walk.
 @cfg(feature = "jvm")
 @axiom("com.amazonaws:aws-xray-recorder-sdk-core 2.15.3 — AWSXRay.getGlobalRecorder / AWSXRayRecorder")

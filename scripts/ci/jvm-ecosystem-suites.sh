@@ -45,7 +45,7 @@
 #   jobs        InProcessJobScheduler (a `List[JobSpec]` queue field read back
 #               through the erased ArrayList) and the Retryable aspect
 #   session     InProcessSessionStore (`Map[String, Record]` values) and the
-#               Lettuce-backed kernel; Lettuce is Maven-restored first
+#               threaded concurrency suite
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
 #               (`__LyricBModeCallContext` on the JVM, #4600)
 #   aws-xray    the `AwsXRay.Tracing` B'-mode aspect over the X-Ray recorder
@@ -97,14 +97,14 @@ trap 'rm -rf "$log_dir"' EXIT
 run_suite() {
   local lib="$1"
   # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
-  # `session` (Lettuce), `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
+  # `aws-xray` (X-Ray recorder), `ws` (Undertow) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|session|aws-xray|ws|db)
+    web|mail|grpc|aws-xray|ws|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac

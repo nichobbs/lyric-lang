@@ -53,7 +53,7 @@ CORE_INFRA_PATTERN='lyric-compiler/|lyric-stdlib/|bootstrap/|lyric-rt/|resolver/
 # always triggers every entry.
 declare -A ECO_DEPS=(
   [auth]=""
-  [session]="cache"
+  [session]=""
   [health]=""
   [cache]=""
   [docker]=""

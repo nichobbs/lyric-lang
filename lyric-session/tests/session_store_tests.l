@@ -300,7 +300,7 @@ test "isValidSessionId accepts create()'s ids and rejects malformed ones" {
     case Err(e) -> assertTrue(false, "create failed: " + e.message)
   }
   assertFalse(Session.isValidSessionId(""), "empty (a bare `LYRIC_SESSION=` cookie)")
-  assertFalse(Session.isValidSessionId("a:b"), "a Redis key separator")
+  assertFalse(Session.isValidSessionId("a:b"), "a storage-key separator")
   assertFalse(Session.isValidSessionId("a b"), "a space")
   var long = ""
   var i = 0

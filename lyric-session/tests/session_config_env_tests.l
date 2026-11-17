@@ -2,7 +2,7 @@
 //! (review finding #4842: the `t > 0` guard — reject zero/negative/non-numeric,
 //! accept positive — had no test coverage). A regression that weakened the
 //! guard (e.g. `t >= 0` or `t != 0`) would silently allow a zero-second TTL,
-//! causing Redis SETEX/EXPIRE to immediately expire every session.
+//! causing a store to immediately expire every session.
 @test_module
 package Session.SessionConfigEnvTests
 
@@ -22,7 +22,7 @@ test "parseSessionTtlSeconds: zero is rejected and falls back to the default" {
   assertEqualInt(
     Session.parseSessionTtlSeconds("0", 1800),
     1800,
-    "TTL of 0 must not pass through — Redis SETEX/EXPIRE require a strictly positive TTL"
+    "TTL of 0 must not pass through — a store's expiry requires a strictly positive TTL"
   )
 }
 
