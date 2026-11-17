@@ -176,6 +176,19 @@ func newTcpListener(addr: in IPAddress, port: in Int): TcpListener = ()
 @externTarget("System.Net.Sockets.TcpClient..ctor")
 func newTcpClientConnected(host: in String, port: in Int): TcpClient = ()
 
+extern type ConnectTask = "System.Threading.Tasks.Task"
+
+@externTarget("System.Net.Sockets.TcpClient..ctor")
+func newTcpClientUnconnected(): TcpClient = ()
+
+@externInstance
+@externTarget("System.Net.Sockets.TcpClient.ConnectAsync")
+func clientConnectAsync(c: in TcpClient, host: in String, port: in Int): ConnectTask = ()
+
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func connectTaskWait(t: in ConnectTask, ms: in Int): Bool = ()
+
 @externInstance
 @externTarget("System.Net.Sockets.TcpListener.Start")
 func listenerStart(l: in TcpListener): Unit = ()
@@ -460,12 +473,37 @@ pub func hostLocalPort(l: in Listener): Int {
 
 /// Dial a plain (non-TLS) TCP connection to `host`:`port`. `host` may be an
 /// IP literal or a DNS name (the client path resolves names, unlike
-/// `hostListen`). A connect failure (refused, unreachable, unresolved) is
-/// `Err(TransportFailed(...))`.
-@experimental
-pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
+/// `hostListen`). `connectTimeoutMs` bounds the connect, name resolution
+/// included (`0` = the operating system's own limit). A connect failure
+/// (refused, unreachable, unresolved, timed out) is `Err(TransportFailed(...))`.
+// Dials on the Task `ConnectAsync` returns and waits for it for at most
+// `timeoutMs`; a connect that is still pending then is abandoned by
+// disposing the client, which aborts it.
+func connectWithin(host: in String, port: in Int, timeoutMs: in Int): TcpClient {
+  val client = newTcpClientUnconnected()
   try {
-    val client = newTcpClientConnected(host, port)
+    val pending = clientConnectAsync(client, host, port)
+    if not connectTaskWait(pending, timeoutMs) {
+      clientClose(client)
+      panic("connect timed out after " + timeoutMs.toString() + " ms")
+    }
+    client
+  } catch Bug as b {
+    clientClose(client)
+    panic(b.message)
+  }
+}
+
+@experimental
+pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): Result[Conn, TcpError]
+  requires: connectTimeoutMs >= 0
+{
+  try {
+    val client = if connectTimeoutMs == 0 {
+      newTcpClientConnected(host, port)
+    } else {
+      connectWithin(host, port, connectTimeoutMs)
+    }
     // `clientStream` (`GetStream()`) is wrapped in its own try so a failure
     // here — after the client is already connected — closes the socket
     // before returning the error instead of leaking it (#6057).

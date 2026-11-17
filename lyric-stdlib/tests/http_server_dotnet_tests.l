@@ -353,7 +353,7 @@ func readInto(conn: in Conn, acc: in List[String], marker: in String): Bool {
 }
 
 func dial(host: in String, port: in Int): Conn {
-  val r = hostConnect(host, port)
+  val r = hostConnect(host, port, 0)
   match r {
     case Ok(c) -> c
     case Err(e) -> panic("connect failed: " + TcpError.message(e))

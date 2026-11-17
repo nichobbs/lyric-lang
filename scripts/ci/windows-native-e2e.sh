@@ -522,7 +522,7 @@ func plainRoundTrip(): Int {
     case Err(_) -> return 1
   }
   val port = hostLocalPort(listener)
-  val client = match hostConnect("localhost", port) {
+  val client = match hostConnect("localhost", port, 0) {
     case Ok(c) -> c
     case Err(_) -> return 2
   }

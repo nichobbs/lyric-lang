@@ -378,6 +378,27 @@ func settle[T](t: in Task[T]): Task[BclTask] {
 @externTarget("System.Threading.Tasks.Task`1.get_Result")
 func taskResultOf[T](t: in Task[T]): T = ()
 
+// The text every kernel reports for a send that ended because its deadline
+// passed; `Std.Http` turns exactly this into `HttpError.Timeout`.
+val timedOutText: String = "request timed out"
+
+pub func hostTimeoutMessage(): String {
+  timedOutText
+}
+
+// A send that fails while its token is cancelled was ended by the
+// cancellation (a `TaskCanceledException` from the pipeline, or an I/O error
+// the cancelled connection raised), so it is reported as the timeout it is.
+// The BCL does not say whether a token was cancelled by its timer
+// (`makeCancelSourceTimeout`) or by `cancelSource`, so both read as a timeout
+// on this target (#9067); a failure on a live token keeps its own text.
+func cancelOutcome[T](r: in Result[T, String], token: in CancellationToken): Result[T, String] {
+  match r {
+    case Ok(_) -> r
+    case Err(_) -> if isCancelled(token) { Err(error = timedOutText) } else { r }
+  }
+}
+
 func taskOutcome[T](t: in Task[T]): Result[T, String] {
   return try {
     Ok(value = taskResultOf(t))
@@ -1221,7 +1242,7 @@ pub async func hostSendWithCancelSafe(
 ): Result[HttpResponseMessage, String] {
   val pending = clientSendTaskCancel(client, request, token)
   val settled = await settle(pending)
-  return taskOutcome(pending)
+  return cancelOutcome(taskOutcome(pending), token)
 }
 
 pub async func hostGetWithCancelSafe(
@@ -1229,7 +1250,7 @@ pub async func hostGetWithCancelSafe(
 ): Result[HttpResponseMessage, String] {
   val pending = clientGetTaskCancel(client, url, token)
   val settled = await settle(pending)
-  return taskOutcome(pending)
+  return cancelOutcome(taskOutcome(pending), token)
 }
 
 pub async func hostPostStringWithCancelSafe(
@@ -1241,7 +1262,7 @@ pub async func hostPostStringWithCancelSafe(
 ): Result[HttpResponseMessage, String] {
   val pending = clientPostTaskCancel(client, url, newStringContent(body, utf8(), contentType), token)
   val settled = await settle(pending)
-  return taskOutcome(pending)
+  return cancelOutcome(taskOutcome(pending), token)
 }
 
 pub async func hostReadBodyTextWithCancelSafe(
@@ -1249,5 +1270,5 @@ pub async func hostReadBodyTextWithCancelSafe(
 ): Result[String, String] {
   val pending = contentTextTaskCancel(responseContent(response), token)
   val settled = await settle(pending)
-  return taskOutcome(pending)
+  return cancelOutcome(taskOutcome(pending), token)
 }

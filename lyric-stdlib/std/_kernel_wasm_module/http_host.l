@@ -161,6 +161,13 @@ func clientHandle(followRedirects: in Bool, maxRedirects: in Int, unsupported: i
   HttpClientHandle(followRedirects = followRedirects, maxRedirects = maxRedirects, unsupported = unsupported)
 }
 
+/// The text every kernel reports for a send that ended because its deadline
+/// passed (`Std.Http` turns it into `HttpError.Timeout`). This kernel never
+/// reports it: the token is not consulted (module header item 5).
+pub func hostTimeoutMessage(): String {
+  "request timed out"
+}
+
 pub func hostDefaultClient(): HttpClientHandle {
   clientHandle(true, 20, "")
 }

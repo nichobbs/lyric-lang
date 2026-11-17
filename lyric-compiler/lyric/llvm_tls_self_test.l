@@ -432,7 +432,7 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
     "    case Err(_) -> return 1\n" +
     "  }\n" +
     "  val port = hostLocalPort(listener)\n" +
-    "  val clientConn = match hostConnect(\"127.0.0.1\", port) {\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", port, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 2\n" +
     "  }\n" +

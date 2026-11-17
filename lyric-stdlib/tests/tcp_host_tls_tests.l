@@ -3,10 +3,10 @@
 //! (docs/61-https-tls-http-versions.md §6.1/§6.3, phase 3.1 of epic #5874,
 //! issue #5882).
 //!
-//! dotnet-only: `Std.TcpHost` is the `--target dotnet` transport kernel
-//! (`System.Net.Sockets.TcpListener` + `System.Net.Security.SslStream`). The
-//! JVM/native transports are separate later issues, so this suite runs only
-//! on `--target dotnet`.
+//! Runs on `--target dotnet` and `--target jvm`: `Std.TcpHost` is
+//! `System.Net.Sockets` + `SslStream` on dotnet and `java.net.Socket` +
+//! `SSLSocket` on the JVM (`_kernel_jvm/tcp_host.l`, #9042). Native has its own
+//! twin and test (`tcp_host_bounded_native_tests.l`).
 //!
 //! Coverage: `TcpError.message`, a `hostListen` bind-failure, a plain
 //! loopback echo round trip (accept/connect/read/write/close + `hostAlpn ==
@@ -18,19 +18,16 @@
 //! handshake). The transport advertises `h2` + `http/1.1` (phase 4.4), but
 //! `serveOneTls` is a raw HTTP/1.1 echo server, so the round-trip tests pin the
 //! client to HTTP/1.1 (`withHttpVersion(Http11)`) — a .NET HttpClient pinned to
-//! 1.1 sends no ALPN, so the server reports `hostAlpn == ""`; the h2 ALPN
-//! end-to-end path is covered by `http_server_dotnet_tests.l`. The server echoes
+//! 1.1 sends no ALPN, so the server reports `hostAlpn == ""` (the JDK client
+//! offers `http/1.1`, which the JVM server reports); the h2 ALPN end-to-end path is
+//! covered by `http_server_dotnet_tests.l`. The server echoes
 //! its own `hostAlpn` in the response body, so
 //! a main-thread assertion confirms the negotiated protocol end to end.
 //!
 //! Concurrency: an in-process loopback needs the server accept loop and the
-//! client to run on separate OS threads (Lyric `spawn` is degenerate-
-//! synchronous on `--target dotnet`, D119/D120), so the server side runs on a
-//! `System.Threading.Tasks.Task`. Declaring those `extern`s in a test file
-//! mirrors `tls_server_jvm_tests.l`, which reaches the handshake layer through
-//! the same `extern` surface the kernel itself uses — a documented
-//! test-only exception to the `_kernel/`-only extern rule for driving the
-//! opposite side of a real protocol.
+//! client to run on separate threads (Lyric `spawn` is degenerate-synchronous on
+//! `--target dotnet`, D119/D120), so the server side runs under
+//! `Std.Task.scopeSpawn`, a pool task on dotnet and a virtual thread on the JVM.
 //!
 //! Fixtures: a self-signed CA, a server leaf with `SAN=DNS:localhost,IP:
 //! 127.0.0.1` signed by it (so the .NET client's hostname check passes when
@@ -49,6 +46,8 @@ import Std.Http
 import Std.Testing
 import Std.Collections
 import Std.Errors
+import Std.Task as Task
+import Std.Time as Time
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -176,23 +175,11 @@ BYr/w9ucuC11rYllBCEkxQ==
 -----END PRIVATE KEY-----
 """
 
-extern type Task = "System.Threading.Tasks.Task"
-
-// `Task.Run(Action)` on a background thread gives the in-process loopback the
-// real concurrency `spawn` cannot on this target (module header). The Lyric
-// `() -> Unit` closure binds to `System.Action` through the D122 delegate
-// bridge, exactly as the client kernel's validation-callback lambda does.
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@externInstance
-@externTarget("System.Threading.Tasks.Task.Wait")
-func taskWait(t: in Task): Unit = ()
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
+func taskRun(work: in () -> Unit): Task.Scope {
+  val sc = Task.makeScope()
+  Task.scopeSpawn(sc, work)
+  sc
+}
 
 func serverIdentity(): Identity {
   match Identity.fromPem(serverCertPem, serverKeyPem) {
@@ -225,7 +212,7 @@ func httpOkResponse(body: in String): slice[Byte] {
 
 // Bounded wait for the server task to signal it has started (`ready` is
 // non-empty) before the client connects — replaces a fixed-duration
-// `threadSleep`, which is a latent CI flake under slow scheduling (#6032).
+// `Time.sleepMillis`, which is a latent CI flake under slow scheduling (#6032).
 // Correctness does not actually depend on this timing: the listener is bound
 // (`hostListen` returns) BEFORE the server task is spawned, so a client
 // connection always lands in the accept backlog and the TLS handshake / read
@@ -236,14 +223,14 @@ func httpOkResponse(body: in String): slice[Byte] {
 func waitReady(ready: in List[String], maxTries: in Int): Unit {
   var i = 0
   while i < maxTries and ready.count == 0 {
-    threadSleep(50)
+    Time.sleepMillis(50)
     i = i + 1
   }
 }
 
 // Accept one TLS connection, reply with a body echoing the negotiated ALPN,
 // then close. Signals `ready` before blocking on accept. The handshake outcome
-// is appended to `outcome` (read on the main thread after `taskWait`, which is
+// is appended to `outcome` (read on the main thread after the scope is awaited, which is
 // a memory barrier).
 func serveOneTls(listener: in Listener, cfg: in TlsServerConfig, ready: in List[String], outcome: in List[String]): Unit {
   ready.add("go")
@@ -306,7 +293,7 @@ test "plain loopback echo round trip" {
   val ready: List[String] = newList()
   val server = taskRun({ -> plainEchoServer(listener, ready) })
   waitReady(ready, 100)
-  val conn = match hostConnect("127.0.0.1", 18921) {
+  val conn = match hostConnect("127.0.0.1", 18921, 0) {
     case Ok(c) -> c
     case Err(e) -> panic("connect failed: " + TcpError.message(e))
   }
@@ -317,7 +304,7 @@ test "plain loopback echo round trip" {
     case Err(e) -> panic("read failed: " + TcpError.message(e))
   }
   hostClose(conn)
-  taskWait(server)
+  val _ = await Task.awaitAll(server)
   hostStopListener(listener)
   match tryDecodeUtf8(echoed) {
     case Some(s) -> assertEqual(s, "ping", "echo round trip returns the sent bytes")
@@ -353,8 +340,8 @@ test "server TLS terminates and round-trips bytes with an http/1.1 client" {
     case Ok(r) -> r
     case Err(e) -> panic("client GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
-  taskWait(server)
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val _ = await Task.awaitAll(server)
   hostStopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "TLS-terminated response carries the 200 status")
   assertTrue(body.startsWith("alpn="), "server echoed its ALPN report over the TLS byte round trip: " + body)
@@ -390,7 +377,7 @@ test "mTLS accepts a client whose certificate chains to clientCa" {
     )
   )
   val result = await client.get("https://localhost:18923/")
-  taskWait(server)
+  val _ = await Task.awaitAll(server)
   hostStopListener(listener)
   match result {
     case Ok(r) -> assertEqualInt(r.statusCode(), 200, "mTLS client accepted; 200 returned")
@@ -419,9 +406,9 @@ test "mTLS rejects a client presenting no certificate when requireClientCert is 
     HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
   )
   val result = await client.get("https://localhost:18924/")
-  taskWait(server)
+  val _ = await Task.awaitAll(server)
   hostStopListener(listener)
-  assertTrue(startsWith(outcome[0], "ERR"), "server rejected the certless client at the handshake: " + outcome[0])
+  assertTrue(outcome[0].startsWith("ERR"), "server rejected the certless client at the handshake: " + outcome[0])
   match result {
     case Ok(_) -> panic("expected the client GET to fail against a rejecting mTLS server")
     case Err(_) -> assertTrue(true, "client GET failed as expected")
@@ -476,8 +463,8 @@ test "TLS 1.3 minVersion still completes the handshake and round trip" {
     case Ok(r) -> r
     case Err(e) -> panic("client GET failed under Tls13: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
-  taskWait(server)
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val _ = await Task.awaitAll(server)
   hostStopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "Tls13 server completes the round trip with 200")
   assertTrue(body.startsWith("alpn="), "Tls13 server echoed its ALPN report over the round trip: " + body)

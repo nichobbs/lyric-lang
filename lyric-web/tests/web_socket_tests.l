@@ -111,7 +111,7 @@ val clientKey: String = "dGhlIHNhbXBsZSBub25jZQ=="
 func dial(port: in Int): Conn {
   var attempt = 0
   while attempt < 40 {
-    match hostConnect("127.0.0.1", port) {
+    match hostConnect("127.0.0.1", port, 0) {
       case Ok(c) -> return c
       case Err(_) -> {
         threadSleep(50)

@@ -1104,6 +1104,7 @@ recorded in the §19 baseline.
 | `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
+| `Std.TcpHost`            | `tcp_host.l`                 | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
@@ -1115,7 +1116,7 @@ recorded in the §19 baseline.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
-| **Total**                |                              | **31** | **0**       |
+| **Total**                |                              | **32** | **0**       |
 
 ### Combined total
 
@@ -1249,6 +1250,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.StringHost` | `string_host.l` | java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts |
 | `jvm` | `Std.Task` | `task.l` | java.util.concurrent.atomic.AtomicBoolean is safe to use from several threads at once, as its JDK documentation states |
+| `jvm` | `Std.TcpHost` | `tcp_host.l` | java.net.Socket, ServerSocket and javax.net.ssl.SSLSocket operations conform to their documented JVM contracts |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
 | `jvm` | `Std.TlsHost` | `tls_host.l` | java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |

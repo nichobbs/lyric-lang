@@ -103,10 +103,8 @@
 //!        not an idle timeout per read: a peer that keeps sending a byte now
 //!        and then does not extend it. There is no separate connect timeout.
 //!      - **A deadline that passes** ends the send with the cause
-//!        `"request timed out"`, which `Std.Http` reports as
-//!        `ConnectionFailed(url, "request timed out")` — the JVM kernel's
-//!        wording, so a caller's test is the same there (#9067: `Std.Http`
-//!        has no `HttpError.Timeout` producer on any target yet). It is never
+//!        `"request timed out"` (`hostTimeoutMessage`), which `Std.Http`
+//!        reports as `HttpError.Timeout` on every target (#9067). It is never
 //!        reported early: the monotonic clock has reached the deadline, so
 //!        `isCancelled(token)` is already true when the send returns.
 //!      - **`cancelSource` (or `cancelScope`) from another thread** ends the
@@ -577,6 +575,10 @@ extern func rtCancelWakeUnregister(source: CancellationTokenSource, writeFd: Int
 /// kernel's wording for the same event, so a caller's test for it is the
 /// same on both.
 val timedOutMessage: String = "request timed out"
+
+pub func hostTimeoutMessage(): String {
+  timedOutMessage
+}
 
 /// The cause a send reports when its token was cancelled explicitly.
 val cancelledMessage: String = "request cancelled: cancellation was requested"

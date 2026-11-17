@@ -43,6 +43,11 @@ by design (Unix-socket clients and `https://` listener prefixes, which
 the JDK's client/server APIs cannot express here — see the file
 headers).
 
+`tcp_host.l` (`Std.TcpHost`, #9042) is the JVM twin of `_kernel/tcp_host.l`
+over `java.net.Socket`, `ServerSocket` and `SSLSocket`, with the same `host*`
+surface; its server `SSLContext` comes from `http_server.l`'s
+`serverSslContextFromConfig[Mtls]`.
+
 ## What does NOT live here
 
 Native Lyric code.  Pure-Lyric algorithms belong in the parent

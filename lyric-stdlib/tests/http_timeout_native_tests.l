@@ -5,7 +5,7 @@
 //! finishes the TLS exchange, or refuses the connection.
 //!
 //! What is asserted is the contract the HTTP backends rely on: a deadline
-//! that passes ends the send with `ConnectionFailed(_, "request timed out")`
+//! that passes ends the send with `HttpError.Timeout` (#9067)
 //! and a token that reads as cancelled; `cancelSource` ends it at once with a
 //! cause naming the cancellation; a refused connection is neither.
 //!
@@ -108,12 +108,31 @@ func causeOf(o: in Outcome): String {
     case Ok(resp) -> "a response with status " + HttpResponse.statusCode(resp).toString()
     case Err(e) -> match e {
       case ConnectionFailed(_, cause) -> cause
+      case Timeout(_, _) -> timedOutCause
       case _ -> "another error: " + HttpError.message(e)
     }
   }
 }
 
+func isTimeoutError(r: in Result[HttpResponse, HttpError]): Bool {
+  match r {
+    case Err(e) -> match e { case Timeout(_, _) -> true; case _ -> false }
+    case Ok(_) -> false
+  }
+}
+
+func assertTimeoutError(e: in HttpError, url: in String, what: in String): Unit {
+  match e {
+    case Timeout(u, ms) -> {
+      assertEqual(u, url, what + ": the url")
+      assertTrue(ms >= 250i64 and ms < 3300i64, what + ": the send ran for its timeout (" + ms.toString() + " ms)")
+    }
+    case _ -> assertTrue(false, what + ": expected HttpError.Timeout, got " + HttpError.message(e))
+  }
+}
+
 func assertTimedOut(o: in Outcome, timeoutMs: in Int, what: in String): Unit {
+  assertTrue(isTimeoutError(o.sent), what + ": the error is HttpError.Timeout")
   assertEqual(causeOf(o), timedOutCause, what + ": cause")
   assertTrue(o.tokenCancelled, what + ": the token reads as cancelled once the send reports the timeout")
   assertTrue(
@@ -343,7 +362,7 @@ test "a token whose deadline has already passed: the send reports the timeout" {
   val src = Task.makeCancelSourceTimeout(1)
   Time.sleepMillis(20)
   val o = sendUnder(plainClient(), urlOf("http", l, "/never-sent"), src)
-  assertEqual(causeOf(o), timedOutCause, "cause")
+  assertTrue(isTimeoutError(o.sent), "the error is HttpError.Timeout")
   assertTrue(o.tokenCancelled, "the token is cancelled")
   closeListener(l)
 }
@@ -408,29 +427,17 @@ test "the free functions honour the token: getWithCancelAsync, postWithCancelAsy
   val raw = "http://127.0.0.1:" + Tcp.hostLocalPort(l).toString() + "/silent"
   val getSrc = Task.makeCancelSourceTimeout(300)
   match await getWithCancelAsync(raw, Task.sourceToken(getSrc)) {
-    case Err(e) -> assertEqual(
-      HttpError.message(e),
-      "connection failed to " + raw + ": " + timedOutCause,
-      "getWithCancelAsync"
-    )
+    case Err(e) -> assertTimeoutError(e, raw, "getWithCancelAsync")
     case Ok(_) -> assertTrue(false, "getWithCancelAsync: a response from a server that never answers")
   }
   val postSrc = Task.makeCancelSourceTimeout(300)
   match await postWithCancelAsync(raw, "body", Task.sourceToken(postSrc)) {
-    case Err(e) -> assertEqual(
-      HttpError.message(e),
-      "connection failed to " + raw + ": " + timedOutCause,
-      "postWithCancelAsync"
-    )
+    case Err(e) -> assertTimeoutError(e, raw, "postWithCancelAsync")
     case Ok(_) -> assertTrue(false, "postWithCancelAsync: a response from a server that never answers")
   }
   val started = Time.monotonicNanos()
   match await getWithTimeoutAsync(raw, 300) {
-    case Err(e) -> assertEqual(
-      HttpError.message(e),
-      "connection failed to " + raw + ": " + timedOutCause,
-      "getWithTimeoutAsync"
-    )
+    case Err(e) -> assertTimeoutError(e, raw, "getWithTimeoutAsync")
     case Ok(_) -> assertTrue(false, "getWithTimeoutAsync: a response from a server that never answers")
   }
   val elapsedMs = (Time.monotonicNanos() - started) / 1000000i64
@@ -439,19 +446,11 @@ test "the free functions honour the token: getWithCancelAsync, postWithCancelAsy
     "getWithTimeoutAsync waits its timeout (" + elapsedMs.toString() + " ms)"
   )
   match await postWithTimeoutAsync(raw, "body", 300) {
-    case Err(e) -> assertEqual(
-      HttpError.message(e),
-      "connection failed to " + raw + ": " + timedOutCause,
-      "postWithTimeoutAsync"
-    )
+    case Err(e) -> assertTimeoutError(e, raw, "postWithTimeoutAsync")
     case Ok(_) -> assertTrue(false, "postWithTimeoutAsync: a response from a server that never answers")
   }
   match await sendWithTimeoutAsync(request(GET, urlOf("http", l, "/silent")), 300) {
-    case Err(e) -> assertEqual(
-      HttpError.message(e),
-      "connection failed to " + raw + ": " + timedOutCause,
-      "sendWithTimeoutAsync"
-    )
+    case Err(e) -> assertTimeoutError(e, raw, "sendWithTimeoutAsync")
     case Ok(_) -> assertTrue(false, "sendWithTimeoutAsync: a response from a server that never answers")
   }
   closeListener(l)

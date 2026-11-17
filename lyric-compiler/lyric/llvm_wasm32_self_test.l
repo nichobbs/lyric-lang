@@ -265,7 +265,7 @@ test "wasm32: the TCP and TLS client kernels link and report a typed Err" {
       "    case Err(_) -> {\n" +
       "    }\n" +
       "  }\n" +
-      "  match hostConnect(\"127.0.0.1\", 1) {\n" +
+      "  match hostConnect(\"127.0.0.1\", 1, 0) {\n" +
       "    case Ok(_) -> {\n" +
       "      return 2\n" +
       "    }\n" +

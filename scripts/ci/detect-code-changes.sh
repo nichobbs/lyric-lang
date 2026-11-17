@@ -200,8 +200,8 @@ fi
 #            `_kernel_native/` overrides by BASENAME, falling back to
 #            `_kernel/<basename>.l` whenever no target-specific override
 #            exists with that basename -- e.g. `_kernel/verifier_env_host.l`
-#            and `_kernel/tcp_host.l` have no `_kernel_jvm/` counterpart and
-#            compile into the JVM build via fallback; ~13 more basenames
+#            has no `_kernel_jvm/` counterpart and compiles into the JVM
+#            build via fallback; ~13 more basenames
 #            (`collections_host.l`, `hash_host.l`, `json_host.l`, …) have no
 #            `_kernel_native/` counterpart and feed the native build the
 #            same way. Classifying all of `_kernel/` as MSIL-only would set

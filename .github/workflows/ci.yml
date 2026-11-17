@@ -4759,7 +4759,7 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer request-body test ran: http_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_server_jvm_tests.l"
+        run: "bash scripts/ci/stdlib-net-tests.sh jvm"
 
       # Extra barrier (JVM batch 1a-split-2, #7021): this sub-batch had
       # drifted to 15 concurrent steps (one of #7005/#7021's own fixes
@@ -7281,7 +7281,7 @@ jobs:
       # separate later issues), so there is no JVM twin of this step.
       - name: Std.TcpHost transport-kernel test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/tcp_host_tls_tests.l
+        run: bash scripts/ci/stdlib-net-tests.sh dotnet
 
       # Std.HttpServer dotnet server-assembly test coverage (#5884, docs/61
       # §6.1 item 9 / §6.2 / §6.3 phase 3.3; D-progress-700): the dotnet
