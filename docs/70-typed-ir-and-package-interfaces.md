@@ -907,6 +907,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A closure passed to an `extern func` callback parameter is a `CvCallback` conversion (the declared type adds the userdata slot), and one passed as the userdata pointer a `CvClosureAsPointer` (D494).
   - A list literal the checker typed as a slice, used where `array[N, T]` of the same length is expected, is an array literal with each element converted (D495).
   - An array, slice, string or list index of any integer primitive keeps its own type; a backend range checks and narrows it (D496).
+  - An interface method's parameter defaults are written to the package interface, so a call through a restored interface takes them (D442).
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).

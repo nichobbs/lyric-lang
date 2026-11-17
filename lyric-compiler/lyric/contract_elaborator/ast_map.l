@@ -137,6 +137,7 @@ func mapItem(it: in Item, m: in AstMapper): Item {
       while i < decl.members.count {
         match decl.members[i] {
           case IMFunc(fn) -> members.add(IMFunc(fn = mapFunction(fn, m)))
+          case IMSig(sig) -> members.add(IMSig(sig = sig.copy(params = mapParams(sig.params, m))))
           case other -> members.add(other)
         }
         i = i + 1
