@@ -534,6 +534,42 @@ LYRIC
 
 
 
+# A bare case name two enums share (`On` of `Beam` and `Ray`), read where the expected type decides
+# which enum it is, builds as that enum's case (D446).
+check shared_enum_case 11 <<'LYRIC'
+package Shapes16
+
+enum Beam {
+  case Off
+  case On
+}
+
+enum Ray {
+  case On
+  case Idle
+}
+
+func beamOn(): Beam {
+  On
+}
+
+func rayOn(): Ray {
+  On
+}
+
+func main(): Int {
+  val b = match beamOn() {
+    case Beam.On -> 5
+    case Beam.Off -> 0
+  }
+  val r = match rayOn() {
+    case Ray.On -> 6
+    case Ray.Idle -> 0
+  }
+  b + r
+}
+LYRIC
+
 # A field of a generic record read inside a function generic over the record's parameter keeps its
 # type (`List[D]` for `many: List[D]`), so the read and a loop over it build (D492).
 check rigid_nested_field 9 <<'LYRIC'
