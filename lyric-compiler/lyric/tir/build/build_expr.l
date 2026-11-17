@@ -3780,6 +3780,10 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if isClosureAsPointer(t.ty, ty) {
     return Some(value = convertNode(env, t, ty, CvClosureAsPointer))
   }
+  match retypeListLiteral(env, t, ty) {
+    case Some(c) -> return Some(value = c)
+    case None -> ()
+  }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
@@ -3872,6 +3876,34 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
     i = i + 1
   }
   Some(value = CvCovariant)
+}
+
+/// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
+/// gave it no array context) used where a fixed-length array is wanted: the same elements
+/// as an array literal of that type, each converted to the element type.  None unless the
+/// literal has exactly the array's length (or the array's length is unsized) and its
+/// elements convert.
+func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val elems = match t.kind { case XListLit(es) -> es; case _ -> return None }
+  match t.ty {
+    case TSlice(_) -> ()
+    case _ -> return None
+  }
+  val el = match ty {
+    case TArray(len, element) -> match len {
+      case ALKnown(n) -> if n == elems.count { element } else { return None }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  val converted: List[TExpr] = newList()
+  for x in elems {
+    match convertValue(env, x, el) {
+      case Some(c) -> converted.add(c)
+      case None -> return None
+    }
+  }
+  Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XListLit(elems = converted)))
 }
 
 /// A union-case construction used at the same union with other type arguments (`Some(value = x)`

@@ -2848,4 +2848,11 @@ test "a loop that breaks from inside a let initializer may complete, so the miss
     "package App\nfunc f(n: in Int): Int {\n  loop {\n    val x = if n > 5 {\n      break\n    } else {\n      1\n    }\n  }\n}\n"
   )
   assertTrue(c.built < c.total, "the body stays counted")
+
+test "a list literal typed as a slice and used as a fixed array is an array literal (D495)" {
+  val c = censusOf(
+    "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8], 1)\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
