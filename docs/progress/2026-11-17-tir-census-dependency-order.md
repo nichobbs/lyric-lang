@@ -1,0 +1,3 @@
+# 2026-11-17: the wide census builds path dependencies first
+
+The ecosystem area of `scripts/ci/tir-census.sh` built the library manifests in glob order, so a library whose manifest names a path dependency (`lyric-access` on `lyric-ui/native`, `lyric-ui/native` on `lyric-ui`, `lyric-unicode-dict` on `lyric-unicode`) ran before that dependency's DLL existed and exited with "local dep not built". They were listed as unchecked builds, which part 7 had not investigated. `eco_build` now walks each manifest's `path = "..."` dependencies depth-first, building each once, before the manifest itself. Built in that order, `lyric-unicode-dict`, `lyric-ui`, `lyric-ui/native` and `lyric-access` all build (exit 0) with the census lines intact. The census output is unchanged otherwise.
