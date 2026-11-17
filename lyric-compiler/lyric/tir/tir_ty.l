@@ -219,6 +219,61 @@ func paramTysEq(xs: in List[TParamTy], ys: in List[TParamTy]): Bool {
   ok
 }
 
+/// Whether `t` is the type of a C callback's userdata slot: `NativeUserdata`, or the older
+/// `NativePtr[Byte]` spelling (D189).
+pub func isUserdataSlotTy(t: in Ty): Bool {
+  match t {
+    case TExtern(h) -> h.name == "lyric.native.NativeUserdata" or
+      (
+        h.name.startsWith("lyric.native.NativePtr") and h.args.count == 1 and
+          match h.args[0] { case TPrim(TPByte) -> true; case _ -> false }
+      )
+    case _ -> false
+  }
+}
+
+/// Whether a value of type `closure` is passed as the userdata pointer `ptr`.
+pub func isClosureAsPointer(closure: in Ty, ptr: in Ty): Bool {
+  match closure {
+    case TFunc(_, _, _) -> isUserdataSlotTy(ptr)
+    case _ -> false
+  }
+}
+
+/// Whether `callback` is the C callback type of closure type `closure`: the same result and
+/// the same parameters with one userdata slot added, anywhere in the list (SDL3 puts it first).
+pub func isCallbackOf(closure: in Ty, callback: in Ty): Bool {
+  match closure {
+    case TFunc(cp, cr, ca) -> match callback {
+      case TFunc(kp, kr, ka) -> {
+        if ca != ka or not tyEq(cr, kr) or kp.count != cp.count + 1 {
+          return false
+        }
+        var slot = 0
+        while slot < kp.count {
+          if isUserdataSlotTy(kp[slot].ty) {
+            val rest: List[TParamTy] = newList()
+            var i = 0
+            while i < kp.count {
+              if i != slot {
+                rest.add(kp[i])
+              }
+              i = i + 1
+            }
+            if paramTysEq(rest, cp) {
+              return true
+            }
+          }
+          slot = slot + 1
+        }
+        false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 /// Structural equality.  Nothing is a wildcard: a parameter equals only the
 /// same parameter, and a refinement equals only a refinement with the same
 /// bounds (a conversion between a refined type and its underlying type is an
