@@ -1,0 +1,3 @@
+# 2026-11-17: native TIR lowers the zero value of record-element arrays (D530)
+
+`var a: array[N, Rec]` with no initializer (`XZeroValue`) now lowers from TIR on `--target native` when `Rec` is a by-value record with no field defaults whose fields are all scalar or themselves zero-bits (nested arrays and records included). `TirRecLayout.zeroBits` (set in `llvm_codegen.l` from the record's declared defaults) and `structZeroOk` in `llvm_tir.l` decide it. Records with defaults and arrays held as lists stay on the AST path. Covered by `scripts/ci/native-via-tir/arrays.l` under AddressSanitizer. See D530.
