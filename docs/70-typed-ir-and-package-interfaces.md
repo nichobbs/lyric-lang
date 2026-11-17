@@ -904,6 +904,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A host method called on a `String` value (`a.compareTo(b)`, the JVM kernels' calls on `java.lang.String`) is an extern call with the value as receiver, found through the host metadata (D493).
 - A function ending in a `while true` or `loop` with no `break` out of it, and a generator body ending in `try`, build as branches (D440).
   - A closure passed to an `extern func` callback parameter is a `CvCallback` conversion (the declared type adds the userdata slot), and one passed as the userdata pointer a `CvClosureAsPointer` (D494).
+  - A list literal the checker typed as a slice, used where `array[N, T]` of the same length is expected, is an array literal with each element converted (D495).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
