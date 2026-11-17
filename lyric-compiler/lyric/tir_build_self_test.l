@@ -2890,18 +2890,12 @@ test "an interface method's parameter default is written to the package defaults
   val file = renumberNodeIds(parse("package App\ninterface Shape {\n  func area(self: in Shape, scale: in Int = 2): Int\n}\nrecord Sq { side: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, scale: in Int = 3): Int { self.side * scale }\n}\n").file).file
   val cr = check(file)
   val ds = buildPackageDefaults(newTyConvCtx(cr.symbols), cr.symbols, file)
-  var iface = 0
-  var impls = 0
-  for k in mapKeys(ds) {
-    if Str.contains(k, "Shape") and not Str.contains(k, "impl") {
-      iface = iface + 1
-    }
-    if Str.contains(k, "impl") {
-      impls = impls + 1
-    }
+  assertTrue(ds.containsKey("App::Shape::area(Shape,Int)"), "the interface method carries its default")
+  assertTrue(ds.containsKey("App::Sq::$impl(Shape)::area(Sq,Int)"), "the impl method carries its own")
+  match mapGet(ds, "App::Shape::area(Shape,Int)") {
+    case Some(m) -> assertTrue(m.containsKey("scale"), "keyed by the parameter")
+    case None -> assertTrue(false, "the interface method has defaults")
   }
-  assertEqualInt(iface, 1, "the interface method carries its default")
-  assertEqualInt(impls, 1, "the impl method carries its own")
 }
 
 test "an interface method's default expression is numbered with the file's nodes (D442)" {
