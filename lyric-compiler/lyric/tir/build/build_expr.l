@@ -3559,7 +3559,17 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
       return None
     }
   }
-  val idx = match coerceArg(env, it, keyTy) { case Some(c) -> c; case None -> return None }
+  // An array, slice, string or list index may be any integer type (docs/01 section on arrays: a
+  // non-Int index is range checked as a Long before it is narrowed), so it keeps its own type.
+  val keepsOwnType = match keyTy {
+    case TPrim(TPInt) -> match it.ty { case TPrim(k) -> isIntegerPrim(k); case _ -> false }
+    case _ -> false
+  }
+  val idx = if keepsOwnType {
+    it
+  } else {
+    match coerceArg(env, it, keyTy) { case Some(c) -> c; case None -> return None }
+  }
   Some(value = IndexParts(recv = rt, idx = idx, how = how))
 }
 

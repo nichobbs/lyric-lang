@@ -2854,6 +2854,8 @@ test "a list literal typed as a slice and used as a fixed array is an array lite
   val c = censusOf(
     "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8], 1)\n}\n"
   )
+test "an array indexed by a Long keeps the Long index (D496)" {
+  val c = censusOf("package App\nfunc readLong(a: in array[3, Int], i: in Long): Int {\n  a[i]\n}\n")
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
