@@ -719,10 +719,10 @@ test "a Long to Nat conversion takes a Long to a Nat only" {
 func neverFnFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
   val x = local(1, "x", fromTy, false)
   val inner = ex(3, fromTy, XLocal(local = x.id))
-  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvNeverFnAsUnit, inner = inner)))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvNeverFn, inner = inner)))
 }
 
-test "a Never function used as a Unit function keeps its parameters" {
+test "a Never function used as a function of another result keeps its parameters" {
   val ps: List[Ty] = newList()
   ps.add(tyInt())
   val other: List[Ty] = newList()
@@ -731,6 +731,10 @@ test "a Never function used as a Unit function keeps its parameters" {
   assertFalse(
     rulesOf(oneFn(entries(), neverFnFn(fnTy(ps, TNever), fnTy(ps, unit)))).contains("convert-type"),
     "same parameters"
+  )
+  assertFalse(
+    rulesOf(oneFn(entries(), neverFnFn(fnTy(ps, TNever), fnTy(ps, tyInt())))).contains("convert-type"),
+    "an Int result"
   )
   assertTrue(
     rulesOf(oneFn(entries(), neverFnFn(fnTy(ps, TNever), fnTy(other, unit)))).contains("convert-type"),
