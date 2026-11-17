@@ -718,4 +718,99 @@ else
   (cd "$WORK" && java -jar jvm_host_static_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_static_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_static_shapes"; fi
 fi
+# A call on a restored package's concrete type takes the default of the `impl` method it resolves to,
+# not the interface's (language reference 6.1): the interface carries a declaration for each non-generic
+# `impl` member that declares a default (D447).  Two impls of one type share a method name here and are
+# told apart by arity; each keeps its own default, on both targets.
+restored_impl_defaults() {
+  local target="$1" dir="$WORK/impldef-$1"
+  mkdir -p "$dir/lib/src" "$dir/app/src"
+  cat > "$dir/lib/lyric.toml" <<'TOML'
+[package]
+name = "Id.Lib"
+version = "0.1.0"
+
+[project]
+name = "Id.Lib"
+output = "single"
+output_assembly = "IdLib.dll"
+
+[project.packages]
+"IdLib" = "src/lib.l"
+TOML
+  cat > "$dir/lib/src/lib.l" <<'LYRIC'
+package IdLib
+
+pub interface Shape {
+  func area(self: in Self, scale: in Int = 1): Int
+}
+
+pub interface Weight {
+  func area(self: in Self, scale: in Int, bias: in Int = 5): Int
+}
+
+pub record Sq {
+  s: Int
+}
+
+impl Shape for Sq {
+  func area(self: in Sq, scale: in Int = 3): Int {
+    self.s * scale
+  }
+}
+
+impl Weight for Sq {
+  func area(self: in Sq, scale: in Int, bias: in Int = 5): Int {
+    self.s * scale + bias
+  }
+}
+LYRIC
+  cat > "$dir/app/lyric.toml" <<'TOML'
+[package]
+name = "Id.App"
+version = "0.1.0"
+
+[dependencies]
+"Id.Lib" = { path = "../lib" }
+
+[project]
+name = "Id.App"
+output = "single"
+output_assembly = "IdApp.dll"
+
+[project.packages]
+"IdApp" = "src/app.l"
+TOML
+  cat > "$dir/app/src/app.l" <<'LYRIC'
+package IdApp
+import IdLib
+
+func main(): Int {
+  val q = Sq(s = 4)
+  q.area() + q.area(2)
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --manifest "$dir/lib/lyric.toml" --target "$target" >"$dir/lib.log" 2>&1) || { echo "FAIL (restored_impl_defaults $target): the library did not build"; tail -3 "$dir/lib.log"; fail=1; return; }
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/app/lyric.toml" --target "$target" >"$dir/app.log" 2>&1) || { echo "FAIL (restored_impl_defaults $target): the consumer did not build"; tail -3 "$dir/app.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*app.l\]" "$dir/app.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (restored_impl_defaults $target): $built of $total consumer bodies built"; grep -E "first error" "$dir/app.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*app.l\]: 0 diagnostic" "$dir/app.log"; then
+    echo "FAIL (restored_impl_defaults $target): the verifier rejected a built body"; fail=1; return
+  fi
+  local got
+  if [[ "$target" == jvm ]]; then
+    (cd "$dir/app" && java -jar bin/IdApp.jar >/dev/null 2>&1); got=$?
+  else
+    (cd "$dir/app/bin" && dotnet IdApp.dll >/dev/null 2>&1); got=$?
+  fi
+  if [[ "$got" != "25" ]]; then echo "FAIL (restored_impl_defaults $target): exit code $got, want 25"; fail=1; return; fi
+  echo "ok   restored_impl_defaults $target"
+}
+restored_impl_defaults dotnet
+restored_impl_defaults jvm
 exit $fail

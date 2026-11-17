@@ -21,7 +21,7 @@ import Lyric.Tir.Build.{buildPackageDefaults, newTyConvCtx}
 import Lyric.Iface
 import Lyric.IfaceConv
 import Lyric.ModeChecker
-import Lyric.Resolve.{funcDefPath, methodDefPath, reexportsOf}
+import Lyric.Resolve.{funcDefPath, implDefPath, methodDefPath, reexportsOf}
 import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPushOwned, resolveType}
 
 func visOf(v: in Option[Visibility]): IfVis {
@@ -408,6 +408,15 @@ func addRecordLike(
   }
 }
 
+func implMemberDeclaresDefault(fn: in FunctionDecl): Bool {
+  for p in fn.params {
+    if isSome(p.dflt) {
+      return true
+    }
+  }
+  false
+}
+
 func addItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, fileLevel: in VerificationLevel) {
   val vis = visOf(it.visibility)
   val pkg = bc.pkg
@@ -546,6 +555,23 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
           }
           case IMFunc(fn) -> addMethod(bc, acc, frames, selfSome, path, fn, vis, fileLevel)
           case IMAssoc(_) -> ()
+        }
+      }
+    }
+    // A non-generic `impl` member that declares a default: a call on the concrete type takes the
+    // `impl` method's own default, not the interface's (language reference 6.1), so the member needs a
+    // declaration for the default to be carried.  A generic `impl` exports none (#8099).
+    case IImpl(decl) -> if isSome(decl.generics) {
+      ()
+    } else {
+      val implPath = implDefPath(pkg, decl)
+      val selfTy = Some(value = resolveTy(bc, newList(), None, decl.target, defPathKey(implPath)))
+      for m in decl.members {
+        match m {
+          case IMplFunc(fn) -> if implMemberDeclaresDefault(fn) {
+            addMethod(bc, acc, newList(), selfTy, implPath, fn, IfPublic, fileLevel)
+          }
+          case IMplAssoc(_) -> ()
         }
       }
     }
