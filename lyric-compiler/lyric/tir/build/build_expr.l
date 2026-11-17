@@ -737,8 +737,7 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
-  not isHostObject(name) and not isHostValueClass(name) and name != hostArrayName() and
-    not Str.startsWith(name, "System.Threading.Tasks.") and
+  not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.") and
     not Str.startsWith(name, "java.util.concurrent.")
 }
 
@@ -3043,30 +3042,21 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
     case TExtern(h) -> {
       val n = h.name
       match callTy {
-        case TSlice(_) -> n == "an array, pointer or by-reference type"
-        case TArray(_, _) -> n == "an array, pointer or by-reference type"
-        case TNullable(inner) -> match inner {
-          case TPrim(TPString) -> n == "System.String" or n == "java.lang.String"
-          case _ -> false
-        }
+        case TSlice(_) -> n == hostArrayName()
+        case TArray(_, _) -> n == hostArrayName()
+        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n); case _ -> false }
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
         case TPrim(TPString) -> n == "java.lang.Object" or n == "System.Object"
         case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object"
         case TPrim(TPBool) -> n == "java.lang.Object" or n == "System.Object"
-        case TPrim(TPFloat) -> n == "System.Single" or n == "java.lang.Float" or n == "java.lang.Object" or
-          n == "System.Object"
-        case TPrim(TPDouble) -> n == "System.Double" or n == "java.lang.Double" or n == "java.lang.Object" or
-          n == "System.Object"
-        case TPrim(TPInt) -> n != "an array, pointer or by-reference type" and n != "System.String" and
-          n != "java.lang.String"
+        case TPrim(TPFloat) -> isHostSingleName(n) or isHostObject(n)
+        case TPrim(TPDouble) -> isHostDoubleName(n) or isHostObject(n)
+        case TPrim(TPInt) -> n != hostArrayName() and not isHostStringName(n)
         case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
           (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
-          (
-            n == "System.Threading.Tasks.Task" or n == "java.util.concurrent.CompletableFuture" or
-              n == "java.util.concurrent.Future"
-          )
+          isHostTaskName(n)
         case _ -> false
       }
     }
@@ -4293,7 +4283,7 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 /// type parameter, a host generic class as the same class applied to type arguments, and the host's `Object`
 /// array as a slice of a type parameter.  The host's erasure makes the representation the same, so the
 /// conversion is `CvFromHost`.
-func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
+pub func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TExtern(a) -> match to {
       case TParam(_, _) -> if isHostObject(a.name) { Some(value = CvFromHost) } else { None }
