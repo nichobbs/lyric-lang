@@ -1086,7 +1086,7 @@ func siblingGenericFuncs(
   val generics: List[FunctionDecl] = newList()
   val specialised: List[FunctionDecl] = newList()
   for ip in importedPkgs {
-    if ip.name != ownPkg and (ip.name == "Std" or Str.startsWith(ip.name, "Std.")) {
+    if ip.name != ownPkg and (isStdlibPackageName(ip.name)) {
       val pkgImports = match mapGet(importsByPkg, ip.name) { case Some(imps) -> imps; case None -> newList() }
       pipeAddGenericFuncs(ip.items, ip.name, pkgImports, false, false, generics)
     }
@@ -1095,7 +1095,7 @@ func siblingGenericFuncs(
   // or helper a `pub` generic reaches is not among their cross-package items.
   for f in ownFiles {
     val pkg = dottedPath(f.packageDecl.path)
-    if pkg != ownPkg and not (pkg == "Std" or Str.startsWith(pkg, "Std.")) {
+    if pkg != ownPkg and not isStdlibPackageName(pkg) {
       val pkgImports = match mapGet(importsByPkg, pkg) { case Some(imps) -> imps; case None -> newList() }
       pipeAddGenericFuncs(f.items, pkg, pkgImports, false, false, specialised, true)
     }

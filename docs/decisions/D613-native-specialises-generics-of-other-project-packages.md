@@ -31,7 +31,11 @@ private helpers a generic reaches (#8427).
    they stay with the code generator, which has no use for the type argument's
    identity there. The union cases of every other package are declared to
    `Lyric.Mono` (`unionCtorInferenceDecls`) when something is specialised, as
-   the other bridges do. Generics are read from the parsed files, so a private
+   the other bridges do. A generic with a defaulted parameter is never
+   specialised here: its default is written in the declaring package's scope
+   and a specialisation is lowered in the consumer's, so a same-named function
+   of the consumer would capture it (`llvm_project_self_test.l`, #9136); codegen
+   fills such a default as the declaring package. Generics are read from the parsed files, so a private
    generic or non-generic helper a `pub` generic reaches travels with it under
    its package-unique `__priv_` name, as in the JVM bridge.
 2. A call of such a generic is specialised at its type arguments like any
