@@ -429,6 +429,10 @@ pub record TirRecLayout {
   byValue: Bool = true
   /// A heap record's destructor symbol, or "" when it has no reference field.
   dtor: String = ""
+  /// A by-value record whose zero value (the checker's `zeroExprFor`) is the all-zero bit
+  /// pattern: no field has a declared default.  Set by the code generator, which holds the
+  /// declaration; false for a heap record or tuple.
+  zeroBits: Bool = false
 }
 
 /// Why a function stayed on the AST path.
@@ -4067,8 +4071,9 @@ func lowerArrayCopy(c: in LCtx, inner: in TExpr): Val {
 
 /// `XZeroValue`: `var a: array[N, T]` without an initializer, which the checker allows only for an
 /// element with a zero value.  An inline array of scalar leaves is `zeroinitializer`.  A record
-/// element's zero is built from the checker's zero expression, which the node does not carry, and an
-/// array held as a list has no zero value (a `String` or a reference element has none, T0156), so
+/// element's zero is the all-zero bit pattern when the record has no field defaults (`zeroBits`) and
+/// every field is itself zero-bits; a record with a default stays on the AST path, which builds the
+/// checker's zero expression.  An array held as a list has no zero value (a `String` or a reference element has none, T0156), so
 /// those stay on the AST path.
 func lowerZeroValue(c: in LCtx, ty: in Ty): Val {
   val nt = match tyToN(c.env, ty) {
@@ -4077,7 +4082,7 @@ func lowerZeroValue(c: in LCtx, ty: in Ty): Val {
   }
   match nt {
     case NArray(_, _) -> {
-      if not arrayZeroOk(nt) {
+      if not arrayZeroOk(c.env, nt) {
         return unsupported(c, "the zero value of " + renderTy(ty))
       }
       Val(ty = nt, value = NZeroInit(ty = nt))
@@ -4132,9 +4137,31 @@ func lowerArrayLit(c: in LCtx, arrTy: in NType, elems: in List[TExpr]): Val {
 
 /// The zero value of `var a: array[N, T]` without an initializer: every element zero, which is
 /// the checker's zero value only for scalar elements.
-func arrayZeroOk(t: in NType): Bool {
+func arrayZeroOk(env: in TirLowerEnv, t: in NType): Bool {
   match t {
-    case NArray(e, _) -> isScalarN(e) or arrayZeroOk(e)
+    case NArray(e, _) -> isScalarN(e) or arrayZeroOk(env, e) or structZeroOk(env, e)
+    case _ -> false
+  }
+}
+
+/// A by-value record whose zero value is all-zero bits: no field default, and every field a
+/// scalar, an array of zero-bits elements or another such record.
+func structZeroOk(env: in TirLowerEnv, t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> {
+      val want = nTypeToIrString(t)
+      for l in mapValues(env.recs) {
+        if l.byValue and l.zeroBits and nTypeToIrString(l.ty) == want {
+          for ft in l.fieldTys {
+            if not (isScalarN(ft) or arrayZeroOk(env, ft) or structZeroOk(env, ft)) {
+              return false
+            }
+          }
+          return true
+        }
+      }
+      false
+    }
     case _ -> false
   }
 }
@@ -5376,7 +5403,7 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
           case Some(x) -> own(c, lowerExpr(c, x))
           case None -> match slot.ty {
             case NArray(_, _) -> {
-              if not arrayZeroOk(slot.ty) {
+              if not arrayZeroOk(c.env, slot.ty) {
                 c.problems.add("the zero value of " + renderTy(decl.ty))
               }
               Val(ty = slot.ty, value = NZeroInit(ty = slot.ty))
