@@ -9,6 +9,8 @@
 # and the verifier must report nothing.  Each case also runs without --verify-ir
 # and the program's exit code is checked, so the default's value is the declared one.
 #
+# Each case is also built with --target jvm, which checks the entry package before its siblings (D443).
+#
 # Usage: tir-foreign-defaults-e2e.sh [path/to/lyric]
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -83,6 +85,14 @@ LYRIC
   fi
   if ! grep -q "I0003 census \[.*src/b/b.l\]: 0 diagnostic" "$log"; then
     echo "FAIL ($expr): the verifier rejected the built body"; grep -E "I0003" "$log" | head -3; fail=1; continue
+  fi
+  # The same project on the JVM: its entry package is checked before the packages it imports (D443).
+  (cd "$WORK" && "$LYRIC" build --verify-ir --manifest lyric.toml --target jvm >"$log" 2>&1)
+  if ! grep -q "TIR build census \[.*src/b/b.l\]: 1 of 1 function bodies built" "$log"; then
+    echo "FAIL ($expr) [jvm]: the body of B did not build"; grep -E "first error|no builder case" "$log" | head -3; fail=1; continue
+  fi
+  if ! grep -q "I0003 census \[.*src/b/b.l\]: 0 diagnostic" "$log"; then
+    echo "FAIL ($expr) [jvm]: the verifier rejected the built body"; grep -E "I0003" "$log" | head -3; fail=1; continue
   fi
   (cd "$WORK" && "$LYRIC" build --manifest lyric.toml --target dotnet >"$log" 2>&1) || { echo "FAIL ($expr): the build failed"; tail -3 "$log"; fail=1; continue; }
   (cd "$WORK" && dotnet bin/ForeignDefaults.dll >/dev/null 2>&1)

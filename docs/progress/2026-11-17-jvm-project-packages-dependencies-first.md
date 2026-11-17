@@ -1,0 +1,3 @@
+# 2026-11-17: the JVM bridge checks project packages dependencies first (D443)
+
+`Jvm.Bridge` checked a project's entry package before the packages it imports, so a default one of them declares was not yet in the build's interface store and was counted under `--verify-ir`. `jvmProjectDependencyOrder` gives the dependency-first order; the check path uses it and the build path registers the sibling interfaces in that order before the entry package is built (only when `LYRIC_VERIFY_IR` is set). `tir-foreign-defaults-e2e.sh` now builds every case with `--target jvm` too; `g(7)` builds. Docs/70 status updated.
