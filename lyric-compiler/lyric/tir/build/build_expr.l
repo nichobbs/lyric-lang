@@ -728,7 +728,8 @@ func hostChainResult(
           } else {
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
-            if not isPlainHostResult(rname) {
+            // The root object of a non-generic host class is the class's own result (`Method.invoke`).
+            if not isPlainHostResult(rname) and not (isHostObject(rname) and host.args.count == 0) {
               return None
             }
             match hostElemTy(el, host.args, TirT.TNever) {
@@ -3152,8 +3153,43 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
       }
       case None -> ()
     }
+    // The checker lets a host result flow into a more specific host type the context declares
+    // (`val c: X509Certificate = cf.generateCertificate(in)`): the host's result is the base class.
+    if hostResultNarrowsTo(env, ret, ty) {
+      val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+      return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
+    }
   }
   mkExpr(e, ty, call)
+}
+
+/// Whether `to` is a host class that has the host class `from` among its bases.
+func hostResultNarrowsTo(env: in BuildEnv, from: in Ty, to: in Ty): Bool {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return false
+  }
+  match from {
+    case TExtern(f) -> match to {
+      case TExtern(t) -> {
+        if f.name == t.name {
+          return false
+        }
+        match env.ctx.tbl.externIterResolver[0].resolveBases(t.name) {
+          case Some(bases) -> {
+            for b in bases {
+              if b == f.name {
+                return true
+              }
+            }
+            false
+          }
+          case None -> false
+        }
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 /// An argument converted to the host parameter type `want`: the host's widening, boxing and narrowing, or
