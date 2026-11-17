@@ -417,6 +417,26 @@ func implMemberDeclaresDefault(fn: in FunctionDecl): Bool {
   false
 }
 
+// A non-generic `impl` member that declares a default: a call on the concrete type takes the `impl`
+// method's own default, not the interface's (language reference 6.1), so the member needs a declaration for
+// the default to be carried.  An `impl` has no visibility of its own and applies wherever its type is
+// visible, so this runs before the visibility gate.  A generic `impl` exports none (#8099).
+func addImplDefaults(bc: in BuildCtx, acc: in List[IfDecl], decl: in ImplDecl, fileLevel: in VerificationLevel) {
+  if isSome(decl.generics) {
+    return
+  }
+  val implPath = implDefPath(bc.pkg, decl)
+  val selfTy = Some(value = resolveTy(bc, newList(), None, decl.target, defPathKey(implPath)))
+  for m in decl.members {
+    match m {
+      case IMplFunc(fn) -> if implMemberDeclaresDefault(fn) {
+        addMethod(bc, acc, newList(), selfTy, implPath, fn, IfPublic, fileLevel)
+      }
+      case IMplAssoc(_) -> ()
+    }
+  }
+}
+
 func addItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, fileLevel: in VerificationLevel) {
   val vis = visOf(it.visibility)
   val pkg = bc.pkg
@@ -432,6 +452,7 @@ func addItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, fileLevel: in V
         IfDExtern(typeParams = typeParamsOf(bc, frames, decl.generics, None, defPathKey(path)), host = decl.clrName)
       )
     }
+    case IImpl(decl) -> addImplDefaults(bc, acc, decl, fileLevel)
     case _ -> if isVisible(vis) { addVisibleItem(bc, acc, it, vis, fileLevel) }
   }
 }
@@ -555,23 +576,6 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
           }
           case IMFunc(fn) -> addMethod(bc, acc, frames, selfSome, path, fn, vis, fileLevel)
           case IMAssoc(_) -> ()
-        }
-      }
-    }
-    // A non-generic `impl` member that declares a default: a call on the concrete type takes the
-    // `impl` method's own default, not the interface's (language reference 6.1), so the member needs a
-    // declaration for the default to be carried.  A generic `impl` exports none (#8099).
-    case IImpl(decl) -> if isSome(decl.generics) {
-      ()
-    } else {
-      val implPath = implDefPath(pkg, decl)
-      val selfTy = Some(value = resolveTy(bc, newList(), None, decl.target, defPathKey(implPath)))
-      for m in decl.members {
-        match m {
-          case IMplFunc(fn) -> if implMemberDeclaresDefault(fn) {
-            addMethod(bc, acc, newList(), selfTy, implPath, fn, IfPublic, fileLevel)
-          }
-          case IMplAssoc(_) -> ()
         }
       }
     }
