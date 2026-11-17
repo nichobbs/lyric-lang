@@ -1,0 +1,3 @@
+# 2026-11-17: follow-up to the host shapes (D445) from review
+
+Review suggestions on #9203, carried into one cosmetic follow-up: `jvm_host_static_shapes` gains a host string passed for a host string parameter (`JKeyStore.getInstance(JKeyStore.getDefaultType())`) and an untyped array result returned as a slice (`toArray()`), both built with `--target jvm --verify-ir` and run; `hostArrayAsSlice` documents why `Object[]` is exposed as a slice and a typed array is not; `hostMethodOnTypeParam` documents that the active target's metadata resolver decides which root object class resolves. No behaviour change.
