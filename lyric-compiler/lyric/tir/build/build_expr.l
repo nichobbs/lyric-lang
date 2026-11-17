@@ -4180,6 +4180,8 @@ func blockMayBreak(t: in TExpr, lbl: in Option[String], depth: in Int): Bool {
       }
       false
     }
+    case XUnsafe(body) -> blockMayBreak(body, lbl, depth)
+    case XAssign(_, _, v) -> blockMayBreak(v, lbl, depth)
     case _ -> false
   }
 }
@@ -4195,6 +4197,9 @@ func stmtMayBreak(s: in TStmt, lbl: in Option[String], depth: in Int): Bool {
   match s.kind {
     case TsBreak(b) -> breakTargetsUs(b, lbl, depth)
     case TsExpr(x) -> blockMayBreak(x, lbl, depth)
+    case TsLet(_, init) -> blockMayBreak(init, lbl, depth)
+    case TsVar(_, init) -> match init { case Some(x) -> blockMayBreak(x, lbl, depth); case None -> false }
+    case TsReturn(v) -> match v { case Some(x) -> blockMayBreak(x, lbl, depth); case None -> false }
     case TsScope(_, body) -> blockMayBreak(body, lbl, depth)
     case TsDefer(body) -> blockMayBreak(body, lbl, depth)
     case TsTry(body, catches, fin) -> {
