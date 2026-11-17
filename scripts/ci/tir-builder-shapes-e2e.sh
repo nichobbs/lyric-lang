@@ -720,8 +720,9 @@ else
 fi
 # A call on a restored package's concrete type takes the default of the `impl` method it resolves to,
 # not the interface's (language reference 6.1): the interface carries a declaration for each non-generic
-# `impl` member that declares a default (D447).  Two impls of one type share a method name here and are
-# told apart by arity; each keeps its own default, on both targets.
+# `impl` member that declares a default (D447).  Two types implement the same interface method (the language
+# rejects two impls of one type that share a method name, T0139), each with its own default: 4 * 3, 5 * 7 and an
+# explicit 5 * 2 add to 57, on both targets.
 restored_impl_defaults() {
   local target="$1" dir="$WORK/impldef-$1"
   mkdir -p "$dir/lib/src" "$dir/app/src"
@@ -745,12 +746,12 @@ pub interface Shape {
   func area(self: in Self, scale: in Int = 1): Int
 }
 
-pub interface Weight {
-  func area(self: in Self, scale: in Int, bias: in Int = 5): Int
-}
-
 pub record Sq {
   s: Int
+}
+
+pub record Circle {
+  r: Int
 }
 
 impl Shape for Sq {
@@ -759,9 +760,9 @@ impl Shape for Sq {
   }
 }
 
-impl Weight for Sq {
-  func area(self: in Sq, scale: in Int, bias: in Int = 5): Int {
-    self.s * scale + bias
+impl Shape for Circle {
+  func area(self: in Circle, scale: in Int = 7): Int {
+    self.r * scale
   }
 }
 LYRIC
@@ -787,7 +788,8 @@ import IdLib
 
 func main(): Int {
   val q = Sq(s = 4)
-  q.area() + q.area(2)
+  val c = Circle(r = 5)
+  q.area() + c.area() + c.area(2)
 }
 LYRIC
   (cd "$dir" && "$LYRIC" build --manifest "$dir/lib/lyric.toml" --target "$target" >"$dir/lib.log" 2>&1) || { echo "FAIL (restored_impl_defaults $target): the library did not build"; tail -3 "$dir/lib.log"; fail=1; return; }
@@ -803,12 +805,8 @@ LYRIC
     echo "FAIL (restored_impl_defaults $target): the verifier rejected a built body"; fail=1; return
   fi
   local got
-  if [[ "$target" == jvm ]]; then
-    (cd "$dir/app" && java -jar bin/IdApp.jar >/dev/null 2>&1); got=$?
-  else
-    (cd "$dir/app/bin" && dotnet IdApp.dll >/dev/null 2>&1); got=$?
-  fi
-  if [[ "$got" != "25" ]]; then echo "FAIL (restored_impl_defaults $target): exit code $got, want 25"; fail=1; return; fi
+  (cd "$dir" && "$LYRIC" run --manifest "$dir/app/lyric.toml" --target "$target" >/dev/null 2>&1); got=$?
+  if [[ "$got" != "57" ]]; then echo "FAIL (restored_impl_defaults $target): exit code $got, want 57"; fail=1; return; fi
   echo "ok   restored_impl_defaults $target"
 }
 restored_impl_defaults dotnet
