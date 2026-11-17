@@ -323,7 +323,7 @@ process would inherit it.
 
 `Std.AnnotationMeta` records each annotated field's store key in
 `AnnotatedField.envVar`, so a library that reads a custom annotation
-(`lyric-aws-secrets`' `@secretsManager` / `@parameterStore`) registers under
+(`AwsSecrets`' `@secretsManager` / `@parameterStore`, in `lyric-ecosystem`) registers under
 it instead of re-deriving the naming rule.
 
 ### 6.1 Initialiser ordering

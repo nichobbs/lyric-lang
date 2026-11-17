@@ -10,7 +10,7 @@
 # PATH, builds `resolver/target/lyric-resolver.jar` (`make maven-resolver`),
 # exports `LYRIC_MAVEN_RESOLVER`, and runs `lyric restore --manifest
 # <manifest>` before the test — the same sequence `lyric-web`'s Undertow
-# smoke test and the `lyric-aws-secrets` JVM suite already inline, extracted
+# smoke test already inlines, extracted
 # here so a manifest whose JVM build pulls in a Maven-backed dependency
 # (like lyric-auth or lyric-web) can wire a CI
 # step in the same one-line `self-test.sh` form other JVM ecosystem suites

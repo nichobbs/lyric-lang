@@ -362,7 +362,7 @@ Open-ended. Successful languages spend most of their lifetime here.
 > each library's module doc-comment.  The cohort splits three ways:
 >
 > - **Production-ready / `@stable(since="0.1")`** — `lyric-auth`,
->   `lyric-mq`, `lyric-aws-secrets`.  Surface is covered by SemVer;
+>   `lyric-mq` (and `lyric-aws-secrets`, since moved to `lyric-ecosystem`, D620).  Surface is covered by SemVer;
 >   tests exercise the operative paths; safe to use in production with
 >   the usual deployment due diligence.
 > - **Operational but live-untested / `@experimental` + WARNING banner** —

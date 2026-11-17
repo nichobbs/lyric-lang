@@ -31,7 +31,6 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 | `lyric-unicode` / `lyric-search` | Supported | Supported | Supported | Pure-Lyric UAX #9 bidi / UAX #14 line breaking / UAX #29 word boundaries, BM25/inverted-index search |
 | `lyric-text` | — | — | Supported | Native-only FreeType / HarfBuzz text shaping and layout |
 | `lyric-proto` / `lyric-grpc` / `lyric-mcp` | Supported | Supported | Pure-Lyric (`proto`, `mcp`) | Protobuf wire codec, gRPC over HTTP/2, Model Context Protocol |
-| `lyric-lambda` / `lyric-aws-secrets` / `lyric-aws-xray` | Supported | Supported | — | AWS Lambda runtime API, Secrets Manager, X-Ray tracing |
 | `lyric-mail` / `lyric-jobs` / `lyric-feature-flags` / `lyric-docker` | Supported | Supported | Pure-Lyric subset | SMTP/SES mail, cron/job runner, feature flags, Docker Engine API |
 | `lyric-db` | Supported (Postgres, SQLite) | Returns `NOT_SUPPORTED_ON_TARGET` | — | JDBC kernel tracked separately |
 | `lyric-mq` | Supported (`inmemory`) | Returns `NOT_SUPPORTED_ON_TARGET` | — | Broker drivers (`redis://`, `amqp://`, `sqs://`) return explicit `Err` |
