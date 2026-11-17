@@ -2840,3 +2840,10 @@ test "a loop that breaks from inside a let initializer may complete, so the miss
   )
   assertTrue(c.built < c.total, "the body stays counted")
 }
+
+test "a record that impls an extern interface is that interface as a function's value (D441)" {
+  val st = buildFirstFnHost(
+    "package App\nextern type Disp = \"System.IDisposable\"\nrecord R { x: Int }\nimpl Disp for R {\n  func Dispose(): Unit { () }\n}\nfunc mk(): Disp {\n  R(x = 1)\n}\n"
+  )
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+}

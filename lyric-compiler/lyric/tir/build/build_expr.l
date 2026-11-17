@@ -3778,7 +3778,7 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
       case Some(k) -> Some(value = convertNode(env, t, ty, k))
-      case None -> match taskAsHostTask(t.ty, ty) {
+      case None -> match hostUpcastKind(env, t.ty, ty) {
         case Some(k) -> Some(value = convertNode(env, t, ty, k))
         case None -> match retypeConstruct(env, t, ty) {
           case Some(c) -> Some(value = c)
