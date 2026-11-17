@@ -1769,6 +1769,12 @@ pub record CheckFront {
   checked: SourceFile
 }
 
+/// Whether `LYRIC_VERIFY_IR` asks this build to build and verify TIR, which makes each package's interface
+/// known to the packages checked after it (D482, D443).
+pub func pipeVerifyIrEnabled(): Bool {
+  tirVerifyIrEnabled()
+}
+
 func tirVerifyIrEnabled(): Bool {
   Environment.getVarOrDefault("LYRIC_VERIFY_IR", "") == "1"
 }
