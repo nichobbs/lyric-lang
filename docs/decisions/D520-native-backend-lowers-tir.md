@@ -250,3 +250,7 @@ and still holds generics and un-elaborated contracts.
 ## Slice 31: the zero value of record-element arrays
 
 - `lowerZeroValue` lowers `var a: array[N, Rec]` as `zeroinitializer` when `Rec` is a by-value record with no field defaults and every field is zero-bits (D530). Records with defaults and arrays held as lists stay on the AST path.
+
+## Slice 32: protected-type field initializers
+
+- Measured, not changed: the initializers lower from TIR through `constructProtected` (D531); only a generic-union initializer falls back until 3c. `protected.l` pins it under AddressSanitizer.
