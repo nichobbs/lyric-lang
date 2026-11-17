@@ -24,7 +24,7 @@ tier0=(
   lyric-cache lyric-logging lyric-proto lyric-generator-sdk
   lyric-mail lyric-storage lyric-auth lyric-resilience
   lyric-validation lyric-i18n lyric-otel lyric-feature-flags
-  lyric-aws-xray lyric-aws-secrets lyric-db
+  lyric-db
 )
 for lib in "${tier0[@]}"; do
   echo "=== build $lib (tier 0) ==="
@@ -43,7 +43,7 @@ for lib in "${tier1[@]}"; do
   fi
 done
 # Tier 2: libraries depending on tier-0 and tier-1 libraries.
-tier2=(lyric-health lyric-conformance lyric-lambda)
+tier2=(lyric-health lyric-conformance)
 for lib in "${tier2[@]}"; do
   echo "=== build $lib (tier 2) ==="
   if ! "$lyric_bin" build --manifest "$lib/lyric.toml"; then

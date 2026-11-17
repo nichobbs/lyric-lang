@@ -82,6 +82,10 @@ Extends docs/57 and `docs/12-todo-plan.md` item 3.
   in favour of `Lyric.Session.Redis`; `lyric-session` is pure Lyric and claims
   `dotnet`, `jvm` and `native` (D614,
   docs/progress/2026-11-17-session-redis-extracted.md).
+  Then the AWS libraries `lyric-lambda`, `lyric-aws-secrets` and
+  `lyric-aws-xray` moved out of `lyric-lang` as `Lyric.Lambda`,
+  `Lyric.AwsSecrets` and `Lyric.AwsXRay` (D620,
+  docs/progress/2026-11-17-aws-libraries-move-to-ecosystem.md).
 
 ## 4. Open questions
 

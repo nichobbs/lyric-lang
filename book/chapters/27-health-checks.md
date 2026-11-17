@@ -6,7 +6,8 @@ decide whether to restart a pod or remove it from the load balancer.
 
 Checks are registered as **function references** (closures) and invoked
 directly when checks run — the same AOT-safe registration model as
-`Lambda.Direct` (Chapter 28 / `docs/35-lambda-library.md` §10).  No
+`Lambda.Direct` (`docs/35-lambda-library.md` §10; the library now lives in
+`lyric-ecosystem`).  No
 runtime reflection or name-based dispatch is involved.
 
 ## Adding the dependency

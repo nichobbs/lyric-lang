@@ -6242,10 +6242,8 @@ jobs:
       # after it, which actually needs `mvn`) could still be skipped on a
       # self-hosted runner whenever an earlier background step fails,
       # reproducing the exact #7038 failure this PR exists to fix.
-      # #7108: serialized via the same `/tmp/lyric-ci-apt-maven.lock` flock
-      # the "lyric-aws-secrets suite on JVM" step's own conditional Maven
-      # install uses, so the two can never race on the dpkg lock — whichever
-      # runs first installs; the other waits, then finds `mvn` present.
+      # #7108: serialized via the `/tmp/lyric-ci-apt-maven.lock` flock so
+      # concurrent Maven installs never race on the dpkg lock.
       - name: Install Maven (self-hosted runners only)
         if: ${{ !cancelled() && runner.environment == 'self-hosted' }}
         run: |
@@ -6335,8 +6333,8 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    # The heavy ecosystem and library JVM suites (Maven-backed lambda,
-    # aws-secrets and web, the Undertow smokes, the UI suites), split from
+    # The heavy ecosystem and library JVM suites (Maven-backed web, the
+    # Undertow smokes, the UI suites), split from
     # compiler-self-tests-jvm-b's last batch, where running them together
     # on one 4-vCPU runner made each wait on CPU. Same has_jvm_changes gate
     # and setup as compiler-self-tests-jvm.
@@ -6359,96 +6357,6 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/jvm-ecosystem-suites.sh
-
-      # lyric-lambda suite on JVM (#7337, #7357); no Maven dependencies since
-      # the HTTP bridge (and its lyric-web import) was withdrawn (D552).
-      - name: lyric-lambda suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --manifest lyric-lambda/lyric.toml --target jvm --no-default-features --features jvm
-
-      # lyric-aws-secrets suite on JVM (#7033) — pins the real
-      # SecretsManagerClient/SsmClient bindings (secrets_kernel_jvm.l)
-      # against the actual AWS SDK for Java v2 JARs: classifySecretsError/
-      # classifyParameterError and extractSecretField's panic-to-Result
-      # fixes (#6875, #6979) now have automated regression coverage instead
-      # of having been exercised once, manually, in a sandbox session.
-      #
-      # `--features jvm` needs the AWS SDK for Java v2 classpath resolved
-      # from lyric-aws-secrets's `[maven]` deps (`target/restore/
-      # jvm-classpath.txt`) before the JVM emitter's auto-FFI resolution can
-      # find `software.amazon.awssdk.services.secretsmanager.
-      # SecretsManagerClient` — without a prior `lyric restore` this failed
-      # with `error[J002]: ... class ... not found in JDK jmods or
-      # LYRIC_FFI_JARS`. This step is `background: true` with no ordering
-      # guarantee relative to the other steps in this job, so — mirroring the
-      # #6790 fix for the same race on the lyric-web Undertow classpath —
-      # make it self-contained: install Maven if missing, build the
-      # resolver, and restore before running the test, instead of depending
-      # on timing against unrelated steps.
-      #
-      # #7108: the conditional `apt-get install maven` below can run at the
-      # same moment as another step's install on the same runner, with no
-      # coordination between them — a dpkg-lock race. Every such install
-      # serializes through the same `flock` on a shared lock file so only one
-      # process installs at a time; the others wait, then find `mvn` already
-      # present (or perform a harmless redundant install/update).
-      # `make maven-resolver` is similarly serialized — its other concurrent
-      # callers in this job are the ecosystem suites' `web`,
-      # the lyric-web and lyric-ws Undertow smokes and the UI suites — so two
-      # `mvn package` builds never race into the same `resolver/target/`
-      # output directory.
-      #
-      # `lyric-aws-secrets` is by far the largest Maven dependency set of
-      # any restore in this job (41 AWS SDK for Java artifacts, vs. 7 for
-      # lyric-auth/lyric-resilience/lyric-web) and the first CI consumer to
-      # ever exercise it — on this job's self-hosted runner, downloading
-      # all 41 artifacts has twice exceeded `lyric restore`'s hardcoded
-      # 300s internal timeout (`cli_restore.l`) with no other diagnostic,
-      # while every other (smaller) Maven restore in the same run completed
-      # in seconds. Retry up to 3 attempts specifically on that timeout
-      # message (never on a genuine restore error, which fails immediately
-      # with its own message) rather than widening the shared, repo-wide
-      # 300s constant every other manifest's restore also uses.
-      - name: lyric-aws-secrets suite on JVM (lyric test --target jvm --features jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if ! command -v mvn >/dev/null 2>&1; then
-            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
-            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
-          fi
-          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
-          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping lyric-aws-secrets JVM suite"
-            exit 1
-          fi
-          restore_ok=0
-          for attempt in 1 2 3; do
-            if restore_out="$("$lyric_bin" restore --manifest lyric-aws-secrets/lyric.toml 2>&1)"; then
-              echo "$restore_out"
-              restore_ok=1
-              break
-            fi
-            echo "$restore_out"
-            if [[ "$restore_out" != *"Maven resolver timed out"* ]]; then
-              echo "::error::lyric-aws-secrets restore failed for a reason other than the known timeout; not retrying"
-              exit 1
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "::warning::lyric-aws-secrets Maven restore timed out (attempt $attempt/3); retrying"
-            fi
-          done
-          if [ "$restore_ok" -ne 1 ]; then
-            echo "::error::lyric-aws-secrets Maven restore timed out on all 3 attempts"
-            exit 1
-          fi
-          bash scripts/ci/self-test.sh --manifest lyric-aws-secrets/lyric.toml --target jvm --no-default-features --features jvm
 
       # lyric-auth manifest build on JVM with NO feature flags (#5571) — the
       # regression pin for target-normalized feature resolution: a plain
@@ -6703,10 +6611,6 @@ jobs:
             deps: ""
           - id: mail
             deps: ""
-          - id: aws-xray
-            deps: ""
-          - id: aws-secrets
-            deps: ""
           - id: feature-flags
             deps: ""
           - id: validation
@@ -6729,8 +6633,6 @@ jobs:
             deps: "logging"
           - id: search
             deps: "resilience"
-          - id: lambda
-            deps: "auth resilience ws web"
           - id: web
             deps: "auth resilience ws"
           - id: ws
@@ -6848,37 +6750,6 @@ jobs:
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           LYRIC_BIN="$LYRIC_CLI_PATH" bash scripts/ci/smtp-roundtrip-e2e.sh dotnet jvm
 
-      - name: Run tests (aws-xray)
-        if: matrix.id == 'aws-xray'
-        run: |
-          "$LYRIC_CLI_PATH" test --manifest lyric-aws-xray/lyric.toml
-
-      # --features local: exercises the no-op local kernel (init()/
-      # getSecret()/getParameter() always-NotFound contract).
-      - name: Run tests (aws-secrets, local feature)
-        if: matrix.id == 'aws-secrets'
-        run: |
-          "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --features local
-
-      # --features aws: real AWSSDK.SecretsManager/AWSSDK.SimpleSystemsManagement
-      # bindings (#6864) — restore first, since (unlike the prior
-      # NOT_IMPLEMENTED stub) this now genuinely references AWS SDK for
-      # .NET types at compile time. Not a live-credentials integration
-      # path: this CI runner has no AWS region/credentials configured, so
-      # the assertions pin the honest failure contract (getSecret/
-      # getParameter never panic uncaught, always a typed Err) rather than
-      # a successful round-trip against a real Secrets Manager/SSM
-      # endpoint.
-      - name: Run tests (aws-secrets, aws feature)
-        if: matrix.id == 'aws-secrets'
-        run: |
-          set -euo pipefail
-          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-aws-secrets/lyric.toml; then
-            echo "::error::failed to restore lyric-aws-secrets NuGet dependencies"
-            exit 1
-          fi
-          "$LYRIC_CLI_PATH" test --manifest lyric-aws-secrets/lyric.toml --no-default-features --features aws
-
       - name: Run tests (feature-flags)
         if: matrix.id == 'feature-flags'
         run: |
@@ -6979,22 +6850,6 @@ jobs:
           overall=0
           "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml || overall=$?
           "$LYRIC_CLI_PATH" test --manifest lyric-search/lyric.toml --no-default-features --features meilisearch || overall=$?
-          exit "$overall"
-
-      # --features local: guards that the local-dev kernel (a real
-      # HTTP test server, Lambda.Kernel.Runtime) at least builds/links
-      # cleanly. The dispatch loop itself needs a live HTTP round-trip
-      # to exercise and isn't tested here — see docs/57 §5.2/§7 item 5.
-      - name: Run tests (lambda, default + local feature)
-        if: matrix.id == 'lambda'
-        # Both variants always run even if the first fails (matching the
-        # old monolithic job's overall=$? aggregation) so a single failed
-        # run surfaces both failures instead of hiding the second behind
-        # the first until a follow-up push.
-        run: |
-          overall=0
-          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml || overall=$?
-          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
           exit "$overall"
 
       - name: Run tests (web)

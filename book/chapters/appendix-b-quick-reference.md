@@ -873,7 +873,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 > **Stability framing (Tier 5 — #367).** Per-library stability is now
 > declared in each library's module doc-comment:
 >
-> - **`@stable(since="0.1")`** — `lyric-auth`, `lyric-mq`, `lyric-aws-secrets`.
+> - **`@stable(since="0.1")`** — `lyric-auth`, `lyric-mq`.
 >   Public API covered by the SemVer guarantee.  Tested.
 > - **`@experimental` + WARNING banner** — `lyric-storage`.
 >   Surface compiles and has tests, but the production backend (S3/Azure
