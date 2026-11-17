@@ -701,3 +701,17 @@ test "a positional index must be an integer primitive of any width" {
   assertFalse(rulesOf(oneFn(entries(), indexFn(TPrim(kind = TPLong)))).contains("index-type"), "a Long index")
   assertTrue(rulesOf(oneFn(entries(), indexFn(tyString()))).contains("index-type"), "a String index")
 }
+
+func longToNatFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
+  val x = local(1, "x", fromTy, false)
+  val inner = ex(3, fromTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvLongToNat, inner = inner)))
+}
+
+test "a Long to Nat conversion takes a Long to a Nat only" {
+  val nat = TPrim(kind = TPNat)
+  val long = TPrim(kind = TPLong)
+  assertFalse(rulesOf(oneFn(entries(), longToNatFn(long, nat))).contains("convert-type"), "Long to Nat")
+  assertTrue(rulesOf(oneFn(entries(), longToNatFn(tyInt(), nat))).contains("convert-type"), "Int to Nat")
+  assertTrue(rulesOf(oneFn(entries(), longToNatFn(long, tyInt()))).contains("convert-type"), "Long to Int")
+}
