@@ -452,7 +452,7 @@ cat "$work/ar_census.txt"
 "$work/ar_ast" > "$work/ar_ast.out"
 "$work/ar_tir" > "$work/ar_tir.out"
 diff -u "$work/ar_ast.out" "$work/ar_tir.out"
-printf '14\n9\n3\n2\n21\n10\n5\n21\n9\n72\n13\n' | diff -u - "$work/ar_tir.out"
+printf '14\n9\n3\n2\n21\n10\n5\n21\n9\n77\n11\n72\n13\n' | diff -u - "$work/ar_tir.out"
 if grep -q '^  fallback:' "$work/ar_census.txt"; then
   echo "::error::arrays.l has a TIR fallback"
   exit 1
