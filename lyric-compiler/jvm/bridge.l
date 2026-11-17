@@ -405,34 +405,22 @@ pub func compileToJar(
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val noFiles: List[String] = newList()
-  // #7198: JVM's `async func` lowering is a synchronous stub with no
-  // suspend point — F0045's CLR-verifier-suspend-in-protected-region
-  // hazard does not apply here, so it must never fire on this target.
   val optsCheckedOut: List[SourceFile] = newList()
   val recvClasses: Map[String, String] = newMap()
   val callArities: Map[String, Int] = newMap()
   val callees: Map[String, String] = newMap()
-  val opts = MiddleEndOptions(
-    externIterResolver = jvmIterResolver(newJvmHostIterIndex(buildAutoFfiCtx())),
+  val opts = jvmMiddleEndOptions(
     tcFatal = true,
-    tcReport = false,
     pkgLabel = "",
-    filePaths = noFiles,
-    awaitInTryIsHazard = false,
-    bindListLiteralTypes = false,
-    awaitAsyncCalls = false,
+    files = noFiles,
+    checkedOut = optsCheckedOut,
+    recvClassesOut = recvClasses,
+    aritiesOut = callArities,
+    ioForbiddenReason = "",
     contractsEnabled = true,
-    checkedSourceOut = optsCheckedOut,
-    memberRecvClassesOut = recvClasses,
-    methodCallAritiesOut = callArities,
-    calleeSitesOut = callees,
-    typeArgCalleesOut = newMap(),
-    genericItemsOut = newList(),
-    foreignValueRecordsOut = newList(),
-    arraysAsLists = true,
-    primitiveArrays = true,
-    foreignRecvClasses = true,
-    stringSurface = jvmStringSurface()
+    quietWarnings = false,
+    externIter = jvmIterResolver(newJvmHostIterIndex(buildAutoFfiCtx())),
+    calleesOut = callees
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -912,7 +900,8 @@ func jvmMiddleEndOptions(
   calleesOut: in Map[String, String] = newMap(),
   depDefaults: in TirBuild.DepDefaults = pipeNewDepDefaults(),
 ): MiddleEndOptions {
-  // #7198: see the other `MiddleEndOptions` construction site in this file.
+  // #7198: JVM's `async func` lowering is a synchronous stub with no suspend point, so F0045's
+  // CLR-verifier-suspend-in-protected-region hazard (`awaitInTryIsHazard`) never fires on this target.
   MiddleEndOptions(
     externIterResolver = externIter,
     tcFatal = tcFatal,

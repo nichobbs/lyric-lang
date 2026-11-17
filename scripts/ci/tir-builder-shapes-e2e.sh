@@ -709,8 +709,11 @@ func arrayOf(l: in JArrayList): slice[JObject] {
 }
 
 func main(): Int {
-  if defaultKeyStoreType().getType() == "" {
+  if defaultKeyStoreType().getType() != JKeyStore.getDefaultType() {
     return 4
+  }
+  if arrayOf(JArrayList.new()).length != 0 {
+    return 5
   }
   if primitiveChar().getName() != "char" {
     return 1
