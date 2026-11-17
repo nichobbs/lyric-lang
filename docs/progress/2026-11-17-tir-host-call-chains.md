@@ -1,0 +1,3 @@
+# 2026-11-17: the builder types host call chains from the host's metadata (D444)
+
+A host call on a result no `extern type` names (`m.entrySet().iterator()`) is typed by the builder from the host's metadata instead of staying counted: `openHostChainTy` gives the open call or property read the host class its members return, `buildHostMethodOnChain` builds the extern call, `erasedHostKind` converts a host `Object`, an unapplied host generic and an `Object` array to the language's erased generic types with `CvFromHost`, and a `JString` value is its own receiver. The checker is unchanged. `tir-builder-shapes-e2e.sh` builds and runs a JVM chain. Docs/70 status updated.

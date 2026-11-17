@@ -3592,7 +3592,26 @@ pub func checkProjectTypesJvm(
   val checkIterIx = newJvmHostIterIndex(buildAutoFfiCtx())
   val checkDepDefaults = pipeNewDepDefaults()
   registerRestoredInterfacesJvm(checkDepDefaults, restoredArtifacts)
+  val checkedNames: Map[String, Bool] = newMap()
   for f in checked {
+    checkedNames.add(dottedPath(f.packageDecl.path), true)
+  }
+  val checkedInOrder: List[SourceFile] = newList()
+  for f in jvmProjectDependencyOrder(fe) {
+    if checkedNames.containsKey(dottedPath(f.packageDecl.path)) {
+      checkedInOrder.add(f)
+    }
+  }
+  var entryPlaced = false
+  for f in checkedInOrder {
+    if dottedPath(f.packageDecl.path) == dottedPath(fe.userFile.packageDecl.path) {
+      entryPlaced = true
+    }
+  }
+  if not entryPlaced {
+    checkedInOrder.add(fe.userFile)
+  }
+  for f in checkedInOrder {
     val name = dottedPath(f.packageDecl.path)
     val label = match mapGet(fe.pkgPathByName, name) { case Some(p) -> p; case None -> name }
     val files: List[String] = match mapGet(fe.pkgFilesByName, name) { case Some(o) -> o; case None -> newList() }
@@ -3726,6 +3745,42 @@ func jvmBundleClosure(fe: in JvmProjectFrontEnd, restoredArtifacts: in List[Synt
     }
   }
   toBundle
+}
+
+/// The project packages' files, each after the project packages it imports (D443): the order in which
+/// a package's interface is known to the packages that need it.
+func jvmProjectDependencyOrder(fe: in JvmProjectFrontEnd): List[SourceFile] {
+  val byName: Map[String, SourceFile] = newMap()
+  for f in fe.userFiles {
+    byName.add(dottedPath(f.packageDecl.path), f)
+  }
+  val ordered: List[SourceFile] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for f in fe.userFiles {
+    visitProjectDependencies(byName, seen, ordered, dottedPath(f.packageDecl.path))
+  }
+  ordered
+}
+
+func visitProjectDependencies(
+  byName: in Map[String, SourceFile],
+  seen: in Map[String, Bool],
+  ordered: in List[SourceFile],
+  name: in String,
+): Unit {
+  if seen.containsKey(name) {
+    return
+  }
+  seen.add(name, true)
+  match mapGet(byName, name) {
+    case Some(f) -> {
+      for imp in f.imports {
+        visitProjectDependencies(byName, seen, ordered, dottedPath(imp.path))
+      }
+      ordered.add(f)
+    }
+    case None -> ()
+  }
 }
 
 /// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
@@ -4403,6 +4458,37 @@ pub func compileProjectToJarBundledWithRestored(
     // `typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)` call.
     Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
+  }
+
+  // Under `--verify-ir` the entry package is built against the interfaces of the project packages it
+  // imports, but it is checked before them (below), so their interfaces are not in the shared store
+  // yet and a default they declare is counted (D443).  Check each of them first, dependencies first,
+  // for the interface alone: its diagnostics are reported by the real pass, not here.
+  if pipeVerifyIrEnabled() {
+    val preDiags: List[DiagUtil.LocatedDiagnostic] = newList()
+    val preSink = collectDiagnostics(preDiags)
+    for pf in jvmProjectDependencyOrder(fe) {
+      val pname = dottedPath(pf.packageDecl.path)
+      if pname != userEntryPkgName {
+        val plabel = match mapGet(pkgPathByName, pname) { case Some(pp) -> pp; case None -> pname }
+        val pfiles: List[String] = match mapGet(pkgFilesByName, pname) { case Some(o) -> o; case None -> newList() }
+        val popts = jvmMiddleEndOptions(
+          true,
+          plabel,
+          pfiles,
+          newList(),
+          newMap(),
+          newMap(),
+          unwrapOr(mapGet(ioForbiddenByPkg, pname), ""),
+          contractsEnabled,
+          true,
+          preSink,
+          externIter = jvmIterResolver(hostIterIx),
+          depDefaults = projDepDefaults
+        )
+        val _ = pipeCheckFront(arrayTypedOrSelf(arrayTypedByPkg, pf), importedPkgs, popts, preSink)
+      }
+    }
   }
 
   // The entry package's code is generated before any bundled package's middle

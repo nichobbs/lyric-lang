@@ -374,9 +374,9 @@ cat "$work/pr_census.txt"
 "$work/pr_ast" > "$work/pr_ast.out"
 "$work/pr_tir" > "$work/pr_tir.out"
 diff -u "$work/pr_ast.out" "$work/pr_tir.out"
-printf '3\n7\ntotal\ntotal=7\n7\n' | diff -u - "$work/pr_tir.out"
-grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/pr_census.txt" || {
-  echo "::error::expected every function of protected.l (the four bodies and the constructing main) to be lowered from TIR"
+printf '3\n7\ntotal\ntotal=7\n7\n50\n' | diff -u - "$work/pr_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/pr_census.txt" || {
+  echo "::error::expected every function of protected.l (the five bodies, seed and the constructing main) to be lowered from TIR"
   exit 1
 }
 clang -O1 -g -fsanitize=address -Wno-override-module "$work/pr_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/pr_asan"
@@ -452,7 +452,7 @@ cat "$work/ar_census.txt"
 "$work/ar_ast" > "$work/ar_ast.out"
 "$work/ar_tir" > "$work/ar_tir.out"
 diff -u "$work/ar_ast.out" "$work/ar_tir.out"
-printf '14\n9\n3\n2\n21\n10\n5\n21\n9\n72\n13\n' | diff -u - "$work/ar_tir.out"
+printf '14\n9\n3\n2\n21\n10\n5\n21\n9\n77\n11\n72\n13\n' | diff -u - "$work/ar_tir.out"
 if grep -q '^  fallback:' "$work/ar_census.txt"; then
   echo "::error::arrays.l has a TIR fallback"
   exit 1

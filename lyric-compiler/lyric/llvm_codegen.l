@@ -8948,6 +8948,16 @@ func recDtorName(ri: in NRecInfo): String {
   ri.irName + ".dtor"
 }
 
+func recHasNoDefaults(ri: in NRecInfo): Bool {
+  for d in ri.fieldDefaults {
+    match d {
+      case Some(_) -> return false
+      case None -> ()
+    }
+  }
+  true
+}
+
 func recHasRefFields(ri: in NRecInfo): Bool {
   if ri.customDtor.length > 0 {
     return true
@@ -19152,7 +19162,8 @@ func tirUnitMaps(
                       ty = recPtrType(ri),
                       fieldTys = ri.fieldTys,
                       byValue = ri.byValue,
-                      dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" }
+                      dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" },
+                      zeroBits = ri.byValue and recHasNoDefaults(ri)
                     )
                   )
                 }

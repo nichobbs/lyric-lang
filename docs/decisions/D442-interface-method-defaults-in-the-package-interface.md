@@ -10,7 +10,6 @@ D482 carries a function's and a body-carrying member's parameter defaults in the
 
 The node mapper (`mapFileWith`, behind `renumberNodeIds` and every syntactic pass) skipped an interface method's parameters, so a default there kept `nodeId` 0 and the builder found no checker type for it. `IMSig` parameters are now mapped like a function's, so their defaults are numbered and visible to the passes that rewrite expressions.
 
-
 `interfaceDefaultSites` makes a body-less member site of each non-generic interface method that declares a default, and `buildPackageDefaults` builds those next to the other members, keyed by the method's DefPath key and parameter name as for any member. A generic interface is left out (no carried form, as for a generic record). The consumer needs no change: it reads the key of the callee symbol, which for a call through an interface is the interface method's.
 
 ## Not covered

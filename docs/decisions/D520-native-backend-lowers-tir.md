@@ -246,3 +246,11 @@ and still holds generics and un-elaborated contracts.
 - With the builder's `XArrayCopy` and `XZeroValue` nodes (D489), an `array[N, T]` whose elements are not held by value lowers from TIR as the reference-counted list the AST path uses (`arrayType` falls back to the element's list type, registered on demand like any list). `XArrayCopy` is a copy of the list storage (the kernel's copy retains each element) and a no-op for an inline array; an array of arrays would need a deep copy and stays on the AST path. `XZeroValue` is `zeroinitializer` for an inline array of scalar leaves; a record element's zero is the checker's zero expression, which the node does not carry, so that array stays on the AST path, and an array held as a list never has one (a `String` or reference element has no zero value, T0156).
 - Indexing and element assignment (compound included) check the index against the array's own length first, with the inline array's panic message, then read or write the list slot (`lyric_list_get`/`lyric_list_set`); `for` iterates a copy of the list, as the AST path's rewrite does; a bracket literal builds the list element by element.
 - `scripts/ci/native-via-tir/arrayrefs.l` runs both ways and under AddressSanitizer.
+
+## Slice 31: the zero value of record-element arrays
+
+- `lowerZeroValue` lowers `var a: array[N, Rec]` as `zeroinitializer` when `Rec` is a by-value record with no field defaults and every field is zero-bits (D530). Records with defaults and arrays held as lists stay on the AST path.
+
+## Slice 32: protected-type field initializers
+
+- Measured, not changed: the initializers lower from TIR through `constructProtected` (D531); only a generic-union initializer falls back until 3c. `protected.l` pins it under AddressSanitizer.
