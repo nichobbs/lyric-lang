@@ -864,6 +864,14 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which is not a closure and a userdata pointer"
           )
         }
+        case CvLongToNat -> if not (tyEq(inner.ty, TPrim(kind = TPLong)) and tyEq(e.ty, TPrim(kind = TPNat))) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvLongToNat takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) + ", which is not Long to Nat"
+          )
+        }
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))
         }
