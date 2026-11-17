@@ -349,7 +349,7 @@ automate this; until it ships, publish manually in this order:
 4. `lyric-grpc`, `lyric-web`, `lyric-db`, `lyric-health`, `lyric-mq`,
    `lyric-jobs`, `lyric-mail`, `lyric-storage`, `lyric-ws`, `lyric-session`,
    `lyric-search`, `lyric-feature-flags`, `lyric-i18n`, `lyric-testing`
-5. `lyric-lambda` (depends on `lyric-web`)
+5. `lyric-lambda` (depends on `lyric-web`; since D620 published from `lyric-ecosystem`)
 
 **Version alignment.** All first-party packages are versioned together (same
 `MAJOR.MINOR.PATCH`). A version bump requires updating every `[package].version`

@@ -5,7 +5,7 @@
 # real `extern package` declarations in eight ecosystem libraries with
 # stub bodies (`= Ok(0)` / `= Err("not linked")` / `Unit = ()`).  The
 # affected libraries (lyric-mq / session / ws / mail / jobs / storage /
-# aws-secrets / web) compile and pass tests but are silent no-ops at
+# web) compile and pass tests but are silent no-ops at
 # runtime.  See #733 and its eight tracking sub-issues (#777-#784).
 #
 # This script enforces: **no NEW stub bodies may be added** to any
