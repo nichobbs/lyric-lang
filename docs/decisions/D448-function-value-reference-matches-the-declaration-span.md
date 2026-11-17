@@ -14,4 +14,4 @@ The trace (`LYRIC_DEBUG_FUNCREF`, a temporary hook in `recordFuncRefNode`, not k
 
 ## Results
 
-`tir-builder-shapes-e2e.sh` gains `documented_function_value` (a doc-commented function defined after the call that passes it by name; built with `--verify-ir` and run). The compiler census no longer counts the two `lowerFormatBuiltin` sites, and `forms.l`'s `Forms.Derive::report`.
+`tir-builder-shapes-e2e.sh` gains `documented_function_value` (a doc-commented function defined after the call that passes it by name; built with `--verify-ir` and run). The `Lyric.Pipeline` census no longer counts the two `lowerFormatBuiltin` sites (6037, 6109), and the shape builds and runs on dotnet and the JVM.
