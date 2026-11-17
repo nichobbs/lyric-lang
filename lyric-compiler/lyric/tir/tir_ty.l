@@ -240,6 +240,19 @@ pub func isClosureAsPointer(closure: in Ty, ptr: in Ty): Bool {
   }
 }
 
+/// Whether `to` is `from` with another result where `from` has a `Never` one: the same
+/// parameters and asyncness.  A function that never returns is used where one returning any type is expected.
+pub func isNeverFnOf(from: in Ty, to: in Ty): Bool {
+  match from {
+    case TFunc(fp, fr, fa) -> match to {
+      case TFunc(tp, tr, ta) -> fa == ta and tyEq(fr, TNever) and not tyEq(tr, TNever) and
+        paramTysEq(fp, tp)
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 /// Whether `callback` is the C callback type of closure type `closure`: the same result and
 /// the same parameters with one userdata slot added, anywhere in the list (SDL3 puts it first).
 pub func isCallbackOf(closure: in Ty, callback: in Ty): Bool {

@@ -1880,6 +1880,15 @@ test "a Nat-backed range subtype's from takes a Long argument" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a diverging lambda is used as a function of another result (D499)" {
+  val c = censusOf(
+    "package App\nfunc run(fn: in () -> Unit): Unit { fn() }\nfunc pick(fn: in () -> Int): Int { fn() }\nfunc f(): Unit { run({ -> panic(\"x\") }) }\nfunc g(): Int { pick({ -> panic(\"y\") }) }\n"
+  )
+  assertEqualInt(c.built, 4, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })

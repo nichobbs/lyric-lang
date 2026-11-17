@@ -139,6 +139,7 @@ func convText(it: in DefPathInterner, k: in ConvKind): String {
     case CvCallback -> "callback"
     case CvClosureAsPointer -> "closure-as-pointer"
     case CvLongToNat -> "long-to-nat"
+    case CvNeverFn -> "never-fn"
   }
 }
 

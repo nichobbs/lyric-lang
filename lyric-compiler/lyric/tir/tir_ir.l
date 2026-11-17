@@ -151,6 +151,9 @@ pub union ConvKind {
   /// A `Long` taken as a `Nat` (the argument of a `Nat`-backed distinct or range type's `from`):
   /// the value must be non-negative and panics otherwise, as `.toNat()` does.
   case CvLongToNat
+  /// A function value whose result is `Never` used as one with the same parameters and another
+  /// result: it never returns, so the conversion changes the type only.
+  case CvNeverFn
 }
 
 pub union ShortOp {

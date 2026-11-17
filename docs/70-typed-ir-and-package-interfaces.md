@@ -911,6 +911,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The JVM bridge checks a project's packages dependencies first, so the entry package finds the defaults its siblings' interfaces carry (D443).
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
+  - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
