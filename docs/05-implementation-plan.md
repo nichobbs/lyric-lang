@@ -366,8 +366,8 @@ Open-ended. Successful languages spend most of their lifetime here.
 >   tests exercise the operative paths; safe to use in production with
 >   the usual deployment due diligence.
 > - **Operational but live-untested / `@experimental` + WARNING banner** —
->   `lyric-session`, `lyric-storage`.  The Lyric surface compiles and
->   has tests, but the production backend (Redis, S3 / Azure Blob) has
+>   `lyric-storage`.  The Lyric surface compiles and
+>   has tests, but the production backend (S3 / Azure Blob) has
 >   not been exercised against a live provider in CI.  May change
 >   without a SemVer major bump until the missing coverage lands.
 > - **Surface-only / `@experimental`** — every other `lyric-*` package.

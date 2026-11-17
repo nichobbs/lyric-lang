@@ -1141,10 +1141,12 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   ASP.NET Core WebSockets on .NET, Undertow on JVM (Phase 6);
   `WsHandler`/`WsRegistry` interfaces; `WsAuth` and `WsRateLimit`
   aspects.
-- `lyric-session/` — `lyric-session` library: distributed session
-  management (`Lyric.Session`). Redis-backed (StackExchange.Redis) and
-  in-process stores; `SessionStore` interface; session config (TTL,
-  cookie name, SameSite, Secure, HttpOnly).
+- `lyric-session/` — `lyric-session` library: session management
+  (`Lyric.Session`). `SessionStore` interface and the in-process store,
+  pure Lyric on dotnet, the JVM and native; session config (TTL, cookie
+  name, SameSite, Secure, HttpOnly). The Redis backend (`connectRedis()`,
+  StackExchange.Redis and Lettuce kernels) was removed (D614): use
+  `Lyric.Session.Redis` (`session-redis`) in lyric-ecosystem.
 - `lyric-search/` — `lyric-search` library: search engine integration
   (`Lyric.Search`). Elasticsearch and Meilisearch backends, implemented
   over plain HTTP and JSON on `Std.Http`/`Std.Json` (#5408), no native SDK —

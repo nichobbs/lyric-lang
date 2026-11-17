@@ -24,7 +24,7 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 |---|---|---|---|---|
 | `lyric-stdlib` (`Std.*`) | Supported | Supported | Supported | Full cross-target standard library (`String.normalize` / `isNormalized` require `.NET` or `JVM`) |
 | `lyric-web` / `lyric-ws` | Supported | Supported | Supported (`web`) | HTTP/1.1, HTTP/2 (`dotnet`), TLS/mTLS, WebSocket, OpenAPI |
-| `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, Redis/in-memory session |
+| `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, in-memory session (Redis: `Lyric.Session.Redis` in lyric-ecosystem) |
 | `lyric-cache` / `lyric-resilience` | Supported | Supported | Pure-Lyric subset | Redis/in-memory cache, retry/circuit-breaker/rate-limiter |
 | `lyric-logging` / `lyric-otel` / `lyric-health` | Supported | Supported | Pure-Lyric subset | Structured logging, OpenTelemetry spans/metrics, health checks |
 | `lyric-validation` / `lyric-forms` / `lyric-i18n` | Supported | Supported | Supported | Pure-Lyric schema validation, form models, locale bundles |

@@ -533,7 +533,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
 | lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet`, Hangfire in `Lyric.Jobs.Hangfire` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
 | lyric-ws | stable | stable | partial (Undertow WebSocket kernel real and aspects work, suite in CI; fragmented messages and keepalive pings still dotnet-only, Q-WS-001) | D-progress-634 |
-| lyric-session | stable | stable | stable (`InProcessSessionStore` and the Lettuce Redis backend real, suite in CI) | D-progress-631 |
+| lyric-session | stable | stable | stable (`InProcessSessionStore` real, suite in CI); the Redis backend is `Lyric.Session.Redis` in `lyric-ecosystem`; `targets = ["dotnet", "jvm", "native"]` | D-progress-631, D614 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
 | lyric-validation | stable | stable | stable | — |
