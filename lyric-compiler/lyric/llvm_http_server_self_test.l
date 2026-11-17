@@ -333,7 +333,7 @@ test "native Std.HttpServer plaintext HTTP/1.1 round trip: method/path/query/hea
     "}\n" +
     "func main(): Int {\n" +
     "  val listener = startListener(\"http://127.0.0.1:19720/\")\n" +
-    "  val clientConn = match hostConnect(\"127.0.0.1\", 19720) {\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19720, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
@@ -614,7 +614,7 @@ test "native Std.HttpServer keep-alive round trip: two requests over one connect
     "}\n" +
     "func main(): Int {\n" +
     "  val listener = startListener(\"http://127.0.0.1:19723/\")\n" +
-    "  val clientConn = match hostConnect(\"127.0.0.1\", 19723) {\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19723, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
@@ -709,7 +709,7 @@ test "native Std.HttpServer stopListener does not hang on an idle keep-alive con
     "}\n" +
     "func main(): Int {\n" +
     "  val listener = startListener(\"http://127.0.0.1:19724/\")\n" +
-    "  val clientConn = match hostConnect(\"127.0.0.1\", 19724) {\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19724, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
@@ -795,7 +795,7 @@ test "native Std.HttpServer registry does not go stale under a fast connect-disc
     "  var i = 0\n" +
     "  var scanErr = 0\n" +
     "  while i < 200 and scanErr == 0 {\n" +
-    "    match hostConnect(\"127.0.0.1\", 19725) {\n" +
+    "    match hostConnect(\"127.0.0.1\", 19725, 0) {\n" +
     "      case Ok(c) -> {\n" +
     "        hostClose(c)\n" +
     "      }\n" +
@@ -815,7 +815,7 @@ test "native Std.HttpServer registry does not go stale under a fast connect-disc
     "  // THIS connection, stopListener's later hostShutdown on that stale\n" +
     "  // entry would hit this live connection's fd instead of a genuinely\n" +
     "  // dead one -- corrupting or prematurely killing it.\n" +
-    "  val clientConn = match hostConnect(\"127.0.0.1\", 19725) {\n" +
+    "  val clientConn = match hostConnect(\"127.0.0.1\", 19725, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 2\n" +
     "  }\n" +
@@ -857,7 +857,7 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
     "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
-    "  match hostConnect(\"127.0.0.1\", 19726) {\n" +
+    "  match hostConnect(\"127.0.0.1\", 19726, 0) {\n" +
     "    case Ok(conn) -> {\n" +
     "      val reqText = \"GET /race HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
     "      val _ = hostWrite(conn, encodeUtf8(reqText))\n" +
@@ -991,7 +991,7 @@ test "native Std.HttpServer stopListener drains concurrently-enqueued contexts w
     "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
-    "  match hostConnect(\"127.0.0.1\", 19728) {\n" +
+    "  match hostConnect(\"127.0.0.1\", 19728, 0) {\n" +
     "    case Ok(conn) -> {\n" +
     "      val reqText = \"GET /orphan HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
     "      val _ = hostWrite(conn, encodeUtf8(reqText))\n" +
@@ -1157,7 +1157,7 @@ test "native Std.HttpServer runs the TLS handshake off the accept thread with a 
     "    case Ok(l) -> l\n" +
     "    case Err(_) -> return 2\n" +
     "  }\n" +
-    "  val silent = match hostConnect(\"127.0.0.1\", 19730) {\n" +
+    "  val silent = match hostConnect(\"127.0.0.1\", 19730, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> {\n" +
     "      stopListener(listener)\n" +
@@ -1213,7 +1213,7 @@ test "native Std.HttpServer closes an idle keep-alive connection at the idle tim
     "func main(): Int {\n" +
     "  Env.setVar(\"LYRIC_HTTP_IDLE_TIMEOUT_MS\", \"300\")\n" +
     "  val listener = startListener(\"http://127.0.0.1:19731/\")\n" +
-    "  val conn = match hostConnect(\"127.0.0.1\", 19731) {\n" +
+    "  val conn = match hostConnect(\"127.0.0.1\", 19731, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> {\n" +
     "      stopListener(listener)\n" +
@@ -1333,7 +1333,7 @@ test "native Std.HttpServer takeConnection hands the connection to its caller an
     connHelpersSource() +
     "func main(): Int {\n" +
     "  val listener = startListener(\"http://127.0.0.1:19732/\")\n" +
-    "  val client = match hostConnect(\"127.0.0.1\", 19732) {\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", 19732, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
@@ -1381,7 +1381,7 @@ test "native Std.HttpServer takeConnection refuses an HTTP/1.0 request and a req
     "import Std.TcpHost\n" +
     connHelpersSource() +
     "func refused(port: in Int, listener: in HttpListener, request: in String, marker: in String): Bool {\n" +
-    "  val client = match hostConnect(\"127.0.0.1\", port) {\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", port, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return false\n" +
     "  }\n" +
@@ -1425,7 +1425,7 @@ test "native Std.HttpServer chunked response streams chunks and terminates with 
     connHelpersSource() +
     "func main(): Int {\n" +
     "  val listener = startListener(\"http://127.0.0.1:19734/\")\n" +
-    "  val client = match hostConnect(\"127.0.0.1\", 19734) {\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", 19734, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
@@ -1478,11 +1478,11 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "func main(): Int {\n" +
     "  Env.setVar(\"LYRIC_HTTP_MAX_CONNECTIONS\", \"1\")\n" +
     "  val listener = startListener(\"http://127.0.0.1:19735/\")\n" +
-    "  val c1 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "  val c1 = match hostConnect(\"127.0.0.1\", 19735, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 1\n" +
     "  }\n" +
-    "  val c2 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "  val c2 = match hostConnect(\"127.0.0.1\", 19735, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 2\n" +
     "  }\n" +
@@ -1544,7 +1544,7 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "  // c4 and is blocked at rtSemWait(queue.connLimit) when shutdown starts.\n" +
     "  // stopListener posts connLimit and spawnConnectionThread closes c4 on\n" +
     "  // seeing queue.stopping without ever serving /fourth.\n" +
-    "  val c3 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "  val c3 = match hostConnect(\"127.0.0.1\", 19735, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 12\n" +
     "  }\n" +
@@ -1561,7 +1561,7 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "  if not readUntil(c3, acc3, \"third-ok\") {\n" +
     "    return 15\n" +
     "  }\n" +
-    "  val c4 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "  val c4 = match hostConnect(\"127.0.0.1\", 19735, 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 16\n" +
     "  }\n" +

@@ -99,6 +99,12 @@ extern type JDuration = "java.time.Duration"
 
 extern type JSystem = "java.lang.System"
 
+extern type JThreadCls = "java.lang.Thread"
+
+extern type JRunnableIface = "java.lang.Runnable"
+
+extern type JAtomicFlag = "java.util.concurrent.atomic.AtomicBoolean"
+
 /// A client. `unixPath` is empty for the JDK transport (`jdk` is the client
 /// that sends); otherwise every request is written to that Unix domain socket
 /// by the pure-Lyric HTTP/1.1 codec (`Std.HttpClientWire`) and `jdk` is unused
@@ -1107,15 +1113,84 @@ func readAllAndClose(ins: in JInputStream): slice[Byte] {
   }
 }
 
+// The text every kernel reports for a send that ended because its deadline
+// passed; `Std.Http` turns exactly this into `HttpError.Timeout`.
+val timedOutText: String = "request timed out"
+
+pub func hostTimeoutMessage(): String {
+  timedOutText
+}
+
+// Closes `ins` when `deadlineNanos` (a `System.nanoTime()` instant) passes
+// before the reader has claimed `state`. The JDK's request timeout covers only
+// the time until the response headers arrive, so a body that stalls would
+// otherwise hold the call past its deadline; closing the stream from another
+// thread is what unblocks a blocked `read`. The reader interrupts this thread
+// once it is done, so a fast response does not leave a sleeper behind.
+ref record BodyWatchdog {
+  ins: JInputStream
+  deadlineNanos: Long
+  state: JAtomicFlag
+}
+
+func sleepNanos(nanos: in Long): Unit {
+  JThreadCls.sleep(nanos / 1000000i64, (nanos % 1000000i64).toInt())
+}
+
+impl JRunnableIface for BodyWatchdog {
+  func run(): Unit {
+    try {
+      val remaining = self.deadlineNanos - JSystem.nanoTime()
+      if remaining > 0i64 {
+        sleepNanos(remaining)
+      }
+      if self.state.compareAndSet(false, true) {
+        self.ins.close()
+      }
+    } catch Bug as _ {
+      ()
+    }
+  }
+}
+
+// Reads the whole body, ending the call at `deadlineNanos` (0 = no deadline)
+// with `timedOutText`.
+func readAllWithin(ins: in JInputStream, deadlineNanos: in Long): slice[Byte] {
+  if deadlineNanos == 0i64 {
+    return readAllAndClose(ins)
+  }
+  val state: JAtomicFlag = JAtomicFlag.new(false)
+  val dog = BodyWatchdog(ins = ins, deadlineNanos = deadlineNanos, state = state)
+  val watcher: JThreadCls = JThreadCls.startVirtualThread(dog)
+  try {
+    val bytes = ins.readAllBytes()
+    if not state.compareAndSet(false, true) {
+      panic(timedOutText)
+    }
+    watcher.interrupt()
+    ins.close()
+    bytes
+  } catch Bug as b {
+    val expired = not state.compareAndSet(false, true)
+    watcher.interrupt()
+    ins.close()
+    if expired {
+      panic(timedOutText)
+    }
+    panic(b.message)
+  }
+}
+
 func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage {
   if client.unixPath.length > 0 {
     return doSendUnix(client, request)
   }
+  val deadlineNanos = if request.timeoutNanos > 0i64 { JSystem.nanoTime() + request.timeoutNanos } else { 0i64 }
   val jreq = buildJavaRequest(request)
   val jdk: JHttpClient = client.jdk
   val resp: JHttpResponse = jdk.send(jreq, JBodyHandlers.ofInputStream())
   val ins: JInputStream = resp.body()
-  val bytes = readAllAndClose(ins)
+  val bytes = readAllWithin(ins, deadlineNanos)
   val headers: JHttpHeaders = resp.headers()
   HttpResponseMessage(
     status = resp.statusCode(),
@@ -1457,6 +1532,54 @@ func readBodyTextOf(response: in HttpResponseMessage): String {
 }
 
 // ---------------------------------------------------------------------------
+// Deadline classification (#9067).  A send under a `makeCancelSourceTimeout`
+// token ends one of three ways when the deadline passes: the JDK's own
+// request timeout fires (`HttpTimeoutException` / `HttpConnectTimeoutException`,
+// "request timed out" / "HTTP connect timed out"), the body watchdog fires
+// (`timedOutText`), or the deadline had already passed before the send began
+// (the `OperationCanceledException` panic of `throwIfCancelled`).  All three
+// are reported as `timedOutText`.  The JDK timer is armed from the time
+// remaining at send, while the token compares `System.nanoTime()` to its
+// deadline lazily, so the JDK can report a timeout a few microseconds before
+// `isCancelled(token)` turns true; the failure is held back until it has, so
+// a caller that checks the token after a timeout always sees it cancelled.
+// An explicit `cancelSource` keeps the cancellation wording, and every other
+// failure keeps its own text.
+// ---------------------------------------------------------------------------
+val maxDeadlineSlackNanos: Long = 1000000000i64
+
+func deadlinePassed(token: in CancellationToken): Bool {
+  JSystem.nanoTime() - token.deadlineMs >= 0i64
+}
+
+func awaitDeadline(token: in CancellationToken): Unit {
+  var left = token.deadlineMs - JSystem.nanoTime()
+  while left > 0i64 {
+    sleepNanos(if left > 1000000i64 { 1000000i64 } else { left })
+    left = token.deadlineMs - JSystem.nanoTime()
+  }
+}
+
+func looksLikeDeadline(typeName: in String, message: in String): Bool {
+  typeName.contains("TimeoutException") or message == timedOutText or message.contains("timed out") or
+    message.contains("cancellation was requested") or
+    typeName.contains("CancellationException")
+}
+
+func sendFailureText(typeName: in String, message: in String, token: in CancellationToken): String {
+  if token.deadlineMs > 0i64 and not token.flag.get() and looksLikeDeadline(typeName, message) {
+    if deadlinePassed(token) or token.deadlineMs - JSystem.nanoTime() <= maxDeadlineSlackNanos {
+      awaitDeadline(token)
+      timedOutText
+    } else {
+      message
+    }
+  } else {
+    message
+  }
+}
+
+// ---------------------------------------------------------------------------
 // V0012-safe wrappers — the public send/read surface, mirroring
 // _kernel/http_host.l.  On JVM there is no CLR protected-region
 // restriction; the try/catch here is the kernel's exception -> Result
@@ -1515,7 +1638,7 @@ pub async func hostSendWithCancelSafe(
     throwIfCancelled(token)
     Ok(value = doSend(client, withCancelDeadline(request, token)))
   } catch Bug as b {
-    Err(error = b.message)
+    Err(error = sendFailureText(b.typeName, b.message, token))
   }
 }
 
@@ -1526,7 +1649,7 @@ pub async func hostGetWithCancelSafe(
     throwIfCancelled(token)
     Ok(value = doSend(client, withCancelDeadline(hostMakeRequest("GET", url), token)))
   } catch Bug as b {
-    Err(error = b.message)
+    Err(error = sendFailureText(b.typeName, b.message, token))
   }
 }
 
@@ -1542,7 +1665,7 @@ pub async func hostPostStringWithCancelSafe(
     val request = hostWithStringBody(hostMakeRequest("POST", url), contentType, body)
     Ok(value = doSend(client, withCancelDeadline(request, token)))
   } catch Bug as b {
-    Err(error = b.message)
+    Err(error = sendFailureText(b.typeName, b.message, token))
   }
 }
 

@@ -4760,6 +4760,22 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.HttpServer request-body test ran: http_server_jvm_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_server_jvm_tests.l"
+      # Std.TcpHost JVM kernel (#9042, D611) and the HttpError.Timeout contract (#9067, D612).
+      - name: Std.TcpHost transport kernel tests on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"Std.TcpHost test ran: tcp_host_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tcp_host_tests.l"
+      - name: Std.TcpHost server-TLS tests on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"Std.TcpHost TLS test ran: tcp_host_tls_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tcp_host_tls_tests.l"
+      - name: Std.Http timeout tests on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"Std.Http timeout test ran: http_timeout_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_timeout_tests.l"
 
       # Extra barrier (JVM batch 1a-split-2, #7021): this sub-batch had
       # drifted to 15 concurrent steps (one of #7005/#7021's own fixes
@@ -7277,11 +7293,16 @@ jobs:
       # transport that drives Std.HttpEngine. Runs a real in-process loopback
       # — a plain echo, a server-side TLS handshake that negotiates http/1.1
       # via ALPN against the real Lyric HTTPS client, and both mTLS
-      # accept/reject outcomes. dotnet-only (the JVM/native transports are
-      # separate later issues), so there is no JVM twin of this step.
+      # accept/reject outcomes. dotnet and JVM (the JVM twin is in the JVM job).
       - name: Std.TcpHost transport-kernel test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/tcp_host_tls_tests.l
+      - name: Std.TcpHost plain TCP test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/tcp_host_tests.l
+      - name: Std.Http timeout test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_timeout_tests.l
 
       # Std.HttpServer dotnet server-assembly test coverage (#5884, docs/61
       # §6.1 item 9 / §6.2 / §6.3 phase 3.3; D-progress-700): the dotnet

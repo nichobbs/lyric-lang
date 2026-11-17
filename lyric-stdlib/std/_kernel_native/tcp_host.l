@@ -149,6 +149,7 @@ import Std.Core
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
 import Std.IoWait as IoWait
+import Std.Time as Time
 
 // =====================================================================
 // Public error + connection types.
@@ -479,11 +480,18 @@ pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
 
 /// Dial a plain (non-TLS) TCP connection to `host`:`port`. `host` may be
 /// an IP literal or a DNS name (`lyric_sock_connect`'s `getaddrinfo`
-/// resolves it). A connect failure (refused, unreachable, unresolved) is
+/// resolves it). `connectTimeoutMs` bounds the connect, name resolution
+/// included (`0` = the operating system's own limit). A connect failure
+/// (refused, unreachable, unresolved, timed out) is
 /// `Err(TransportFailed(...))`.
 @unsafe_ffi
 @experimental
-pub func hostConnect(host: in String, port: in Int): Result[Conn, TcpError] {
+pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): Result[Conn, TcpError]
+  requires: connectTimeoutMs >= 0
+{
+  if connectTimeoutMs > 0 {
+    return hostConnectLimited(host, port, connectTimeoutMs)
+  }
   val c = toC(host)
   val fd = rtSockConnect(c, port)
   freeC(c)
@@ -1101,7 +1109,7 @@ pub func hostConnectTls(
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
 ): Result[Conn, TcpError] {
-  match hostConnect(host, port) {
+  match hostConnect(host, port, 0) {
     case Err(e) -> Err(error = e)
     case Ok(plain) -> hostUpgradeClientTls(plain, host, trust, clientIdentity, minVersion, alpnCsv)
   }
@@ -1234,6 +1242,24 @@ pub func hostWakePipeSignal(p: in WakePipe): Unit {
 pub func hostWakePipeClose(p: in WakePipe): Unit {
   val _r = rtSockClose(p.readFd)
   val _w = rtSockClose(p.writeFd)
+}
+
+// `hostConnect`'s limited form: the connect is over by `connectTimeoutMs` from
+// now, name resolution included, and a deadline that passes first is
+// `TransportFailed("connect timed out ...")`.
+func hostConnectLimited(host: in String, port: in Int, connectTimeoutMs: in Int): Result[Conn, TcpError] {
+  val deadline = Time.monotonicNanos() + connectTimeoutMs.toLong() * 1000000i64
+  match hostConnectBounded(host, port, deadline, 0 - 1) {
+    case Ok(c) -> Ok(value = c)
+    case Err(BoundDeadlinePassed) -> Err(
+      error = TransportFailed(
+        message = "connect timed out after " + connectTimeoutMs.toString() +
+          " ms"
+      )
+    )
+    case Err(BoundInterrupted) -> Err(error = TransportFailed(message = "connect interrupted"))
+    case Err(BoundFailed(e)) -> Err(error = e)
+  }
 }
 
 /// `hostConnect` within the limits, name resolution included.

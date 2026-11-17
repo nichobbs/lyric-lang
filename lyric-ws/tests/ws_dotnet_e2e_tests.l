@@ -128,7 +128,7 @@ func startEchoServer(port: in Int): StartedServer {
 val clientKey: String = "dGhlIHNhbXBsZSBub25jZQ=="
 
 func dial(host: in String, port: in Int): Conn {
-  match hostConnect(host, port) {
+  match hostConnect(host, port, 0) {
     case Ok(c) -> c
     case Err(e) -> panic("client connect failed: " + TcpError.message(e))
   }

@@ -14,6 +14,7 @@ import Std.Environment
 import Std.Errors
 import Std.HttpHost as HostHttp
 import Std.Task
+import Std.Time as Time
 import Std.Tls
 import Std.String as Str
 
@@ -227,15 +228,29 @@ func unsupportedClientError(url: in String, reason: in String): HttpError {
   ConnectionFailed(url = url, message = reason)
 }
 
+// The one place a kernel's failure text becomes a typed `HttpError`. Every
+// kernel reports a send that ended because its deadline passed with exactly
+// `HostHttp.hostTimeoutMessage()`; that is `Timeout`, with the time the send
+// ran as `durationMs`. Any other failure is `ConnectionFailed` with the
+// kernel's own text.
+func sendFailure(url: in String, message: in String, startedNanos: in Long): HttpError {
+  if message == HostHttp.hostTimeoutMessage() {
+    Timeout(url = url, durationMs = (Time.monotonicNanos() - startedNanos) / 1000000i64)
+  } else {
+    ConnectionFailed(url = url, message = message)
+  }
+}
+
 impl HttpClient for HttpClientImpl {
   async func send(request: in HttpRequest): Result[HttpResponse, HttpError] {
     match self.unsupportedReason {
       case Some(reason) -> return Err(error = unsupportedClientError(request.url, reason))
       case None -> ()
     }
+    val startedNanos = Time.monotonicNanos()
     val result = await HostHttp.hostSendSafe(self.handle, request.handle)
     match result {
-      case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+      case Err(message) -> return Err(error = sendFailure(request.url, message, startedNanos))
       case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
     }
   }
@@ -245,9 +260,10 @@ impl HttpClient for HttpClientImpl {
       case Some(reason) -> return Err(error = unsupportedClientError(request.url, reason))
       case None -> ()
     }
+    val startedNanos = Time.monotonicNanos()
     val result = await HostHttp.hostSendWithCancelSafe(self.handle, request.handle, token)
     match result {
-      case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+      case Err(message) -> return Err(error = sendFailure(request.url, message, startedNanos))
       case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
     }
   }
@@ -260,9 +276,10 @@ impl HttpClient for HttpClientImpl {
           case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
           case None -> ()
         }
+        val startedNanos = Time.monotonicNanos()
         val result = await HostHttp.hostGetSafe(self.handle, parsed.value)
         match result {
-          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
         }
       }
@@ -277,9 +294,10 @@ impl HttpClient for HttpClientImpl {
           case Some(reason) -> return Err(error = unsupportedClientError(parsed.value, reason))
           case None -> ()
         }
+        val startedNanos = Time.monotonicNanos()
         val result = await HostHttp.hostPostStringSafe(self.handle, parsed.value, body, "text/plain")
         match result {
-          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
         }
       }
@@ -295,9 +313,10 @@ impl HttpClient for HttpClientImpl {
           case None -> ()
         }
         val req = withStringBody(newHttpRequest("PUT", parsed.value), "text/plain", body)
+        val startedNanos = Time.monotonicNanos()
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
-          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
         }
       }
@@ -313,9 +332,10 @@ impl HttpClient for HttpClientImpl {
           case None -> ()
         }
         val req = newHttpRequest("DELETE", parsed.value)
+        val startedNanos = Time.monotonicNanos()
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
-          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
         }
       }
@@ -331,9 +351,10 @@ impl HttpClient for HttpClientImpl {
           case None -> ()
         }
         val req = withStringBody(newHttpRequest("PATCH", parsed.value), "text/plain", body)
+        val startedNanos = Time.monotonicNanos()
         val result = await HostHttp.hostSendSafe(self.handle, req.handle)
         match result {
-          case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+          case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
           case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
         }
       }
@@ -1057,18 +1078,20 @@ pub func withBytesBody(
 /// Send a prepared HTTP request using the default client.
 ///
 /// # Errors
-/// - `ConnectionFailed`: DNS, connection, TLS, cancellation, or other
-///   host send failures that are not classified more precisely yet.
-/// - `Timeout`: reserved for future host timeout classification.
+/// - `ConnectionFailed`: DNS, connection, TLS, an explicit cancellation, or
+///   any other host send failure.
+/// - `Timeout`: not produced here; a call without a cancellation token has no
+///   deadline of its own. See `sendWithCancelAsync`.
 ///
 /// Non-2xx status codes are returned as successful HttpResponse values.
 /// Callers decide whether to treat them as domain errors via status
 /// helpers or `ensureSuccess`.
 @stable(since = "1.0")
 pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpError] {
+  val startedNanos = Time.monotonicNanos()
   val result = await HostHttp.hostSendSafe(HostHttp.hostDefaultClient(), request.handle)
   match result {
-    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Err(message) -> return Err(error = sendFailure(request.url, message, startedNanos))
     case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
@@ -1080,15 +1103,16 @@ pub async func sendAsync(request: in HttpRequest): Result[HttpResponse, HttpErro
 ///
 /// # Errors
 /// - `InvalidUrl`: URL parsing failed.
-/// - `ConnectionFailed` / `Timeout`: host send failures.
+/// - `ConnectionFailed`: host send failures.
 @stable(since = "1.0")
 pub async func getAsync(url: in String): Result[HttpResponse, HttpError] {
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
+      val startedNanos = Time.monotonicNanos()
       val result = await HostHttp.hostGetSafe(HostHttp.hostDefaultClient(), parsed.value)
       match result {
-        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
       }
     }
@@ -1101,9 +1125,10 @@ pub async func postAsync(url: in String, body: in String): Result[HttpResponse, 
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
+      val startedNanos = Time.monotonicNanos()
       val result = await HostHttp.hostPostStringSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain")
       match result {
-        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
       }
     }
@@ -1248,24 +1273,33 @@ pub async func retry(request: in HttpRequest, maxAttempts: in Int, backoffMs: in
 /// while the request is in flight.
 ///
 /// # Errors
-/// - `ConnectionFailed`: classified for cancellations as well as
-///   transport failures (the message includes "cancelled" when
-///   the token signalled).
+/// - `Timeout`: the send ended because the token's deadline
+///   (`makeCancelSourceTimeout`) passed, whatever stage it had reached
+///   (name resolution, connect, TLS, request write, response headers or
+///   body), and the token reads as cancelled by then. `durationMs` is how
+///   long the send ran. The request may or may not have been applied.
+///   A .NET cancellation does not say why a token was cancelled, so there
+///   any cancellation that ends the send is `Timeout`; the JVM and native
+///   targets tell a deadline from an explicit `cancelSource`.
+/// - `ConnectionFailed`: every other failure, including a refused or
+///   unreachable connection (the request was not applied), and an explicit
+///   cancellation on the JVM and native targets (the message names it).
 @stable(since = "1.0")
 pub async func sendWithCancelAsync(
   request: in HttpRequest, token: in CancellationToken
 ): Result[HttpResponse, HttpError] {
+  val startedNanos = Time.monotonicNanos()
   val result = await HostHttp.hostSendWithCancelSafe(HostHttp.hostDefaultClient(), request.handle, token)
   match result {
-    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Err(message) -> return Err(error = sendFailure(request.url, message, startedNanos))
     case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
 
 /// Send a request with a timeout in milliseconds.  An auto-cancelling
 /// `CancellationTokenSource` fires after `timeoutMs`; the request is
-/// cancelled, surfacing as `ConnectionFailed` with a "cancelled"
-/// message.  The source is disposed when the call returns.
+/// cancelled, surfacing as `HttpError.Timeout` (see `sendWithCancelAsync`).
+/// The source is disposed when the call returns.
 ///
 /// Disposal is inlined rather than `defer`red: `defer` desugars to a
 /// `try/finally` around every statement that follows it, and the MSIL
@@ -1297,10 +1331,11 @@ pub async func sendWithTimeoutAsync(request: in HttpRequest, timeoutMs: in Int):
 {
   val src = makeCancelSourceTimeout(timeoutMs)
   val tok = sourceToken(src)
+  val startedNanos = Time.monotonicNanos()
   val result = await HostHttp.hostSendWithCancelSafe(HostHttp.hostDefaultClient(), request.handle, tok)
   disposeSource(src)
   match result {
-    case Err(message) -> return Err(error = ConnectionFailed(url = request.url, message = message))
+    case Err(message) -> return Err(error = sendFailure(request.url, message, startedNanos))
     case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = request.url))
   }
 }
@@ -1311,9 +1346,10 @@ pub async func getWithCancelAsync(url: in String, token: in CancellationToken): 
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
+      val startedNanos = Time.monotonicNanos()
       val result = await HostHttp.hostGetWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, token)
       match result {
-        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
       }
     }
@@ -1344,9 +1380,10 @@ pub async func postWithCancelAsync(
   match Url.tryFrom(url) {
     case Err(e) -> return Err(error = e)
     case Ok(parsed) -> {
+      val startedNanos = Time.monotonicNanos()
       val result = await HostHttp.hostPostStringWithCancelSafe(HostHttp.hostDefaultClient(), parsed.value, body, "text/plain", token)
       match result {
-        case Err(message) -> return Err(error = ConnectionFailed(url = parsed.value, message = message))
+        case Err(message) -> return Err(error = sendFailure(parsed.value, message, startedNanos))
         case Ok(response) -> return Ok(value = HttpResponse(handle = response, url = parsed.value))
       }
     }
