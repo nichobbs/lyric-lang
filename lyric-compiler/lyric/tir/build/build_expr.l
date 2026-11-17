@@ -3537,6 +3537,45 @@ func indexKeyTy(how: in TirT.IndexKind, recv: in Ty): Option[Ty] {
   }
 }
 
+func isIntPrimTy(t: in Ty): Bool {
+  match t {
+    case TPrim(TPInt) -> true
+    case _ -> false
+  }
+}
+
+/// An index of a range subtype or a distinct type over an integer, as that integer: the
+/// operand unwrapped (`CvUnrefine`, `CvUnwrapDistinct`) until it is a primitive, or as it was
+/// when it is neither.
+func unwrapIndexOperand(env: in BuildEnv, t: in TExpr): TExpr {
+  match t.ty {
+    case TRefined(u, _, _, _) -> unwrapIndexOperand(env, convertNode(env, t, u, CvUnrefine))
+    case TNamed(did, targs) -> {
+      if targs.count != 0 {
+        return t
+      }
+      val under = match symbolOfDefId(env.ctx.tbl, did) {
+        case Some(sym) -> match sym.kind {
+          case DKDistinctType(_, _) -> distinctUnderlyingOf(
+            env.ctx.tbl,
+            TyUser(id = did, name = sym.name, args = newList())
+          )
+          case _ -> None
+        }
+        case None -> None
+      }
+      match under {
+        case Some(u) -> match tyOfType(env.ctx, u) {
+          case Ok(uty) -> unwrapIndexOperand(env, convertNode(env, t, uty, CvUnwrapDistinct(sym = did)))
+          case Err(_) -> t
+        }
+        case None -> t
+      }
+    }
+    case _ -> t
+  }
+}
+
 /// The receiver and index of `recv[idx]`, built and converted: a single index only.
 func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[Expr]): Option[IndexParts] {
   if idxs.count != 1 {
@@ -3551,7 +3590,7 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
       return None
     }
   }
-  val it = match buildExpr(env, idxs[0]) { case Some(t) -> t; case None -> return None }
+  val it0 = match buildExpr(env, idxs[0]) { case Some(t) -> t; case None -> return None }
   val keyTy = match indexKeyTy(how, rt.ty) {
     case Some(k) -> k
     case None -> {
@@ -3561,6 +3600,7 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
   }
   // An array, slice, string or list index may be any integer type (docs/01 section on arrays: a
   // non-Int index is range checked as a Long before it is narrowed), so it keeps its own type.
+  val it = if isIntPrimTy(keyTy) { unwrapIndexOperand(env, it0) } else { it0 }
   val keepsOwnType = match keyTy {
     case TPrim(TPInt) -> match it.ty { case TPrim(k) -> isIntegerPrim(k); case _ -> false }
     case _ -> false

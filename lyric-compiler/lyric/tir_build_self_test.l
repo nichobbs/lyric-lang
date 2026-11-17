@@ -2870,3 +2870,11 @@ test "an array indexed by a Long keeps the Long index (D496)" {
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+test "an array indexed by a range subtype is indexed by its underlying integer (D497)" {
+  val c = censusOf(
+    "package App\ntype Slot = Int range 0 ..= 2\n\nfunc slotAt(a: in array[3, Int], s: in Slot): Int {\n  a[s]\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
