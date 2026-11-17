@@ -240,13 +240,12 @@ pub func isClosureAsPointer(closure: in Ty, ptr: in Ty): Bool {
   }
 }
 
-/// Whether `to` is `from` with a `Unit` result where `from` has a `Never` one: the same
-/// parameters and asyncness.  A function that never returns is used where one returning `Unit` is expected.
-pub func isNeverFnAsUnit(from: in Ty, to: in Ty): Bool {
+/// Whether `to` is `from` with another result where `from` has a `Never` one: the same
+/// parameters and asyncness.  A function that never returns is used where one returning any type is expected.
+pub func isNeverFnOf(from: in Ty, to: in Ty): Bool {
   match from {
     case TFunc(fp, fr, fa) -> match to {
-      case TFunc(tp, tr, ta) -> fa == ta and tyEq(fr, TNever) and
-        tyEq(tr, TPrim(kind = TPUnit)) and
+      case TFunc(tp, tr, ta) -> fa == ta and tyEq(fr, TNever) and not tyEq(tr, TNever) and
         paramTysEq(fp, tp)
       case _ -> false
     }
