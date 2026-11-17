@@ -611,4 +611,31 @@ if grep -q "TIR build census \[.*src/b/b.l\]: 1 of 1 function bodies built" "$WO
 else
   echo "FAIL (package_qualified_type_function)"; grep -E "first error" "$WORK/proj.log" | head -3; fail=1
 fi
+# A host call chain whose middle result is a host class no `extern type` names, built for the JVM
+# (D444): `m.entrySet().iterator()` is typed from the host metadata.  The program is also run.
+cat > "$WORK/jvm_host_chain.l" <<'LYRIC'
+package JvmHostChain
+extern type HM = "java.util.HashMap"
+extern type It = "java.util.Iterator"
+
+func hasEntries(m: in HM): Bool {
+  val it: It = m.entrySet().iterator()
+  it.hasNext()
+}
+
+func main(): Int {
+  val m: HM = HM.new()
+  if hasEntries(m) { 1 } else { 0 }
+}
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_chain.l" -o "$WORK/jvm_host_chain.jar" >"$WORK/jvm_host_chain.log" 2>&1)
+jline="$(grep "^TIR build census" "$WORK/jvm_host_chain.log" | head -1)"
+if [[ -z "$jline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$jline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$jline")" ]]; then
+  echo "FAIL (jvm_host_chain): not every body built"; grep -E "first error" "$WORK/jvm_host_chain.log" | head -3; fail=1
+elif ! grep -q "^I0003 census .*: 0 diagnostic" "$WORK/jvm_host_chain.log"; then
+  echo "FAIL (jvm_host_chain): the verifier rejected a built body"; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_chain.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_chain): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_chain"; fi
+fi
 exit $fail
