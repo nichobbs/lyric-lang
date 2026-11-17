@@ -3774,6 +3774,9 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     }
     case _ -> ()
   }
+  if isCallbackOf(t.ty, ty) {
+    return Some(value = convertNode(env, t, ty, CvCallback))
+  }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {

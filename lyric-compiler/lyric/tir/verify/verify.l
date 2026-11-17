@@ -846,6 +846,15 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which are not one generic type at other arguments"
           )
         }
+        case CvCallback -> if not isCallbackOf(inner.ty, e.ty) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvCallback takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) +
+              ", which is not a closure and the C callback type that adds a userdata slot to it"
+          )
+        }
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))
         }
