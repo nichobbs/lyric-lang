@@ -903,6 +903,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `TIR_CENSUS_PARTIAL=1` aggregates the builds a stopped or running wide census has kept, without building (D528).
   - A host method called on a `String` value (`a.compareTo(b)`, the JVM kernels' calls on `java.lang.String`) is an extern call with the value as receiver, found through the host metadata (D493).
 - A function ending in a `while true` or `loop` with no `break` out of it, and a generator body ending in `try`, build as branches (D440).
+- A record that `impl`s an extern interface converts to that interface wherever a value is converted, not only as an argument (D441).
   - A closure passed to an `extern func` callback parameter is a `CvCallback` conversion (the declared type adds the userdata slot), and one passed as the userdata pointer a `CvClosureAsPointer` (D494).
   - A list literal the checker typed as a slice, used where `array[N, T]` of the same length is expected, is an array literal with each element converted (D495).
   - An array, slice, string or list index of any integer primitive keeps its own type; a backend range checks and narrows it (D496).
