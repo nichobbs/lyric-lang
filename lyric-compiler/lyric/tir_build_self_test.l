@@ -1880,6 +1880,15 @@ test "a Nat-backed range subtype's from takes a Long argument" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a function returning Never is used as one returning Unit (D499)" {
+  val c = censusOf(
+    "package App\nfunc stop(): Never { panic(\"x\") }\nfunc run(f: func(): Unit): Unit { f() }\nfunc main(): Unit { run(stop) }\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
