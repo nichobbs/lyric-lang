@@ -812,9 +812,35 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case _ -> report(c, e.id, "zero-value", "a zero value of " + renderTy(zt) + ", which is not an array type")
       }
     }
-    case XIndex(recv, idx, _) -> {
+    case XIndex(recv, idx, how) -> {
       visitExpr(c, recv)
       visitExpr(c, idx)
+      val positional = match how {
+        case IkArray -> true
+        case IkSlice -> true
+        case IkString -> true
+        case IkList -> true
+        case IkBuffer -> true
+        case _ -> false
+      }
+      if positional {
+        val isInteger = match idx.ty {
+          case TPrim(TPByte) -> true
+          case TPrim(TPInt) -> true
+          case TPrim(TPUInt) -> true
+          case TPrim(TPLong) -> true
+          case TPrim(TPULong) -> true
+          case _ -> false
+        }
+        if not isInteger {
+          report(
+            c,
+            e.id,
+            "index-type",
+            "a positional index of type " + renderTy(idx.ty) + ", which is not an integer primitive"
+          )
+        }
+      }
     }
     case XConvert(kind, inner) -> {
       visitExpr(c, inner)
