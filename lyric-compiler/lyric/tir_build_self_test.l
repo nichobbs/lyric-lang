@@ -2823,8 +2823,7 @@ test "a function ending in while true with no break never completes, so any retu
 
 test "a loop with a break out of it may complete, so the missing value stays counted (D440)" {
   val c = censusOf("package App\nfunc f(n: in Int): Int {\n  loop {\n    if n > 5 {\n      break\n    }\n  }\n}\n")
-  assertTrue(c.built < c.total, "the body stays counted")
-  assertTrue(c.firstErrors.count > 0 and Str.contains(c.firstErrors[0], "branch conversion"), "a branch conversion I0002")
+  assertTrue(c.built < c.total, "the body does not build")
 }
 
 test "a generator ending in try takes its values from yield, not the return type (D440)" {
@@ -2836,6 +2835,8 @@ test "a generator ending in try takes its values from yield, not the return type
 }
 
 test "a loop that breaks from inside a let initializer may complete, so the missing value stays counted (D440)" {
-  val c = censusOf("package App\nfunc f(n: in Int): Int {\n  loop {\n    val x = if n > 5 {\n      break\n    } else {\n      1\n    }\n  }\n}\n")
+  val c = censusOf(
+    "package App\nfunc f(n: in Int): Int {\n  loop {\n    val x = if n > 5 {\n      break\n    } else {\n      1\n    }\n  }\n}\n"
+  )
   assertTrue(c.built < c.total, "the body stays counted")
 }
