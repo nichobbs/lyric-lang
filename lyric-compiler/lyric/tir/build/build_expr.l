@@ -2650,10 +2650,6 @@ func ffiIntrinsicCall(env: in BuildEnv, fn: in Expr): Option[String] {
   }
 }
 
-func isHostStringName(name: in String): Bool {
-  name == "System.String" or name == "java.lang.String"
-}
-
 /// `s.compareTo(t)`, `s.startsWith(p)` and the other host methods a `String` value is called with where the
 /// checker records no callee (the host's string is the language's `String`, so the receiver is the value
 /// itself): an extern call on whichever host string type declares the method, found through the host
