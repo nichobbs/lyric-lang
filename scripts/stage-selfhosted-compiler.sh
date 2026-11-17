@@ -42,9 +42,11 @@ cat > "$driver" <<'EOF'
 // Auto-generated driver for the self-hosted compiler-bundle staging step.
 // Importing Lyric.Cli makes emitCompilerBundle discover and emit the whole
 // compiler-package closure as one Lyric.Compiler.dll (Std.* referenced
-// externally as Lyric.Stdlib).
+// externally as Lyric.Stdlib).  Lyric.ContractMetaEmit is imported by no
+// compiler package, only by its own self-test, so it is named here to be linked.
 package SelfHostedCompilerStage
 import Lyric.Cli
+import Lyric.ContractMetaEmit
 func main(): Unit { }
 EOF
 
