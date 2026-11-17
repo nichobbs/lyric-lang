@@ -890,6 +890,15 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which is not a closure and a userdata pointer"
           )
         }
+        case CvNeverFnAsUnit -> if not isNeverFnAsUnit(inner.ty, e.ty) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvNeverFnAsUnit takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) +
+              ", which is not a function returning Never and the same function returning Unit"
+          )
+        }
         case CvLongToNat -> if not (tyEq(inner.ty, TPrim(kind = TPLong)) and tyEq(e.ty, TPrim(kind = TPNat))) {
           report(
             c,

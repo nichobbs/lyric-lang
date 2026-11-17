@@ -909,6 +909,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - An array, slice, string or list index of any integer primitive keeps its own type; a backend range checks and narrows it (D496).
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
+  - A function value returning `Never` used as one returning `Unit` with the same parameters is a `CvNeverFnAsUnit` conversion (D499).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

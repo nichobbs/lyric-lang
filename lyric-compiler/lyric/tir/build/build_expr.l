@@ -3839,6 +3839,9 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if isCallbackOf(t.ty, ty) {
     return Some(value = convertNode(env, t, ty, CvCallback))
   }
+  if isNeverFnAsUnit(t.ty, ty) {
+    return Some(value = convertNode(env, t, ty, CvNeverFnAsUnit))
+  }
   if isClosureAsPointer(t.ty, ty) {
     return Some(value = convertNode(env, t, ty, CvClosureAsPointer))
   }
