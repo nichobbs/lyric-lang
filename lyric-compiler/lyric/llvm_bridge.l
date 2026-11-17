@@ -1061,21 +1061,43 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
   Block(statements = stmts, span = sp)
 }
 
-/// The value-generic functions of the other packages of the project, which
-/// the middle end specialises at each call (D167, D173): codegen
-/// instantiates other generics itself, but has no value-argument form, so a
-/// method of another package's value-generic record (`Vec.total[N: Nat]`)
-/// is specialised before it.
-func siblingValueGenericFuncs(
+/// The generic functions of the other packages of the project, which the
+/// middle end specialises at each call: the value-generic ones (D167, D173),
+/// since codegen has no value-argument form (a method of another package's
+/// value-generic record, `Vec.total[N: Nat]`, is specialised before it), and
+/// the generics of a package that is not the bundled standard library that
+/// may stringify a value, or call one that does (#9131,
+/// `pipeRenderingGenerics`). Codegen instantiates a generic it is handed
+/// keyed by erased types, so one instance serves `Int` and `Char` (both
+/// `i32`) and an operand typed by the type parameter cannot be rendered as
+/// either; a specialisation made by `Lyric.Mono` is checked with the type
+/// argument bound, which marks the `Char` operands (D606, D613). The other
+/// generics stay with codegen: `Lyric.Mono` infers a type argument inside a
+/// specialised body from less than the checker knows, and a generic that
+/// renders nothing has no use for the type argument's identity. The private
+/// helpers a specialised body reaches are copied under package-unique names,
+/// as on the JVM (#8427).
+func siblingGenericFuncs(
   importedPkgs: in List[ImportedPackage],
+  ownFiles: in List[SourceFile],
   ownPkg: in String,
   importsByPkg: in Map[String, List[String]],
 ): List[FunctionDecl] {
   val generics: List[FunctionDecl] = newList()
+  val specialised: List[FunctionDecl] = newList()
   for ip in importedPkgs {
-    if ip.name != ownPkg {
+    if ip.name != ownPkg and (ip.name == "Std" or Str.startsWith(ip.name, "Std.")) {
       val pkgImports = match mapGet(importsByPkg, ip.name) { case Some(imps) -> imps; case None -> newList() }
       pipeAddGenericFuncs(ip.items, ip.name, pkgImports, false, false, generics)
+    }
+  }
+  // The project's own packages are read from their files: a private generic
+  // or helper a `pub` generic reaches is not among their cross-package items.
+  for f in ownFiles {
+    val pkg = dottedPath(f.packageDecl.path)
+    if pkg != ownPkg and not (pkg == "Std" or Str.startsWith(pkg, "Std.")) {
+      val pkgImports = match mapGet(importsByPkg, pkg) { case Some(imps) -> imps; case None -> newList() }
+      pipeAddGenericFuncs(f.items, pkg, pkgImports, false, false, specialised, true)
     }
   }
   val valueGenerics: List[FunctionDecl] = newList()
@@ -1084,7 +1106,47 @@ func siblingValueGenericFuncs(
       valueGenerics.add(g)
     }
   }
+  // A value-generic function is always specialised (codegen has no form for
+  // it); the others only when they can render a value.
+  val typeGenerics: List[FunctionDecl] = newList()
+  for g in specialised {
+    if hasValueGenericParam(g.generics) {
+      valueGenerics.add(g)
+    } else {
+      typeGenerics.add(g)
+    }
+  }
+  val specialisedKept = pipeRenderingGenerics(typeGenerics)
+  for g in specialisedKept {
+    valueGenerics.add(g)
+  }
+  // A specialised body is inferred without the checker's types, so the
+  // union cases it matches on are declared to `Lyric.Mono` as the other
+  // bridges do (`unionCtorInferenceDecls`), last so a real function wins its
+  // first-wins name merge. Only when something is specialised: a build
+  // without such a generic is fed as before.
+  var anySpecialised = false
+  for g in specialisedKept {
+    if isSpecialisableGeneric(g) {
+      anySpecialised = true
+    }
+  }
+  if anySpecialised {
+    for ip in importedPkgs {
+      if ip.name != ownPkg {
+        for ctor in unionCtorInferenceDecls(ip.items) {
+          valueGenerics.add(ctor)
+        }
+      }
+    }
+  }
   valueGenerics
+}
+
+func isSpecialisableGeneric(g: in FunctionDecl): Bool {
+  val isGen = match g.generics { case Some(_) -> true; case None -> false }
+  val hasBody = match g.body { case Some(_) -> true; case None -> false }
+  isGen and hasBody
 }
 
 func hasValueGenericParam(g: in Option[GenericParams]): Bool {
@@ -1945,12 +2007,13 @@ pub func compileProjectToNativeWithShape(
       LlvmTir.viaTirRequested(),
       optsTirOut
     )
-    val siblingValueGenerics = siblingValueGenericFuncs(
+    val siblingGenerics = siblingGenericFuncs(
       importedPkgs,
+      ownFiles0,
       dottedPath(ownFiles0[mei].packageDecl.path),
       originImportsByPkg
     )
-    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingValueGenerics, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingGenerics, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
     }

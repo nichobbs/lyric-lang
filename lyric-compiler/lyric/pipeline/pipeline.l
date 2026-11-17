@@ -4196,6 +4196,61 @@ func specMayRender(decl: in FunctionDecl): Bool {
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
 }
 
+func declAsFile(decl: in FunctionDecl): SourceFile {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  SourceFile(
+    files = newList(),
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+}
+
+/// The generic functions of `decls` whose specialisation must be checked with
+/// its type arguments bound for a backend that cannot tell a `Char` from an
+/// `Int` (native, #9131): those whose body may stringify a value
+/// (`specMayRender`) and, to a fixpoint, those that call one of them by name,
+/// so a type argument reaches the renderer through every generic in between.
+/// Every other generic is kept for inference only (its signature, no body), so
+/// the type of a call to it inside a kept body is still known and it is left
+/// to the code generator to instantiate. A private non-generic helper carried
+/// with a generic (`__priv_...`) is kept as it is; it is specialised only
+/// where a kept body calls it.
+pub func pipeRenderingGenerics(decls: in List[FunctionDecl]): List[FunctionDecl] {
+  val included: Map[String, Bool] = newMap()
+  var changed = true
+  while changed {
+    changed = false
+    for d in decls {
+      val isGeneric = match d.generics { case Some(_) -> true; case None -> false }
+      if isGeneric and not included.containsKey(d.name) {
+        val f = declAsFile(d)
+        if anyExprInFile(f, { e: Expr -> mayRenderStructure(e) }) or anyExprInFile(f, { e: Expr -> match e.kind { case ECall(fn, _) -> calleeMethodName(fn, included); case _ -> false } }) {
+          included.add(d.name, true)
+          changed = true
+        }
+      }
+    }
+  }
+  val kept: List[FunctionDecl] = newList()
+  for d in decls {
+    val isGeneric = match d.generics { case Some(_) -> true; case None -> false }
+    if not isGeneric or included.containsKey(d.name) {
+      kept.add(d)
+    } else {
+      kept.add(pipeInferenceOnlyFuncDecl(d))
+    }
+  }
+  kept
+}
+
 func calleeMethodName(callee: in Expr, names: in Map[String, Bool]): Bool {
   match callee.kind {
     case EParen(inner) -> calleeMethodName(inner, names)
