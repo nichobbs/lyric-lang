@@ -681,7 +681,7 @@ func hostChainResult(
         case EIEHost(rname, _) -> {
           if isHostStringName(rname) {
             // The checker types a host call's string as `String?` (the host may return null).
-            TNullable(TPrim(kind = TPString))
+            TirT.TNullable(TPrim(kind = TPString))
           } else {
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
