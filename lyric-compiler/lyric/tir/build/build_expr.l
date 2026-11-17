@@ -731,7 +731,12 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
 
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
-  env: in BuildEnv, host: in HostTypeRef, name: in String, argc: in Int, isProperty: in Bool, wantStatic: in Bool
+  env: in BuildEnv,
+  host: in HostTypeRef,
+  name: in String,
+  argc: in Int,
+  isProperty: in Bool,
+  wantStatic: in Bool,
 ): Option[Ty] {
   val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
     case Some(c) -> c
@@ -2665,14 +2670,19 @@ func buildHostMethodOnChain(
   }
   val recvAndName = match fn.kind {
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> Some(value = HostChainCall(host = h.host, name = name))
+      case Some(h) -> Some(
+        value = HostChainCall(host = h.host, name = name)
+      )
       case None -> None
     }
     case _ -> None
   }
   val hc = match recvAndName {
     case Some(x) -> x
-    case None -> match hostMethodOnTypeParam(env, fn, args.count) { case Some(x) -> x; case None -> return None }
+    case None -> match hostMethodOnTypeParam(env, fn, args.count) {
+      case Some(x) -> x
+      case None -> return None
+    }
   }
   // A generic host class takes its type arguments from the checker's site, which a chain has none of.
   if hc.host.args.count > 0 {
