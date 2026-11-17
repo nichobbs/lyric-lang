@@ -19,6 +19,10 @@ The builder types the chain itself, changing nothing the checker accepts.
 
 The JVM standard-library kernels `dictForEachEntry`, `tryGetValue`, `setToSlice` and `hostIndexOfFrom` build, and `hostCompareOrdinal`-style calls on `String` are unchanged. `tir-builder-shapes-e2e.sh` gains `jvm_host_chain` (the chain built with `--target jvm --verify-ir` and run).
 
+## Results the checker types as a Lyric type
+
+A chain result is typed as the host class only when it is a plain host class. A result the checker maps to a Lyric type (an array as a slice, a string, a boxed number or character, a task, the root `Object`) keeps the checker's own type: typing `fis.readAllBytes()` as the host array made the local it initialises disagree with its uses (I0003 `local-type`, found by the library census on the first merge of this change). `isPlainHostResult` excludes them and the body stays counted.
+
 ## Not covered
 
 `hostAppend`, `hostAppendChar` and `mapEntries` stay counted: the checker itself gives their `append` and `Map` calls no usable type (`<error>`), which this builder-side typing does not reach.
