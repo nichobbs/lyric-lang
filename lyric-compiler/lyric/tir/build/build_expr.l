@@ -3559,7 +3559,20 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
       return None
     }
   }
-  val idx = match coerceArg(env, it, keyTy) { case Some(c) -> c; case None -> return None }
+  // An array, slice, string or list index may be any integer type (docs/01 section on arrays: a
+  // non-Int index is range checked as a Long before it is narrowed), so it keeps its own type.
+  val keepsOwnType = match keyTy {
+    case TPrim(TPInt) -> match it.ty { case TPrim(k) -> isIntegerPrim(k); case _ -> false }
+    case _ -> false
+  }
+  val idx = if keepsOwnType {
+    it
+  } else {
+    match coerceArg(env, it, keyTy) {
+      case Some(c) -> c
+      case None -> return None
+    }
+  }
   Some(value = IndexParts(recv = rt, idx = idx, how = how))
 }
 
@@ -3774,6 +3787,16 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     }
     case _ -> ()
   }
+  if isCallbackOf(t.ty, ty) {
+    return Some(value = convertNode(env, t, ty, CvCallback))
+  }
+  if isClosureAsPointer(t.ty, ty) {
+    return Some(value = convertNode(env, t, ty, CvClosureAsPointer))
+  }
+  match retypeListLiteral(env, t, ty) {
+    case Some(c) -> return Some(value = c)
+    case None -> ()
+  }
   match convKindOf(t.ty, ty) {
     case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> match upcastKind(env, t.ty, ty) {
@@ -3866,6 +3889,33 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
     i = i + 1
   }
   Some(value = CvCovariant)
+}
+
+/// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
+/// gave it no array context) used where a fixed-length array is wanted: the same elements
+/// as an array literal of that type, each converted to the element type.  None unless the
+/// literal has exactly the array's known length and its elements convert.
+func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val elems = match t.kind { case XListLit(es) -> es; case _ -> return None }
+  match t.ty {
+    case TSlice(_) -> ()
+    case _ -> return None
+  }
+  val el = match ty {
+    case TArray(len, element) -> match len {
+      case ALKnown(n) -> if n == elems.count { element } else { return None }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  val converted: List[TExpr] = newList()
+  for x in elems {
+    match convertValue(env, x, el) {
+      case Some(c) -> converted.add(c)
+      case None -> return None
+    }
+  }
+  Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XListLit(elems = converted)))
 }
 
 /// A union-case construction used at the same union with other type arguments (`Some(value = x)`

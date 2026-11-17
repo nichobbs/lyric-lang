@@ -647,3 +647,43 @@ test "a covariant conversion takes a generic type to the same one at other argum
   )
   assertTrue(rulesOf(oneFn(entries(), covariantFn(tyInt(), tyString()))).contains("convert-type"), "not generic types")
 }
+
+func callbackFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
+  val x = local(1, "x", fromTy, false)
+  val inner = ex(3, fromTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvCallback, inner = inner)))
+}
+
+func fnTy(ps: in List[Ty], ret: in Ty): Ty {
+  val res: List[TParamTy] = newList()
+  for p in ps {
+    res.add(TParamTy(mode = TMIn, ty = p))
+  }
+  TFunc(params = res, ret = ret, isAsync = false)
+}
+
+test "a callback conversion adds exactly one userdata slot to a closure type" {
+  val ud = TExtern(host = HostTypeRef(name = "lyric.native.NativeUserdata", args = newList()))
+  val closureParams: List[Ty] = newList()
+  closureParams.add(tyInt())
+  val first: List[Ty] = newList()
+  first.add(ud)
+  first.add(tyInt())
+  val noSlot: List[Ty] = newList()
+  noSlot.add(tyString())
+  noSlot.add(tyInt())
+  assertFalse(
+    rulesOf(oneFn(entries(), callbackFn(fnTy(closureParams, tyInt()), fnTy(first, tyInt())))).contains("convert-type"),
+    "the slot first, as SDL3 puts it"
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), callbackFn(fnTy(closureParams, tyInt()), fnTy(noSlot, tyInt())))).contains("convert-type"),
+    "an added parameter that is not a userdata slot"
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), callbackFn(fnTy(closureParams, tyInt()), fnTy(first, tyString())))).contains(
+      "convert-type"
+    ),
+    "another result"
+  )
+}

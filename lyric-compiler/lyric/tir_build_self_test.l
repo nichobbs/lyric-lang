@@ -2834,6 +2834,15 @@ test "a generator ending in try takes its values from yield, not the return type
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
 
+test "a closure passed to a C callback parameter is a callback conversion (D494)" {
+  val c = censusOf(
+    "package App\nimport Std.Ffi\n\n@library(\"lyriccbtest\")\nextern func cbtSum(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = \"cbt_sum\"\n\n" +
+      "func total(n: Int): Int {\n  val f: (Int) -> Int = { v: Int -> v }\n  cbtSum(f, f, n)\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertTrue(c.built >= 1, "total builds")
+}
+
 test "a loop that breaks from inside a let initializer may complete, so the missing value stays counted (D440)" {
   val c = censusOf(
     "package App\nfunc f(n: in Int): Int {\n  loop {\n    val x = if n > 5 {\n      break\n    } else {\n      1\n    }\n  }\n}\n"
@@ -2846,4 +2855,25 @@ test "a record that impls an extern interface is that interface as a function's 
     "package App\nextern type Disp = \"System.IDisposable\"\nrecord R { x: Int }\nimpl Disp for R {\n  func Dispose(): Unit { () }\n}\nfunc mk(): Disp {\n  R(x = 1)\n}\n"
   )
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+}
+
+test "a list literal typed as a slice and used as a fixed array is an array literal (D495)" {
+  val c = censusOf(
+    "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8], 1)\n}\n"
+  )
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a list literal of another length than the array stays counted (D495)" {
+  val c = censusOf(
+    "package App\nfunc firstOf[T](xs: in array[2, T], n: in Int): T {\n  xs[n]\n}\n\nfunc g(): Long {\n  firstOf[Long]([7, 8, 9], 1)\n}\n"
+  )
+  assertTrue(c.built < c.total or c.firstErrors.count > 0, "no unsound claim")
+}
+
+test "an array indexed by a Long keeps the Long index (D496)" {
+  val c = censusOf("package App\nfunc readLong(a: in array[3, Int], i: in Long): Int {\n  a[i]\n}\n")
+  assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }

@@ -4013,12 +4013,14 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   }
 }
 
-/// True inside a generic function this backend instantiated itself (one of
-/// another package, N3.1) with a type parameter bound to an `i32`. Such an
-/// instantiation is keyed by erased types, so it is shared by `Int` and
-/// `Char` arguments and an operand typed by that parameter is not known to be
-/// either; the generics of the package being compiled are specialised by
-/// `Lyric.Mono` and re-checked instead (`MonoResult.charSpecs`).
+/// True inside a generic function this backend instantiated itself (N3.1)
+/// with a type parameter bound to an `i32`. Such an instantiation is keyed by
+/// erased types, so it is shared by `Int` and `Char` arguments and an operand
+/// typed by that parameter is not known to be either. The generics of the
+/// package being compiled and of every other package of the build are
+/// specialised by `Lyric.Mono` and re-checked instead (`MonoResult.charSpecs`,
+/// D613); what reaches here is a generic of the bundled standard library, or
+/// a method of a generic record.
 func fnBindsTypeParamToI32(ctx: in Ctx): Bool {
   for t in ctx.fnTyEnvTys {
     match t {
@@ -4080,7 +4082,7 @@ func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NV
     val i32Operand = match a.ty { case NI32 -> true; case _ -> match b.ty { case NI32 -> true; case _ -> false } }
     if op == BAdd and i32Operand and fnBindsTypeParamToI32(ctx) {
       panic(
-        "Lyric.LlvmCodegen: 'String + x' where x is an Int or a Char inside a generic function of another package instantiated at Int or Char: --target native shares that instantiation between the two types and cannot tell which one x is (in " +
+        "Lyric.LlvmCodegen: 'String + x' where x is an Int or a Char inside a generic function or generic record method that this backend instantiated at Int or Char: --target native shares that instantiation between the two types and cannot tell which one x is (in " +
           ctx.curPkg[0] +
           " at line " +
           line.toString() +

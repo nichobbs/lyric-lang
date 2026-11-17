@@ -140,6 +140,14 @@ pub union ConvKind {
   /// and arity; how a backend represents the result (the same value, or one rebuilt per
   /// argument) is its own choice.
   case CvCovariant
+  /// A closure passed as a C callback (docs/01 §11.6): the operand has the closure type and the
+  /// node the declared callback type, which is the closure's with one extra parameter, the
+  /// userdata slot (`NativeUserdata`, or a trailing `NativePtr[Byte]`).  The slot is where a
+  /// backend puts the closure's own pointer.
+  case CvCallback
+  /// A closure passed as the userdata pointer of a C callback API (`NativeUserdata` or
+  /// `NativePtr[Byte]`): the pointer is the closure itself.
+  case CvClosureAsPointer
 }
 
 pub union ShortOp {
@@ -278,6 +286,8 @@ pub union TExprKind {
   /// array of zero elements, or a record of zero fields (not an all-zero bit pattern: a record
   /// element may hold a reference).
   case XZeroValue(ty: Ty)
+  /// The index of an array, slice, string, list or buffer is `Int` or any other integer primitive
+  /// (`Long`, `Byte`, `UInt`, `ULong`), which a backend range checks before narrowing.
   case XIndex(recv: TExpr, idx: TExpr, how: IndexKind)
   case XConvert(kind: ConvKind, inner: TExpr)
   case XTuple(elems: List[TExpr])
