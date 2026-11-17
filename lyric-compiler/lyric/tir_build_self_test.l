@@ -2848,6 +2848,7 @@ test "a loop that breaks from inside a let initializer may complete, so the miss
     "package App\nfunc f(n: in Int): Int {\n  loop {\n    val x = if n > 5 {\n      break\n    } else {\n      1\n    }\n  }\n}\n"
   )
   assertTrue(c.built < c.total, "the body stays counted")
+}
 
 test "a list literal typed as a slice and used as a fixed array is an array literal (D495)" {
   val c = censusOf(
