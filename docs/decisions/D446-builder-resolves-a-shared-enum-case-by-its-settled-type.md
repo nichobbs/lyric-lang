@@ -8,7 +8,7 @@ A bare case name several enums share (`On` of `Beam` and `Ray`) is told apart by
 
 ## Decision
 
-`sharedCaseRead`, the last step of `buildRefPath` before the name is counted: when the node's type is a type with no type arguments, the name is that type's nullary case of the same name (an enum case, or a union case with no fields), built as `XConstruct`. Any other shape stays counted.
+`sharedCaseRead`, the last step of `buildRefPath` before the name is counted: when the node's type is a type with no type arguments, the name is that type's nullary case of the same name (an enum case, or a union case with no fields), built as `XConstruct`. Any other shape stays counted, a shared case of a generic union (a type with type arguments) among them.
 
 ## Results
 

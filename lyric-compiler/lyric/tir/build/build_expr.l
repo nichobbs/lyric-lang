@@ -664,30 +664,73 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       case EMember(recv, name) -> match hostChainReceiver(env, recv) {
         case Some(h) -> hostChainResult(
           env,
-          h,
+          h.host,
           name,
           args.count,
-          false
+          false,
+          h.isStatic
         )
         case None -> None
       }
       case _ -> None
     }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> hostChainResult(env, h, name, 0, true)
+      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic)
       case None -> None
     }
     case _ -> None
   }
 }
 
-/// The host type of `recv`: its recorded type when that is a host class, else the type its own chain gives.
-func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
+/// A host receiver of a chain: a value of a host class, or (`isStatic`) the host class named by an
+/// `extern type` (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`).
+record HostRecv {
+  host: HostTypeRef
+  isStatic: Bool
+}
+
+/// The host class an `extern type` named by the bare path `recv` stands for, when no local shadows it and
+/// the type takes no type arguments.
+func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return None
+      }
+      match lookupLocal(env, p.segments[0]) {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      match symTableTryFindOne(env.ctx.tbl, p.segments[0]) {
+        case Some(sym) -> match sym.kind {
+          case DKExternType(_, d) -> if isSome(d.generics) {
+            None
+          } else {
+            Some(value = HostTypeRef(name = d.clrName, args = newList()))
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The host receiver of `recv`: its recorded type when that is a host class, else the type its own chain
+/// gives, else the host class it names as an `extern type`.
+func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
   match exprTy(env.ctx, recv.nodeId) {
-    case Ok(t) -> match t { case TExtern(h) -> Some(value = h); case _ -> None }
+    case Ok(t) -> match t { case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false)); case _ -> None }
     case Err(_) -> match openHostChainTy(env, recv) {
-      case Some(t) -> match t { case TExtern(h) -> Some(value = h); case _ -> None }
-      case None -> None
+      case Some(t) -> match t {
+        case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
+        case _ -> None
+      }
+      case None -> match hostStaticReceiver(env, recv) {
+        case Some(h) -> Some(value = HostRecv(host = h, isStatic = true))
+        case None -> None
+      }
     }
   }
 }
@@ -699,9 +742,38 @@ func isPlainHostResult(name: in String): Bool {
     not Str.startsWith(name, "java.util.concurrent.")
 }
 
+/// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
+func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
+  match el {
+    case EIEHost(_, aargs) -> {
+      if aargs.count != 1 {
+        return None
+      }
+      val elemOk = match aargs[0] {
+        case EIEPrim(n) -> n == "Byte"
+        case EIEHost(n, _) -> isPlainHostResult(n) or isHostObject(n)
+        case _ -> false
+      }
+      if not elemOk {
+        return None
+      }
+      match hostElemTy(aargs[0], targs, TirT.TNever) {
+        case Some(t) -> Some(value = TirT.TSlice(t))
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
-  env: in BuildEnv, host: in HostTypeRef, name: in String, argc: in Int, isProperty: in Bool
+  env: in BuildEnv,
+  host: in HostTypeRef,
+  name: in String,
+  argc: in Int,
+  isProperty: in Bool,
+  wantStatic: in Bool,
 ): Option[Ty] {
   val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
     case Some(c) -> c
@@ -709,21 +781,34 @@ func hostChainResult(
   }
   var result: Option[Ty] = None
   for c in cands {
-    if c.isStatic {
+    if c.isStatic != wantStatic {
       return None
     }
     val t = match c.ret {
       case EMTVoid -> return None
       case EMTType(el) -> match el {
         case EIEHost(rname, _) -> {
-          // A result the checker types as a Lyric type (an array as a slice, a string, a boxed number, a
-          // task, the root object) is not a plain host class: the checker's own type applies there.
-          if not isPlainHostResult(rname) {
-            return None
-          }
-          match hostElemTy(el, host.args, TirT.TNever) {
-            case Some(x) -> x
-            case None -> return None
+          if rname == hostArrayName() {
+            // The array the checker types as a slice where it types the call at all: bytes and host
+            // objects (`Object[] toArray()`), a slice of them.
+            match hostArrayAsSlice(el, host.args) {
+              case Some(t) -> t
+              case None -> return None
+            }
+          } else if isHostStringName(rname) {
+            // The checker types a host call's string as `String?` (the host may return null).
+            TirT.TNullable(TPrim(kind = TPString))
+          } else {
+            // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
+            // the root object) is not a plain host class: the checker's own type applies there.
+            // The root object of a non-generic host class is the class's own result (`Method.invoke`).
+            if not isPlainHostResult(rname) and not (isHostObject(rname) and host.args.count == 0) {
+              return None
+            }
+            match hostElemTy(el, host.args, TirT.TNever) {
+              case Some(x) -> x
+              case None -> return None
+            }
           }
         }
         case _ -> return None
@@ -2622,12 +2707,20 @@ func buildHostMethodOnChain(
   }
   val recvAndName = match fn.kind {
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> Some(value = HostChainCall(host = h, name = name))
+      case Some(h) -> Some(
+        value = HostChainCall(host = h.host, name = name)
+      )
       case None -> None
     }
     case _ -> None
   }
-  val hc = match recvAndName { case Some(x) -> x; case None -> return None }
+  val hc = match recvAndName {
+    case Some(x) -> x
+    case None -> match hostMethodOnTypeParam(env, fn, args.count) {
+      case Some(x) -> x
+      case None -> return None
+    }
+  }
   // A generic host class takes its type arguments from the checker's site, which a chain has none of.
   if hc.host.args.count > 0 {
     return None
@@ -2649,6 +2742,29 @@ func buildHostMethodOnChain(
       )
     )
     case None -> None
+  }
+}
+
+/// `target.getClass()` where `target` has a type parameter's type: the member of the host's root object
+/// class the call names, found through the host metadata (the receiver is boxed to it by `buildExternCall`).
+func hostMethodOnTypeParam(env: in BuildEnv, fn: in Expr, argc: in Int): Option[HostChainCall] {
+  match fn.kind {
+    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
+      case Ok(rt) -> match rt {
+        case TParam(_, _) -> {
+          for obj in ["java.lang.Object", "System.Object"] {
+            match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(obj, name, argc, false) {
+              case Some(_) -> return Some(value = HostChainCall(host = HostTypeRef(name = obj, args = newList()), name = name))
+              case None -> ()
+            }
+          }
+          None
+        }
+        case _ -> None
+      }
+      case Err(_) -> None
+    }
+    case _ -> None
   }
 }
 
@@ -3115,8 +3231,43 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
       }
       case None -> ()
     }
+    // The checker lets a host result flow into a more specific host type the context declares
+    // (`val c: X509Certificate = cf.generateCertificate(in)`): the host's result is the base class.
+    if hostResultNarrowsTo(env, ret, ty) {
+      val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+      return mkExpr(e, ty, XConvert(kind = CvFromHost, inner = c))
+    }
   }
   mkExpr(e, ty, call)
+}
+
+/// Whether `to` is a host class that has the host class `from` among its bases.
+func hostResultNarrowsTo(env: in BuildEnv, from: in Ty, to: in Ty): Bool {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return false
+  }
+  match from {
+    case TExtern(f) -> match to {
+      case TExtern(t) -> {
+        if f.name == t.name {
+          return false
+        }
+        match env.ctx.tbl.externIterResolver[0].resolveBases(t.name) {
+          case Some(bases) -> {
+            for b in bases {
+              if b == f.name {
+                return true
+              }
+            }
+            false
+          }
+          case None -> false
+        }
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 /// An argument converted to the host parameter type `want`: the host's widening, boxing and narrowing, or
@@ -3276,11 +3427,16 @@ func buildExternCall(
     } else {
       TExtern(host = owner)
     }
-    if not tyEq(rt.ty, want) {
+    // A value of a type parameter's type is the host's root object for a call of one of its members.
+    val recvArg = if tyEq(rt.ty, want) {
+      rt
+    } else if isHostObject(site.hostType) and (match rt.ty { case TParam(_, _) -> true; case _ -> false }) {
+      convertNode(env, rt, want, CvBoxToHost(host = owner))
+    } else {
       return uncoveredExpr(env, e, "an extern call on a receiver that is not the host type itself")
     }
     params.add(TParamTy(mode = TMIn, ty = want))
-    targsOut.add(TArgIn(value = rt))
+    targsOut.add(TArgIn(value = recvArg))
   }
   var i = 0
   while i < built.count {
@@ -3352,6 +3508,51 @@ func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr
   val args: List[TArg] = newList()
   args.add(TArgIn(value = rt))
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = args)))
+}
+
+/// `JCharacter.TYPE`: a read of a static field or property of the host class an `extern type` names, where the
+/// checker records no type.  None, counting nothing, when `recv` names no such type, the host metadata has no
+/// such static member, or its result is not one the checker's type fits.
+func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match exprTy(env.ctx, recv.nodeId) {
+    case Ok(_) -> return None
+    case Err(_) -> ()
+  }
+  val host = match hostStaticReceiver(env, recv) { case Some(h) -> h; case None -> return None }
+  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, 0, true) {
+    case Some(c) -> c
+    case None -> return None
+  }
+  var found: Option[ExternMemberSig] = None
+  for c in cands {
+    if c.isStatic and c.params.count == 0 and not isSome(found) {
+      found = Some(value = c)
+    }
+  }
+  val sig = match found { case Some(c) -> c; case None -> return None }
+  val ret = match sig.ret {
+    case EMTType(el) -> match hostElemTy(el, host.args, ty) { case Some(t) -> t; case None -> return None }
+    case EMTVoid -> return None
+  }
+  val nullableString = match ty {
+    case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
+    case _ -> false
+  }
+  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+    return None
+  }
+  val member = HostMemberRef(
+    owner = host,
+    name = name,
+    kind = if sig.isField { HMFieldGet } else { HMPropertyGet },
+    isStatic = true,
+    params = newList(),
+    ret = ret
+  )
+  Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = newList())))
 }
 
 /// Whether the checker typed `r` as a host value.
@@ -3560,6 +3761,10 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
 /// receiver built, then the field.  Any other member (a collection's `count`, a host
 /// property, a config field, a tuple or union payload) is counted.
 func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  match buildHostStaticRead(env, e, ty, recv, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))

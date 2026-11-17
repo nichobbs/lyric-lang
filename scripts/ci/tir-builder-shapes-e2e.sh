@@ -569,6 +569,7 @@ func main(): Int {
   b + r
 }
 LYRIC
+
 # A field of a generic record read inside a function generic over the record's parameter keeps its
 # type (`List[D]` for `many: List[D]`), so the read and a loop over it build (D492).
 check rigid_nested_field 9 <<'LYRIC'
@@ -698,5 +699,59 @@ if ! grep -q "^I0003 census \[.*jvm_host_array_result.l\]: 0 diagnostic" "$WORK/
   echo "FAIL (jvm_host_array_result): the verifier rejected a built body"; grep "I0003" "$WORK/jvm_host_array_result.log" | head -3; fail=1
 else
   echo "ok   jvm_host_array_result"
+fi
+# The host expressions the checker leaves untyped (docs/01 section 2.11), each typed by the builder from the
+# host's metadata (D445): a static field read on an extern type, a static call whose result is the next
+# call's receiver, a host call's string result as `String?`, a call of a host member on a value of a type
+# parameter's type, and `Method.invoke`'s root-object result.  Every body must build, the verifier must
+# accept it, and the program must run.
+cat > "$WORK/jvm_host_static_shapes.l" <<'LYRIC'
+package JvmHostStaticShapes
+extern type JCharacter = "java.lang.Character"
+extern type JClass = "java.lang.Class"
+extern type JMethod = "java.lang.reflect.Method"
+extern type JObject = "java.lang.Object"
+
+func primitiveChar(): JClass {
+  val c: JClass = JCharacter.TYPE
+  c
+}
+
+func nameViaStaticChain(): Bool {
+  val n = JClass.forName("java.lang.String").getName()
+  n == "java.lang.String"
+}
+
+func classOf[A](x: in A): JClass {
+  val c: JClass = x.getClass()
+  c
+}
+
+func methodName(m: in JMethod): Bool {
+  m.getName() == "length"
+}
+
+func main(): Int {
+  if primitiveChar().getName() != "char" {
+    return 1
+  }
+  if not nameViaStaticChain() {
+    return 2
+  }
+  if classOf("s").getName() != "java.lang.String" {
+    return 3
+  }
+  0
+}
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_static_shapes.l" -o "$WORK/jvm_host_static_shapes.jar" >"$WORK/jvm_host_static_shapes.log" 2>&1)
+sline="$(grep "^TIR build census \[.*jvm_host_static_shapes.l\]" "$WORK/jvm_host_static_shapes.log" | head -1)"
+if [[ -z "$sline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$sline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$sline")" ]]; then
+  echo "FAIL (jvm_host_static_shapes): not every body built"; grep -E "first error" "$WORK/jvm_host_static_shapes.log" | head -3; fail=1
+elif ! grep -q "^I0003 census \[.*jvm_host_static_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_static_shapes.log"; then
+  echo "FAIL (jvm_host_static_shapes): the verifier rejected a built body"; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_static_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_static_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_static_shapes"; fi
 fi
 exit $fail
