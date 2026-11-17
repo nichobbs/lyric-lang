@@ -681,7 +681,9 @@ test "a callback conversion adds exactly one userdata slot to a closure type" {
     "an added parameter that is not a userdata slot"
   )
   assertTrue(
-    rulesOf(oneFn(entries(), callbackFn(fnTy(closureParams, tyInt()), fnTy(first, tyString())))).contains("convert-type"),
+    rulesOf(oneFn(entries(), callbackFn(fnTy(closureParams, tyInt()), fnTy(first, tyString())))).contains(
+      "convert-type"
+    ),
     "another result"
   )
 }

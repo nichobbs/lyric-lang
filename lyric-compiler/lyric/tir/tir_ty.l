@@ -224,8 +224,10 @@ func paramTysEq(xs: in List[TParamTy], ys: in List[TParamTy]): Bool {
 pub func isUserdataSlotTy(t: in Ty): Bool {
   match t {
     case TExtern(h) -> h.name == "lyric.native.NativeUserdata" or
-      (h.name.startsWith("lyric.native.NativePtr") and h.args.count == 1 and
-        match h.args[0] { case TPrim(TPByte) -> true; case _ -> false })
+      (
+        h.name.startsWith("lyric.native.NativePtr") and h.args.count == 1 and
+          match h.args[0] { case TPrim(TPByte) -> true; case _ -> false }
+      )
     case _ -> false
   }
 }
