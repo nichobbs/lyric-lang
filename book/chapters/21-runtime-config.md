@@ -82,8 +82,9 @@ environment and the default, and satisfies a required field.  Unlike
 `Std.Environment.setVar`, it is not written to the process environment, so child
 processes do not inherit it.  An empty value is no override, which is also how
 `clearConfigOverride` works.  Register before the block's first read: a value
-set afterwards is not seen.  `lyric-aws-secrets` (`@secretsManager`,
-`@parameterStore`, `AwsSecrets.init()`) is built on this.  On dotnet and the
+set afterwards is not seen.  `AwsSecrets` (`@secretsManager`,
+`@parameterStore`, `AwsSecrets.init()`, in `nichobbs/lyric-ecosystem` since D620)
+is built on this.  On dotnet and the
 JVM only: native reads every config field before `main` runs, so a
 registration made by the program could never be seen there, and
 `Std.ConfigOverride` reports `Unsupported`.

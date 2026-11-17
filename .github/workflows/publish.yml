@@ -672,7 +672,7 @@ jobs:
       # Without this step the runner's default JDK (17) throws
       # UnsupportedClassVersionError when `lyric build` shells out to the
       # Maven resolver for any library with a [maven] table — this silently
-      # failed lyric-grpc/-web/-mq/-session/-lambda on every release until the
+      # failed lyric-grpc/-web/-mq/-session on every release until the
       # per-library logs were fixed (#5615) and the error became visible.
       - name: Set up Java 22 (for the Maven resolver jar)
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
@@ -936,7 +936,6 @@ jobs:
           # after a same-tier race caused a publish failure (NU1102) even with
           # the barrier working correctly.
           run_tier 4 \
-            lyric-lambda/lyric.toml \
             lyric-conformance/lyric.toml
 
           # Tier 5: lyric-testing depends on lyric-conformance (Tier 4).
