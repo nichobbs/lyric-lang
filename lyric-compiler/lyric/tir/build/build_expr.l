@@ -2669,7 +2669,16 @@ func buildDistinctFactory(
     return None
   }
   val built = match buildExpr(env, xs[0]) { case Some(t) -> t; case None -> return Some(value = None) }
-  val arg = match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
+  val arg = match built.ty {
+    case TPrim(TPLong) -> match uty {
+      case TPrim(TPNat) -> convertNode(env, built, uty, CvLongToNat)
+      case _ -> match coerceArg(env, built, uty) {
+        case Some(c) -> c
+        case None -> return Some(value = None)
+      }
+    }
+    case _ -> match coerceArg(env, built, uty) { case Some(c) -> c; case None -> return Some(value = None) }
+  }
   if mname == "from" {
     return Some(
       value = match distinctId {

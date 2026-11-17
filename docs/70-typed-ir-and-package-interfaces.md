@@ -910,6 +910,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - An interface method's parameter defaults are written to the package interface, so a call through a restored interface takes them (D442).
   - The JVM bridge checks a project's packages dependencies first, so the entry package finds the defaults its siblings' interfaces carry (D443).
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
+  - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

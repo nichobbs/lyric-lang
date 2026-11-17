@@ -148,6 +148,9 @@ pub union ConvKind {
   /// A closure passed as the userdata pointer of a C callback API (`NativeUserdata` or
   /// `NativePtr[Byte]`): the pointer is the closure itself.
   case CvClosureAsPointer
+  /// A `Long` taken as a `Nat` (the argument of a `Nat`-backed distinct or range type's `from`):
+  /// the value must be non-negative and panics otherwise, as `.toNat()` does.
+  case CvLongToNat
 }
 
 pub union ShortOp {
