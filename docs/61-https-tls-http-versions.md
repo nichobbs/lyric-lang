@@ -646,6 +646,8 @@ items marked ∥ are independent and can proceed in parallel.
    than silently downgrading. Applies uniformly to both the non-mTLS
    (`buildServerSslContext`) and mTLS (`buildServerSslContextWithClientCa`)
    context constructors via the shared `buildServerSslContextCore` helper.
+   `ServerSslContext.rawContext` (the `SSLContext` the two `serverSslContextFromConfig*` constructors wrap) is
+   `@experimental pub` on the JVM so `lyric-web`'s Undertow `serveTls` can read it from its own project (D437).
    Verified by `tls_server_jvm_tests.l`: a real handshake proving
    negotiation lands on TLSv1.2 or TLSv1.3, and a client whose own socket is
    pinned to TLSv1.1 alone (`SSLParameters.setProtocols`) failing the

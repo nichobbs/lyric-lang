@@ -1207,6 +1207,8 @@ extern type JMap = "java.util.HashMap"
 extern type JIter = "java.util.Iterator"
 extern type JEntry = "java.util.Map$Entry"
 extern type JCm[K, V] = "java.util.concurrent.ConcurrentHashMap"
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+extern type JRunnable = "java.lang.Runnable"
 
 record Req { path: String }
 
@@ -1235,6 +1237,10 @@ func entries(m: in JMap, action: in (String, String) -> Unit): Unit {
 
 func putIgnored(m: in JCm[String, String]): Unit {
   val _: String? = m.put("a", "b")
+}
+
+func submitIgnored(e: in JExecutorService, r: in JRunnable): Unit {
+  val _ = e.submit(r)
 }
 
 func main(): Int { 0 }
