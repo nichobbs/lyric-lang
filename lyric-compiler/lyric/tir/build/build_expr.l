@@ -949,6 +949,13 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             if d.id.id < 0 {
               return None
             }
+            // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
+            // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
+            // takes the same conversion the call would have.
+            if not tyEq(d.ty, ty) and hostResultIsCallType(d.ty, ty) {
+              val inner = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
+              return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = inner)))
+            }
             return Some(value = mkExpr(e, ty, XLocal(local = d.id)))
           }
           case None -> ()
@@ -1445,7 +1452,12 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       Some(value = mkPat(p, ty, TpOr(alts = built)))
     }
-    case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
+    // `case x is T`: the checker types the inner pattern at the tested type `T`, so that
+    // type is the test's.
+    case PTypeTest(inner, _) -> match buildPat(env, inner) {
+      case Some(ip) -> Some(value = mkPat(p, ty, TpTypeTest(inner = ip, ty = ip.ty)))
+      case None -> None
+    }
     case PConstRef(_) -> match refSite(env.ctx, p.nodeId) {
       case Some(r) -> {
         noteGlobalSym(env, r.sym, ty)
@@ -2929,8 +2941,8 @@ func buildRecordCopy(
   Some(value = Some(value = mkExpr(e, ty, XCopy(base = base, updates = updates))))
 }
 
-/// `T.from(x)` and `T.tryFrom(x)` on a non-generic distinct type `T` (language reference
-/// 2.3), which the checker types without recording a callee.  The call's own type names
+/// `T.from(x)`, `T.tryFrom(x)` and the constructor call `T(x)` on a non-generic distinct type `T`
+/// (language reference 2.3), which the checker types without recording a callee.  The call's own type names
 /// `T` (`from`) or `Result[T, String]` (`tryFrom`).  The argument is converted to `T`'s
 /// underlying type; `from` is then a `CvWrapDistinct` node and `tryFrom` an `IoTryFrom`
 /// intrinsic.  None when the call is not such a factory (the caller counts it); a
@@ -2942,6 +2954,15 @@ func buildDistinctFactory(
     case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
       match recv.kind {
         case EPath(path) -> if path.segments.count >= 1 { m } else { return None }
+        case _ -> return None
+      }
+    } else {
+      return None
+    }
+    // `T(x)`: the distinct type's own constructor call is `T.from(x)`.
+    case EPath(path) -> if path.segments.count == 1 {
+      match ty {
+        case TNamed(_, _) -> "from"
         case _ -> return None
       }
     } else {
@@ -5748,7 +5769,7 @@ func buildDefaultArg(
 ): Option[TExpr] {
   val here = if env.ctx.tbl.scopePkg.count > 0 { env.ctx.tbl.scopePkg[0] } else { "" }
   if origin != "" and origin != here {
-    return buildForeignDefaultArg(env, call, callee, p, ptys, index)
+    return buildForeignDefaultArg(env, call, callee, origin, p, ptys, index)
   }
   val d = match p.dfltExpr { case Some(x) -> x; case None -> return uncoveredExpr(env, call, "a defaulted argument") }
   val pty = match paramTyAt(env, ptys, index, p) {
@@ -5792,12 +5813,48 @@ func buildDefaultArg(
   }
 }
 
+/// The default of a parameter of a restored package: a call to the compiled thunk the package
+/// carries for it (`defaultThunkName`), made at the call and converted to the parameter's type.
+func buildThunkDefault(env: in BuildEnv, call: in Expr, origin: in String, d: in Expr, pty: in Ty): Option[TExpr] {
+  val name = match stripExprParens(d).kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> path.segments[path.segments.count - 1]
+      case EMember(_, m) -> m
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+  val tc = match defaultThunkCallee(env.ctx.tbl, origin, name) {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, call, "a default argument declared in another package")
+  }
+  val rty = match tyOfType(env.ctx, tc.sig.returnTy) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
+  noteFuncSym(env, tc.sym, tc.sig, None, None, TSkFunc)
+  val t = TExpr(
+    id = freshNodeId(env),
+    ty = rty,
+    span = call.span,
+    kind = XCall(callee = Direct(sym = tc.sym, typeArgs = newList()), args = newList())
+  )
+  match coerceArg(env, t, pty) {
+    case Some(c) -> Some(value = c)
+    case None -> uncoveredExpr(env, call, "a default argument needing a conversion")
+  }
+}
+
 /// A default declared in another package: the carried expression, its declarations added to
 /// this body's, placed at the call and converted to the parameter's type.
 func buildForeignDefaultArg(
   env: in BuildEnv,
   call: in Expr,
   callee: in SymbolId,
+  origin: in String,
   p: in ResolvedParam,
   ptys: in List[Ty],
   index: in Int,
@@ -5808,6 +5865,10 @@ func buildForeignDefaultArg(
       env.errors.add(msg)
       return None
     }
+  }
+  match p.dfltExpr {
+    case Some(d) -> if isDefaultThunkCall(d) { return buildThunkDefault(env, call, origin, d, pty) }
+    case None -> ()
   }
   val key = match symTableDefPathKeyOf(env.ctx.tbl, callee) {
     case Some(k) -> k
