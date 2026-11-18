@@ -924,6 +924,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function with a doc comment or annotations used as a value is recorded by the declaration's own span, so the builder builds it (D448); the wide census prints why a build was unchecked.
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
   - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
+  - A host member's erased `Object` result on a generic host class applied to the function's type parameters (`HashMap<K, V>.get`) is typed as the host `Object` and converted with `CvFromHost` (D431).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
