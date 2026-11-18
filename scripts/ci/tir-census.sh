@@ -314,6 +314,15 @@ if [[ "$AREAS" == *" ecosystem "* ]]; then
 # in glob order, `lyric-access` ran before `lyric-ui/native` and `lyric-unicode-dict` before
 # `lyric-unicode`, and both failed with "local dep not built" and were listed unchecked.
 declare -A eco_seen=()
+# A dependency declared `"Lyric.Resilience" = { workspace = true }` names a package, not a path; map every
+# member's package name to its manifest so those dependencies are built first too.  Without that,
+# `lyric-jobs` was checked before `lyric-resilience` was built and its uses of it typed as errors.
+declare -A eco_pkg_manifest=()
+for m in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
+  [[ -f "$m" ]] || continue
+  pn="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^name[ \t]*=/{gsub(/^[^"]*"|".*$/,""); print; exit}' "$m")"
+  [[ -n "$pn" ]] && eco_pkg_manifest[$pn]="$m"
+done
 eco_build() {
   local manifest="$1" dir dep depdir
   [[ -f "$manifest" ]] || return 0
@@ -326,6 +335,9 @@ eco_build() {
     depdir="$(realpath -m --relative-to="$REPO_ROOT" "$REPO_ROOT/$dir/$dep")"
     eco_build "$depdir/lyric.toml"
   done < <(grep -oE 'path *= *"[^"]+"' "$manifest" | sed -E 's/path *= *"([^"]+)"/\1/')
+  while IFS= read -r dep; do
+    [[ -n "${eco_pkg_manifest[$dep]:-}" ]] && eco_build "${eco_pkg_manifest[$dep]}"
+  done < <(grep -oE '^"[^"]+" *= *\{ *workspace *= *true' "$manifest" | sed -E 's/^"([^"]+)".*/\1/')
   run_cached "eco-$manifest" 900 "$LYRIC" build --verify-ir --manifest "$manifest" --target dotnet
   absorb_log ecosystem "$manifest" "$log" "$rc"
 }
