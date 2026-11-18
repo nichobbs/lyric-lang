@@ -1023,7 +1023,7 @@ else
 fi
 
 # A record and a function reached through an alias of a package that re-exports them (`pub use`):
-# `L.Leaf(v = n)` and `L.ident(4)` have recorded callees (D460).
+# `L.Leaf(v = n)` and `L.ident(4)` have recorded callees (D420).
 reexport_qualified() {
   local dir="$WORK/reexport_qualified"
   mkdir -p "$dir/src"

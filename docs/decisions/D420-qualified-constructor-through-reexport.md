@@ -1,4 +1,4 @@
-# D460 - A qualified construction through an alias or a re-export has a callee (docs/70 phase 3a, #8613)
+# D420 - A qualified construction through an alias or a re-export has a callee (docs/70 phase 3a, #8613)
 
 **Status:** shipped; extends D388 (the construction signature in the symbol table).
 
