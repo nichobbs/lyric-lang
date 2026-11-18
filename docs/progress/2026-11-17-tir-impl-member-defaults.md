@@ -1,0 +1,3 @@
+# 2026-11-17: the package interface declares impl members that carry a default (D447)
+
+A call on a restored package's concrete type takes the default of the `impl` method it resolves to. The interface walk skipped every `impl` (it forwards only visible items, and an `impl` has none), so the member's carried default had no declaration to attach to and the call was counted. `addImplDefaults` declares each non-generic `impl` member that has a default before the visibility gate. `tir-builder-shapes-e2e.sh` gains `restored_impl_defaults` (two packages, two types implementing one interface method with different defaults, run on dotnet and the JVM). The checker is unchanged.
