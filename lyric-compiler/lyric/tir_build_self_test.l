@@ -1898,6 +1898,15 @@ test "the unsigned widening methods toUInt and toULong build as built-in calls (
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "an exposed record's construction builds as a construction (D452)" {
+  val c = censusOf(
+    "package App\nexposed record E { value: Int }\nexposed record Box[T] { value: T }\nfunc a(v: Int): E { E(value = v) }\nfunc b(v: Int): Box[Int] { Box(value = v) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
