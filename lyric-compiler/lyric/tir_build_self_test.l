@@ -1898,6 +1898,15 @@ test "the unsigned widening methods toUInt and toULong build as built-in calls (
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "toLong on a Nat-backed range subtype is a widening of its Nat (D453)" {
+  val c = censusOf(
+    "package App\ntype Score = Nat range 0 ..= 100\ntype Id = Nat\nfunc f(s: Score): Long { s.toLong() }\nfunc g(i: Id): Long { i.toLong() }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })

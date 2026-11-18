@@ -914,6 +914,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
+  - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
   - Static host members (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`), a host call's string as `String?`, `getClass()` on a type-parameter receiver, a root-`Object` result, an untyped host array as a slice, and a host result narrowed to a declared host class are typed by the builder too, with the checker unchanged (D445).
