@@ -976,4 +976,71 @@ if ! grep -q "^I0003 census \[.*jvm_host_chain_counted.l\]: 0 diagnostic" "$WORK
 else
   echo "ok   jvm_host_chain_counted"
 fi
+# A local bound to a static host call's result is a host receiver, a void host call on a chain is typed
+# Unit, and a static host call whose result is a `java.util.concurrent` class no `extern type` names is
+# an argument to a host call (D434): the shape of `Std.HttpServer.startListener`.  Built and run.
+cat > "$WORK/jvm_host_local_receiver.l" <<'LYRIC'
+package JvmHostLocalReceiver
+extern type JHttpServer = "com.sun.net.httpserver.HttpServer"
+extern type JExchange = "com.sun.net.httpserver.HttpExchange"
+extern type JInet = "java.net.InetSocketAddress"
+extern type JExecutors = "java.util.concurrent.Executors"
+
+func start(): Int {
+  val addr = JInet.new(0)
+  val server = JHttpServer.create(addr, 0)
+  server.createContext("/", { ex: JExchange -> () })
+  server.setExecutor(JExecutors.newVirtualThreadPerTaskExecutor())
+  server.start()
+  server.stop(0)
+  0
+}
+
+func main(): Int { start() }
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_local_receiver.l" -o "$WORK/jvm_host_local_receiver.jar" >"$WORK/jvm_host_local_receiver.log" 2>&1)
+jline="$(grep "^TIR build census \[.*jvm_host_local_receiver.l\]" "$WORK/jvm_host_local_receiver.log" | head -1)"
+if [[ -z "$jline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$jline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$jline")" ]]; then
+  echo "FAIL (jvm_host_local_receiver): not every body built"; grep -E "first error" "$WORK/jvm_host_local_receiver.log" | head -3; fail=1
+elif ! grep -q "^I0003 census \[.*jvm_host_local_receiver.l\]: 0 diagnostic" "$WORK/jvm_host_local_receiver.log"; then
+  echo "FAIL (jvm_host_local_receiver): the verifier rejected a built body"; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_local_receiver.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_local_receiver): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_local_receiver"; fi
+fi
+# A `Std.*` package sees the `internal` functions of another `Std.*` package (`Std.Tls`'s `rawHandle`
+# accessors, D432) and a user package does not: with `Std.HttpServer` imported, the two kernel functions
+# that call them are built, and a user call of the accessor stays unresolved.
+cat > "$WORK/std_internal_sigs.l" <<'LYRIC'
+package StdInternalSigs
+import Std.Core
+import Std.HttpServer
+import Std.Tls
+
+func peek(id: in Identity): Int { 0 }
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/std_internal_sigs.l" -o "$WORK/std_internal_sigs.jar" >"$WORK/std_internal_sigs.log" 2>&1)
+if grep -q "^TIR body.unbuilt.Std.HttpServer::build\(Identity\|ClientCa\)KeyStore" "$WORK/std_internal_sigs.log" || ! grep -q "^TIR body.built.Std.HttpServer::buildIdentityKeyStore" "$WORK/std_internal_sigs.log"; then
+  echo "FAIL (std_internal_sigs): a Std.HttpServer body that calls Std.Tls's internal accessor was not built"; fail=1
+else
+  echo "ok   std_internal_sigs"
+fi
+cat > "$WORK/user_internal_hidden.l" <<'LYRIC'
+package UserInternalHidden
+import Std.Core
+import Std.Tls
+import Std.TlsHost
+
+func raw(id: in Identity): CertHandle { id.rawHandle() }
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/user_internal_hidden.l" -o "$WORK/user_internal_hidden.jar" >"$WORK/user_internal_hidden.log" 2>&1)
+if grep -q "^TIR body.built.UserInternalHidden::raw" "$WORK/user_internal_hidden.log"; then
+  echo "FAIL (user_internal_hidden): a user package called Std.Tls's internal accessor"; fail=1
+else
+  echo "ok   user_internal_hidden"
+fi
 exit $fail

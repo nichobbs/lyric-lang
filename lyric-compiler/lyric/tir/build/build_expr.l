@@ -745,8 +745,7 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
-  not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.") and
-    not Str.startsWith(name, "java.util.concurrent.")
+  not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
 }
 
 /// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
