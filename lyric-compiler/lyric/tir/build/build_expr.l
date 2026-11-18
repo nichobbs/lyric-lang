@@ -641,6 +641,20 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
+  // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
+  match e.kind {
+    case EBinop(op, _, _) -> match op {
+      case BEq -> return Some(value = tyBool())
+      case BNeq -> return Some(value = tyBool())
+      case BLt -> return Some(value = tyBool())
+      case BLte -> return Some(value = tyBool())
+      case BGt -> return Some(value = tyBool())
+      case BGte -> return Some(value = tyBool())
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   match openLocalTy(env, e) {
     case Some(t) -> Some(value = t)
     case None -> match openPropagateYield(env, e) {
