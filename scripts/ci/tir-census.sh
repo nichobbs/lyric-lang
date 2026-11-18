@@ -340,6 +340,22 @@ done
 fi
 
 if [[ "$AREAS" == *" self-tests "* ]]; then
+# The JVM kernels of lyric-web and lyric-ws call Undertow classes through `[maven]` dependencies, and a self-test
+# that builds them (`jvm_auto_ffi_bridge_self_test.l` builds the real `lyric-web/lyric.toml`) resolves those
+# calls from the restored classpath, as a real `--target jvm` build does.  Without a restore the host metadata
+# cannot resolve them and 26 bodies count as unbuilt for want of a jar, not for a builder gap.  The restore needs
+# the Maven resolver (`make maven-resolver`) and network access to Maven Central; where either is missing the
+# census says so and counts those bodies as it did before.
+resolver="${LYRIC_MAVEN_RESOLVER:-$REPO_ROOT/resolver/target/lyric-resolver.jar}"
+if [[ -f "$resolver" ]]; then
+  for m in lyric-web lyric-ws; do
+    if ! LYRIC_MAVEN_RESOLVER="$resolver" "$LYRIC" restore --manifest "$REPO_ROOT/$m/lyric.toml" >"$OUT/restore-$m.txt" 2>&1; then
+      echo "NOTICE: the Maven restore of $m failed; its Undertow bodies count as unbuilt (see below)"; tail -n 3 "$OUT/restore-$m.txt"
+    fi
+  done
+else
+  echo "NOTICE: no Maven resolver at $resolver (make maven-resolver); the Undertow bodies of lyric-web and lyric-ws count as unbuilt"
+fi
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do
   run_cached "st-$f" 600 "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/st.dll"
