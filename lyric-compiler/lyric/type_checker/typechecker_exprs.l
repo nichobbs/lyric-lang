@@ -3440,10 +3440,7 @@ func recordMonadAccessorCallee(
     case Some(_) -> ()
     case None -> return
   }
-  val targs = match unrefine(recvRaw) {
-    case TyUser(_, _, a) -> a
-    case _ -> return
-  }
+  val targs = match unrefine(recvRaw) { case TyUser(_, _, a) -> a; case _ -> return }
   match mapGet(sigs, name) {
     case Some(sig) -> {
       if sig.originPackage != "Std.Core" or sig.generics.count != targs.count {
@@ -20269,6 +20266,7 @@ func inferExprCore(
           val urt = inferExpr(sc, tbl, sigs, diag, recvE)
           val toUInt = mname == "toUInt"
           if isUnsignedConvReceiver(urt) and not (toUInt and isPrimOf(urt, PtULong)) {
+            recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(urt) + "." + mname)
             if toUInt {
               return TyPrim(pt = PtUInt)
             }

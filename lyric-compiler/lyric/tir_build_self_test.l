@@ -1889,6 +1889,15 @@ test "a diverging lambda is used as a function of another result (D499)" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "the unsigned widening methods toUInt and toULong build as built-in calls (D451)" {
+  val c = censusOf(
+    "package App\nfunc a(b: Byte): UInt { b.toUInt() }\nfunc b(b: Byte): ULong { b.toULong() }\nfunc c(u: UInt): ULong { u.toULong() }\nfunc d(n: Long): UInt { n.toByte().toUInt() }\n"
+  )
+  assertEqualInt(c.built, 4, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
