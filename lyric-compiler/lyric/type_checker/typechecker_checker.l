@@ -1759,18 +1759,18 @@ func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): 
   kept
 }
 
-// Whether the package being checked is a stdlib package.  The bridges list every
-// user package (the entry and each sibling) unflagged under its own name, and
-// leave the stdlib package being checked out of its own import list, so a
-// package with an unflagged entry is a user package whatever its name and every
-// other checked package was loaded from the stdlib root (D432).
+// Whether the package being checked is a stdlib package: its own entry in the
+// list the caller gave (read before the checked package is taken out of it) is
+// one the bridge loaded from the stdlib root.  A user package is listed
+// unflagged, and a package that is not listed at all is not the stdlib either:
+// an unknown importer sees `pub` items only (D432).
 func importerIsStdlibPackage(userPkg: in String, importedPackages: in List[ImportedPackage]): Bool {
   for ip in importedPackages {
-    if ip.name == userPkg and not ip.stdlib {
-      return false
+    if ip.name == userPkg {
+      return ip.stdlib
     }
   }
-  true
+  false
 }
 
 // T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
@@ -7490,13 +7490,14 @@ func checkWithImportedPackagesCore(
   // What the resolver is given for each dependency: the items the checker
   // registers, with a destructuring module-level `val` already split.
   val resolveDeps: List[DepPackage] = newList()
+  val importerStd = importerIsStdlibPackage(userPkg, allImportedPackages)
   var p = 0
   while p < importedPackages.count {
     val ip = importedPackages[p]
     symTableRegisterPackageReexports(tbl, ip.name, ip.reexports)
     // T0144 in another package is that package's own build error.
     val ipDiag: List[Diagnostic] = newList()
-    val ipItems = desugarModuleValItems(ip.items, ipDiag)
+    val ipItems = desugarModuleValItems(itemsVisibleToImporter(importerStd, ip), ipDiag)
     val depImports = if ip.importDecls.count > 0 {
       ip.importDecls
     } else {
@@ -7568,7 +7569,6 @@ func checkWithImportedPackagesCore(
   // to key the subtyping relation, so its diagnostics are discarded (genuine
   // unresolved-type errors surface via sig resolution / checkImplConformance).
   val implDiag: List[Diagnostic] = newList()
-  val importerStd = importerIsStdlibPackage(userPkg, importedPackages)
   var sp = 0
   while sp < importedPackages.count {
     val ip2 = importedPackages[sp]

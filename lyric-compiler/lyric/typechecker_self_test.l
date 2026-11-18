@@ -15850,10 +15850,10 @@ test "a member read and a Set method on a collection are T0113; dot-named and UF
 
 // D432: a stdlib package sees the `internal` items of another stdlib package, a
 // user package does not, and a user package that merely carries a `Std.` name is
-// still a user package.  The call `t.raw()` records its result type only when the
+// still a user package.  The call `t.raw()` types as `Int` where `String` is returned, an error, only when the
 // dot-named `internal` function is visible to the file being checked.
-func internalVisibilityPackages(): List[ImportedPackage] {
-  val key = parse("package Std.Key\npub record Thing { x: Int }\ninternal func Thing.raw(t: in Thing): Int { t.x }\n")
+func internalVisibilityPackages(vis: in String): List[ImportedPackage] {
+  val key = parse("package Std.Key\npub record Thing { x: Int }\n" + vis + " func Thing.raw(t: in Thing): Int { t.x }\n")
   val packages: List[ImportedPackage] = newList()
   packages.add(
     ImportedPackage(
@@ -15867,31 +15867,61 @@ func internalVisibilityPackages(): List[ImportedPackage] {
   packages
 }
 
-func internalVisibilityCallType(pkgName: in String, listEntry: in Bool): String {
-  val packages = internalVisibilityPackages()
-  val src = "package " + pkgName + "\nimport Std.Key\nfunc f(t: in Thing): Int {\n  t.raw()\n}\n"
+func errorCodes(cr: in CheckResult): String {
+  var codes = ""
+  for d in cr.diagnostics {
+    match d.severity {
+      case DiagError -> {
+        codes = codes + d.code + ":" + d.message + ";"
+      }
+      case DiagWarning -> ()
+    }
+  }
+  codes
+}
+
+func internalVisibilityCallType(pkgName: in String, listing: in String, vis: in String = "internal"): String {
+  val packages = internalVisibilityPackages(vis)
+  val src = "package " + pkgName + "\nimport Std.Key\nfunc f(t: in Thing): String {\n  t.raw()\n}\n"
   val file = parse(src).file
-  if listEntry {
+  if listing != "unlisted" {
     packages.add(
       ImportedPackage(
         name = pkgName,
+        stdlib = listing == "stdlib",
         items = file.items,
         imports = collectImportNames(file.imports),
         wholeImports = collectWholeImportNames(file.imports)
       )
     )
   }
-  recordedCallType(checkWithImportedPackages(file, packages), src, "t.raw()")
+  val cr = checkWithImportedPackages(file, packages)
+  errorCodes(cr)
 }
 
+// The diagnostics of `t.raw()` returned as a `String` are a probe: a function that resolves
+// types the call as `Int` (a `pub` one is the control), one that does not leaves the call
+// untyped, and the two read differently.
 test "a stdlib package sees another stdlib package's internal function (D432)" {
-  assertTrue(internalVisibilityCallType("Std.Other", false) == "Int", "stdlib importer resolves the internal accessor")
+  val seen = internalVisibilityCallType("Std.Other", "stdlib")
+  val control = internalVisibilityCallType("App", "user", "pub")
+  assertTrue(seen == control, "stdlib importer got '" + seen + "', a visible function gives '" + control + "'")
 }
 
 test "a user package does not see a stdlib package's internal function (D432)" {
-  assertTrue(internalVisibilityCallType("App", true) == "", "user importer does not resolve the internal accessor")
+  val hidden = internalVisibilityCallType("App", "user")
+  val control = internalVisibilityCallType("App", "user", "pub")
+  assertTrue(hidden != control, "user importer got '" + hidden + "', the same as a visible function")
 }
 
 test "a user package named Std.Mine does not see a stdlib package's internal function (D432)" {
-  assertTrue(internalVisibilityCallType("Std.Mine", true) == "", "a Std.-named user package is still a user package")
+  val hidden = internalVisibilityCallType("Std.Mine", "user")
+  val control = internalVisibilityCallType("Std.Mine", "user", "pub")
+  assertTrue(hidden != control, "Std.Mine got '" + hidden + "', the same as a visible function")
+}
+
+test "a package that is not listed does not see a stdlib package's internal function (D432)" {
+  val hidden = internalVisibilityCallType("Unlisted", "unlisted")
+  val control = internalVisibilityCallType("Unlisted", "unlisted", "pub")
+  assertTrue(hidden != control, "an unlisted importer got '" + hidden + "', the same as a visible function")
 }
