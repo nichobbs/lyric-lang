@@ -588,6 +588,42 @@ func main(): Int {
 }
 LYRIC
 
+# The same for a nullary case of two unions (`Idle` of `Job` and `Lane`): the expected type decides
+# which union it is (D446).
+check shared_union_case 11 <<'LYRIC'
+package Shapes17
+
+union Job {
+  case Idle
+  case Run(n: Int)
+}
+
+union Lane {
+  case Idle
+  case Closed
+}
+
+func idleJob(): Job {
+  Idle
+}
+
+func idleLane(): Lane {
+  Idle
+}
+
+func main(): Int {
+  val j = match idleJob() {
+    case Job.Idle -> 5
+    case Job.Run(n) -> n
+  }
+  val l = match idleLane() {
+    case Lane.Idle -> 6
+    case Lane.Closed -> 0
+  }
+  j + l
+}
+LYRIC
+
 # A field of a generic record read inside a function generic over the record's parameter keeps its
 # type (`List[D]` for `many: List[D]`), so the read and a loop over it build (D492).
 check rigid_nested_field 9 <<'LYRIC'

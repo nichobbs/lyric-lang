@@ -1898,6 +1898,15 @@ test "the unsigned widening methods toUInt and toULong build as built-in calls (
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "an exposed record's construction builds as a construction (D452)" {
+  val c = censusOf(
+    "package App\nexposed record E { value: Int }\nexposed record Box[T] { value: T }\nfunc a(v: Int): E { E(value = v) }\nfunc b(v: Int): Box[Int] { Box(value = v) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "toLong on a Nat-backed range subtype is a widening of its Nat (D453)" {
   val c = censusOf(
     "package App\ntype Score = Nat range 0 ..= 100\ntype Id = Nat\nfunc f(s: Score): Long { s.toLong() }\nfunc g(i: Id): Long { i.toLong() }\n"
@@ -2473,6 +2482,52 @@ test "a host result the checker types as a Lyric type takes the checker's type" 
     not hostResultIsCallType(hostTy("System.Threading.Tasks.Task"), TPrim(kind = TPString)),
     "a task is not a String"
   )
+}
+
+func isFromHost(k: in Option[ConvKind]): Bool {
+  match k {
+    case Some(CvFromHost) -> true
+    case _ -> false
+  }
+}
+
+func hostTyOf(name: in String, arg: in Ty): Ty {
+  val args: List[Ty] = newList()
+  args.add(arg)
+  TExtern(host = HostTypeRef(name = name, args = args))
+}
+
+test "erasedHostKind converts a host value to the language's erased generic type" {
+  val param = TParam(owner = SymbolId(id = 5), index = 0)
+  val arr = "an array, pointer or by-reference type"
+  assertTrue(isFromHost(erasedHostKind(hostTy("java.lang.Object"), param)), "the JVM Object as a type parameter")
+  assertTrue(isFromHost(erasedHostKind(hostTy("System.Object"), param)), "the CLR Object as a type parameter")
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy("java.util.List"), param)),
+    "another host class is not a type parameter"
+  )
+  assertTrue(
+    isFromHost(erasedHostKind(hostTy(arr), TSlice(element = param))),
+    "a host array as a slice of a type parameter"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy("java.lang.Object"), TSlice(element = param))),
+    "an Object is not a slice of a type parameter"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy(arr), TSlice(element = TPrim(kind = TPInt)))),
+    "a host array is not a slice of Int"
+  )
+}
+
+test "erasedHostKind relates a host generic class to itself applied to type arguments" {
+  val raw = hostTy("java.util.List")
+  val applied = hostTyOf("java.util.List", TPrim(kind = TPInt))
+  assertTrue(isFromHost(erasedHostKind(raw, applied)), "the class as itself applied")
+  assertTrue(isFromHost(erasedHostKind(applied, raw)), "itself applied as the class")
+  assertTrue(not isFromHost(erasedHostKind(applied, applied)), "equal types need no conversion")
+  assertTrue(not isFromHost(erasedHostKind(raw, hostTy("java.util.Map"))), "another class is not related")
+  assertTrue(not isFromHost(erasedHostKind(TPrim(kind = TPInt), raw)), "a Lyric value is not a host value")
 }
 
 test "a value-generic case built in a value-generic function verifies" {

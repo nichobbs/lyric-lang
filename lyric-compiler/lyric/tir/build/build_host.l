@@ -51,6 +51,36 @@ func isHostObject(name: in String): Bool {
   name == "System.Object" or name == "java.lang.Object"
 }
 
+/// The host's string class: the checker types a call returning it as the possibly null `String?`.
+func isHostStringName(name: in String): Bool {
+  name == "System.String" or name == "java.lang.String"
+}
+
+/// The host's 32-bit floating point class, which the checker types as `Float`.
+func isHostSingleName(name: in String): Bool {
+  name == "System.Single" or name == "java.lang.Float"
+}
+
+/// The host's 64-bit floating point class, which the checker types as `Double`.
+func isHostDoubleName(name: in String): Bool {
+  name == "System.Double" or name == "java.lang.Double"
+}
+
+/// A host task or future, which the checker types as the built-in `Task[T]`.
+func isHostTaskName(name: in String): Bool {
+  name == "System.Threading.Tasks.Task" or name == "java.util.concurrent.CompletableFuture" or
+    name == "java.util.concurrent.Future"
+}
+
+/// A host class every call result of which the checker types as a Lyric type whatever the declared
+/// type, the one list `hostResultIsCallType` (a result the checker typed) and `isPlainHostResult` (a
+/// result it left untyped, which the builder types itself) both read, so the two cannot drift apart.
+func hostNameHasLyricType(name: in String): Bool {
+  name == hostArrayName() or isHostStringName(name) or isHostObject(name) or isHostSingleName(name) or
+    isHostDoubleName(name) or
+    isHostTaskName(name)
+}
+
 /// The host's own classes for strings, boxed numbers and characters: a value of the language, never a
 /// functional interface or a delegate, so a function value fits none of them.
 func isHostValueClass(name: in String): Bool {
