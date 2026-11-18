@@ -1746,6 +1746,7 @@ func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): 
       case _ -> false
     }
     val itemInternal = match it.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
+    // The kinds a bridge keeps for `internal` in `pipeIsCrossPackageItemProject` and a consumer calls by name.
     val hidable = match it.kind {
       case IFunc(_) -> true
       case IVal(_) -> true
