@@ -1139,4 +1139,51 @@ LYRIC
 }
 reexport_qualified
 
+# `b.withMutPointer(f)` on a buffer and `w.upgrade()` on a `NativeWeak` have no declared callee: the
+# checker records them as built-in calls by name (D421).  Native only, so built for native.
+native_member_intrinsics() {
+  local src="$WORK/native_member_intrinsics.l" log="$WORK/native_member_intrinsics.log"
+  cat > "$src" <<'LYRIC'
+package App
+
+import Std.Core
+
+extern func cMemset(p: NativePtr[Byte], c: Int, n: Long): NativePtr[Byte] = "memset"
+
+record Node {
+  name: String
+}
+
+@unsafe_ffi
+func fillSeven(b: inout buffer[Byte]): Unit {
+  val _ = b.withMutPointer({ p: NativePtr[Byte] ->
+    val _ = cMemset(p, 7, 4)
+    0
+  })
+}
+
+func lengthOf(w: in NativeWeak[Node]): Int {
+  match w.upgrade() {
+    case Some(n) -> n.name.length
+    case None -> 0
+  }
+}
+
+func main(): Int = 0
+LYRIC
+  (cd "$WORK" && "$LYRIC" build --verify-ir --target native "$src" -o "$WORK/native_member_intrinsics" >"$log" 2>&1)
+  local line built total
+  line="$(grep "^TIR build census" "$log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (native_member_intrinsics): $built of $total bodies built"; grep -E "first error" "$log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census .*: 0 diagnostic" "$log"; then
+    echo "FAIL (native_member_intrinsics): the verifier rejected a built body"; grep "I0003" "$log" | head -3; fail=1; return
+  fi
+  echo "ok   native_member_intrinsics"
+}
+native_member_intrinsics
+
 exit $fail
