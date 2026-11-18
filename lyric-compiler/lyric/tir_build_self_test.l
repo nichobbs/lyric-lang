@@ -1833,6 +1833,15 @@ test "a type-test pattern builds as a test of the inner pattern's type (D459)" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a distinct type's constructor call builds as a wrap of its underlying value (D458)" {
+  val c = censusOf(
+    "package App\ntype TestAge = Int\nrecord OrdPerson {\n  age: TestAge\n  name: String\n}\nfunc a(): TestAge { TestAge(40) }\nfunc b(): OrdPerson { OrdPerson(age = TestAge(30), name = \"zed\") }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a protected type's construction and entry call build as a construction and a receiver-first call" {
   val c = censusOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"

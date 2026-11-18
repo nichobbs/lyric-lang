@@ -915,9 +915,12 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
+  - `b.withPointer(f)`, `b.withMutPointer(f)` and `w.upgrade()` are recorded as built-in calls by name, so they build as `IoBuiltin` with the receiver first (D421).
   - A call through a record's function-typed field has a recorded callee type, and inside a generic function keeps the record's parameters rather than erasing them, so it builds (D456).
   - A type-test pattern `case x is T` builds as `TpTypeTest` at the inner pattern's recorded type (D459).
   - A record, opaque or protected type's construction written through an alias or a re-exporting package (`L.Leaf(v = n)`) resolves its constructor through the resolver, so it records its callee and builds (D420).
+  - A call that leaves out a defaulted argument of a restored package's callable calls the package's compiled default thunk, so it builds (D457).
+  - A distinct type's constructor call `T(x)` builds as a wrap of its underlying value like `T.from(x)` (D458).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
   - A generic `opaque` or `protected` type's construction has a recorded signature with its fields at the result type's arguments, so it builds (D454).
