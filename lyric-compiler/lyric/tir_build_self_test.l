@@ -1824,6 +1824,15 @@ test "a call through a generic record's function-typed field in a generic functi
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a type-test pattern builds as a test of the inner pattern's type (D459)" {
+  val c = censusOf(
+    "package App\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(pt: Point): Int {\n  match pt {\n    case p is Point -> p.x\n    case _ -> -1\n  }\n}\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a distinct type's constructor call builds as a wrap of its underlying value (D458)" {
   val c = censusOf(
     "package App\ntype TestAge = Int\nrecord OrdPerson {\n  age: TestAge\n  name: String\n}\nfunc a(): TestAge { TestAge(40) }\nfunc b(): OrdPerson { OrdPerson(age = TestAge(30), name = \"zed\") }\n"
