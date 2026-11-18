@@ -20335,7 +20335,13 @@ func inferExprCore(
         case None -> ()
       }
       match bufferPointerCallType(sc, tbl, sigs, diag, fn, args, e.span) {
-        case Some(bt) -> return bt
+        case Some(bt) -> {
+          match fn.kind {
+            case EMember(_, lent) -> recordBuiltinCallee(tbl, e.nodeId, lent)
+            case _ -> ()
+          }
+          return bt
+        }
         case None -> ()
       }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
@@ -20543,7 +20549,10 @@ func inferExprCore(
         case EMember(weakRecv, weakName) -> if weakName == "upgrade" and args.count == 0 and tbl.nativeIntrinsicTypes.count > 0 {
           val weakRecvTy = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, weakRecv) }
           match nativeWeakUpgradeType(tbl, weakRecvTy) {
-            case Some(ut) -> return ut
+            case Some(ut) -> {
+              recordBuiltinCallee(tbl, e.nodeId, "upgrade")
+              return ut
+            }
             case None -> {
               cachedRecvType = Some(value = weakRecvTy)
             }
