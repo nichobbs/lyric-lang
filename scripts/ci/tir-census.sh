@@ -110,6 +110,8 @@ declare -A samples
 # Per area (the wide census): bodies built, bodies total, I0003, builds judged / attempted.
 declare -A a_built a_total a_i0003 a_judged a_tried
 declare -A a_kinds a_samples a_unchecked
+# Why each unchecked wide build failed: its name, then the first error lines of its log.
+unchecked_why=()
 
 # Appends the body identities of one build log to the area's file (see the header): one
 # tab-separated line per body (`built` or `unbuilt`, key) and per uncovered kind of an
@@ -160,7 +162,10 @@ absorb_log() {
   lines="$(grep -c '^TIR build census' "$log" || true)"
   a_tried[$area]=$(( ${a_tried[$area]:-0} + 1 ))
   if [[ "$lines" -eq 0 ]]; then
-    if [[ $rc -ne 0 ]]; then a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit=$rc) "; fi
+    if [[ $rc -ne 0 ]]; then
+      a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit=$rc) "
+      unchecked_why+=("${name} (exit=$rc): $(grep -m3 -iE 'error|^build:|exception|unhandled|not found|failed' "$log" | cut -c1-300 | tr '\n' '|')")
+    fi
     return 0
   fi
   collect_bodies "$area" "$name" "$log"
@@ -383,6 +388,7 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     echo "    unchecked builds: $(wc -w <<<"${a_unchecked[$area]}")"
     # shellcheck disable=SC2086
     printf '      %s\n' ${a_unchecked[$area]} | head -10
+    printf '      why: %s\n' "${unchecked_why[@]}" | head -30
   fi
 done
 if [[ "${TIR_CENSUS_PARTIAL:-0}" == 1 ]]; then
