@@ -1083,4 +1083,25 @@ if [[ -z "$gline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$
 else
   echo "ok   jvm_host_generic_result"
 fi
+# A host array result read as the host `Object` the context declares (`Std.HttpHost.buildClientSslContext`:
+# `val tm: JObject = tmf.getTrustManagers()`): the call keeps the array type and an upcast gives `Object` (D434).
+cat > "$WORK/jvm_host_array_as_object.l" <<'LYRIC'
+package JvmHostArrayAsObject
+extern type JTmf = "javax.net.ssl.TrustManagerFactory"
+extern type JObj = "java.lang.Object"
+
+func managers(t: in JTmf): Int {
+  val o: JObj = t.getTrustManagers()
+  0
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_array_as_object.l" -o "$WORK/jvm_host_array_as_object.jar" >"$WORK/jvm_host_array_as_object.log" 2>&1)
+if ! grep -q "^TIR build census \[.*jvm_host_array_as_object.l\]: 2 of 2" "$WORK/jvm_host_array_as_object.log" || \
+   ! grep -q "^I0003 census \[.*jvm_host_array_as_object.l\]: 0 diagnostic" "$WORK/jvm_host_array_as_object.log"; then
+  echo "FAIL (jvm_host_array_as_object): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_array_as_object.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_array_as_object"
+fi
 exit $fail
