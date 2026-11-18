@@ -333,6 +333,7 @@ pub func compileToJar(
     importedPkgs.add(
       ImportedPackage(
         name = dottedPath(stdPrInv.packageDecl.path),
+        stdlib = true,
         items = pkgItems,
         imports = collectImportNames(stdPrInv.imports),
         wholeImports = collectWholeImportNames(stdPrInv.imports),
@@ -3326,6 +3327,7 @@ func jvmProjectFrontEnd(
     importedPkgs.add(
       ImportedPackage(
         name = pn,
+        stdlib = true,
         items = pkgItems,
         imports = collectImportNames(prFile.imports),
         wholeImports = collectWholeImportNames(prFile.imports),
