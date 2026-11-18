@@ -498,9 +498,9 @@ func main(): Int {
 }
 LYRIC
 
-# Arithmetic on a record that derives Add is lowered field by field by the AST pass; the builder counts
-# the body instead of emitting a plain `+` on two records (D491).
-check_counted record_arith_stays_counted <<'LYRIC'
+# Arithmetic on a record that derives Add builds as its fields' operator in a record built from them,
+# never as a plain `+` on two records (D422); the program is also run.
+check record_arith 1 <<'LYRIC'
 package Shapes16
 import Std.Core
 
@@ -700,6 +700,56 @@ if grep -q "TIR build census \[.*src/b/b.l\]: 1 of 1 function bodies built" "$WO
   echo "ok   package_qualified_type_function"
 else
   echo "FAIL (package_qualified_type_function)"; grep -E "first error" "$WORK/proj.log" | head -3; fail=1
+fi
+# A case name two enums of another package share, read through the package where the annotated type
+# decides which enum it is (`val b: Lib.Beam = Lib.On`), builds as that enum's case (D423).
+mkdir -p "$WORK/shared/src/lib" "$WORK/shared/src/app"
+cat > "$WORK/shared/lyric.toml" <<'TOML'
+[package]
+name = "SharedCase"
+version = "0.1.0"
+
+[project]
+name = "SharedCase"
+output = "single"
+output_assembly = "SharedCase.dll"
+
+[project.packages]
+"SiblingEnums" = "src/lib"
+"SiblingEnumsValueApp" = "src/app"
+TOML
+cat > "$WORK/shared/src/lib/lib.l" <<'LYRIC'
+package SiblingEnums
+
+pub enum Beam {
+  case Off
+  case On
+}
+
+pub enum Ray {
+  case On
+  case Idle
+}
+LYRIC
+cat > "$WORK/shared/src/app/app.l" <<'LYRIC'
+package SiblingEnumsValueApp
+import SiblingEnums
+
+pub func main(): Int {
+  val beam: SiblingEnums.Beam = SiblingEnums.On
+  val ray: SiblingEnums.Ray = SiblingEnums.On
+  match beam {
+    case SiblingEnums.On -> 1
+    case SiblingEnums.Off -> 0
+  }
+}
+LYRIC
+(cd "$WORK/shared" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/shared.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/shared.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/shared.log"; then
+  echo "ok   package_qualified_shared_enum_case"
+else
+  echo "FAIL (package_qualified_shared_enum_case)"; grep -E "first error" "$WORK/shared.log" | head -3; fail=1
 fi
 # A host call chain whose middle result is a host class no `extern type` names, built for the JVM
 # (D444): `m.entrySet().iterator()` is typed from the host metadata.  The program is also run.

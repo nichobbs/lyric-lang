@@ -6145,20 +6145,16 @@ func recordMethodCalleeNode(
 // receiver-dropped signature and receiver type, and the interface the receiver
 // is a value of.  A member of a record, protected type or `impl` is recorded with
 // its generics (D580: the owner's parameters then its own, instantiated from the
-// receiver's type arguments); a dot-named generic function and a generic
-// interface receiver wait for the generic-call step.
+// receiver's type arguments).  A dot-named function that is generic, or whose receiver is an
+// instance of a generic type, is recorded with its full signature (`full`): the call is that
+// function called with the receiver first.  A generic interface receiver waits for the
+// generic-call step.
 func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
-  if mp.sig.generics.count > 0 and mp.fullSig.isSome() {
-    return
-  }
   val recv = unrefine(recvTy)
   var iface: Option[SymbolId] = None
   var recvArgs = 0
   match recv {
     case TyUser(id, _, targs) -> {
-      if targs.count > 0 and mp.fullSig.isSome() {
-        return
-      }
       recvArgs = targs.count
       match symbolOfDefId(tbl, id) {
         case Some(s) -> match s.kind { case DKInterface(_, _) -> { iface = Some(value = id) }; case _ -> () }
@@ -6166,6 +6162,13 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
       }
     }
     case _ -> return
+  }
+  // A dot-named function that is generic, or whose receiver is an instance of a generic
+  // type, is recorded with its full signature: the call is a call of that function with the
+  // receiver first.
+  var full: Option[ResolvedSignature] = None
+  if mp.fullSig.isSome() and (mp.sig.generics.count > 0 or recvArgs > 0) {
+    full = mp.fullSig
   }
   // Only a method the interface declares is dispatched on it; a dot-named
   // function `Feed.f(self, ...)` called on the value is a plain function.
@@ -6177,13 +6180,13 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
     return
   }
   val declared = match mp.fullSig {
-    case Some(full) -> if full.params.count > 0 { full.params[0].ty } else { recv }
+    case Some(f) -> if f.params.count > 0 { f.params[0].ty } else { recv }
     case None -> recv
   }
   if tbl.methodCallByNode.containsKey(callNode) {
     tbl.methodCallByNode.remove(callNode)
   }
-  tbl.methodCallByNode.add(callNode, MethodCallSite(sig = mp.sig, recvTy = declared, iface = iface))
+  tbl.methodCallByNode.add(callNode, MethodCallSite(sig = mp.sig, recvTy = declared, iface = iface, full = full))
 }
 
 // The receiver-dropped copy of a full dot-named signature.
@@ -23237,6 +23240,17 @@ pub func inferExprExpected(
 ): Type {
   val core = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
   val t = sharedEnumCaseAgainstExpected(tbl, core, expected)
+  // A case name several enums share, read against the enum the expected type names: the node is
+  // that enum's case (docs/70 §6.3).
+  if sharedCaseOwnersOf(tbl, core).count > 0 {
+    match e.kind {
+      case EMember(_, n) -> recordQualifiedEnumCaseRef(tbl, e.nodeId, t, n)
+      case EPath(p) -> if p.segments.count > 0 {
+        recordQualifiedEnumCaseRef(tbl, e.nodeId, t, p.segments[p.segments.count - 1])
+      }
+      case _ -> ()
+    }
+  }
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).  An expression with
