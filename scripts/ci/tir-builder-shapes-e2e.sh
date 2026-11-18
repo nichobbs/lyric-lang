@@ -1104,4 +1104,94 @@ if ! grep -q "^TIR build census \[.*jvm_host_array_as_object.l\]: 2 of 2" "$WORK
 else
   echo "ok   jvm_host_array_as_object"
 fi
+# A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`, the host's
+# `Object`) and read where a `String` is wanted: the read converts with `CvFromHost`, so the local's type
+# and the read agree and the verifier accepts it (the I0003 `local-type` rule).
+cat > "$WORK/jvm_host_local_read.l" <<'LYRIC'
+package JvmHostLocalRead
+extern type JHashMap = "java.util.HashMap"
+
+func lookup(): String {
+  val prefix = "v:"
+  val m = JHashMap.new()
+  val v = m.computeIfAbsent("key", { k: String -> prefix + k })
+  v
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_local_read.l" -o "$WORK/jvm_host_local_read.jar" >"$WORK/jvm_host_local_read.log" 2>&1)
+if ! grep -q "^I0003 census \[.*jvm_host_local_read.l\]: 0 diagnostic" "$WORK/jvm_host_local_read.log"; then
+  echo "FAIL (jvm_host_local_read): the verifier rejected a built body"; grep "I0003" "$WORK/jvm_host_local_read.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_local_read"
+fi
+
+# A record and a function reached through an alias of a package that re-exports them (`pub use`):
+# `L.Leaf(v = n)` and `L.ident(4)` have recorded callees (D420).
+reexport_qualified() {
+  local dir="$WORK/reexport_qualified"
+  mkdir -p "$dir/src"
+  cat > "$dir/lyric.toml" <<'TOML'
+[package]
+name    = "Fac"
+version = "0.1.0"
+
+[project]
+name            = "Fac"
+output          = "single"
+output_assembly = "Fac.dll"
+
+[project.packages]
+"Pu.Inner" = "src/inner.l"
+"Pu" = "src/pu.l"
+"Pu.Main" = "src/main.l"
+TOML
+  cat > "$dir/src/inner.l" <<'LYRIC'
+package Pu.Inner
+
+pub record Leaf {
+  v: Int
+}
+
+pub func ident(n: in Int): Int = n
+LYRIC
+  cat > "$dir/src/pu.l" <<'LYRIC'
+package Pu
+
+import Pu.Inner
+pub use Pu.Inner
+
+pub func own(): Int = 1
+LYRIC
+  cat > "$dir/src/main.l" <<'LYRIC'
+package Pu.Main
+
+import Pu as L
+
+func leafOf(n: in Int): L.Leaf {
+  L.Leaf(v = n)
+}
+
+func main(): Int {
+  val a = L.ident(4)
+  val b = leafOf(5).v
+  a + b
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/lyric.toml" >"$dir/build.log" 2>&1) || { echo "FAIL (reexport_qualified): the project did not build"; tail -3 "$dir/build.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*main.l\]" "$dir/build.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (reexport_qualified): $built of $total bodies built"; grep -E "first error" "$dir/build.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*main.l\]: 0 diagnostic" "$dir/build.log"; then
+    echo "FAIL (reexport_qualified): the verifier rejected a built body"; fail=1; return
+  fi
+  echo "ok   reexport_qualified"
+}
+reexport_qualified
+
 exit $fail

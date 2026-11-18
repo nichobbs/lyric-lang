@@ -11385,6 +11385,19 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       }
       case None -> ()
     }
+    // `L.Leaf(v = 1)` for an alias or a package that re-exports `Leaf` (`pub use`): the
+    // resolver answers for the qualified name where the declaring package is not the one
+    // written.
+    match symTableQualifiedType(tbl, flatSegs) {
+      case Some(qs) -> match qs.kind {
+        case DKRecord(_, _) -> return Some(value = qs)
+        case DKExposedRec(_, _) -> return Some(value = qs)
+        case DKOpaque(_, _) -> return Some(value = qs)
+        case DKProtected(_, _) -> return Some(value = qs)
+        case _ -> ()
+      }
+      case None -> ()
+    }
   }
   if not fnWasFlatPath {
     return None
@@ -19739,6 +19752,25 @@ func typeMentionsGenericInst(t: in Type): Bool {
   }
 }
 
+// The type of the record field `name` of `recv` at the receiver's type arguments, with the
+// enclosing generic's own parameters kept as parameters rather than erased; `dflt` when `recv`
+// is no record with that field.  A call through a function-typed field of `Program[E, Msg]`
+// inside `f[E, Msg]` has the field's `(E) -> Msg`, not an unknown type (D456).
+func fieldTypeKeepingBinders(tbl: in SymbolTable, recv: in Type, name: in String, dflt: in Type): Type {
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      val fs = fieldsOfRecordSubstituted(tbl, tid, targs)
+      for f in fs {
+        if f.name == name {
+          return f.ty
+        }
+      }
+      dflt
+    }
+    case _ -> dflt
+  }
+}
+
 // Whether a call's callee `fn` evaluates to a function value (see
 // `recordFuncValueCall`).  A member callee is one only when the receiver's
 // record declares a field of that name (a builtin or method is called by
@@ -20609,9 +20641,20 @@ func inferExprCore(
           // A function-valued protected field called from outside is as
           // refused as a read of it (T0221, D359).
           checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
-          inferMemberBase(tbl, rt, memberName)
+          val base = inferMemberBase(tbl, rt, memberName)
+          if typeHasUnsolved(base) {
+            fieldTypeKeepingBinders(tbl, rt, memberName, base)
+          } else {
+            base
+          }
         }
         case None -> if shadowedFn { tyErrorUnresolved() } else { inferExpr(sc, tbl, sigs, diag, fn) }
+      }
+      // A record's function-typed field called as a member is the callee of an indirect
+      // call, a value the builder builds; it has a type like any expression (D456).
+      match memberRecvTy {
+        case Some(_) -> if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) { recordExprType(tbl, fn, fnT) }
+        case None -> ()
       }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }

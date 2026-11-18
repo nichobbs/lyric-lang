@@ -952,6 +952,13 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             if d.id.id < 0 {
               return None
             }
+            // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
+            // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
+            // takes the same conversion the call would have.
+            if not tyEq(d.ty, ty) and hostResultIsCallType(d.ty, ty) {
+              val inner = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
+              return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = inner)))
+            }
             return Some(value = mkExpr(e, ty, XLocal(local = d.id)))
           }
           case None -> ()
@@ -1448,7 +1455,12 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       Some(value = mkPat(p, ty, TpOr(alts = built)))
     }
-    case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
+    // `case x is T`: the checker types the inner pattern at the tested type `T`, so that
+    // type is the test's.
+    case PTypeTest(inner, _) -> match buildPat(env, inner) {
+      case Some(ip) -> Some(value = mkPat(p, ty, TpTypeTest(inner = ip, ty = ip.ty)))
+      case None -> None
+    }
     case PConstRef(_) -> match refSite(env.ctx, p.nodeId) {
       case Some(r) -> {
         noteGlobalSym(env, r.sym, ty)
