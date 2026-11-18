@@ -91,7 +91,8 @@ func findSub(s: in String, sub: in String, from: in Int): Int {
 }
 
 /// The type arguments an `impl`'s target is written with, from its DefPath key (`Pkg::Box[T,U]::$impl(I)`
-/// is `T,U`): None when the key's target has no argument list.
+/// is `T,U`): None when the key's target has no argument list.  A nested argument (`Box[List[T],U]`)
+/// splits into names that match no declared parameter, so such a target stays counted, deliberately.
 func implTargetNames(ownerKey: in String): Option[List[String]] {
   val open = findSub(ownerKey, "[", 0)
   val close = findSub(ownerKey, "]::$impl(", 0)

@@ -311,13 +311,6 @@ func shortOfBinop(op: in BinOp): Option[ShortOp] {
   }
 }
 
-/// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
-/// 2.5, D172, D206), the ordering operators a type derives or a type parameter is bounded by
-/// (`T: Compare`), and the arithmetic of a distinct, range or record type that derives `Add`, `Sub`
-/// and the rest.  One intrinsic over both operands, lowered by each backend by the operands' type
-/// (a distinct value by its underlying value, a range subtype's result range-checked).  The operands
-/// have the same type, the right one converted to the left's when the checker accepted a difference
-/// (`opt == 5`); the result has the type the checker gave the expression.
 /// `a + b` on a record that derives `Add` or `Sub` (D155): the operator applied field by field.  The
 /// operands are evaluated once each, into locals, and the sum is the record built from the fields'
 /// sums, as the language states it.  TIR has no node of its own for it (D422).
@@ -381,6 +374,13 @@ func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs
   Some(value = mkExpr(e, ty, XBlock(stmts = stmts, tail = Some(value = built))))
 }
 
+/// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
+/// 2.5, D172, D206), the ordering operators a type derives or a type parameter is bounded by
+/// (`T: Compare`), and the arithmetic of a distinct, range or record type that derives `Add`, `Sub`
+/// and the rest.  One intrinsic over both operands, lowered by each backend by the operands' type
+/// (a distinct value by its underlying value, a range subtype's result range-checked).  The operands
+/// have the same type, the right one converted to the left's when the checker accepted a difference
+/// (`opt == 5`); the result has the type the checker gave the expression.
 func buildDeclaredBinary(
   env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
@@ -1912,6 +1912,8 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
           // `r += s` is `r = r + s` on a record that derives `Add` (D155): the sum is built as the
           // operator is, at the target's type.
           val tty = match exprTy(env.ctx, t.nodeId) { case Ok(x) -> x; case Err(msg) -> { env.errors.add(msg); return None } }
+          // The target is built twice, as the place assigned and as the left operand, as the AST
+          // lowering reads it twice (`lowerRecordArith`): a target with a side effect would run twice.
           val sum = Expr(kind = EBinop(op = site.op, lhs = t, rhs = v), span = s.span, nodeId = freshNodeId(env).id)
           env.settled.add(sum.nodeId, tty)
           val ae = Expr(kind = EAssign(target = t, op = AssEq, value = sum), span = s.span, nodeId = freshNodeId(env).id)

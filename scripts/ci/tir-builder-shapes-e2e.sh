@@ -776,6 +776,54 @@ if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" 
 else
   echo "FAIL (package_qualified_shared_enum_case)"; grep -E "first error" "$WORK/shared.log" | head -3; fail=1
 fi
+# A function of another package used as a value through its alias (`AL.update`), its full package path
+# (`Reg.Lib.update`) or an import of the name builds as that function's reference (D424).
+mkdir -p "$WORK/fnval/src/lib" "$WORK/fnval/src/app"
+cat > "$WORK/fnval/lyric.toml" <<'TOML'
+[package]
+name = "FnVal"
+version = "0.1.0"
+
+[project]
+name = "FnVal"
+output = "single"
+output_assembly = "FnVal.dll"
+
+[project.packages]
+"Reg.Lib" = "src/lib"
+"Reg.App" = "src/app"
+TOML
+cat > "$WORK/fnval/src/lib/lib.l" <<'LYRIC'
+package Reg.Lib
+
+pub func update(x: in Int): Int = x + 1
+
+pub record Prog[M] {
+  step: (M) -> M
+}
+
+pub func apply[M](p: in Prog[M], m: in M): M = p.step(m)
+LYRIC
+cat > "$WORK/fnval/src/app/app.l" <<'LYRIC'
+package Reg.App
+import Reg.Lib as AL
+import Reg.Lib.{Prog, apply, update}
+
+pub func main(): Int {
+  val pa = Prog(step = AL.update)
+  val f: (Int) -> Int = Reg.Lib.update
+  val g: (Int) -> Int = update
+  val h: (Int) -> Int = AL.update
+  apply(pa, 1) + f(1) + g(1) + h(1)
+}
+LYRIC
+(cd "$WORK/fnval" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/fnval.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/fnval.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/fnval.log"; then
+  echo "ok   package_qualified_function_value"
+else
+  echo "FAIL (package_qualified_function_value)"; grep -E "first error" "$WORK/fnval.log" | head -3; fail=1
+fi
 # A host call chain whose middle result is a host class no `extern type` names, built for the JVM
 # (D444): `m.entrySet().iterator()` is typed from the host metadata.  The program is also run.
 cat > "$WORK/jvm_host_chain.l" <<'LYRIC'
