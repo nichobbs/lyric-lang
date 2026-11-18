@@ -20577,6 +20577,14 @@ func inferExprCore(
         }
         case None -> if shadowedFn { tyErrorUnresolved() } else { inferExpr(sc, tbl, sigs, diag, fn) }
       }
+      // A record's function-typed field called as a member is the callee of an indirect
+      // call, a value the builder builds; it has a type like any expression (D456).
+      match memberRecvTy {
+        case Some(_) -> if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
+          recordExprType(tbl, fn, fnT)
+        }
+        case None -> ()
+      }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }
         case None -> ()
