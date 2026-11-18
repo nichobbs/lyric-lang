@@ -1797,6 +1797,33 @@ test "generic opaque and protected constructions in one package build (D454)" {
   assertEqualInt(c.built, c.total, all)
 }
 
+test "a call through a record's function-typed field builds as an indirect call (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc a(p: in P1, x: in Int): Int { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call through a generic record's function-typed field at concrete types builds (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc b(p: in P3[Int, String], x: in Int): String { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call through a generic record's function-typed field in a generic function builds (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc c[E, M](p: in P3[E, M], x: in E): M { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a type-test pattern builds as a test of the inner pattern's type (D459)" {
   val c = censusOf(
     "package App\nrecord Point {\n  x: Int\n  y: Int\n}\nfunc f(pt: Point): Int {\n  match pt {\n    case p is Point -> p.x\n    case _ -> -1\n  }\n}\n"
