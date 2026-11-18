@@ -1760,6 +1760,7 @@ func stdlibImportedPackages(stdlibPkgs: in List[StdlibPkg]): List[ImportedPackag
     importedPkgs.add(
       ImportedPackage(
         name = sp.name,
+        stdlib = true,
         items = sp.items,
         imports = sp.imports,
         wholeImports = sp.wholeImports,

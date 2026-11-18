@@ -818,6 +818,7 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
     importedPkgs.add(
       ImportedPackage(
         name = pn,
+        stdlib = true,
         items = pkgItems,
         imports = collectImportNames(stdFile.imports),
         wholeImports = collectWholeImportNames(stdFile.imports),

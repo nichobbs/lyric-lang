@@ -1727,36 +1727,45 @@ func isStdOriginPkg(pkg: in String): Bool {
   pkg == "Std" or pkg.startsWith("Std.")
 }
 
-// The items of imported package `imported` that package `importer` may name.
-// The standard library is one project: a `Std.*` package sees the `internal`
-// declarations of the other `Std.*` packages (the kernel-boundary accessors
-// of `Std.Tls`, docs/61), while every other importer sees a `Std.*` package's
-// `pub` items only (docs/01 section 3.1).  Other imported packages are passed
-// through: their bridge already applied the project rule.  The bridges hand a `Std.*` package's `internal`
-// items over for exactly this filter.
-func itemsVisibleToImporter(importer: in String, imported: in String, items: in List[Item]): List[Item] {
-  if not isStdOriginPkg(imported) or isStdOriginPkg(importer) {
-    return items
+// The items of imported package `ip` that the file being checked may name.  The
+// standard library is one project: a package the bridge loaded from the stdlib
+// root (`ImportedPackage.stdlib`) sees the `internal` declarations of the other
+// stdlib packages (the kernel-boundary accessors of `Std.Tls`, docs/61), while
+// every other importer sees a stdlib package's `pub` items only (docs/01 section
+// 3.1).  A package that merely carries a `Std.` name is not the stdlib.  Other
+// imported packages pass through: their bridge already applied the project rule.
+func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): List[Item] {
+  if not ip.stdlib or importerIsStdlib {
+    return ip.items
   }
   val kept: List[Item] = newList()
-  for it in items {
+  for it in ip.items {
     val internalFunc = match it.kind {
       case IFunc(fd) -> match fd.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
       case _ -> false
     }
     val internalItem = match it.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
-    if not internalFunc and not (internalItem and isValItem(it)) {
+    val valueLike = match it.kind {
+      case IVal(_) -> true
+      case IExternFunc(_) -> true
+      case _ -> false
+    }
+    if not internalFunc and not (internalItem and valueLike) {
       kept.add(it)
     }
   }
   kept
 }
 
-func isValItem(it: in Item): Bool {
-  match it.kind {
-    case IVal(_) -> true
-    case _ -> false
+// Whether the package being checked is itself one of the stdlib packages given.
+func importerIsStdlibPackage(userPkg: in String, importedPackages: in List[ImportedPackage]): Bool {
+  for ip in importedPackages {
+    if ip.stdlib and ip.name == userPkg {
+      return true
+    }
   }
+  false
+}
 }
 
 // T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
@@ -6200,6 +6209,11 @@ pub record ImportedPackage {
   /// `<package>::<name>` for each name the package imports selectively; read
   /// with `imports` and `wholeImports` when `importDecls` is empty.
   selectedImports: List[String] = newList()
+  /// A package loaded from the standard library's own root.  The standard library
+  /// is one project: its packages see one another's `internal` items, which a
+  /// package of any other project does not (D432).  Identity comes from where the
+  /// bridge loaded the package, never from its name.
+  stdlib: Bool = false
 }
 
 // The imports of a package known by the names of its imports only (a restored
@@ -7549,6 +7563,7 @@ func checkWithImportedPackagesCore(
   // to key the subtyping relation, so its diagnostics are discarded (genuine
   // unresolved-type errors surface via sig resolution / checkImplConformance).
   val implDiag: List[Diagnostic] = newList()
+  val importerStd = importerIsStdlibPackage(userPkg, importedPackages)
   var sp = 0
   while sp < importedPackages.count {
     val ip2 = importedPackages[sp]
@@ -7561,7 +7576,7 @@ func checkWithImportedPackagesCore(
     // instead of resolving under whichever package is calling in.
     symTableRegisterPackageImports(tbl, ip2.name, ip2.imports)
     val pkgDiag: List[Diagnostic] = newList()
-    val ip2Items = itemsVisibleToImporter(userPkg, ip2.name, ip2.items)
+    val ip2Items = itemsVisibleToImporter(importerStd, ip2)
     addSigsFromItems(tbl, pkgDiag, sigs, ip2Items, true, ip2.name)
     registerImplsFromItems(tbl, newGenericContext(), pkgDiag, ip2Items)
     addMethodSigsFromItems(tbl, ip2Items, ip2.name)

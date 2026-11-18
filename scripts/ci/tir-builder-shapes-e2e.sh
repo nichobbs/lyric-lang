@@ -1038,10 +1038,27 @@ func raw(id: in Identity): CertHandle { id.rawHandle() }
 func main(): Int { 0 }
 LYRIC
 (cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/user_internal_hidden.l" -o "$WORK/user_internal_hidden.jar" >"$WORK/user_internal_hidden.log" 2>&1)
-if grep -q "^TIR body.built.UserInternalHidden::raw" "$WORK/user_internal_hidden.log"; then
-  echo "FAIL (user_internal_hidden): a user package called Std.Tls's internal accessor"; fail=1
+if grep -q "^TIR body.built.UserInternalHidden::raw" "$WORK/user_internal_hidden.log" || ! grep -q "uncovered callee: .rawHandle" "$WORK/user_internal_hidden.log"; then
+  echo "FAIL (user_internal_hidden): a user package called Std.Tls's internal accessor, or the call was not reported unresolved"; fail=1
 else
   echo "ok   user_internal_hidden"
+fi
+# A user package that merely carries a `Std.` name is not the standard library (D432): it sees `pub` items only.
+cat > "$WORK/user_std_named.l" <<'LYRIC'
+package Std.MyOwn
+import Std.Core
+import Std.Tls
+import Std.TlsHost
+
+func raw(id: in Identity): CertHandle { id.rawHandle() }
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/user_std_named.l" -o "$WORK/user_std_named.jar" >"$WORK/user_std_named.log" 2>&1)
+if grep -q "^TIR body.built.Std.MyOwn::raw" "$WORK/user_std_named.log" || ! grep -q "uncovered callee: .rawHandle" "$WORK/user_std_named.log"; then
+  echo "FAIL (user_std_named): a user package named Std.* called Std.Tls's internal accessor"; fail=1
+else
+  echo "ok   user_std_named"
 fi
 # A call on a generic host class applied to the function's own type parameters (`HashMap<K, V>.get`,
 # the JVM kernel's `tryGetValue`): the checker records no type for the host's erased `Object` result, so
