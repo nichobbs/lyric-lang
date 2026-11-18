@@ -1,0 +1,3 @@
+# docs/70 phase 3a: a documented function used as a value has a recorded reference (D448)
+
+A function with a doc comment or annotations, passed or assigned by name, is recorded by the checker as a function reference (`RkFunc`), so the builder builds it instead of counting "a name that is not a local". The lookup compared the item span (which starts at the doc comment) with the signature span (which starts at `func`); it now also compares the declaration's own span. `tir-builder-shapes-e2e.sh` gains `documented_function_value`. The wide census also prints the first error lines of each unchecked build.
