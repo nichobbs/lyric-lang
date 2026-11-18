@@ -2972,7 +2972,20 @@ func buildUnderlyingConversion(
 func convertValueAs(env: in BuildEnv, e: in Expr, t: in TExpr, ty: in Ty): Option[TExpr] {
   match convertValue(env, t, ty) {
     case Some(c) -> Some(value = c)
-    case None -> uncoveredExpr(env, e, "a conversion method whose result differs from the underlying type")
+    case None -> {
+      // The method is itself a numeric conversion of the underlying primitive (`toInt()` of a `UInt`-backed
+      // range subtype): the primitive's own built-in, as the call on the primitive itself is.
+      val m = match e.kind {
+        case ECall(fn, _) -> match fn.kind { case EMember(_, name) -> name; case _ -> "" }
+        case _ -> ""
+      }
+      if m != "" and isPrimTy(t.ty) and isPrimTy(ty) {
+        val one: List[TExpr] = newList()
+        one.add(t)
+        return Some(value = mkExpr(e, ty, intrinsicCall(IoBuiltin(name = renderTy(t.ty) + "." + m), one)))
+      }
+      uncoveredExpr(env, e, "a conversion method whose result differs from the underlying type")
+    }
   }
 }
 
