@@ -919,6 +919,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The host-shape e2e covers a host string argument and an untyped array result, and the array and type-parameter-receiver rules are documented (follow-up to D445).
   - The wide census builds a library's path dependencies before it, so `lyric-access`, `lyric-ui/native`, `lyric-ui` and `lyric-unicode-dict` are judged instead of listed as unchecked builds.
   - The builder's host chain typing and the checker's host result mapping read one set of host class name predicates (D449); `erasedHostKind` has unit tests.
+  - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
