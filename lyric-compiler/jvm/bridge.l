@@ -325,7 +325,7 @@ pub func compileToJar(
     var ii = 0
     while ii < stdPrInv.items.count {
       val it = stdPrInv.items[ii]
-      if pipeIsCrossPackageItem(it) {
+      if pipeIsCrossPackageItemProject(it) {
         pkgItems.add(it)
       }
       ii = ii + 1
@@ -3317,7 +3317,7 @@ func jvmProjectFrontEnd(
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < prFile.items.count {
-      if pipeIsCrossPackageItem(prFile.items[ii]) {
+      if pipeIsCrossPackageItemProject(prFile.items[ii]) {
         pkgItems.add(prFile.items[ii])
       }
       ii = ii + 1

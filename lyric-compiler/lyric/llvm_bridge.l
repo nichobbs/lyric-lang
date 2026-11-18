@@ -810,7 +810,7 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
     val stdFile = synthesizeInvariantCheckers(Aliases.rewriteFile(stdCfg.file))
     val pkgItems: List[Item] = newList()
     for it in stdFile.items {
-      if pipeIsCrossPackageItem(it) {
+      if pipeIsCrossPackageItemProject(it) {
         pkgItems.add(it)
       }
     }

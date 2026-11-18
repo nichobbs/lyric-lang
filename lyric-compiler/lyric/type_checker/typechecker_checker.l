@@ -1727,6 +1727,38 @@ func isStdOriginPkg(pkg: in String): Bool {
   pkg == "Std" or pkg.startsWith("Std.")
 }
 
+// The items of imported package `imported` that package `importer` may name.
+// The standard library is one project: a `Std.*` package sees the `internal`
+// declarations of the other `Std.*` packages (the kernel-boundary accessors
+// of `Std.Tls`, docs/61), while every other importer sees a `Std.*` package's
+// `pub` items only (docs/01 section 3.1).  Other imported packages are passed
+// through: their bridge already applied the project rule.  The bridges hand a `Std.*` package's `internal`
+// items over for exactly this filter.
+func itemsVisibleToImporter(importer: in String, imported: in String, items: in List[Item]): List[Item] {
+  if not isStdOriginPkg(imported) or isStdOriginPkg(importer) {
+    return items
+  }
+  val kept: List[Item] = newList()
+  for it in items {
+    val internalFunc = match it.kind {
+      case IFunc(fd) -> match fd.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
+      case _ -> false
+    }
+    val internalItem = match it.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
+    if not internalFunc and not (internalItem and isValItem(it)) {
+      kept.add(it)
+    }
+  }
+  kept
+}
+
+func isValItem(it: in Item): Bool {
+  match it.kind {
+    case IVal(_) -> true
+    case _ -> false
+  }
+}
+
 // T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
 // named one of `isReservedBuiltinFuncName`'s reserved built-ins is rejected
 // at declaration time, rather than being silently captured by the same-named
@@ -7529,10 +7561,11 @@ func checkWithImportedPackagesCore(
     // instead of resolving under whichever package is calling in.
     symTableRegisterPackageImports(tbl, ip2.name, ip2.imports)
     val pkgDiag: List[Diagnostic] = newList()
-    addSigsFromItems(tbl, pkgDiag, sigs, ip2.items, true, ip2.name)
-    registerImplsFromItems(tbl, newGenericContext(), pkgDiag, ip2.items)
-    addMethodSigsFromItems(tbl, ip2.items, ip2.name)
-    reportDependencySurfaceError(diag, ip2.name, exportedSurfaceDiagnostics(ip2.items, pkgDiag), file.packageDecl.span)
+    val ip2Items = itemsVisibleToImporter(userPkg, ip2.name, ip2.items)
+    addSigsFromItems(tbl, pkgDiag, sigs, ip2Items, true, ip2.name)
+    registerImplsFromItems(tbl, newGenericContext(), pkgDiag, ip2Items)
+    addMethodSigsFromItems(tbl, ip2Items, ip2.name)
+    reportDependencySurfaceError(diag, ip2.name, exportedSurfaceDiagnostics(ip2Items, pkgDiag), file.packageDecl.span)
     sp = sp + 1
   }
 
