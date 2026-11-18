@@ -4277,8 +4277,9 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 
 /// A host value used where the language names its erased generic type (D444): the host's `Object` for a
 /// type parameter, a host generic class as the same class applied to type arguments, and the host's `Object`
-/// array as a slice of a type parameter.  The host's erasure makes the representation the same, so the
-/// conversion is `CvFromHost`.
+/// array as a slice of a type parameter, or the slice of host `Object`s a host array result was typed as
+/// (`hostArrayAsSlice`) used as the slice of a type parameter.  The host's erasure makes the representation
+/// the same, so the conversion is `CvFromHost`.
 pub func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TExtern(a) -> match to {
@@ -4293,6 +4294,20 @@ pub func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
           Some(value = CvFromHost)
         } else {
           None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case TSlice(fromEl) -> match fromEl {
+      case TExtern(a) -> match to {
+        case TSlice(toEl) -> match toEl {
+          case TParam(_, _) -> if isHostObject(a.name) {
+            Some(value = CvFromHost)
+          } else {
+            None
+          }
+          case _ -> None
         }
         case _ -> None
       }
