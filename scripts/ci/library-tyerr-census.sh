@@ -194,4 +194,13 @@ rm -f "$sites_file" "$unchecked_file" "$known_file"
 # library gate decides it, and --wide adds the compiler, ecosystem and self-test counts
 # without gating them (docs/70 §13 phase 3a).  The self-tests are left out here: each is
 # a build of its own, hundreds of them; run `TIR_CENSUS_AREAS=self-tests` by hand for those.
+# The phases above leave each library's last build in its bin/, and a JVM build writes its jar under
+# the same `.dll` name as the dotnet build.  The typed-IR census builds the libraries for dotnet again and
+# restores their dependencies from those bin/ directories, so a jar left there fails every dependent with
+# "restored DLL has no Lyric.Contract resource" (the nine libraries listed unchecked in CI, never locally,
+# where nothing builds for the JVM first).  Only untracked outputs are removed.
+for bindir in "$REPO_ROOT"/lyric-*/bin "$REPO_ROOT"/lyric-*/*/bin "$REPO_ROOT"/lyric-ui/native/*/bin; do
+  [[ -d "$bindir" ]] || continue
+  [[ -z "$(git -C "$REPO_ROOT" ls-files -- "$bindir" | head -n1)" ]] && rm -rf "$bindir"
+done
 TIR_CENSUS_AREAS="compiler ecosystem" bash "$REPO_ROOT/scripts/ci/tir-census.sh" "$LYRIC" --wide
