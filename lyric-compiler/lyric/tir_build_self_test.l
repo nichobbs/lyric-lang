@@ -1759,6 +1759,44 @@ test "a default of a shape the builder cannot copy is counted, not guessed" {
   assertTrue(c.firstErrors.count > 0, "f reports an I0002")
 }
 
+test "a generic opaque type's construction at a closed type builds (D454)" {
+  val c = censusOf(
+    "package App\nopaque type Opq[T] {\n  v: T\n}\nprotected type Cell[T] {\n  var value: T\n  entry put(x: in T): Unit {\n    value = x\n  }\n}\nfunc mk(x: Int): Opq[Int] { Opq(v = x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a generic protected type's construction at a closed type builds (D454)" {
+  val c = censusOf(
+    "package App\nopaque type Opq[T] {\n  v: T\n}\nprotected type Cell[T] {\n  var value: T\n  entry put(x: in T): Unit {\n    value = x\n  }\n}\nfunc fixed(): Cell[String] { Cell(value = \"s\") }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a generic protected type's construction at a function's own parameter builds (D454)" {
+  val c = censusOf(
+    "package App\nopaque type Opq[T] {\n  v: T\n}\nprotected type Cell[T] {\n  var value: T\n  entry put(x: in T): Unit {\n    value = x\n  }\n}\nfunc cellOf[T](v: in T): Cell[T] { Cell(value = v) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "generic opaque and protected constructions in one package build (D454)" {
+  val c = censusOf(
+    "package App\nopaque type Opq[T] {\n  v: T\n}\nprotected type Cell[T] {\n  var value: T\n  entry put(x: in T): Unit {\n    value = x\n  }\n}\nfunc mk(x: Int): Opq[Int] { Opq(v = x) }\nfunc cellOf[T](v: in T): Cell[T] { Cell(value = v) }\nfunc fixed(): Cell[String] { Cell(value = \"s\") }\n"
+  )
+  var all = ""
+  for m in c.firstErrors {
+    all = all + m + "; "
+  }
+  assertEqualInt(c.built, c.total, all)
+}
+
 test "a protected type's construction and entry call build as a construction and a receiver-first call" {
   val c = censusOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"
