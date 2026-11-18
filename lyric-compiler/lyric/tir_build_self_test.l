@@ -2466,6 +2466,52 @@ test "a host result the checker types as a Lyric type takes the checker's type" 
   )
 }
 
+func isFromHost(k: in Option[ConvKind]): Bool {
+  match k {
+    case Some(CvFromHost) -> true
+    case _ -> false
+  }
+}
+
+func hostTyOf(name: in String, arg: in Ty): Ty {
+  val args: List[Ty] = newList()
+  args.add(arg)
+  TExtern(host = HostTypeRef(name = name, args = args))
+}
+
+test "erasedHostKind converts a host value to the language's erased generic type" {
+  val param = TParam(owner = SymbolId(id = 5), index = 0)
+  val arr = "an array, pointer or by-reference type"
+  assertTrue(isFromHost(erasedHostKind(hostTy("java.lang.Object"), param)), "the JVM Object as a type parameter")
+  assertTrue(isFromHost(erasedHostKind(hostTy("System.Object"), param)), "the CLR Object as a type parameter")
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy("java.util.List"), param)),
+    "another host class is not a type parameter"
+  )
+  assertTrue(
+    isFromHost(erasedHostKind(hostTy(arr), TSlice(element = param))),
+    "a host array as a slice of a type parameter"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy("java.lang.Object"), TSlice(element = param))),
+    "an Object is not a slice of a type parameter"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(hostTy(arr), TSlice(element = TPrim(kind = TPInt)))),
+    "a host array is not a slice of Int"
+  )
+}
+
+test "erasedHostKind relates a host generic class to itself applied to type arguments" {
+  val raw = hostTy("java.util.List")
+  val applied = hostTyOf("java.util.List", TPrim(kind = TPInt))
+  assertTrue(isFromHost(erasedHostKind(raw, applied)), "the class as itself applied")
+  assertTrue(isFromHost(erasedHostKind(applied, raw)), "itself applied as the class")
+  assertTrue(not isFromHost(erasedHostKind(applied, applied)), "equal types need no conversion")
+  assertTrue(not isFromHost(erasedHostKind(raw, hostTy("java.util.Map"))), "another class is not related")
+  assertTrue(not isFromHost(erasedHostKind(TPrim(kind = TPInt), raw)), "a Lyric value is not a host value")
+}
+
 test "a value-generic case built in a value-generic function verifies" {
   val c = censusOf(
     "package App\nunion Shape[N: Nat] {\n  case Poly(pts: array[N, Int])\n  case Empty\n}\nfunc wrapPoly[N: Nat](xs: in array[N, Int]): Shape[N] = Poly(pts = xs)\n"
