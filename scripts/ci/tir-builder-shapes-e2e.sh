@@ -1256,6 +1256,7 @@ extern type JEntry = "java.util.Map$Entry"
 extern type JCm[K, V] = "java.util.concurrent.ConcurrentHashMap"
 extern type JExecutorService = "java.util.concurrent.ExecutorService"
 extern type JRunnable = "java.lang.Runnable"
+extern type JSb = "java.lang.StringBuilder"
 
 record Req { path: String }
 
@@ -1288,6 +1289,10 @@ func putIgnored(m: in JCm[String, String]): Unit {
 
 func submitIgnored(e: in JExecutorService, r: in JRunnable): Unit {
   val _ = e.submit(r)
+}
+
+func appendTail(sb: in JSb, text: in String): Unit {
+  sb.append(text)
 }
 
 func main(): Int { 0 }
