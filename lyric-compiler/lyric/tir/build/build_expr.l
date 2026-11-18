@@ -2666,6 +2666,47 @@ func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
   }
 }
 
+/// The union-case construction `e` built at `ty`, the type its node settled at, when the checker recorded
+/// no constructor signature for it: each field is the call's argument (in field order, named or positional)
+/// converted to the case's field type at the arguments of `ty`.  None when the call is not such a construction;
+/// Some(None) after a part could not be built (counted or reported there).
+func buildSettledCaseCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if tbl.ctorSigByNode.containsKey(e.nodeId) {
+    return None
+  }
+  val sid = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val s = match symbolOfDefId(tbl, sid) { case Some(x) -> x; case None -> return None }
+  val uc = match s.kind { case DKUnionCase(_, c) -> c; case _ -> return None }
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  noteCaseSym(env, sid)
+  val en = match mapGet(env.syms, sid.id) { case Some(x) -> x; case None -> return None }
+  val sig = match en.sig { case Some(x) -> x; case None -> return None }
+  if sig.params.count != uc.fields.count or args.count != uc.fields.count {
+    return None
+  }
+  val fields: List[TExpr] = newList()
+  var i = 0
+  while i < uc.fields.count {
+    val fname = match uc.fields[i] { case UFNamed(n, _, _) -> n; case UFPos(_, _) -> "" }
+    val x = match args[i] {
+      case CAPositional(v) -> v
+      case CANamed(n, v, _) -> if n == fname {
+        v
+      } else {
+        return Some(value = uncoveredExpr(env, e, "a union case construction with its arguments out of field order"))
+      }
+    }
+    val target = substOwnerArgs(sig.params[i].ty, parent, targs)
+    val bv = match settleArg(env, x, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    val cv = match coerceArg(env, bv, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    fields.add(cv)
+    i = i + 1
+  }
+  Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
+}
+
 /// A call: a built-in by its recorded name, a call through a function value,
 /// or a call to a declared non-generic function with in-mode arguments.  Other
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
@@ -2712,6 +2753,13 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   match mapGet(tbl.externByNode, e.nodeId) {
     case Some(site) -> return buildExternCall(env, e, ty, site, fn, args)
+    case None -> ()
+  }
+  // A union-case construction whose type argument the checker left open and the context settled
+  // (`{ m -> App(msg = m) }` against `(M) -> Wrap[M]`, whose parameter type the checker erased): it
+  // recorded no signature, so the fields are the case's at the arguments the node settled at.
+  match buildSettledCaseCtor(env, e, ty, args) {
+    case Some(r) -> return r
     case None -> ()
   }
   if tbl.calleeByNode.containsKey(e.nodeId) {
