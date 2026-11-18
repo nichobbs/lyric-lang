@@ -748,6 +748,19 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
   }
 }
 
+/// A local declared `String?` (a host string, which the checker types `String?` because the host may
+/// return null) read where the checker wants a `String`: the checker lets a host string flow unchecked
+/// (docs/01 section 2.11), as `CvFromHost` over the local.
+func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
+  match declared {
+    case TNullable(TPrim(TPString)) -> match read {
+      case TPrim(TPString) -> true
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
   not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
@@ -955,7 +968,9 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
             // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
             // takes the same conversion the call would have.
-            if not tyEq(d.ty, ty) and hostResultIsCallType(d.ty, ty) {
+            // A host string the call typed `String?` is read as the `String` the context wants
+            // (`val path = exchange.getRequestPath()`, then `Request(path = path)`).
+            if not tyEq(d.ty, ty) and (hostResultIsCallType(d.ty, ty) or hostStringReadAsString(d.ty, ty)) {
               val inner = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
               return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = inner)))
             }

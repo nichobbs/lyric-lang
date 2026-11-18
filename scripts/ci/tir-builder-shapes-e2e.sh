@@ -1194,4 +1194,58 @@ LYRIC
 }
 reexport_qualified
 
+# The host shapes of the JVM kernels (D435, D436): a host string held in a local and read as a `String`
+# (`Web.Kernel.Runtime.buildJvmRequest`), `.length` of a local holding a host byte array
+# (`Std.HashHost.hostSha512File`), a raw `Map.Entry`'s `Object` key and value passed to `String` parameters
+# (`Std.EnvironmentHost.hostForEachOverlayVar`), and the erased `Object` result of a `String` map read at `String?`
+# (`hostSetEnvironmentVariable`).  Every body builds and the verifier accepts it; the program is run.
+cat > "$WORK/jvm_host_kernel_shapes.l" <<'LYRIC'
+package JvmHostKernelShapes
+extern type JUri = "java.net.URI"
+extern type JBais = "java.io.ByteArrayInputStream"
+extern type JMap = "java.util.HashMap"
+extern type JIter = "java.util.Iterator"
+extern type JEntry = "java.util.Map$Entry"
+extern type JCm[K, V] = "java.util.concurrent.ConcurrentHashMap"
+
+record Req { path: String }
+
+func stringLocal(u: in JUri): Req {
+  val path = u.getPath()
+  Req(path = path)
+}
+
+func arrayLength(s: in JBais): Int {
+  var chunk = s.readNBytes(4)
+  var total = 0
+  while chunk.length > 0 {
+    total = total + chunk.length
+    chunk = s.readNBytes(4)
+  }
+  total
+}
+
+func entries(m: in JMap, action: in (String, String) -> Unit): Unit {
+  val it: JIter = m.entrySet().iterator()
+  while it.hasNext() {
+    val e: JEntry = it.next()
+    action(e.getKey(), e.getValue())
+  }
+}
+
+func putIgnored(m: in JCm[String, String]): Unit {
+  val _: String? = m.put("a", "b")
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_kernel_shapes.l" -o "$WORK/jvm_host_kernel_shapes.jar" >"$WORK/jvm_host_kernel_shapes.log" 2>&1)
+kline="$(grep "^TIR build census \[.*jvm_host_kernel_shapes.l\]" "$WORK/jvm_host_kernel_shapes.log" | head -1)"
+if [[ -z "$kline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$kline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$kline")" ]] || \
+   ! grep -q "^I0003 census \[.*jvm_host_kernel_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_kernel_shapes.log"; then
+  echo "FAIL (jvm_host_kernel_shapes): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_kernel_shapes.log" | head -4; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
+fi
 exit $fail
