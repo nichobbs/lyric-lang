@@ -863,13 +863,30 @@ func hostChainResult(
       }
     }
     match result {
-      case Some(prev) -> if not tyEq(prev, t) { return None }
+      case Some(prev) -> if not tyEq(prev, t) {
+        // The candidates of an overridden method differ in the bridge methods the host compiler adds
+        // (`StringBuilder.append` also returns `AbstractStringBuilder` and `Appendable`): the covariant
+        // override that returns the receiver's own class is the one a call binds.
+        if isHostClassTy(t, host.name) {
+          result = Some(value = t)
+        } else if not isHostClassTy(prev, host.name) {
+          return None
+        }
+      }
       case None -> {
         result = Some(value = t)
       }
     }
   }
   result
+}
+
+/// Whether `t` is the host class `name`.
+func isHostClassTy(t: in Ty, name: in String): Bool {
+  match t {
+    case TExtern(h) -> h.name == name
+    case _ -> false
+  }
 }
 
 /// Whether every type in `args` is a type parameter: a generic host class applied to the type parameters of
