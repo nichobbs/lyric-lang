@@ -8,7 +8,7 @@ import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{DepPackage, buildResolverContext, shadowedImports}
+import Lyric.Resolve.{DepPackage, buildResolverContext, shadowedImports, funcDefPath}
 import Std.Environment.{getVarOrDefault}
 import Lyric.Fmt as Fmt
 
@@ -1219,6 +1219,33 @@ func combinedOwners(ownerKey: in String, ownerCount: in Int, own: in List[String
 // own, so it is keyed by where the block starts.
 pub func implOwnerKey(decl: in ImplDecl): String {
   "impl@" + toString(decl.span.startPos.fileId) + ":" + toString(decl.span.startPos.offset)
+}
+
+/// A compiled default thunk of a restored package (`defaultThunkName`): the function's symbol
+/// and signature, for the TIR builder to call it where a call leaves its parameter out.
+pub record DefaultThunkCallee {
+  sym: SymbolId
+  sig: ResolvedSignature
+}
+
+/// The default thunk `name` of package `pkg`, read from the declarations the table holds for
+/// it: None when the package declares no such non-generic function.
+pub func defaultThunkCallee(tbl: in SymbolTable, pkg: in String, name: in String): Option[DefaultThunkCallee] {
+  val s = match symTableTryFindInPackage(tbl, pkg, name) { case Some(x) -> x; case None -> return None }
+  match s.kind {
+    case DKFunc(decl) -> {
+      if decl.generics.isSome() {
+        return None
+      }
+      val scratch: List[Diagnostic] = newList()
+      val saved = enterDeclaringScope(tbl, s)
+      val sig = resolveFunctionSig(tbl, scratch, pkg, decl)
+      restoreScope(tbl, saved)
+      val key = defPathKey(funcDefPath(s.originPackage, s.name, decl.params))
+      Some(value = DefaultThunkCallee(sym = internDefPathKey(tbl.interner, key), sig = sig))
+    }
+    case _ -> None
+  }
 }
 
 func resolveFunctionSig(
