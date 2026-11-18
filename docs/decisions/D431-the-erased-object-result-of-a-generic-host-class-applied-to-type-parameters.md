@@ -8,7 +8,7 @@
 
 ## Decision
 
-`hostChainResult` also types a host member's erased `Object` result as the host `Object` when the host class's type arguments are all type parameters of the function being built (`allTypeParams`), the host's `Object` being exactly what it returns. Where the value is used at `V`, `erasedHostKind` already converts the host `Object` to a type parameter with `CvFromHost`. A concrete instantiation is still the checker's (`hostResultIsCallType`). A member whose result is the class's own type argument (`EIEArg`) at an open type parameter is typed as that parameter.
+`hostChainResult` also types a host member's erased `Object` result as the host `Object` when the host class's type arguments are all type parameters of the function being built (`allTypeParams`), the host's `Object` being exactly what it returns. Where the value is used at `V`, `erasedHostKind` already converts the host `Object` to a type parameter with `CvFromHost`. A concrete instantiation is still the checker's (`hostResultIsCallType`).
 
 ## Results
 

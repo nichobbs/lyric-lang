@@ -815,17 +815,7 @@ func hostChainResult(
             }
           }
         }
-        // A member whose result is the host class's own type argument (`HashMap<K, V>.get` returns `V`),
-        // where the instantiation is a type parameter of the function being built: the checker leaves that
-        // untyped, and the result is that type parameter (the host's erasure is its representation).  A
-        // concrete instantiation is typed by the checker (`hostResultIsCallType`) and is not read here.
-        case EIEArg(i) -> {
-          if i < 0 or i >= host.args.count {
-            return None
-          }
-          match host.args[i] {
-            case TParam(_, _) -> host.args[i]
-            case _ -> return None
+        case _ -> return None
           }
         }
         case _ -> return None

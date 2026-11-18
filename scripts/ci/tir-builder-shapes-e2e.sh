@@ -953,8 +953,8 @@ else
 fi
 # A call on a generic host class applied to the function's own type parameters (`HashMap<K, V>.get`,
 # the JVM kernel's `tryGetValue`): the checker records no type for the host's erased `Object` result, so
-# the builder types it as the host `Object` and converts it where `V` is wanted.  Both bodies must build
-# and the verifier must accept them.
+# the builder types it as the host `Object` and converts it where `V` is wanted.  Every function must build
+# and the verifier must accept it.
 cat > "$WORK/jvm_host_generic_result.l" <<'LYRIC'
 package JvmHostGenericResult
 extern type JMap[K, V] = "java.util.HashMap"
