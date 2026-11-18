@@ -4510,10 +4510,16 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   Some(value = CvCovariant)
 }
 
+/// Whether `name` is the host type of a `List[T]`: the .NET `List<T>` the stdlib declares it as, or the JVM's.
+func isListHostName(name: in String): Bool {
+  name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList"
+}
+
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
 /// gave it no array context) used where a fixed-length array is wanted: the same elements
-/// as an array literal of that type, each converted to the element type.  None unless the
-/// literal has exactly the array's known length and its elements convert.
+/// as an array literal of that type, each converted to the element type; or where a `List[T]` is
+/// wanted, the same elements as a literal of that type.  None unless the array's known length is
+/// the literal's, and the elements convert.
 func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   val elems = match t.kind { case XListLit(es) -> es; case _ -> return None }
   match t.ty {
@@ -4525,6 +4531,9 @@ func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] 
       case ALKnown(n) -> if n == elems.count { element } else { return None }
       case _ -> return None
     }
+    // A `List[T]` is wanted (a field, an argument, a map's value): the literal is a `List[T]` of the
+    // same elements, as `[...]` is where a binding's annotation names one.
+    case TExtern(h) -> if h.args.count == 1 and isListHostName(h.name) { h.args[0] } else { return None }
     case _ -> return None
   }
   val converted: List[TExpr] = newList()
@@ -5115,10 +5124,26 @@ func buildBuiltinCall(
         }
         case _ -> ()
       }
-      match buildAll(env, xs) {
+      // The member's parameter types, when the receiver's type fixes them (`Map[String, List[String]].add`),
+      // settle an argument the checker typed with a hole (`newList()`).
+      val expected: Option[List[Ty]] = match recvT { case Some(r) -> memberArgTys(r.ty, name, xs.count); case None -> None }
+      val built: List[TExpr] = newList()
+      var argsOk = true
+      var ai = 0
+      for x in xs {
+        val bx = match expected { case Some(tys) -> settleArg(env, x, tys[ai]); case None -> buildExpr(env, x) }
+        match bx {
+          case Some(t) -> built.add(t)
+          case None -> {
+            argsOk = false
+          }
+        }
+        ai = ai + 1
+      }
+      val gate: Option[List[TExpr]] = if argsOk { Some(value = built) } else { None }
+      match gate {
         case None -> None
         case Some(ts) -> {
-          val expected: Option[List[Ty]] = match recvT { case Some(r) -> memberArgTys(r.ty, name, ts.count); case None -> None }
           val res: List[TExpr] = newList()
           match recvT {
             case Some(r) -> res.add(r)
