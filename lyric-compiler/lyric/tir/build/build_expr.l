@@ -927,6 +927,13 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             if d.id.id < 0 {
               return None
             }
+            // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
+            // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
+            // takes the same conversion the call would have.
+            if not tyEq(d.ty, ty) and hostResultIsCallType(d.ty, ty) {
+              val inner = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
+              return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = inner)))
+            }
             return Some(value = mkExpr(e, ty, XLocal(local = d.id)))
           }
           case None -> ()
