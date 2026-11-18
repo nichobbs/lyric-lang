@@ -15847,3 +15847,51 @@ test "a member read and a Set method on a collection are T0113; dot-named and UF
   )
   assertEqual(diagCodesOf(ufcs), "", "a bare function binds by UFCS: " + diagCodesOf(ufcs))
 }
+
+// D432: a stdlib package sees the `internal` items of another stdlib package, a
+// user package does not, and a user package that merely carries a `Std.` name is
+// still a user package.  The call `t.raw()` records its result type only when the
+// dot-named `internal` function is visible to the file being checked.
+func internalVisibilityPackages(): List[ImportedPackage] {
+  val key = parse("package Std.Key\npub record Thing { x: Int }\ninternal func Thing.raw(t: in Thing): Int { t.x }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.Key",
+      stdlib = true,
+      items = key.file.items,
+      imports = collectImportNames(key.file.imports),
+      wholeImports = collectWholeImportNames(key.file.imports)
+    )
+  )
+  packages
+}
+
+func internalVisibilityCallType(pkgName: in String, listEntry: in Bool): String {
+  val packages = internalVisibilityPackages()
+  val src = "package " + pkgName + "\nimport Std.Key\nfunc f(t: in Thing): Int {\n  t.raw()\n}\n"
+  val file = parse(src).file
+  if listEntry {
+    packages.add(
+      ImportedPackage(
+        name = pkgName,
+        items = file.items,
+        imports = collectImportNames(file.imports),
+        wholeImports = collectWholeImportNames(file.imports)
+      )
+    )
+  }
+  recordedCallType(checkWithImportedPackages(file, packages), src, "t.raw()")
+}
+
+test "a stdlib package sees another stdlib package's internal function (D432)" {
+  assertTrue(internalVisibilityCallType("Std.Other", false) == "Int", "stdlib importer resolves the internal accessor")
+}
+
+test "a user package does not see a stdlib package's internal function (D432)" {
+  assertTrue(internalVisibilityCallType("App", true) == "", "user importer does not resolve the internal accessor")
+}
+
+test "a user package named Std.Mine does not see a stdlib package's internal function (D432)" {
+  assertTrue(internalVisibilityCallType("Std.Mine", true) == "", "a Std.-named user package is still a user package")
+}
