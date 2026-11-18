@@ -926,6 +926,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
   - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
+  - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
