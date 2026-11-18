@@ -1436,7 +1436,12 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       Some(value = mkPat(p, ty, TpOr(alts = built)))
     }
-    case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
+    // `case x is T`: the checker types the inner pattern at the tested type `T`, so that
+    // type is the test's.
+    case PTypeTest(inner, _) -> match buildPat(env, inner) {
+      case Some(ip) -> Some(value = mkPat(p, ty, TpTypeTest(inner = ip, ty = ip.ty)))
+      case None -> None
+    }
     case PConstRef(_) -> match refSite(env.ctx, p.nodeId) {
       case Some(r) -> {
         noteGlobalSym(env, r.sym, ty)
