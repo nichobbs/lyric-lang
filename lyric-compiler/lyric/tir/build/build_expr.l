@@ -806,7 +806,7 @@ func hostChainResult(
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
             // The root object of a non-generic host class is the class's own result (`Method.invoke`).
-            if not isPlainHostResult(rname) and not (isHostObject(rname) and host.args.count == 0) {
+            if not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
             match hostElemTy(el, host.args, TirT.TNever) {
@@ -826,6 +826,19 @@ func hostChainResult(
     }
   }
   result
+}
+
+/// Whether every type in `args` is a type parameter: a generic host class applied to the type parameters of
+/// the function being built (`HashMap<K, V>` in `func f[K, V](m: in JMap[K, V])`).  The checker has no type for
+/// the host's erased `Object` result there, and the host's `Object` is exactly what it returns.
+func allTypeParams(args: in List[Ty]): Bool {
+  for a in args {
+    match a {
+      case TParam(_, _) -> ()
+      case _ -> return false
+    }
+  }
+  true
 }
 
 /// The type of a read of a local whose own type the checker left open at the read (`o` after

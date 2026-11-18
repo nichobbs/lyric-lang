@@ -914,6 +914,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
+  - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
@@ -925,8 +926,10 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function with a doc comment or annotations used as a value is recorded by the declaration's own span, so the builder builds it (D448); the wide census prints why a build was unchecked.
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
   - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
+  - A host member's erased `Object` result on a generic host class applied to the function's type parameters (`HashMap<K, V>.get`) is typed as the host `Object` and converted with `CvFromHost` (D431).
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
+  - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
