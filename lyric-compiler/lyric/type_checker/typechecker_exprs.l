@@ -5625,7 +5625,35 @@ func recordCtorParams(
   true
 }
 
-// Record the fields of a non-generic record or union-case construction as a
+// The names of a declaration's generic parameters, type and value alike.
+func genericParamNamesOf(g: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match g {
+    case None -> ()
+    case Some(gp) -> {
+      for p in gp.params {
+        match p {
+          case GPType(nm, _) -> names.add(nm)
+          case GPValue(nm, _, _) -> names.add(nm)
+        }
+      }
+    }
+  }
+  names
+}
+
+// The type arguments of a construction's result type (empty for a non-generic type).
+func ctorResultArgs(resultTy: in Type): List[Type] {
+  match unrefine(resultTy) {
+    case TyUser(_, _, a) -> a
+    case _ -> {
+      val none: List[Type] = newList()
+      none
+    }
+  }
+}
+
+// Record the fields of a record, protected, opaque or union-case construction as a
 // signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
 func recordCtorSigNode(
@@ -5672,13 +5700,17 @@ func recordCtorSigNode(
     case DKProtected(_, pd) -> {
       // A protected type's construction takes its fields as a record's: `Total()` leaves
       // each to its default.  Only a non-generic one has them here.
-      if pd.generics.isSome() {
+      val gnames = genericParamNamesOf(pd.generics)
+      val ctx = newGenericContext()
+      gctxPushOwned(ctx, gnames, pd.name)
+      val targs = ctorResultArgs(resultTy)
+      if gnames.count != targs.count {
         return
       }
       val scratch: List[Diagnostic] = newList()
       val saved = enterDeclaringScope(tbl, sym)
       for fd in ctorAllFields(sym) {
-        val fty = resolveType(tbl, newGenericContext(), scratch, fd.ty)
+        val fty = substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)
         params.add(
           ResolvedParam(
             name = fd.name,
@@ -5694,13 +5726,17 @@ func recordCtorSigNode(
     }
     case DKOpaque(_, od) -> {
       // An opaque type is constructed inside its own package as a record is: by its fields.
-      if od.generics.isSome() {
+      val gnames = genericParamNamesOf(od.generics)
+      val ctx = newGenericContext()
+      gctxPushOwned(ctx, gnames, od.name)
+      val targs = ctorResultArgs(resultTy)
+      if gnames.count != targs.count {
         return
       }
       val scratch: List[Diagnostic] = newList()
       val saved = enterDeclaringScope(tbl, sym)
       for fd in ctorAllFields(sym) {
-        val fty = resolveType(tbl, newGenericContext(), scratch, fd.ty)
+        val fty = substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)
         params.add(
           ResolvedParam(
             name = fd.name,
