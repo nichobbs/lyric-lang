@@ -1797,6 +1797,33 @@ test "generic opaque and protected constructions in one package build (D454)" {
   assertEqualInt(c.built, c.total, all)
 }
 
+test "a call through a record's function-typed field builds as an indirect call (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc a(p: in P1, x: in Int): Int { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call through a generic record's function-typed field at concrete types builds (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc b(p: in P3[Int, String], x: in Int): String { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call through a generic record's function-typed field in a generic function builds (D456)" {
+  val c = censusOf(
+    "package App\nrecord P1 {\n  classify: (Int) -> Int\n}\nrecord P3[E, M] {\n  classify: (E) -> M\n}\nfunc c[E, M](p: in P3[E, M], x: in E): M { p.classify(x) }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a distinct type's constructor call builds as a wrap of its underlying value (D458)" {
   val c = censusOf(
     "package App\ntype TestAge = Int\nrecord OrdPerson {\n  age: TestAge\n  name: String\n}\nfunc a(): TestAge { TestAge(40) }\nfunc b(): OrdPerson { OrdPerson(age = TestAge(30), name = \"zed\") }\n"
