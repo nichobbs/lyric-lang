@@ -731,7 +731,9 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
         // A local bound to an unchecked host result (`val server = JHttpServer.create(..)`) is read at
         // the host class it was declared at, though the checker recorded no type for the read.
         case Some(t) -> match t {
-          case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
+          case TExtern(h) -> Some(
+            value = HostRecv(host = h, isStatic = false)
+          )
           case _ -> None
         }
         case None -> match hostStaticReceiver(env, recv) {
