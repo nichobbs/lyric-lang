@@ -3440,10 +3440,7 @@ func recordMonadAccessorCallee(
     case Some(_) -> ()
     case None -> return
   }
-  val targs = match unrefine(recvRaw) {
-    case TyUser(_, _, a) -> a
-    case _ -> return
-  }
+  val targs = match unrefine(recvRaw) { case TyUser(_, _, a) -> a; case _ -> return }
   match mapGet(sigs, name) {
     case Some(sig) -> {
       if sig.originPackage != "Std.Core" or sig.generics.count != targs.count {
@@ -5582,6 +5579,52 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
   }
 }
 
+// The parameters of a record or exposed record's construction, one per field in
+// declaration order, with a generic record's field types instantiated at the result
+// type's arguments.  False when the result type is no record instance or a field has no
+// entry, in which case no signature is recorded.
+func recordCtorParams(
+  tbl: in SymbolTable,
+  id: in SymbolId,
+  rd: in RecordDecl,
+  resultTy: in Type,
+  params: in List[ResolvedParam],
+): Bool {
+  val fes = match unrefine(resultTy) {
+    case TyUser(_, _, targs) -> if rd.generics.isSome() {
+      // Not `fieldsOfRecordInstantiated`: it erases type parameters, and a field of the
+      // enclosing generic's own parameter (`One(v = x)` in `f[T]`) must keep its binder.
+      fieldsOfRecordSubstituted(tbl, id, targs)
+    } else {
+      fieldsOfRecord(tbl, id)
+    }
+    case _ -> return false
+  }
+  var k = 0
+  for m in rd.members {
+    match m {
+      case RMField(fd) -> {
+        if k >= fes.count {
+          return false
+        }
+        params.add(
+          ResolvedParam(
+            name = fd.name,
+            ty = fes[k].ty,
+            mode = PMIn,
+            hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fes[k].ty, fd.span),
+            span = fd.span,
+            dfltExpr = fd.dflt
+          )
+        )
+        k = k + 1
+      }
+      case _ -> ()
+    }
+  }
+  true
+}
+
 // Record the fields of a non-generic record or union-case construction as a
 // signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
@@ -5617,38 +5660,13 @@ func recordCtorSigNode(
   val params: List[ResolvedParam] = newList()
   match sym.kind {
     case DKRecord(id, rd) -> {
-      // A generic record's fields are instantiated at the result type's arguments.
-      val fes = match unrefine(resultTy) {
-        case TyUser(_, _, targs) -> if rd.generics.isSome() {
-          // Not `fieldsOfRecordInstantiated`: it erases type parameters, and a field of the
-          // enclosing generic's own parameter (`One(v = x)` in `f[T]`) must keep its binder.
-          fieldsOfRecordSubstituted(tbl, id, targs)
-        } else {
-          fieldsOfRecord(tbl, id)
-        }
-        case _ -> return
+      if not recordCtorParams(tbl, id, rd, resultTy, params) {
+        return
       }
-      var k = 0
-      for m in rd.members {
-        match m {
-          case RMField(fd) -> {
-            if k >= fes.count {
-              return
-            }
-            params.add(
-              ResolvedParam(
-                name = fd.name,
-                ty = fes[k].ty,
-                mode = PMIn,
-                hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fes[k].ty, fd.span),
-                span = fd.span,
-                dfltExpr = fd.dflt
-              )
-            )
-            k = k + 1
-          }
-          case _ -> ()
-        }
+    }
+    case DKExposedRec(id, rd) -> {
+      if not recordCtorParams(tbl, id, rd, resultTy, params) {
+        return
       }
     }
     case DKProtected(_, pd) -> {
