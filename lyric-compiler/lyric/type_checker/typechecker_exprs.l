@@ -19136,7 +19136,7 @@ func noteBranchExpected(tbl: in SymbolTable, b: in ExprOrBlock, expected: in Typ
 // Whether `t` mentions a hole or an unsolved inference variable anywhere.
 func typeHasUnsolved(t: in Type): Bool {
   match t {
-    case TyError -> true
+    case TyError(_) -> true
     case TyInfer(_) -> true
     case TyUser(_, _, args) -> typesHaveUnsolved(args)
     case TySlice(e) -> typeHasUnsolved(e)
