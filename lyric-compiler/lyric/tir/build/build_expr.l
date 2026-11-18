@@ -2388,6 +2388,15 @@ func buildFnCore(
         }
         case None -> ()
       }
+    } else if isUnitTy(ret) and not functionIsGenerator(fn) {
+      // A `Unit` function discards the value of its last expression (a host call that returns its
+      // receiver, `sb.append(s)`): the tail becomes a statement and the body is `Unit`.
+      match res {
+        case Some(b) -> {
+          res = Some(value = discardTailValue(env, b))
+        }
+        case None -> ()
+      }
     }
   }
   popScope(env)
@@ -2429,6 +2438,30 @@ func buildFnCore(
 /// parameters become the outermost locals; a generic function binds its type
 /// parameters to its symbol.  Contracts are built with the body: a clause the
 /// builder has no case for fails it like any other expression.
+/// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
+func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
+  match b.ty {
+    case TPrim(TPUnit) -> return b
+    case TNever -> return b
+    case _ -> ()
+  }
+  match b.kind {
+    case XBlock(stmts, Some(tail)) -> {
+      val all: List[TStmt] = newList()
+      for st in stmts {
+        all.add(st)
+      }
+      all.add(TStmt(id = freshNodeId(env), span = tail.span, kind = TsExpr(expr = tail)))
+      TExpr(id = b.id, ty = tyUnit(), span = b.span, kind = XBlock(stmts = all, tail = None))
+    }
+    case _ -> {
+      val one: List[TStmt] = newList()
+      one.add(TStmt(id = freshNodeId(env), span = b.span, kind = TsExpr(expr = b)))
+      TExpr(id = freshNodeId(env), ty = tyUnit(), span = b.span, kind = XBlock(stmts = one, tail = None))
+    }
+  }
+}
+
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
