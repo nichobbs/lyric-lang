@@ -1740,18 +1740,19 @@ func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): 
   }
   val kept: List[Item] = newList()
   for it in ip.items {
-    // A function item carries its visibility on its declaration; a value or extern function on the item.
-    val internalFunc = match it.kind {
+    // The parser records a function's visibility on the declaration or on the item; `itemRank` reads both.
+    val declInternal = match it.kind {
       case IFunc(fd) -> match fd.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
       case _ -> false
     }
-    val internalItem = match it.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
-    val valueLike = match it.kind {
+    val itemInternal = match it.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
+    val hidable = match it.kind {
+      case IFunc(_) -> true
       case IVal(_) -> true
       case IExternFunc(_) -> true
       case _ -> false
     }
-    if not internalFunc and not (internalItem and valueLike) {
+    if not declInternal and not (itemInternal and hidable) {
       kept.add(it)
     }
   }
