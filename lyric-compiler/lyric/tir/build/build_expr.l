@@ -816,9 +816,6 @@ func hostChainResult(
           }
         }
         case _ -> return None
-          }
-        }
-        case _ -> return None
       }
     }
     match result {
