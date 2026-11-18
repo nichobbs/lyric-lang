@@ -1994,6 +1994,30 @@ pub func symTableQualifiedType(tbl: in SymbolTable, segs: in List[String]): Opti
   None
 }
 
+// The union case the qualified name `segs` (`L.Circle`) denotes, as the resolver answers it: through an
+// alias, and through a package that re-exports the declaring one (`pub use`).  None when it names no case.
+pub func symTableQualifiedCase(tbl: in SymbolTable, segs: in List[String]): Option[Symbol] {
+  val order = match resolverFileOrder(tbl) { case Some(o) -> o; case None -> return None }
+  val ctx = tbl.resolveCtx[0]
+  val name = segs[segs.count - 1]
+  for fid in order {
+    val pr = resolvePath(ctx.tbl, scopeOfFile(ctx, fid), segs, UseValue)
+    if pr.consumed == segs.count {
+      match pr.res {
+        case RSymbol(id) -> match symbolOfDefIdNamed(tbl, id, name) {
+          case Some(sym) -> match sym.kind {
+            case DKUnionCase(_, _) -> return Some(value = sym)
+            case _ -> ()
+          }
+          case None -> ()
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
 func resolverFileFor(tbl: in SymbolTable): Option[Int] {
   match resolverFileOrder(tbl) {
     case Some(order) -> Some(value = order[0])
