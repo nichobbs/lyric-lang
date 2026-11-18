@@ -520,9 +520,9 @@ record WsCloseListener {
 impl JChannelListener for WsCloseListener {
   func handleEvent(event: in JNioChannel): Unit {
     val channel = match connectionChannel(self.registryHandle, self.connId) { case Some(c) -> c; case None -> return }
-    val code = channel.getCloseCode()
-    val reasonRaw = channel.getCloseReason()
-    val reason = reasonRaw ?? ""
+    val code: Int = channel.getCloseCode()
+    val reasonRaw: String? = channel.getCloseReason()
+    val reason: String = reasonRaw ?? ""
     removeConnection(self.registryHandle, self.connId)
     invokeOnClose(self.registryHandle, self.connId, code, reason)
   }
@@ -550,10 +550,10 @@ impl JWsConnectionCallback for WsConnectCallback {
     closeSetter.set(closeListener)
     channel.resumeReceives()
 
-    val reqPathRaw = exchange.getRequestURI()
-    val reqPath = reqPathRaw ?? ""
-    val reqQueryRaw = exchange.getQueryString()
-    val reqQuery = reqQueryRaw ?? ""
+    val reqPathRaw: String? = exchange.getRequestURI()
+    val reqPath: String = reqPathRaw ?? ""
+    val reqQueryRaw: String? = exchange.getQueryString()
+    val reqQuery: String = reqQueryRaw ?? ""
     val srcAddr: JInetSocketAddress = channel.getSourceAddress()
     val remoteAddress = if JObjects.isNull(srcAddr) { "" } else { srcAddr.toString() }
     invokeOnOpen(self.registryHandle, connId, reqPath, reqQuery, remoteAddress, handshakeHeaders(exchange))
@@ -589,10 +589,10 @@ record WsOriginGuard {
 impl JHttpHandler for WsOriginGuard {
   func handleRequest(exchange: in JHttpServerExchange): Unit {
     val headers: JHeaderMap = exchange.getRequestHeaders()
-    val originRaw = headers.getFirst("Origin")
-    val hostRaw = headers.getFirst("Host")
-    val origin = originRaw ?? ""
-    val host = hostRaw ?? ""
+    val originRaw: String? = headers.getFirst("Origin")
+    val hostRaw: String? = headers.getFirst("Host")
+    val origin: String = originRaw ?? ""
+    val host: String = hostRaw ?? ""
     if originAllowedFor(origin, host, self.allowedOrigins, self.sameHostPorts) {
       self.next.handleRequest(exchange)
     } else {
