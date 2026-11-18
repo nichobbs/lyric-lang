@@ -916,6 +916,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
   - A call through a record's function-typed field has a recorded callee type, and inside a generic function keeps the record's parameters rather than erasing them, so it builds (D456).
+  - A type-test pattern `case x is T` builds as `TpTypeTest` at the inner pattern's recorded type (D459).
   - A record, opaque or protected type's construction written through an alias or a re-exporting package (`L.Leaf(v = n)`) resolves its constructor through the resolver, so it records its callee and builds (D420).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
