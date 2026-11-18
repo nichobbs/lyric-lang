@@ -1907,6 +1907,15 @@ test "an exposed record's construction builds as a construction (D452)" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "toLong on a Nat-backed range subtype is a widening of its Nat (D453)" {
+  val c = censusOf(
+    "package App\ntype Score = Nat range 0 ..= 100\ntype Id = Nat\nfunc f(s: Score): Long { s.toLong() }\nfunc g(i: Id): Long { i.toLong() }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an index on a buffer builds as a buffer index" {
   val c = censusOf("package App\nfunc f(b: buffer[Int]): Int { b[0] }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
@@ -2508,6 +2517,22 @@ test "erasedHostKind converts a host value to the language's erased generic type
   assertTrue(
     not isFromHost(erasedHostKind(hostTy(arr), TSlice(element = TPrim(kind = TPInt)))),
     "a host array is not a slice of Int"
+  )
+}
+
+test "erasedHostKind converts a slice of host Objects to the slice of a type parameter" {
+  val param = TParam(owner = SymbolId(id = 5), index = 0)
+  assertTrue(
+    isFromHost(erasedHostKind(TSlice(element = hostTy("java.lang.Object")), TSlice(element = param))),
+    "Object[] as slice[T]"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(TSlice(element = hostTy("java.util.List")), TSlice(element = param))),
+    "a slice of another host class is not a slice of T"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(TSlice(element = hostTy("java.lang.Object")), TSlice(element = TPrim(kind = TPInt)))),
+    "Object[] is not a slice of Int"
   )
 }
 

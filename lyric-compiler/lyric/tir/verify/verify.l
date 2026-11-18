@@ -849,6 +849,7 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case CvLiftNullable -> expectTy(c, e.id, e.ty, TNullable(inner = inner.ty), "convert-type", "nullable lift")
         case CvFromHost -> match inner.ty {
           case TExtern(_) -> ()
+          case TSlice(TExtern(_)) -> ()
           case _ -> report(
             c,
             e.id,
