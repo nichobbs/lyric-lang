@@ -3068,7 +3068,8 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
       match callTy {
         case TSlice(_) -> n == hostArrayName()
         case TArray(_, _) -> n == hostArrayName()
-        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n); case _ -> false }
+        // An erased generic's `Object` result instantiated at `String` is a string the host may return null for.
+        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n) or isHostObject(n); case _ -> false }
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
