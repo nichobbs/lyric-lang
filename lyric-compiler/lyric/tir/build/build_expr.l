@@ -845,7 +845,10 @@ func hostChainResult(
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
             // The root object of a non-generic host class is the class's own result (`Method.invoke`).
-            if not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
+            // The builder is asked only for a call the checker recorded no type for, so a `Future` here
+            // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
+            val unmappedFuture = rname == "java.util.concurrent.Future"
+            if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
             match hostElemTy(el, host.args, TirT.TNever) {
