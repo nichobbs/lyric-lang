@@ -1758,14 +1758,18 @@ func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): 
   kept
 }
 
-// Whether the package being checked is itself one of the stdlib packages given.
+// Whether the package being checked is a stdlib package.  The bridges list every
+// user package (the entry and each sibling) unflagged under its own name, and
+// leave the stdlib package being checked out of its own import list, so a
+// package with an unflagged entry is a user package whatever its name and every
+// other checked package was loaded from the stdlib root (D432).
 func importerIsStdlibPackage(userPkg: in String, importedPackages: in List[ImportedPackage]): Bool {
   for ip in importedPackages {
-    if ip.stdlib and ip.name == userPkg {
-      return true
+    if ip.name == userPkg and not ip.stdlib {
+      return false
     }
   }
-  false
+  true
 }
 
 // T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
