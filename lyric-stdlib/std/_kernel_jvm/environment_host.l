@@ -163,7 +163,8 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
 // `GetEnvironmentVariable` reads from directly.
 pub func hostGetVarOpt(key: in String): Option[String] {
   if envOverlay.containsKey(key) {
-    val overlaid: String = envOverlay.get(key) ?? ""
+    val overlaidRaw: String? = envOverlay.get(key)
+    val overlaid: String = overlaidRaw ?? ""
     return Some(value = overlaid)
   }
   try {

@@ -3951,7 +3951,7 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     }
     case _ -> ()
   }
-  None
+  openLocalBuiltinProperty(env, recv, name)
 }
 
 /// How `recv[idx]` is performed, from the receiver's type: arrays, slices and strings by
