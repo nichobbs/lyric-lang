@@ -716,6 +716,33 @@ test "a Long to Nat conversion takes a Long to a Nat only" {
   assertTrue(rulesOf(oneFn(entries(), longToNatFn(long, tyInt()))).contains("convert-type"), "Long to Int")
 }
 
+func userdataSlotFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
+  val x = local(1, "x", fromTy, false)
+  val inner = ex(3, fromTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvUserdataSlot, inner = inner)))
+}
+
+test "a userdata slot conversion takes one spelling of the slot to the other only" {
+  val noArgs: List[Ty] = newList()
+  val byteArg: List[Ty] = newList()
+  byteArg.add(TPrim(kind = TPByte))
+  val userdata = TExtern(host = HostTypeRef(name = "lyric.native.NativeUserdata", args = noArgs))
+  val bytePtr = TExtern(host = HostTypeRef(name = "lyric.native.NativePtr`1", args = byteArg))
+  assertFalse(
+    rulesOf(oneFn(entries(), userdataSlotFn(bytePtr, userdata))).contains("convert-type"),
+    "NativePtr[Byte] to NativeUserdata"
+  )
+  assertFalse(
+    rulesOf(oneFn(entries(), userdataSlotFn(userdata, bytePtr))).contains("convert-type"),
+    "NativeUserdata to NativePtr[Byte]"
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), userdataSlotFn(tyInt(), userdata))).contains("convert-type"),
+    "an Int is not a slot"
+  )
+  assertTrue(rulesOf(oneFn(entries(), userdataSlotFn(bytePtr, tyInt()))).contains("convert-type"), "not to an Int")
+}
+
 func neverFnFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
   val x = local(1, "x", fromTy, false)
   val inner = ex(3, fromTy, XLocal(local = x.id))
