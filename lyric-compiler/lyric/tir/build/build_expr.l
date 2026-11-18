@@ -4375,6 +4375,9 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if isClosureAsPointer(t.ty, ty) {
     return Some(value = convertNode(env, t, ty, CvClosureAsPointer))
   }
+  if isUserdataSlotTy(t.ty) and isUserdataSlotTy(ty) {
+    return Some(value = convertNode(env, t, ty, CvUserdataSlot))
+  }
   match retypeListLiteral(env, t, ty) {
     case Some(c) -> return Some(value = c)
     case None -> ()
