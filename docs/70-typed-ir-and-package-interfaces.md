@@ -913,13 +913,16 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
+  - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
   - Static host members (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`), a host call's string as `String?`, `getClass()` on a type-parameter receiver, a root-`Object` result, an untyped host array as a slice, and a host result narrowed to a declared host class are typed by the builder too, with the checker unchanged (D445).
   - The host-shape e2e covers a host string argument and an untyped array result, and the array and type-parameter-receiver rules are documented (follow-up to D445).
   - The wide census builds a library's path dependencies before it, so `lyric-access`, `lyric-ui/native`, `lyric-ui` and `lyric-unicode-dict` are judged instead of listed as unchecked builds.
+  - A function with a doc comment or annotations used as a value is recorded by the declaration's own span, so the builder builds it (D448); the wide census prints why a build was unchecked.
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
+  - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

@@ -20287,6 +20287,7 @@ func inferExprCore(
           val urt = inferExpr(sc, tbl, sigs, diag, recvE)
           val toUInt = mname == "toUInt"
           if isUnsignedConvReceiver(urt) and not (toUInt and isPrimOf(urt, PtULong)) {
+            recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(urt) + "." + mname)
             if toUInt {
               return TyPrim(pt = PtUInt)
             }
