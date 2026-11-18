@@ -11729,6 +11729,12 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       }
       ci = ci - 1
     }
+    // `L.Circle(r = 3)` for an alias or a package that re-exports the declaring one (`pub use`):
+    // the resolver answers for the qualified name where the declaring package is not the one written.
+    match symTableQualifiedCase(tbl, flatSegs) {
+      case Some(qs) -> return Some(value = qs)
+      case None -> ()
+    }
   }
   if not fnWasFlatPath {
     return None

@@ -751,6 +751,64 @@ if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" 
 else
   echo "FAIL (package_qualified_shared_enum_case)"; grep -E "first error" "$WORK/shared.log" | head -3; fail=1
 fi
+# A union case of a package a facade re-exports (`pub use`), constructed through the facade's alias
+# (`L.Circle(r = 3)`), has a callee and a signature (D425).
+mkdir -p "$WORK/facade/src/client" "$WORK/facade/src/lib" "$WORK/facade/src/app"
+cat > "$WORK/facade/lyric.toml" <<'TOML'
+[package]
+name = "Facade"
+version = "0.1.0"
+
+[project]
+name = "Facade"
+output = "single"
+output_assembly = "Facade.dll"
+
+[project.packages]
+"Pu.Client" = "src/client"
+"Pu" = "src/lib"
+"Pu.Main" = "src/app"
+TOML
+cat > "$WORK/facade/src/client/c.l" <<'LYRIC'
+package Pu.Client
+
+pub union Shape {
+  case Dot
+  case Circle(r: Int)
+}
+
+pub func areaOf(s: in Shape): Int {
+  match s {
+    case Dot -> 0
+    case Circle(r) -> r * r
+  }
+}
+LYRIC
+cat > "$WORK/facade/src/lib/lib.l" <<'LYRIC'
+package Pu
+
+import Pu.Client
+pub use Pu.Client
+
+pub func facadeOwn(): Int {
+  1
+}
+LYRIC
+cat > "$WORK/facade/src/app/app.l" <<'LYRIC'
+package Pu.Main
+import Pu as L
+
+pub func main(): Int {
+  L.areaOf(L.Circle(r = 3))
+}
+LYRIC
+(cd "$WORK/facade" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/facade.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/facade.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/facade.log"; then
+  echo "ok   facade_qualified_case"
+else
+  echo "FAIL (facade_qualified_case)"; grep -E "first error" "$WORK/facade.log" | head -3; fail=1
+fi
 # A host call chain whose middle result is a host class no `extern type` names, built for the JVM
 # (D444): `m.entrySet().iterator()` is typed from the host metadata.  The program is also run.
 cat > "$WORK/jvm_host_chain.l" <<'LYRIC'
