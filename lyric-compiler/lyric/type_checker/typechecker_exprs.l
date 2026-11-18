@@ -19703,6 +19703,25 @@ func typeMentionsGenericInst(t: in Type): Bool {
   }
 }
 
+// The type of the record field `name` of `recv` at the receiver's type arguments, with the
+// enclosing generic's own parameters kept as parameters rather than erased; `dflt` when `recv`
+// is no record with that field.  A call through a function-typed field of `Program[E, Msg]`
+// inside `f[E, Msg]` has the field's `(E) -> Msg`, not an unknown type (D456).
+func fieldTypeKeepingBinders(tbl: in SymbolTable, recv: in Type, name: in String, dflt: in Type): Type {
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      val fs = fieldsOfRecordSubstituted(tbl, tid, targs)
+      for f in fs {
+        if f.name == name {
+          return f.ty
+        }
+      }
+      dflt
+    }
+    case _ -> dflt
+  }
+}
+
 // Whether a call's callee `fn` evaluates to a function value (see
 // `recordFuncValueCall`).  A member callee is one only when the receiver's
 // record declares a field of that name (a builtin or method is called by
@@ -20573,7 +20592,12 @@ func inferExprCore(
           // A function-valued protected field called from outside is as
           // refused as a read of it (T0221, D359).
           checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
-          inferMemberBase(tbl, rt, memberName)
+          val base = inferMemberBase(tbl, rt, memberName)
+          if typeHasUnsolved(base) {
+            fieldTypeKeepingBinders(tbl, rt, memberName, base)
+          } else {
+            base
+          }
         }
         case None -> if shadowedFn { tyErrorUnresolved() } else { inferExpr(sc, tbl, sigs, diag, fn) }
       }
