@@ -11385,6 +11385,19 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       }
       case None -> ()
     }
+    // `L.Leaf(v = 1)` for an alias or a package that re-exports `Leaf` (`pub use`): the
+    // resolver answers for the qualified name where the declaring package is not the one
+    // written.
+    match symTableQualifiedType(tbl, flatSegs) {
+      case Some(qs) -> match qs.kind {
+        case DKRecord(_, _) -> return Some(value = qs)
+        case DKExposedRec(_, _) -> return Some(value = qs)
+        case DKOpaque(_, _) -> return Some(value = qs)
+        case DKProtected(_, _) -> return Some(value = qs)
+        case _ -> ()
+      }
+      case None -> ()
+    }
   }
   if not fnWasFlatPath {
     return None
