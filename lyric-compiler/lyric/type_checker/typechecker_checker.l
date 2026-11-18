@@ -1740,6 +1740,7 @@ func itemsVisibleToImporter(importerIsStdlib: in Bool, ip: in ImportedPackage): 
   }
   val kept: List[Item] = newList()
   for it in ip.items {
+    // A function item carries its visibility on its declaration; a value or extern function on the item.
     val internalFunc = match it.kind {
       case IFunc(fd) -> match fd.visibility { case Some(VisInternal(_)) -> true; case _ -> false }
       case _ -> false
@@ -1765,7 +1766,6 @@ func importerIsStdlibPackage(userPkg: in String, importedPackages: in List[Impor
     }
   }
   false
-}
 }
 
 // T0140 (#7508): a NON-`Std.*` package's own `func`/`pub func` declaration
