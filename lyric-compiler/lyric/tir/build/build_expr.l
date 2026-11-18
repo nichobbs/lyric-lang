@@ -676,7 +676,10 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
       case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic)
-      case None -> None
+      case None -> match openLocalBuiltinProperty(env, recv, name) {
+        case Some(_) -> Some(value = tyInt())
+        case None -> None
+      }
     }
     case _ -> None
   }
@@ -3075,9 +3078,13 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         case TPrim(TPFloat) -> isHostSingleName(n) or isHostObject(n)
         case TPrim(TPDouble) -> isHostDoubleName(n) or isHostObject(n)
         case TPrim(TPInt) -> n != hostArrayName() and not isHostStringName(n)
-        case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
-          (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
-          isHostTaskName(n)
+        // A host collection's erased `Object` result read as the Lyric record or union stored in it
+        // (`val state: RegistryState = registryMap.get(key)`): the checker instantiates the call at the
+        // declared type.
+        case TNamed(sym, targs) -> (not isBuiltinSymbol(sym) and isHostObject(n)) or
+          (isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
+            (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
+            isHostTaskName(n))
         case _ -> false
       }
     }
@@ -3878,11 +3885,34 @@ func stdCoreProjection(env: in BuildEnv, id: in SymbolId, hd: in String, name: i
   }
 }
 
+/// `length` of a local the checker left untyped at the read (`var chunk = fis.readNBytes(n)`: a host
+/// array result), by the type the local was declared at.
+func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
+  if name != "length" {
+    return None
+  }
+  match openLocalTy(env, recv) {
+    case Some(t) -> match t {
+      case TSlice(_) -> Some(value = "slice.length")
+      case TArray(_, _) -> Some(value = "array.length")
+      case TPrim(k) -> match k {
+        case TPString -> Some(value = "String.length")
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 /// The built-in a property read names: a stdlib collection's `count` and a string's
 /// `length`, as the checker names the built-in members (`List.count`).  A user type
 /// that happens to be named `List` is not the stdlib's.
 func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
-  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
+    case Some(t) -> t
+    case None -> return openLocalBuiltinProperty(env, recv, name)
+  }
   match rty {
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
@@ -4309,6 +4339,10 @@ pub func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TExtern(a) -> match to {
       case TParam(_, _) -> if isHostObject(a.name) { Some(value = CvFromHost) } else { None }
+      // The host's `Object` where a Lyric primitive or string is wanted (`action(e.getKey(), e.getValue())`
+      // on a raw `Map.Entry`): the checker leaves a host result unchecked (docs/01 section 2.11) and
+      // types it at the type its context wants, as D433 reads a local.
+      case TPrim(_) -> if isHostObject(a.name) { Some(value = CvFromHost) } else { None }
       case TExtern(b) -> if externHostBase(a.name) == externHostBase(b.name) and not tyEq(from, to) {
         Some(value = CvFromHost)
       } else {
