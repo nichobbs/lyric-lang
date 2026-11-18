@@ -797,7 +797,7 @@ func hostChainResult(
       return None
     }
     val t = match c.ret {
-      case EMTVoid -> return None
+      case EMTVoid -> tyUnit()
       case EMTType(el) -> match el {
         case EIEHost(rname, _) -> {
           if rname == hostArrayName() {
