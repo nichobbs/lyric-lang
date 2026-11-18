@@ -2502,6 +2502,22 @@ test "erasedHostKind converts a host value to the language's erased generic type
   )
 }
 
+test "erasedHostKind converts a slice of host Objects to the slice of a type parameter" {
+  val param = TParam(owner = SymbolId(id = 5), index = 0)
+  assertTrue(
+    isFromHost(erasedHostKind(TSlice(element = hostTy("java.lang.Object")), TSlice(element = param))),
+    "Object[] as slice[T]"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(TSlice(element = hostTy("java.util.List")), TSlice(element = param))),
+    "a slice of another host class is not a slice of T"
+  )
+  assertTrue(
+    not isFromHost(erasedHostKind(TSlice(element = hostTy("java.lang.Object")), TSlice(element = TPrim(kind = TPInt)))),
+    "Object[] is not a slice of Int"
+  )
+}
+
 test "erasedHostKind relates a host generic class to itself applied to type arguments" {
   val raw = hostTy("java.util.List")
   val applied = hostTyOf("java.util.List", TPrim(kind = TPInt))

@@ -754,6 +754,31 @@ if ! grep -q "^I0003 census \[.*jvm_host_array_result.l\]: 0 diagnostic" "$WORK/
 else
   echo "ok   jvm_host_array_result"
 fi
+# An untyped host array result of host objects (`HashSet.toArray()`) returned as the slice of a type
+# parameter (the JVM kernel's `setToSlice`): the erased arrays share a representation, so it is a
+# `CvFromHost` conversion the verifier accepts.  The program is also run.
+cat > "$WORK/jvm_host_array_erased.l" <<'LYRIC'
+package JvmHostArrayErased
+extern type JSet = "java.util.HashSet"
+
+func snapshot[T](s: in JSet): slice[T] {
+  s.toArray()
+}
+
+func main(): Int {
+  val s: JSet = JSet.new()
+  val xs: slice[String] = snapshot[String](s)
+  xs.length
+}
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_array_erased.l" -o "$WORK/jvm_host_array_erased.jar" >"$WORK/jvm_host_array_erased.log" 2>&1)
+eline="$(grep "^TIR build census" "$WORK/jvm_host_array_erased.log" | head -1)"
+if [[ -z "$eline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$eline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$eline")" ]] || \
+   ! grep -q "^I0003 census \[.*jvm_host_array_erased.l\]: 0 diagnostic" "$WORK/jvm_host_array_erased.log"; then
+  echo "FAIL (jvm_host_array_erased): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_array_erased.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_array_erased"
+fi
 # The host expressions the checker leaves untyped (docs/01 section 2.11), each typed by the builder from the
 # host's metadata (D445): a static field read on an extern type, a static call whose result is the next
 # call's receiver, a host call's string result as `String?`, a call of a host member on a value of a type
