@@ -1021,4 +1021,72 @@ if ! grep -q "^I0003 census \[.*jvm_host_local_read.l\]: 0 diagnostic" "$WORK/jv
 else
   echo "ok   jvm_host_local_read"
 fi
+
+# A record and a function reached through an alias of a package that re-exports them (`pub use`):
+# `L.Leaf(v = n)` and `L.ident(4)` have recorded callees (D460).
+reexport_qualified() {
+  local dir="$WORK/reexport_qualified"
+  mkdir -p "$dir/src"
+  cat > "$dir/lyric.toml" <<'TOML'
+[package]
+name    = "Fac"
+version = "0.1.0"
+
+[project]
+name            = "Fac"
+output          = "single"
+output_assembly = "Fac.dll"
+
+[project.packages]
+"Pu.Inner" = "src/inner.l"
+"Pu" = "src/pu.l"
+"Pu.Main" = "src/main.l"
+TOML
+  cat > "$dir/src/inner.l" <<'LYRIC'
+package Pu.Inner
+
+pub record Leaf {
+  v: Int
+}
+
+pub func ident(n: in Int): Int = n
+LYRIC
+  cat > "$dir/src/pu.l" <<'LYRIC'
+package Pu
+
+import Pu.Inner
+pub use Pu.Inner
+
+pub func own(): Int = 1
+LYRIC
+  cat > "$dir/src/main.l" <<'LYRIC'
+package Pu.Main
+
+import Pu as L
+
+func leafOf(n: in Int): L.Leaf {
+  L.Leaf(v = n)
+}
+
+func main(): Int {
+  val a = L.ident(4)
+  val b = leafOf(5).v
+  a + b
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/lyric.toml" >"$dir/build.log" 2>&1) || { echo "FAIL (reexport_qualified): the project did not build"; tail -3 "$dir/build.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*main.l\]" "$dir/build.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (reexport_qualified): $built of $total bodies built"; grep -E "first error" "$dir/build.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*main.l\]: 0 diagnostic" "$dir/build.log"; then
+    echo "FAIL (reexport_qualified): the verifier rejected a built body"; fail=1; return
+  fi
+  echo "ok   reexport_qualified"
+}
+reexport_qualified
+
 exit $fail
