@@ -919,6 +919,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A distinct type's constructor call `T(x)` builds as a wrap of its underlying value like `T.from(x)` (D458).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
+  - A generic `opaque` or `protected` type's construction has a recorded signature with its fields at the result type's arguments, so it builds (D454).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
   - Static host members (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`), a host call's string as `String?`, `getClass()` on a type-parameter receiver, a root-`Object` result, an untyped host array as a slice, and a host result narrowed to a declared host class are typed by the builder too, with the checker unchanged (D445).
