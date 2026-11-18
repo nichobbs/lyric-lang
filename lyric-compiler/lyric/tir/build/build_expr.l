@@ -4181,6 +4181,21 @@ record LambdaSig {
 /// The place an assignment writes: a local, a record field or an element.  An assignment
 /// to a global, or through `self` or a host member, is counted.
 func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
+  // A local is assigned at the type it was declared at, whether or not the checker recorded a type
+  // for the target (a local bound to an unchecked host result, `chunk = s.readNBytes(4)`).
+  match target.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match lookupLocal(env, p.segments[0]) {
+        case Some(d) -> {
+          if d.id.id >= 0 {
+            return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
   val pty = match exprTy(env.ctx, target.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> {
