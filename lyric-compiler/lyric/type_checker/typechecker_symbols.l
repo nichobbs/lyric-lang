@@ -2748,6 +2748,21 @@ pub func symTableAliasOfPackage(tbl: in SymbolTable, pkg: in String): Option[Str
   None
 }
 
+// The package the alias `name` of an aliased import (`import P as name`) stands for, in the
+// checked package's files.
+pub func symTablePackageOfAlias(tbl: in SymbolTable, name: in String): Option[String] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  for fsc in tbl.resolveCtx[0].scopes {
+    match mapGet(fsc.aliases, name) {
+      case Some(pkg) -> return Some(value = pkg)
+      case None -> ()
+    }
+  }
+  None
+}
+
 // Whether any file of the checked package binds `name` as the alias of an
 // aliased import.
 pub func symTableIsImportAlias(tbl: in SymbolTable, name: in String): Bool {

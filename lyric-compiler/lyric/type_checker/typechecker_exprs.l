@@ -8243,6 +8243,7 @@ func resolveQualifiedFuncValue(
   pkg: in String,
   name: in String,
   sp: in Span,
+  node: in Int,
 ): Option[Type] {
   // A call's callee is resolved by the call, with its arguments.
   if tbl.funcRefCallees.containsKey(recordCopySiteKey(sp)) {
@@ -8326,6 +8327,7 @@ func resolveQualifiedFuncValue(
   val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
   match pkgFuncSig(sigs, sym.originPackage, name, arity) {
     case Some(sig) -> if recordFuncRefSite(tbl, diag, sig, name, sp) {
+      recordFuncRefNode(tbl, node, sig, name)
       Some(value = funcValueType(sig))
     } else {
       Some(value = tyErrorSilent())
@@ -8407,7 +8409,7 @@ func resolveExprPath(
     // that was never resolved at all — checking
     // `symTablePackageHasAnyExternBlockMember` too closes that gap without
     // reopening #6361 for this package shape.
-    match resolveQualifiedFuncValue(tbl, sigs, diag, pkg, name, span) {
+    match resolveQualifiedFuncValue(tbl, sigs, diag, pkg, name, span, node) {
       case Some(ft) -> return ft
       case None -> ()
     }
@@ -21608,6 +21610,20 @@ func inferExprCore(
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
+      // `Alias.fn`, the alias of an aliased import naming the package, is the same reference.
+      val aliasSegs: List[String] = newList()
+      if flattenCalleePathSegs(e, aliasSegs) and aliasSegs.count == 2 {
+        match scopeTryFind(sc, aliasSegs[0]) {
+          case Some(_) -> ()
+          case None -> match symTablePackageOfAlias(tbl, aliasSegs[0]) {
+            case Some(aliasPkg) -> match resolveQualifiedFuncValue(tbl, sigs, diag, aliasPkg, name, e.span, e.nodeId) {
+              case Some(ft) -> return ft
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+      }
       val chainSegs: List[String] = newList()
       if flattenCalleePathSegs(e, chainSegs) and chainSegs.count >= 3 {
         match scopeTryFind(sc, chainSegs[0]) {
@@ -21621,7 +21637,7 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
-              match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
+              match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span, e.nodeId) {
                 case Some(ft) -> return ft
                 case None -> ()
               }
