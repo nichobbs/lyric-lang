@@ -847,7 +847,9 @@ func hostChainResult(
             // The root object of a non-generic host class is the class's own result (`Method.invoke`).
             // The builder is asked only for a call the checker recorded no type for, so a `Future` here
             // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
-            val unmappedFuture = rname == "java.util.concurrent.Future"
+            // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
+            // the host's own class too.
+            val unmappedFuture = rname == "java.util.concurrent.Future" or rname == "java.lang.Boolean"
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
