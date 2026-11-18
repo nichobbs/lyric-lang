@@ -1202,7 +1202,7 @@ reexport_qualified
 cat > "$WORK/jvm_host_kernel_shapes.l" <<'LYRIC'
 package JvmHostKernelShapes
 extern type JUri = "java.net.URI"
-extern type JBais = "java.io.ByteArrayInputStream"
+extern type JFis = "java.io.FileInputStream"
 extern type JMap = "java.util.HashMap"
 extern type JIter = "java.util.Iterator"
 extern type JEntry = "java.util.Map$Entry"
@@ -1215,7 +1215,7 @@ func stringLocal(u: in JUri): Req {
   Req(path = path)
 }
 
-func arrayLength(s: in JBais): Int {
+func arrayLength(s: in JFis): Int {
   var chunk = s.readNBytes(4)
   var rounds = 0
   while chunk.length > 0 {
