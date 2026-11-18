@@ -926,6 +926,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A generic `opaque` or `protected` type's construction has a recorded signature with its fields at the result type's arguments, so it builds (D454).
   - A derived operator on a record (`a + b`, `r += s`, D155) builds as its fields' operator in a record built from them, with no node of its own (D422).
   - A dot-named generic function called with method syntax (a value-generic record's method) builds as a call with the receiver first; an omitted array field builds as its zero value; a sibling call in a generic `impl` builds; a range pattern bounded by a constant builds as the folded value; a shared enum case read through its package records its reference (D423).
+  - A function of another package used as a value through its import alias or package path (`AL.update`, `Reg.Lib.update`) records its reference under the node like a bare name, so it builds (D424).
   - A union case constructed through an alias or a package that re-exports the declaring one (`L.Circle(r = 3)`) is found through the resolver, so it records its callee and builds (D425).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
