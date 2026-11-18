@@ -1217,12 +1217,12 @@ func stringLocal(u: in JUri): Req {
 
 func arrayLength(s: in JBais): Int {
   var chunk = s.readNBytes(4)
-  var total = 0
+  var rounds = 0
   while chunk.length > 0 {
-    total = total + chunk.length
+    rounds = rounds + 1
     chunk = s.readNBytes(4)
   }
-  total
+  rounds
 }
 
 func entries(m: in JMap, action: in (String, String) -> Unit): Unit {
