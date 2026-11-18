@@ -2516,7 +2516,9 @@ func inArgs(ts: in List[TExpr]): List[TArg] {
 }
 
 /// The implicit widening the language allows from `from` to `to`
-/// (docs/01 §4.1: `Byte < Int < Long`, `Byte < UInt < ULong`, `Float < Double`).
+/// (docs/01 §4.1: `Byte < Int < Long`, `Byte < UInt < ULong`, `Float < Double`), and `Nat` to
+/// `Long` (a `Nat` is a non-negative `Long`, docs/01 §2.1), which a conversion method on a
+/// `Nat`-backed subtype yields.
 func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TPrim(f) -> match to {
@@ -2532,6 +2534,7 @@ func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
           case TPInt -> match t { case TPLong -> true; case _ -> false }
           case TPUInt -> match t { case TPULong -> true; case _ -> false }
           case TPFloat -> match t { case TPDouble -> true; case _ -> false }
+          case TPNat -> match t { case TPLong -> true; case _ -> false }
           case _ -> false
         }
         if ok {
