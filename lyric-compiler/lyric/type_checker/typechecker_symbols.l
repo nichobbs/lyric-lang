@@ -438,6 +438,11 @@ pub record MethodCallSite {
   sig: ResolvedSignature
   recvTy: Type
   iface: Option[SymbolId]
+  /// The full signature (receiver first) of a dot-named function the call resolved to, when
+  /// it is generic or its receiver is an instance of a generic type: such a call is a call of
+  /// that function with the receiver as its first argument, instantiated from the
+  /// receiver's and the arguments' types (a value-generic record's methods, D173).
+  full: Option[ResolvedSignature] = None
 }
 
 @stable(since = "0.1")

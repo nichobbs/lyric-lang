@@ -17,6 +17,9 @@ import Lyric.Tir
 pub record MethodInst {
   sig: ResolvedSignature
   tyArgs: List[Ty]
+  /// The receiver's type under the instantiation, for a dot-named function called as a method
+  /// (its first parameter); `None` for a member declared in a type's body.
+  recvTy: Option[Ty] = None
 }
 
 /// How many leading generics of `sig` are the owner's: the checker binds the owner's under the
@@ -58,6 +61,98 @@ func isBodyMemberOf(env: in BuildEnv, sym: in SymbolId, recvTy: in Type): Bool {
   }
 }
 
+/// The part of a member's DefPath key before its own name segment: the type or `impl` it belongs to.
+func memberOwnerKey(key: in String): String {
+  var cut = -1
+  var i = 0
+  while i + 1 < key.length {
+    if key.substring(i, 2) == "::" {
+      cut = i
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    key
+  } else {
+    key.substring(0, cut)
+  }
+}
+
+/// The first position at or after `from` where `sub` occurs in `s`, or -1.
+func findSub(s: in String, sub: in String, from: in Int): Int {
+  var i = from
+  while i + sub.length <= s.length {
+    if s.substring(i, sub.length) == sub {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+/// The type arguments an `impl`'s target is written with, from its DefPath key (`Pkg::Box[T,U]::$impl(I)`
+/// is `T,U`): None when the key's target has no argument list.
+func implTargetNames(ownerKey: in String): Option[List[String]] {
+  val open = findSub(ownerKey, "[", 0)
+  val close = findSub(ownerKey, "]::$impl(", 0)
+  if open < 0 or close < open {
+    return None
+  }
+  val names: List[String] = newList()
+  var cur = ""
+  var i = open + 1
+  while i < close {
+    val ch = ownerKey.substring(i, 1)
+    if ch == "," {
+      names.add(cur)
+      cur = ""
+    } else if ch != " " {
+      cur = cur + ch
+    }
+    i = i + 1
+  }
+  names.add(cur)
+  Some(value = names)
+}
+
+/// Whether the callee `sym` is a member of the same `impl` as the member being built (a bare call of a
+/// sibling, or a call on `self`'s own type) and the impl's target is written over exactly the impl's own
+/// parameters in the order it declares them, so the receiver's type arguments are the impl's, position
+/// by position.
+func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
+  if env.symOverride.count == 0 or env.memberOwner.count == 0 {
+    return false
+  }
+  val here = match defPathKeyOf(env.ctx.tbl.interner, env.symOverride[0]) {
+    case Some(k) -> memberOwnerKey(k)
+    case None -> return false
+  }
+  val there = match defPathKeyOf(env.ctx.tbl.interner, sym) {
+    case Some(k) -> memberOwnerKey(k)
+    case None -> return false
+  }
+  if here != there or findSub(here, "::$impl(", 0) < 0 {
+    return false
+  }
+  match implTargetNames(here) {
+    case Some(names) -> {
+      val declared = env.memberOwner[0].names
+      if names.count != declared.count {
+        return false
+      }
+      var i = 0
+      while i < names.count {
+        if names[i] != declared[i] {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case None -> false
+  }
+}
+
 /// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
 /// a member declared in the type's body) then the member's own (the checker's record, else
 /// inferred from the arguments and the result as a generic function's are).  The checker's
@@ -74,7 +169,7 @@ pub func instantiateMethod(
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) {
-    if not isBodyMemberOf(env, sym, site.recvTy) {
+    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
       val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
       return None
     }
@@ -105,7 +200,7 @@ pub func instantiateMethod(
         return None
       }
     }
-    checkerArgs = genericArgsFromCall(env, sig, rt, args)
+    checkerArgs = genericArgsFromCall(env, sig, rt, args, None)
   }
   if checkerArgs.count != sig.generics.count {
     val _ = uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
@@ -129,4 +224,78 @@ pub func instantiateMethod(
     ps.add(p.copy(ty = substituteTyParamsOwned(p.ty, sig.generics, sig.genericOwners, checkerArgs)))
   }
   Some(value = MethodInst(sig = sig.copy(params = ps), tyArgs = tyArgs))
+}
+
+/// A call `recv.m(args)` of a dot-named generic function `Type.m` (a value-generic record's
+/// methods, D173) instantiated: its generics are read off the receiver's type (`recvActual`, the
+/// receiver expression's type) and the arguments as a call of the function with the receiver
+/// first reads them.  The signature returned has the receiver dropped and the generics
+/// substituted; `recvTy` is the substituted receiver parameter.
+pub func instantiateDotted(
+  env: in BuildEnv,
+  e: in Expr,
+  sym: in SymbolId,
+  full: in ResolvedSignature,
+  recvActual: in Type,
+  args: in List[CallArg],
+): Option[MethodInst] {
+  if full.params.count == 0 {
+    val _ = uncoveredExpr(env, e, "a dot-named function called as a method without a receiver parameter")
+    return None
+  }
+  var checkerArgs: List[Type] = newList()
+  if full.generics.count > 0 {
+    val rt = match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
+      case Some(t) -> t
+      case None -> {
+        val _ = uncoveredExpr(env, e, "a generic call with no recorded instantiation")
+        return None
+      }
+    }
+    checkerArgs = genericArgsFromCall(env, full, rt, args, Some(value = recvActual))
+    if checkerArgs.count != full.generics.count {
+      val _ = uncoveredExpr(env, e, "a generic call whose instantiation does not match the callee")
+      return None
+    }
+  }
+  val tyArgs: List[Ty] = newList()
+  for ta in checkerArgs {
+    match tyOfType(env.ctx, ta) {
+      case Ok(t) -> tyArgs.add(t)
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return None
+      }
+    }
+  }
+  val ps: List[ResolvedParam] = newList()
+  var recvParamTy: Type = full.params[0].ty
+  var i = 0
+  while i < full.params.count {
+    val pty = if full.generics.count > 0 {
+      substituteTyParamsOwned(full.params[i].ty, full.generics, full.genericOwners, checkerArgs)
+    } else {
+      full.params[i].ty
+    }
+    if i == 0 {
+      recvParamTy = pty
+    } else {
+      ps.add(full.params[i].copy(ty = pty))
+    }
+    i = i + 1
+  }
+  val recvTy = match tyOfType(env.ctx, recvParamTy) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
+  Some(
+    value = MethodInst(
+      sig = full.copy(params = ps, recvMode = Some(value = full.params[0].mode)),
+      tyArgs = tyArgs,
+      recvTy = Some(value = recvTy)
+    )
+  )
 }

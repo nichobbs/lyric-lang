@@ -163,6 +163,27 @@ func noteCtorSym(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature):
   )
 }
 
+/// Record the non-generic record `sym` built by a construction the builder makes up (the field-by-field
+/// expansion of a derived operator): its fields are the record's own.
+func noteRecordSym(env: in BuildEnv, sym: in SymbolId): Unit {
+  if env.syms.containsKey(sym.id) {
+    return
+  }
+  val ctx = newTyConvCtx(env.ctx.tbl)
+  val fs: List[TFieldSig] = newList()
+  val vars = varFieldNames(env.ctx.tbl, sym)
+  for f in fieldsOfRecord(env.ctx.tbl, sym) {
+    match tyOfType(ctx, f.ty) {
+      case Ok(t) -> fs.add(TFieldSig(name = f.name, ty = t, mutable = vars.containsKey(f.name)))
+      case Err(_) -> return
+    }
+  }
+  env.syms.add(
+    sym.id,
+    TSymEntry(sym = sym, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+  )
+}
+
 /// The entry of a function the package declares, from its built declaration.
 func ownFnEntry(f: in TFnDecl): TSymEntry {
   val ps: List[TParamTy] = newList()
