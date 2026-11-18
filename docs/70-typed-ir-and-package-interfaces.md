@@ -915,6 +915,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
+  - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
   - A generic `opaque` or `protected` type's construction has a recorded signature with its fields at the result type's arguments, so it builds (D454).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
@@ -925,6 +926,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function with a doc comment or annotations used as a value is recorded by the declaration's own span, so the builder builds it (D448); the wide census prints why a build was unchecked.
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
   - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
+  - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
