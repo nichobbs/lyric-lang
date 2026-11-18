@@ -2392,6 +2392,15 @@ func buildFnCore(
   }
   var res: Option[TExpr] = None
   if ok and not sigOnly {
+    // The body's value meets the declared return type: an expression the checker left open (a nullary
+    // case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes it.
+    if not isUnitTy(ret) and not functionIsGenerator(fn) {
+      match fn.body {
+        case Some(FBBlock(b)) -> settleBlockTail(env, b, ret)
+        case Some(FBExpr(x)) -> settleHole(env, x, ret)
+        case None -> ()
+      }
+    }
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
