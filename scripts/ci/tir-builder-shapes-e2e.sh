@@ -976,4 +976,27 @@ if ! grep -q "^I0003 census \[.*jvm_host_chain_counted.l\]: 0 diagnostic" "$WORK
 else
   echo "ok   jvm_host_chain_counted"
 fi
+# A call on a generic host class applied to the function's own type parameters (`HashMap<K, V>.get`,
+# the JVM kernel's `tryGetValue`): the checker records no type for the host's erased `Object` result, so
+# the builder types it as the host `Object` and converts it where `V` is wanted.  Every function must build
+# and the verifier must accept it.
+cat > "$WORK/jvm_host_generic_result.l" <<'LYRIC'
+package JvmHostGenericResult
+extern type JMap[K, V] = "java.util.HashMap"
+
+func tryGet[K, V](m: in JMap[K, V], key: in K, value: out V): Bool {
+  value = m.get(key)
+  m.containsKey(key)
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_generic_result.l" -o "$WORK/jvm_host_generic_result.jar" >"$WORK/jvm_host_generic_result.log" 2>&1)
+gline="$(grep "^TIR build census \[.*jvm_host_generic_result.l\]" "$WORK/jvm_host_generic_result.log" | head -1)"
+if [[ -z "$gline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$gline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$gline")" ]] || \
+   ! grep -q "^I0003 census \[.*jvm_host_generic_result.l\]: 0 diagnostic" "$WORK/jvm_host_generic_result.log"; then
+  echo "FAIL (jvm_host_generic_result): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_generic_result.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_generic_result"
+fi
 exit $fail
