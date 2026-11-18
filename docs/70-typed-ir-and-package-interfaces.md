@@ -914,6 +914,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
+  - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
   - An `exposed record`'s construction has a recorded signature like a record's, so it builds (D452).
   - A `Nat` widens to `Long`, so `toLong()` on a `Nat`-backed subtype builds (D453).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
