@@ -756,7 +756,7 @@ else
 fi
 # An untyped host array result of host objects (`HashSet.toArray()`) returned as the slice of a type
 # parameter (the JVM kernel's `setToSlice`): the erased arrays share a representation, so it is a
-# `CvFromHost` conversion the verifier accepts.  The program is also run.
+# `CvFromHost` conversion the verifier accepts.
 cat > "$WORK/jvm_host_array_erased.l" <<'LYRIC'
 package JvmHostArrayErased
 extern type JSet = "java.util.HashSet"
