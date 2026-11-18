@@ -999,4 +999,26 @@ if [[ -z "$gline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$
 else
   echo "ok   jvm_host_generic_result"
 fi
+# A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`, the host's
+# `Object`) and read where a `String` is wanted: the read converts with `CvFromHost`, so the local's type
+# and the read agree and the verifier accepts it (the I0003 `local-type` rule).
+cat > "$WORK/jvm_host_local_read.l" <<'LYRIC'
+package JvmHostLocalRead
+extern type JHashMap = "java.util.HashMap"
+
+func lookup(): String {
+  val prefix = "v:"
+  val m = JHashMap.new()
+  val v = m.computeIfAbsent("key", { k: String -> prefix + k })
+  v
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_local_read.l" -o "$WORK/jvm_host_local_read.jar" >"$WORK/jvm_host_local_read.log" 2>&1)
+if ! grep -q "^I0003 census \[.*jvm_host_local_read.l\]: 0 diagnostic" "$WORK/jvm_host_local_read.log"; then
+  echo "FAIL (jvm_host_local_read): the verifier rejected a built body"; grep "I0003" "$WORK/jvm_host_local_read.log" | head -3; fail=1
+else
+  echo "ok   jvm_host_local_read"
+fi
 exit $fail
