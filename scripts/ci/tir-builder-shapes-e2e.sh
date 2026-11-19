@@ -1208,6 +1208,27 @@ LYRIC
 restored_generic_impl_call dotnet
 restored_generic_impl_call jvm
 
+# `x.toString()` on a range-subtype or distinct value: the checker records no callee for it, so the builder
+# builds the built-in `toString` of the value (D402).  "5" and "12" have 3 characters.
+check range_to_string_method 3 <<'LYRIC'
+package RangeToStringMethod
+
+pub type Cents = Long range 0 ..= 1000000
+pub type Tag = Int
+
+func show(c: in Cents): String {
+  c.toString()
+}
+
+func showTag(t: in Tag): String {
+  t.toString()
+}
+
+func main(): Int {
+  show(Cents.from(5)).length + showTag(Tag.from(12)).length
+}
+LYRIC
+
 # Host chains the builder does not type stay counted and the verifier reports nothing: a chain on a
 # result that is a Lyric value (a string, a boxed number), and a member the host class has no overload
 # for.  The JVM build must finish and every body that builds must verify (D444, D445).
