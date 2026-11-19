@@ -143,7 +143,7 @@ pub func hostRuntimeIdentifier(): String {
 // matching the real, BCL-verified `System.Environment
 // .SetEnvironmentVariable(string, string)` contract.
 pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
-  val _ = envOverlay.put(key, value)
+  val _: String? = envOverlay.put(key, value)
 }
 
 // Option seam — the exception-free surface every kernel twin implements
@@ -163,11 +163,12 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
 // `GetEnvironmentVariable` reads from directly.
 pub func hostGetVarOpt(key: in String): Option[String] {
   if envOverlay.containsKey(key) {
-    val overlaid = envOverlay.get(key) ?? ""
+    val overlaidRaw: String? = envOverlay.get(key)
+    val overlaid: String = overlaidRaw ?? ""
     return Some(value = overlaid)
   }
   try {
-    val v = JSystem.getenv(key) ?? "\u{0000}"
+    val v: String = JSystem.getenv(key) ?? "\u{0000}"
     if v == "\u{0000}" {
       None
     } else {
@@ -208,6 +209,6 @@ pub func hostExit(code: in Int): Never {
 // True when the JVM reports a Windows host.  `os.name` is a standard system
 // property set at JVM startup ("Windows 11", "Windows Server 2022", ...).
 pub func hostIsWindows(): Bool {
-  val name = JSystem.getProperty("os.name") ?? ""
+  val name: String = JSystem.getProperty("os.name") ?? ""
   name.startsWith("Windows")
 }

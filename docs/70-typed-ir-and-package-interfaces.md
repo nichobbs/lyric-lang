@@ -916,6 +916,8 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
+  - `x.toString()` on a range-subtype or distinct value, for which the checker records no callee, builds as the built-in `toString` of the value (D406).
+  - A call of a method a restored package's generic record implements resolves to the non-generic interface's declaration and dispatches on it; the receiver's type arguments are not the callee's owner generics (D402).
   - A union case built where the checker erased an argument's type (a lambda parameter in a generic function) and recorded no signature takes its fields from the case at the type its node settled at (D429).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
@@ -946,6 +948,9 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A host member's erased `Object` result on a generic host class applied to the function's type parameters (`HashMap<K, V>.get`) is typed as the host `Object` and converted with `CvFromHost` (D431).
   - A stdlib package (`ImportedPackage.stdlib`, set by the loader from the stdlib root, never from a package name) sees the `internal` items of the other stdlib packages (`Std.Tls`'s kernel accessors); every other package sees `pub` only (D432).
   - A local bound to a host result is a host chain receiver, a `void` host member is `Unit`, and a `java.util.concurrent` result that is not a future or task is a plain host class (D434).
+  - A local holding a host string is read as a `String` with `CvFromHost` (D435); the JVM environment, hash and registry kernels build: declared host locals, an erased `Object` read as `String?`, a primitive or a record, and `.length` of an untyped array local (D436).
+  - `Std.HttpServer`'s `ServerSslContext.rawContext` is `@experimental pub` so `lyric-web`'s `serveTls` can call it across the project boundary D432 now enforces (D437); the builder types the untyped `Future` result of a host call such as `ExecutorService.submit` as the host class (D438).
+  - A host chain whose candidates differ only in compiler-generated bridge methods binds the receiver's own class, and a `Unit` function discards the value of its last expression (D439).
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.

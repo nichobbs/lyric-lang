@@ -1,0 +1,3 @@
+# docs/70 phase 3a: the JVM environment, hash and registry kernels build (D435, D436)
+
+A host string held in a local is read as a `String` (D435). The environment kernel declares the host results it binds, an erased `Object` is read as `String?`, a primitive or a record, and `.length` of a local holding a host array builds (D436). `Std.EnvironmentHost` and `Std.HashHost` build all their bodies on `--target jvm`, and `hmacSha256`, `serve` and `lookupRegistry` build. `tir-builder-shapes-e2e.sh` gains `jvm_host_kernel_shapes`. Left: `Web.Kernel.Runtime::serveTls` (a call the checker did not resolve at 425:22) and `startWorkerLoop`.

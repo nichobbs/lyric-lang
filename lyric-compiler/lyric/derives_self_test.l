@@ -1258,6 +1258,67 @@ test "a diagnostic in derived code is reported at the deriving type, a warning t
   assertEqual(reported[1].code, "T0002", "a diagnostic in user code is untouched")
 }
 
+func padText(n: in Int): String {
+  var s = ""
+  var i = 0
+  while i < n {
+    s = s + "x"
+    i = i + 1
+  }
+  s
+}
+
+// A project build shares one `origins` map across its packages (`DiagSink`), so
+// the offset a package's generated node takes cannot be derived from the map's
+// size alone: when the next package's `base + 2 * origins.count` equals a key an
+// earlier package recorded, the key is already present, the map does not grow,
+// and every later node of that package would take the same span. Whether that
+// happens turns on the byte sizes of the two packages' files (the earlier one
+// must be a little larger, with the same parity), so the test derives a package
+// after a slightly larger one for each leading-comment length 0..3, which meets
+// the parity case whatever the sources' own lengths are.
+test "generated spans stay unique when the origins map is shared across packages (D370)" {
+  val srcB = "package PB\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Q { x: Int; y: Int }\n"
+  var pad = 0
+  while pad < 4 {
+    val srcA = "package PA\n" + "//" + padText(pad) + "\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" +
+      "record P { x: Int; y: Int; z: Int; w: Int }\n"
+    val origins: Map[String, Span] = newMap()
+    val _ = deriveFileWithImports(parse(srcA).file, newList(), origins)
+    val prB = parse(srcB)
+    val sfB = deriveFileWithImports(prB.file, newList(), origins)
+    val derivedItems: List[Item] = newList()
+    val seen: Map[String, Bool] = newMap()
+    var d = 1
+    while d < sfB.items.count {
+      derivedItems.add(sfB.items[d])
+      val k = spanKey(sfB.items[d].span)
+      assertFalse(seen.containsKey(k), "a derived item's span is unique in its package (pad " + toString(pad) + ")")
+      seen.add(k, true)
+      d = d + 1
+    }
+    val dupExprs: List[String] = newList()
+    val _ = anyExprInFile(
+      sfB.copy(items = derivedItems),
+      { e: Expr ->
+        val k = spanKey(e.span)
+        if seen.containsKey(k) {
+          dupExprs.add(k)
+        } else {
+          seen.add(k, true)
+        }
+        false
+      }
+    )
+    assertEqualInt(
+      dupExprs.count,
+      0,
+      "no two generated expressions of a package share a span (pad " + toString(pad) + ")"
+    )
+    pad = pad + 1
+  }
+}
+
 test "a parsed span never has column 0, so column 0 marks generated code (D391)" {
   val pr = parse("package P\n\nrecord Point { x: Int; y: Int }\n\nfunc f(a: Int): Int {\n  a + 1\n}\n")
   var i = 0
