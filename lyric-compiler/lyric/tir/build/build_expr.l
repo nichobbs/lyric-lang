@@ -5599,7 +5599,7 @@ func buildMethodCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
-  val viaImpl: Option[ImplIface] = if isSome(site.iface) or isSome(ifaceOwnerOfMethod(env, sym0)) {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
     None
   } else {
     ifaceOfImplMember(env, sym0)

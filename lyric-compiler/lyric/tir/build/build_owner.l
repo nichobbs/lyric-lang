@@ -159,7 +159,8 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
 /// generics in its signature, so a call of it is a dispatch on the interface, as when the checker
 /// resolves it to the interface's declaration.  The impl member's DefPath key is
 /// `Pkg::Box[T]::$impl(Iface)::name(params)` and the interface member's `Pkg::Iface::name(params)`;
-/// `None` unless the interface is non-generic, declared in the impl's package, and has exactly one
+/// The caller applies it only to a member whose signature lists no generics (an in-package generic impl's
+/// members list the impl's).  `None` unless the interface is non-generic, declared in the impl's package, and has exactly one
 /// member of that name.
 pub record ImplIface {
   iface: Type
