@@ -4296,8 +4296,11 @@ func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in 
     case TNamed(did, targs) -> if targs.count == 0 { did } else { return None }
     case _ -> return None
   }
-  if typeNameOfId(tbl, owner) != enumName {
-    return None
+  match symbolOfDefId(tbl, owner) {
+    case Some(os) -> if os.name != enumName {
+      return None
+    }
+    case None -> return None
   }
   for cand in symTableTryFindAllNamed(tbl, name) {
     match cand.kind {
