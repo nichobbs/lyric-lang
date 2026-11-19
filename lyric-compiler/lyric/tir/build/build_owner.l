@@ -154,6 +154,14 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
   }
 }
 
+func dbgJoin(xs: in List[String]): String {
+  var r = ""
+  for x in xs {
+    r = r + x + ","
+  }
+  r
+}
+
 /// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
 /// a member declared in the type's body) then the member's own (the checker's record, else
 /// inferred from the arguments and the result as a generic function's are).  The checker's
@@ -175,7 +183,7 @@ pub func instantiateMethod(
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) and not viaIface {
     if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
+      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl DBG " + (match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }) + " gens=" + dbgJoin(sig.generics) + " owners=" + dbgJoin(sig.genericOwners) + " recv=" + toString(recvArgs.count))
       return None
     }
     for ta in recvArgs {
