@@ -811,10 +811,32 @@ test "a construction leaving a literal-defaulted field out places the default an
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "an array field is counted as defaulted, not missing, when left out" {
+test "an array field left out builds as the zero value of its type (D423)" {
   val r = buildFirstFn("package App\nrecord P { xs: array[2, Int] }\nfunc f(): P {\n  P()\n}\n")
-  assertTrue(not r.body.isSome(), "no body")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted as defaulted")
+  assertTrue(r.body.isSome(), "builds")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 0, "not counted as defaulted")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a missing argument"), 0, "not counted as missing")
+  var zeros = 0
+  match r.body {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XConstruct(_, fields) -> {
+          for f in fields {
+            match f.kind {
+              case XZeroValue(_) -> {
+                zeros = zeros + 1
+              }
+              case _ -> ()
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  assertEqualInt(zeros, 1, "the field is a zero value")
 }
 
 func calleeShape(b: in Option[TExpr]): String {
@@ -1837,6 +1859,56 @@ test "a distinct type's constructor call builds as a wrap of its underlying valu
   val c = censusOf(
     "package App\ntype TestAge = Int\nrecord OrdPerson {\n  age: TestAge\n  name: String\n}\nfunc a(): TestAge { TestAge(40) }\nfunc b(): OrdPerson { OrdPerson(age = TestAge(30), name = \"zed\") }\n"
   )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a derived operator on a record builds as its fields' operator in a record built from them (D422)" {
+  val c = censusOf(
+    "package App\n@derive(Add, Sub)\nrecord V {\n  x: Float\n  y: Float\n}\nfunc plus(a: in V, b: in V): V { a + b }\nfunc minus(a: in V, b: in V): V { a - b }\nfunc acc(a: in V, b: in V): V {\n  var r = a\n  r += b\n  r\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a method of a value-generic record called on a receiver builds as a call of its dot-named function (D423)" {
+  val c = censusOf(
+    "package App\nref record Ints[N: Nat] {\n  var data: array[N, Int]\n  func sum(self: in Ints[N]): Int {\n    var t = 0\n    for x in self.data {\n      t = t + x\n    }\n    t\n  }\n  func twice(self: in Ints[N]): Int = sum() * 2\n}\nref record Pair[N: Nat] {\n  var left: Ints[N]\n  func total(self: in Pair[N]): Int = self.left.sum() + N\n}\nfunc totalOf[N: Nat](v: in Ints[N]): Int = v.sum()\nfunc concrete(v: in Ints[3]): Int = v.sum()\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an array field a construction leaves out builds as the zero value of its type (D423)" {
+  val c = censusOf(
+    "package App\nref record Ints[N: Nat] {\n  var data: array[N, Int]\n}\nrecord Plain {\n  var data: array[3, Int]\n}\nfunc concrete(): Ints[5] = Ints()\nfunc plain(): Plain = Plain()\nfunc gen[N: Nat](): Ints[N] = Ints()\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a call of a sibling method in a generic impl builds with the impl's own parameters (D423)" {
+  val c = censusOf(
+    "package App\nrecord Box[T] {\n  value: T\n}\ninterface Mergeable {\n  func pickSelf(useMine: in Bool, other: in Self): Self\n  func twice(other: in Self): Self\n}\nimpl[T] Mergeable for Box[T] {\n  func pickSelf(useMine: in Bool, other: in Self): Self {\n    if useMine { self } else { other }\n  }\n  func twice(other: in Self): Self {\n    pickSelf(false, other)\n  }\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a range pattern bounded by a constant builds with the constant's value (D423)" {
+  val c = censusOf(
+    "package App\nval HighBound: UInt = 3000000000u32\nfunc namedBound(x: in UInt): String {\n  match x {\n    case 1 ..= HighBound -> \"in\"\n    case _ -> \"out\"\n  }\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })

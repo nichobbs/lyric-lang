@@ -268,6 +268,21 @@ func rangeBoundLit(e: in Expr): Option[TLit] {
   }
 }
 
+/// A range pattern's bound: a literal, or an integer constant expression the checker folds
+/// (`case 1 ..= HighBound` with a module-level `val HighBound: UInt = 3000000000u32`).
+func rangeBoundValue(env: in BuildEnv, e: in Expr): Option[TLit] {
+  match rangeBoundLit(e) {
+    case Some(l) -> Some(value = l)
+    case None -> match e.kind {
+      case EPath(_) -> match tryFoldInt(env.ctx.tbl, e) {
+        case FoldOk(v) -> Some(value = TLInt(value = v))
+        case FoldErr(_) -> None
+      }
+      case _ -> None
+    }
+  }
+}
+
 func intrinsicOfBinop(op: in BinOp): Option[IntrinsicOp] {
   match op {
     case BAdd -> Some(value = IoAdd)
@@ -294,6 +309,69 @@ func shortOfBinop(op: in BinOp): Option[ShortOp] {
     case BCoalesce -> Some(value = ShCoalesce)
     case _ -> None
   }
+}
+
+/// `a + b` on a record that derives `Add` or `Sub` (D155): the operator applied field by field.  The
+/// operands are evaluated once each, into locals, and the sum is the record built from the fields'
+/// sums, as the language states it.  TIR has no node of its own for it (D422).
+func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs: in Expr, rhs: in Expr): Option[TExpr] {
+  val sym = match ty {
+    case TNamed(s, targs) -> if targs.count == 0 {
+      s
+    } else {
+      return uncoveredExpr(env, e, "record arithmetic on a generic record")
+    }
+    case _ -> return uncoveredExpr(env, e, "record arithmetic on a type that is not a record")
+  }
+  val iop = match intrinsicOfBinop(op) {
+    case Some(o) -> o
+    case None -> return uncoveredExpr(env, e, "record arithmetic")
+  }
+  val lt = match buildExpr(env, lhs) { case Some(t) -> t; case None -> return None }
+  val rt = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
+  val ld = declareLocal(env, "__ra_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
+  val rd = declareLocal(env, "__ra_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
+  val stmts: List[TStmt] = newList()
+  val lpat = TPat(id = freshNodeId(env), ty = lt.ty, span = lt.span, kind = TpBind(decl = ld, inner = None))
+  val rpat = TPat(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = TpBind(decl = rd, inner = None))
+  stmts.add(TStmt(id = freshNodeId(env), span = lt.span, kind = TsLet(pat = lpat, init = lt)))
+  stmts.add(TStmt(id = freshNodeId(env), span = rt.span, kind = TsLet(pat = rpat, init = rt)))
+  val ctx = newTyConvCtx(env.ctx.tbl)
+  val fields: List[TExpr] = newList()
+  var i = 0
+  for f in fieldsOfRecord(env.ctx.tbl, sym) {
+    val ft = match tyOfType(ctx, f.ty) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+    if not isPrimTy(ft) {
+      return uncoveredExpr(env, e, "record arithmetic over a field that is not a primitive")
+    }
+    val fref = FieldRef(owner = sym, name = f.name, index = i)
+    val lx = TExpr(
+      id = freshNodeId(env),
+      ty = ft,
+      span = e.span,
+      kind = XField(
+        recv = TExpr(id = freshNodeId(env), ty = lt.ty, span = e.span, kind = XLocal(local = ld.id)),
+        field = fref
+      )
+    )
+    val rx = TExpr(
+      id = freshNodeId(env),
+      ty = ft,
+      span = e.span,
+      kind = XField(
+        recv = TExpr(id = freshNodeId(env), ty = rt.ty, span = e.span, kind = XLocal(local = rd.id)),
+        field = fref
+      )
+    )
+    val two: List[TExpr] = newList()
+    two.add(lx)
+    two.add(rx)
+    fields.add(TExpr(id = freshNodeId(env), ty = ft, span = e.span, kind = intrinsicCall(iop, two)))
+    i = i + 1
+  }
+  noteRecordSym(env, sym)
+  val built = TExpr(id = freshNodeId(env), ty = ty, span = e.span, kind = XConstruct(sym = sym, fields = fields))
+  Some(value = mkExpr(e, ty, XBlock(stmts = stmts, tail = Some(value = built))))
 }
 
 /// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
@@ -1042,7 +1120,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       // `a + b` on a record that derives `Add`/`Sub` is applied field by field (D155): the AST
       // lowering does that, and TIR has no node for it yet, so the body stays counted.
       if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
-        return uncoveredExpr(env, e, "record arithmetic")
+        return buildRecordArith(env, e, ty, op, lhs, rhs)
       }
       val l = buildExpr(env, lhs)
       // `x == None`: the checker leaves the bare right operand untyped, and equality
@@ -1424,8 +1502,8 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       }
       case None -> uncoveredPat(env, p, "a record pattern the checker did not resolve")
     }
-    case PRange(lo, inclusive, hi, _) -> match rangeBoundLit(lo) {
-      case Some(l) -> match rangeBoundLit(hi) {
+    case PRange(lo, inclusive, hi, _) -> match rangeBoundValue(env, lo) {
+      case Some(l) -> match rangeBoundValue(env, hi) {
         case Some(h) -> Some(
           value = mkPat(
             p,
@@ -1870,8 +1948,22 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       built
     }
     case SAssign(t, op, v) -> {
-      if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(s.span)) {
-        return uncoveredStmt(env, s, "record arithmetic")
+      match mapGet(env.ctx.tbl.recordArithSites, recordCopySiteKey(s.span)) {
+        case Some(site) -> {
+          // `r += s` is `r = r + s` on a record that derives `Add` (D155): the sum is built as the
+          // operator is, at the target's type.
+          val tty = match exprTy(env.ctx, t.nodeId) { case Ok(x) -> x; case Err(msg) -> { env.errors.add(msg); return None } }
+          // The target is built twice, as the place assigned and as the left operand, as the AST
+          // lowering reads it twice (`lowerRecordArith`): a target with a side effect would run twice.
+          val sum = Expr(kind = EBinop(op = site.op, lhs = t, rhs = v), span = s.span, nodeId = freshNodeId(env).id)
+          env.settled.add(sum.nodeId, tty)
+          val ae = Expr(kind = EAssign(target = t, op = AssEq, value = sum), span = s.span, nodeId = freshNodeId(env).id)
+          return match buildAssign(env, ae, t, AssEq, sum) {
+            case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
+            case None -> None
+          }
+        }
+        case None -> ()
       }
       val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = freshNodeId(env).id)
       match buildAssign(env, ae, t, op, v) {
@@ -4366,6 +4458,9 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   if isClosureAsPointer(t.ty, ty) {
     return Some(value = convertNode(env, t, ty, CvClosureAsPointer))
   }
+  if isUserdataSlotTy(t.ty) and isUserdataSlotTy(ty) {
+    return Some(value = convertNode(env, t, ty, CvUserdataSlot))
+  }
   match retypeListLiteral(env, t, ty) {
     case Some(c) -> return Some(value = c)
     case None -> ()
@@ -5282,7 +5377,11 @@ func readsBeforeLaterCall(slots: in List[Option[Expr]], srcIdx: in List[Int], i:
 /// `T` only in an argument and `U` and `E` only in the annotated result).  An argument the
 /// checker left untyped fixes nothing.
 func genericArgsFromCall(
-  env: in BuildEnv, sig: in ResolvedSignature, resultTy: in Type, args: in List[CallArg]
+  env: in BuildEnv,
+  sig: in ResolvedSignature,
+  resultTy: in Type,
+  args: in List[CallArg],
+  lead: in Option[Type],
 ): List[Type] {
   val named: List[String] = newList()
   for a in args {
@@ -5292,15 +5391,21 @@ func genericArgsFromCall(
     }
   }
   val free: List[Int] = newList()
+  val ps: List[Type] = newList()
+  val ts: List[Type] = newList()
+  // A dot-named function called as a method: its first parameter is the receiver, whose type
+  // is known, and the arguments fill the rest.
   var pi = 0
+  match lead {
+    case Some(lt) -> if sig.params.count > 0 { ps.add(sig.params[0].ty); ts.add(lt); pi = 1 }
+    case None -> ()
+  }
   while pi < sig.params.count {
     if not named.contains(sig.params[pi].name) {
       free.add(pi)
     }
     pi = pi + 1
   }
-  val ps: List[Type] = newList()
-  val ts: List[Type] = newList()
   var pos = 0
   for a in args {
     var slot = -1
@@ -5405,7 +5510,7 @@ func buildDirectCall(
     val checkerArgs = match mapGet(env.ctx.tbl.genericArgsByNode, e.nodeId) {
       case Some(ts) -> ts
       case None -> match mapGet(env.ctx.tbl.exprTypes, e.nodeId) {
-        case Some(rt) -> genericArgsFromCall(env, sig, rt, args)
+        case Some(rt) -> genericArgsFromCall(env, sig, rt, args, None)
         case None -> return uncoveredExpr(env, e, "a generic call with no recorded instantiation")
       }
     }
@@ -5570,11 +5675,36 @@ func buildMethodCall(
       isImplMember = true
     }
   }
-  val declared = match tyOfType(env.ctx, recvTyDecl) {
-    case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg)
-      return None
+  // A dot-named generic function called as a method is instantiated from the receiver's type
+  // (the enclosing method's own `self` for a bare call) and the arguments.
+  var dotted: Option[MethodInst] = None
+  match site.full {
+    case Some(full) -> {
+      val recvActual: Type = if bareSelf {
+        site.recvTy
+      } else {
+        match mapGet(env.ctx.tbl.exprTypes, recvExpr.nodeId) {
+          case Some(t) -> t
+          case None -> return uncoveredExpr(env, e, "a method call on a receiver the checker did not type")
+        }
+      }
+      match instantiateDotted(env, e, sym, full, recvActual, args) {
+        case Some(i) -> {
+          dotted = Some(value = i)
+        }
+        case None -> return None
+      }
+    }
+    case None -> ()
+  }
+  val declared = match dotted {
+    case Some(di) -> match di.recvTy { case Some(t) -> t; case None -> return None }
+    case None -> match tyOfType(env.ctx, recvTyDecl) {
+      case Ok(t) -> t
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return None
+      }
     }
   }
   // A receiver passed `out` or `inout` is a place, not a value.
@@ -5619,7 +5749,13 @@ func buildMethodCall(
       case None -> return None
     }
   }
-  val inst = match instantiateMethod(env, e, sym, site, args) { case Some(i) -> i; case None -> return None }
+  val inst = match dotted {
+    case Some(i) -> i
+    case None -> match instantiateMethod(env, e, sym, site, args) {
+      case Some(i) -> i
+      case None -> return None
+    }
+  }
   val pre: List[TStmt] = newList()
   val rest = match buildCallArgs(env, e, sym, inst.sig, newList(), args, pre) {
     case Some(a) -> a
@@ -6077,6 +6213,31 @@ func withPrelude(env: in BuildEnv, e: in Expr, pre: in List[TStmt], call: in TEx
   TExpr(id = freshNodeId(env), ty = call.ty, span = e.span, kind = XBlock(stmts = pre, tail = Some(value = call)))
 }
 
+/// An array field a construction leaves out is filled with its zero value (D167): the checker
+/// records the omitted fields of each construction (`arrayCtorZeroArgs`), and the argument is
+/// the field type's zero.
+func zeroFilledArg(env: in BuildEnv, e: in Expr, p: in ResolvedParam, ptys: in List[Ty], i: in Int): Option[TExpr] {
+  match mapGet(env.ctx.tbl.arrayCtorZeroArgs, recordCopySiteKey(e.span)) {
+    case Some(zs) -> {
+      var found = false
+      for z in zs {
+        match z {
+          case CANamed(n, _, _) -> if n == p.name { found = true }
+          case CAPositional(_) -> ()
+        }
+      }
+      if not found {
+        return None
+      }
+      match paramTyAt(env, ptys, i, p) {
+        case Ok(t) -> Some(value = TExpr(id = freshNodeId(env), ty = t, span = e.span, kind = XZeroValue(ty = t)))
+        case Err(_) -> None
+      }
+    }
+    case None -> None
+  }
+}
+
 /// The arguments of a call placed by parameter, in parameter order, each built and
 /// converted to its parameter's type; `None` after counting why not.
 func buildCallArgs(
@@ -6152,8 +6313,9 @@ func buildCallArgs(
   while i < sig.params.count {
     val p = sig.params[i]
     match slots[i] {
-      case None -> {
-        if p.hasDefault {
+      case None -> match zeroFilledArg(env, e, p, ptys, i) {
+        case Some(z) -> targs.add(TArgIn(value = z))
+        case None -> if p.hasDefault {
           match buildDefaultArg(env, e, callee, sig.originPackage, p, ptys, i) {
             case Some(t) -> targs.add(TArgIn(value = t))
             case None -> {

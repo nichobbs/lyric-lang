@@ -6145,20 +6145,16 @@ func recordMethodCalleeNode(
 // receiver-dropped signature and receiver type, and the interface the receiver
 // is a value of.  A member of a record, protected type or `impl` is recorded with
 // its generics (D580: the owner's parameters then its own, instantiated from the
-// receiver's type arguments); a dot-named generic function and a generic
-// interface receiver wait for the generic-call step.
+// receiver's type arguments).  A dot-named function that is generic, or whose receiver is an
+// instance of a generic type, is recorded with its full signature (`full`): the call is that
+// function called with the receiver first.  A generic interface receiver waits for the
+// generic-call step.
 func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
-  if mp.sig.generics.count > 0 and mp.fullSig.isSome() {
-    return
-  }
   val recv = unrefine(recvTy)
   var iface: Option[SymbolId] = None
   var recvArgs = 0
   match recv {
     case TyUser(id, _, targs) -> {
-      if targs.count > 0 and mp.fullSig.isSome() {
-        return
-      }
       recvArgs = targs.count
       match symbolOfDefId(tbl, id) {
         case Some(s) -> match s.kind { case DKInterface(_, _) -> { iface = Some(value = id) }; case _ -> () }
@@ -6166,6 +6162,13 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
       }
     }
     case _ -> return
+  }
+  // A dot-named function that is generic, or whose receiver is an instance of a generic
+  // type, is recorded with its full signature: the call is a call of that function with the
+  // receiver first.
+  var full: Option[ResolvedSignature] = None
+  if mp.fullSig.isSome() and (mp.sig.generics.count > 0 or recvArgs > 0) {
+    full = mp.fullSig
   }
   // Only a method the interface declares is dispatched on it; a dot-named
   // function `Feed.f(self, ...)` called on the value is a plain function.
@@ -6177,13 +6180,13 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
     return
   }
   val declared = match mp.fullSig {
-    case Some(full) -> if full.params.count > 0 { full.params[0].ty } else { recv }
+    case Some(f) -> if f.params.count > 0 { f.params[0].ty } else { recv }
     case None -> recv
   }
   if tbl.methodCallByNode.containsKey(callNode) {
     tbl.methodCallByNode.remove(callNode)
   }
-  tbl.methodCallByNode.add(callNode, MethodCallSite(sig = mp.sig, recvTy = declared, iface = iface))
+  tbl.methodCallByNode.add(callNode, MethodCallSite(sig = mp.sig, recvTy = declared, iface = iface, full = full))
 }
 
 // The receiver-dropped copy of a full dot-named signature.
@@ -8240,6 +8243,7 @@ func resolveQualifiedFuncValue(
   pkg: in String,
   name: in String,
   sp: in Span,
+  node: in Int,
 ): Option[Type] {
   // A call's callee is resolved by the call, with its arguments.
   if tbl.funcRefCallees.containsKey(recordCopySiteKey(sp)) {
@@ -8323,6 +8327,7 @@ func resolveQualifiedFuncValue(
   val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
   match pkgFuncSig(sigs, sym.originPackage, name, arity) {
     case Some(sig) -> if recordFuncRefSite(tbl, diag, sig, name, sp) {
+      recordFuncRefNode(tbl, node, sig, name)
       Some(value = funcValueType(sig))
     } else {
       Some(value = tyErrorSilent())
@@ -8404,7 +8409,7 @@ func resolveExprPath(
     // that was never resolved at all — checking
     // `symTablePackageHasAnyExternBlockMember` too closes that gap without
     // reopening #6361 for this package shape.
-    match resolveQualifiedFuncValue(tbl, sigs, diag, pkg, name, span) {
+    match resolveQualifiedFuncValue(tbl, sigs, diag, pkg, name, span, node) {
       case Some(ft) -> return ft
       case None -> ()
     }
@@ -11725,6 +11730,12 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
         case _ -> ()
       }
       ci = ci - 1
+    }
+    // `L.Circle(r = 3)` for an alias or a package that re-exports the declaring one (`pub use`):
+    // the resolver answers for the qualified name where the declaring package is not the one written.
+    match symTableQualifiedCase(tbl, flatSegs) {
+      case Some(qs) -> return Some(value = qs)
+      case None -> ()
     }
   }
   if not fnWasFlatPath {
@@ -21605,6 +21616,20 @@ func inferExprCore(
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
+      // `Alias.fn`, the alias of an aliased import naming the package, is the same reference.
+      val aliasSegs: List[String] = newList()
+      if flattenCalleePathSegs(e, aliasSegs) and aliasSegs.count == 2 {
+        match scopeTryFind(sc, aliasSegs[0]) {
+          case Some(_) -> ()
+          case None -> match symTablePackageOfAlias(tbl, aliasSegs[0]) {
+            case Some(aliasPkg) -> match resolveQualifiedFuncValue(tbl, sigs, diag, aliasPkg, name, e.span, e.nodeId) {
+              case Some(ft) -> return ft
+              case None -> ()
+            }
+            case None -> ()
+          }
+        }
+      }
       val chainSegs: List[String] = newList()
       if flattenCalleePathSegs(e, chainSegs) and chainSegs.count >= 3 {
         match scopeTryFind(sc, chainSegs[0]) {
@@ -21618,7 +21643,7 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
-              match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
+              match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span, e.nodeId) {
                 case Some(ft) -> return ft
                 case None -> ()
               }
@@ -23237,6 +23262,17 @@ pub func inferExprExpected(
 ): Type {
   val core = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
   val t = sharedEnumCaseAgainstExpected(tbl, core, expected)
+  // A case name several enums share, read against the enum the expected type names: the node is
+  // that enum's case (docs/70 §6.3).
+  if sharedCaseOwnersOf(tbl, core).count > 0 {
+    match e.kind {
+      case EMember(_, n) -> recordQualifiedEnumCaseRef(tbl, e.nodeId, t, n)
+      case EPath(p) -> if p.segments.count > 0 {
+        recordQualifiedEnumCaseRef(tbl, e.nodeId, t, p.segments[p.segments.count - 1])
+      }
+      case _ -> ()
+    }
+  }
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).  An expression with

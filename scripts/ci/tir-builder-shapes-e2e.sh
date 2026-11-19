@@ -498,9 +498,9 @@ func main(): Int {
 }
 LYRIC
 
-# Arithmetic on a record that derives Add is lowered field by field by the AST pass; the builder counts
-# the body instead of emitting a plain `+` on two records (D491).
-check_counted record_arith_stays_counted <<'LYRIC'
+# Arithmetic on a record that derives Add builds as its fields' operator in a record built from them,
+# never as a plain `+` on two records (D422); the program is also run.
+check record_arith 1 <<'LYRIC'
 package Shapes16
 import Std.Core
 
@@ -700,6 +700,162 @@ if grep -q "TIR build census \[.*src/b/b.l\]: 1 of 1 function bodies built" "$WO
   echo "ok   package_qualified_type_function"
 else
   echo "FAIL (package_qualified_type_function)"; grep -E "first error" "$WORK/proj.log" | head -3; fail=1
+fi
+# A case name two enums of another package share, read through the package where the annotated type
+# decides which enum it is (`val b: Lib.Beam = Lib.On`), builds as that enum's case (D423).
+mkdir -p "$WORK/shared/src/lib" "$WORK/shared/src/app"
+cat > "$WORK/shared/lyric.toml" <<'TOML'
+[package]
+name = "SharedCase"
+version = "0.1.0"
+
+[project]
+name = "SharedCase"
+output = "single"
+output_assembly = "SharedCase.dll"
+
+[project.packages]
+"SiblingEnums" = "src/lib"
+"SiblingEnumsValueApp" = "src/app"
+TOML
+cat > "$WORK/shared/src/lib/lib.l" <<'LYRIC'
+package SiblingEnums
+
+pub enum Beam {
+  case Off
+  case On
+}
+
+pub enum Ray {
+  case On
+  case Idle
+}
+LYRIC
+cat > "$WORK/shared/src/app/app.l" <<'LYRIC'
+package SiblingEnumsValueApp
+import SiblingEnums
+
+pub func main(): Int {
+  val beam: SiblingEnums.Beam = SiblingEnums.On
+  val ray: SiblingEnums.Ray = SiblingEnums.On
+  match beam {
+    case SiblingEnums.On -> 1
+    case SiblingEnums.Off -> 0
+  }
+}
+LYRIC
+(cd "$WORK/shared" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/shared.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/shared.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/shared.log"; then
+  echo "ok   package_qualified_shared_enum_case"
+else
+  echo "FAIL (package_qualified_shared_enum_case)"; grep -E "first error" "$WORK/shared.log" | head -3; fail=1
+fi
+# A union case of a package a facade re-exports (`pub use`), constructed through the facade's alias
+# (`L.Circle(r = 3)`), has a callee and a signature (D425).
+mkdir -p "$WORK/facade/src/client" "$WORK/facade/src/lib" "$WORK/facade/src/app"
+cat > "$WORK/facade/lyric.toml" <<'TOML'
+[package]
+name = "Facade"
+version = "0.1.0"
+
+[project]
+name = "Facade"
+output = "single"
+output_assembly = "Facade.dll"
+
+[project.packages]
+"Pu.Client" = "src/client"
+"Pu" = "src/lib"
+"Pu.Main" = "src/app"
+TOML
+cat > "$WORK/facade/src/client/c.l" <<'LYRIC'
+package Pu.Client
+
+pub union Shape {
+  case Dot
+  case Circle(r: Int)
+}
+
+pub func areaOf(s: in Shape): Int {
+  match s {
+    case Dot -> 0
+    case Circle(r) -> r * r
+  }
+}
+LYRIC
+cat > "$WORK/facade/src/lib/lib.l" <<'LYRIC'
+package Pu
+
+import Pu.Client
+pub use Pu.Client
+
+pub func facadeOwn(): Int {
+  1
+}
+LYRIC
+cat > "$WORK/facade/src/app/app.l" <<'LYRIC'
+package Pu.Main
+import Pu as L
+
+pub func main(): Int {
+  L.areaOf(L.Circle(r = 3))
+}
+LYRIC
+(cd "$WORK/facade" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/facade.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/facade.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/facade.log"; then
+  echo "ok   facade_qualified_case"
+else
+  echo "FAIL (facade_qualified_case)"; grep -E "first error" "$WORK/facade.log" | head -3; fail=1
+fi
+# A function of another package used as a value through its alias (`AL.update`), its full package path
+# (`Reg.Lib.update`) or an import of the name builds as that function's reference (D424).
+mkdir -p "$WORK/fnval/src/lib" "$WORK/fnval/src/app"
+cat > "$WORK/fnval/lyric.toml" <<'TOML'
+[package]
+name = "FnVal"
+version = "0.1.0"
+
+[project]
+name = "FnVal"
+output = "single"
+output_assembly = "FnVal.dll"
+
+[project.packages]
+"Reg.Lib" = "src/lib"
+"Reg.App" = "src/app"
+TOML
+cat > "$WORK/fnval/src/lib/lib.l" <<'LYRIC'
+package Reg.Lib
+
+pub func update(x: in Int): Int = x + 1
+
+pub record Prog[M] {
+  step: (M) -> M
+}
+
+pub func apply[M](p: in Prog[M], m: in M): M = p.step(m)
+LYRIC
+cat > "$WORK/fnval/src/app/app.l" <<'LYRIC'
+package Reg.App
+import Reg.Lib as AL
+import Reg.Lib.{Prog, apply, update}
+
+pub func main(): Int {
+  val pa = Prog(step = AL.update)
+  val f: (Int) -> Int = Reg.Lib.update
+  val g: (Int) -> Int = update
+  val h: (Int) -> Int = AL.update
+  apply(pa, 1) + f(1) + g(1) + h(1)
+}
+LYRIC
+(cd "$WORK/fnval" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/fnval.log" 2>&1)
+if grep -q "TIR build census \[.*src/app/app.l\]: 1 of 1 function bodies built" "$WORK/fnval.log" && \
+   grep -q "I0003 census \[.*src/app/app.l\]: 0 diagnostic" "$WORK/fnval.log"; then
+  echo "ok   package_qualified_function_value"
+else
+  echo "FAIL (package_qualified_function_value)"; grep -E "first error" "$WORK/fnval.log" | head -3; fail=1
 fi
 # A host call chain whose middle result is a host class no `extern type` names, built for the JVM
 # (D444): `m.entrySet().iterator()` is typed from the host metadata.  The program is also run.
