@@ -1194,6 +1194,108 @@ LYRIC
 restored_impl_defaults dotnet
 restored_impl_defaults jvm
 
+# A call on a restored package's generic record through an interface it implements through a generic
+# `impl[T]` is a dispatch on the interface: the checker resolves it to the interface's member (the
+# package interface keeps no `impl` member), and the receiver's own type arguments are not the callee's
+# owner generics (D402).  `Box(v = 1).size(4)` is 4 * 2 = 8, on both targets.
+restored_generic_impl_call() {
+  local target="$1" dir="$WORK/genimpl-$1"
+  mkdir -p "$dir/lib/src" "$dir/app/src"
+  cat > "$dir/lib/lyric.toml" <<'TOML'
+[package]
+name = "Gi.Lib"
+version = "0.1.0"
+
+[project]
+name = "Gi.Lib"
+output = "single"
+output_assembly = "GiLib.dll"
+
+[project.packages]
+"GiLib" = "src/lib.l"
+TOML
+  cat > "$dir/lib/src/lib.l" <<'LYRIC'
+package GiLib
+
+pub interface Sized {
+  func size(self: in Self, scale: in Int): Int
+}
+
+pub record Box[T] {
+  v: T
+}
+
+impl[T] Sized for Box[T] {
+  func size(self: in Box[T], scale: in Int): Int {
+    scale * 2
+  }
+}
+LYRIC
+  cat > "$dir/app/lyric.toml" <<'TOML'
+[package]
+name = "Gi.App"
+version = "0.1.0"
+
+[dependencies]
+"Gi.Lib" = { path = "../lib" }
+
+[project]
+name = "Gi.App"
+output = "single"
+output_assembly = "GiApp.dll"
+
+[project.packages]
+"GiApp" = "src/app.l"
+TOML
+  cat > "$dir/app/src/app.l" <<'LYRIC'
+package GiApp
+import GiLib
+
+func main(): Int {
+  Box(v = 1).size(4)
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --manifest "$dir/lib/lyric.toml" --target "$target" >"$dir/lib.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the library did not build"; tail -3 "$dir/lib.log"; fail=1; return; }
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/app/lyric.toml" --target "$target" >"$dir/app.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the consumer did not build"; tail -3 "$dir/app.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*app.l\]" "$dir/app.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (restored_generic_impl_call $target): $built of $total consumer bodies built"; grep -E "first error" "$dir/app.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*app.l\]: 0 diagnostic" "$dir/app.log"; then
+    echo "FAIL (restored_generic_impl_call $target): the verifier rejected a built body"; fail=1; return
+  fi
+  local got
+  (cd "$dir" && "$LYRIC" run --manifest "$dir/app/lyric.toml" --target "$target" >/dev/null 2>&1); got=$?
+  if [[ "$got" != "8" ]]; then echo "FAIL (restored_generic_impl_call $target): exit code $got, want 8"; fail=1; return; fi
+  echo "ok   restored_generic_impl_call $target"
+}
+restored_generic_impl_call dotnet
+restored_generic_impl_call jvm
+
+# `x.toString()` on a range-subtype or distinct value: the checker records no callee for it, so the builder
+# builds the built-in `toString` of the value (D406).  "5" and "12" have 3 characters.
+check range_to_string_method 3 <<'LYRIC'
+package RangeToStringMethod
+
+pub type Cents = Long range 0 ..= 1000000
+pub type Tag = Int
+
+func show(c: in Cents): String {
+  c.toString()
+}
+
+func showTag(t: in Tag): String {
+  t.toString()
+}
+
+func main(): Int {
+  show(Cents.from(5)).length + showTag(Tag.from(12)).length
+}
+LYRIC
+
 # Host chains the builder does not type stay counted and the verifier reports nothing: a chain on a
 # result that is a Lyric value (a string, a boxed number), and a member the host class has no overload
 # for.  The JVM build must finish and every body that builds must verify (D444, D445).

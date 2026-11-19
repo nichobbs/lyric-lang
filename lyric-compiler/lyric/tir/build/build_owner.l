@@ -154,22 +154,90 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
   }
 }
 
+/// The non-generic interface a restored `impl` member implements, and the interface's own member of
+/// that name: a restored package may carry a generic `impl[T] Iface for Box[T]` member with no
+/// generics in its signature, so a call of it is a dispatch on the interface, as when the checker
+/// resolves it to the interface's declaration.  The impl member's DefPath key is
+/// `Pkg::Box[T]::$impl(Iface)::name(params)` and the interface member's `Pkg::Iface::name(params)`;
+/// The caller applies it only to a member whose signature lists no generics (an in-package generic impl's
+/// members list the impl's).  `None` unless the interface is non-generic, restored from the impl's package (an in-package impl is built from source), and has exactly one
+/// member of that name.
+pub record ImplIface {
+  iface: Type
+  method: SymbolId
+}
+
+pub func ifaceOfImplMember(env: in BuildEnv, sym: in SymbolId): Option[ImplIface] {
+  val tbl = env.ctx.tbl
+  val key = match defPathKeyOf(tbl.interner, sym) { case Some(k) -> k; case None -> return None }
+  val marker = findSub(key, "::$impl(", 0)
+  if marker < 0 {
+    return None
+  }
+  val pkgEnd = findSub(key, "::", 0)
+  val nameStart = marker + 8
+  val nameEnd = findSub(key, ")::", nameStart)
+  if pkgEnd < 0 or nameEnd < nameStart {
+    return None
+  }
+  val ifaceKey = key.substring(0, pkgEnd) + "::" + key.substring(nameStart, nameEnd - nameStart)
+  val memberStart = nameEnd + 3
+  val paren = findSub(key, "(", memberStart)
+  if paren < memberStart {
+    return None
+  }
+  val prefix = ifaceKey + "::" + key.substring(memberStart, paren - memberStart) + "("
+  val tid = match symbolIdOfKey(tbl.interner, ifaceKey) { case Some(t) -> t; case None -> return None }
+  val ty: Type = match symTableTypeSymbolOf(tbl, tid) {
+    case Some(ts) -> match ts.kind {
+      case DKInterface(_, decl) -> if isSome(decl.generics) or not ts.isImported {
+        return None
+      } else {
+        TyUser(id = tid, name = ts.name, args = newList())
+      }
+      case _ -> return None
+    }
+    case None -> return None
+  }
+  var found: Option[SymbolId] = None
+  var n = 0
+  var i = 0
+  while i < tbl.interner.keys.count {
+    if tbl.interner.keys[i].startsWith(prefix) {
+      n = n + 1
+      found = Some(value = SymbolId(id = i + 1))
+    }
+    i = i + 1
+  }
+  if n != 1 {
+    return None
+  }
+  match found {
+    case Some(m) -> Some(value = ImplIface(iface = ty, method = m))
+    case None -> None
+  }
+}
+
 /// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
 /// a member declared in the type's body) then the member's own (the checker's record, else
 /// inferred from the arguments and the result as a generic function's are).  The checker's
 /// signature lists only the member's own generics for a concrete receiver and none for a
 /// receiver typed over the caller's own parameters, so the owner's are never read from it.
+/// `viaIface`: the call is a dispatch on a non-generic interface the receiver implements (a
+/// restored package keeps no `impl` member of its own), so the receiver's arguments belong to
+/// its own type, not to the callee, which has no owner generics.
 pub func instantiateMethod(
   env: in BuildEnv,
   e: in Expr,
   sym: in SymbolId,
   site: in MethodCallSite,
   args: in List[CallArg],
+  viaIface: in Bool,
 ): Option[MethodInst] {
   val sig = site.sig
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
-  if recvArgs.count > 0 and not isSome(site.iface) {
+  if recvArgs.count > 0 and not isSome(site.iface) and not viaIface {
     if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
       val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
       return None
