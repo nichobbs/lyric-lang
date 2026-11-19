@@ -42,4 +42,4 @@ runs:
         name: build-artifacts
     - name: Restore executable permissions
       shell: bash
-      run: bash scripts/ci/write-lyric-dotnet-wrapper.sh "bootstrap/src/Lyric.Cli.Aot/bin/${{ inputs.build-config }}/net10.0/lyric"
+      run: bash scripts/ci/write-lyric-dotnet-wrapper.sh "bootstrap/src/Lyric.Cli.Aot/bin/${{ inputs.build-config }}/lyric"

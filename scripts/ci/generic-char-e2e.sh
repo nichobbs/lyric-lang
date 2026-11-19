@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 lyric_bin="${LYRIC_BIN:-./bin/lyric}"
 if [ ! -x "$lyric_bin" ]; then
   BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-  lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+  lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 fi
 [ -x "$lyric_bin" ] || { echo "::error::lyric binary not found"; exit 1; }
 case "$lyric_bin" in

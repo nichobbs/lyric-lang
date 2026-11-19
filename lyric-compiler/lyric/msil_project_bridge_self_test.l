@@ -36,6 +36,7 @@ import Lyric.Parser
 import Msil.Bridge
 import Msil.MetadataReader as Mdr
 import Lyric.Emitter as Emitter
+import Lyric.DotnetTarget as DT
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 func tempBase(): String {
@@ -52,12 +53,7 @@ func freshTempDir(label: in String): String {
 }
 
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfig(dllPath: in String): Unit {

@@ -19713,6 +19713,15 @@ func lowerFuncValueInvokeMsil(
         insns.add(MPop)
         MVoid
       }
+      // A slice result is the `e[]` it was built as, or a `List`-backed one
+      // (#2539): convert, so a `T[]` parameter it reaches reads an array and
+      // the call verifies (`emitObjectToSliceArrayMsil`).
+      case MArray(e) -> {
+        if sliceElemHasArrayTokenMsil(e) {
+          emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
+        }
+        rt
+      }
       case _ -> {
         materializeBoxedElemMsil(cctx, insns, rt)
         rt

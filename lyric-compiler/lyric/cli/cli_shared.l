@@ -98,6 +98,7 @@ import Lyric.Discovery as Disc
 import Lyric.Emitter as Emitter
 import Lyric.ContractMeta as Meta
 import Lyric.Version as Ver
+import Lyric.DotnetTarget as DT
 
 func VERSION(): String {
   Ver.VERSION()
@@ -881,21 +882,6 @@ func getBuildKind(m: in Mf.Manifest): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Core build helper
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared runtimeconfig skeleton — the TFM + framework version live here
-// so they're maintained in one place (#1093).  `extra` is inserted at
-// the end of the `runtimeOptions` block; pass an empty string for the
-// minimal form, or the comma-prefixed `additionalProbingPaths` section.
-func runtimeConfigJson(extra: in String): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }" +
-    extra +
-    "\n" +
-    "  }\n" +
-    "}\n"
-}
-
 // Write a minimal runtimeconfig.json next to `dllPath` so `dotnet exec`
 // resolves the right runtime.  Failures are reported as warnings, not
 // hard errors, because the DLL is already written at this point.
@@ -903,7 +889,7 @@ func writeRuntimeConfig(dllPath: in String): Unit {
   val dir = Path.dirname(dllPath)
   val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
   val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
-  val json = runtimeConfigJson("")
+  val json = DT.runtimeConfigJson("")
   match File.writeText(cfgPath, json) {
     case Ok(_) -> ()
     case Err(e) -> printErr("build: warning: runtimeconfig: " + IOError.message(e))
@@ -935,7 +921,7 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
     }
     probingSection = probingSection + "\n    ]"
   }
-  val json = runtimeConfigJson(probingSection)
+  val json = DT.runtimeConfigJson(probingSection)
   match File.writeText(cfgPath, json) {
     case Ok(_) -> ()
     case Err(e) -> printErr("build: warning: runtimeconfig: " + IOError.message(e))

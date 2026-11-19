@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::warning::AOT binary not found; skipping example runs"
   exit 0

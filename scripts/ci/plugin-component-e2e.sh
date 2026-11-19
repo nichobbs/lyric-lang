@@ -8,7 +8,7 @@
 #   host-target  dotnet | jvm | native  (one or more)
 #
 # The lyric binary is $LYRIC_BIN, else the AOT build
-# (bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric).
+# (bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/lyric).
 #
 # Packs the @plugin package lyric-stdlib/tests/plugin_fixtures/greeter_component.l
 # with `lyric plugin pack --targets component` (so the component is generated
@@ -41,7 +41,7 @@ done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
-LYRIC_BIN="${LYRIC_BIN:-bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/net10.0/lyric}"
+LYRIC_BIN="${LYRIC_BIN:-bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/lyric}"
 case "$LYRIC_BIN" in
   /*) ;;
   *) LYRIC_BIN="$REPO_ROOT/$LYRIC_BIN" ;;

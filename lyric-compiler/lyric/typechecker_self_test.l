@@ -4547,6 +4547,56 @@ test "an unannotated binding's bracket literal is recorded at its checked slice 
   )
 }
 
+// A literal in a position that is not a binding's initializer is recorded at its
+// checked slice type when an element is not itself a literal: a lambda's
+// result, a tuple element, a generic constructor argument, a slice method's
+// receiver, an element of another literal.  Not recorded: a literal of literals
+// (a backend reads the type off them), an open literal (`[]`), a position that
+// names the slice type, and a literal in a contract.
+test "an unhinted bracket literal with a non-literal element is recorded at its checked slice type" {
+  val src = "package P\nrecord Box[T] { v: T }\nfunc mk(n: in Int): String { \"m\" }\n" + "func f(n: in Int): Int {\n" +
+    "  val g = { -> [\"l\", mk(n)] }\n" +
+    "  val t = ([\"t\", mk(n)], 1)\n" +
+    "  val b = Box(v = [\"b\", mk(n)])\n" +
+    "  val r = [\"r\", mk(n)].length\n" +
+    "  val xs = [[\"i\", mk(n)]]\n" +
+    "  val plain = [\"p\", \"q\"].length\n" +
+    "  val num = [1, -2].length\n" +
+    "  val e: slice[String] = [\"z\", mk(n)]\n" +
+    "  val h: (slice[String], Int) = ([\"h\", mk(n)], 1)\n" +
+    "  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  assertEqual(boundListLiteralType(cr, src, "[\"l\", mk(n)]"), "slice[String]", "lambda result")
+  assertEqual(boundListLiteralType(cr, src, "[\"t\", mk(n)]"), "slice[String]", "tuple element")
+  assertEqual(boundListLiteralType(cr, src, "[\"b\", mk(n)]"), "slice[String]", "generic constructor argument")
+  assertEqual(boundListLiteralType(cr, src, "[\"r\", mk(n)]"), "slice[String]", "method receiver")
+  assertEqual(boundListLiteralType(cr, src, "[\"i\", mk(n)]"), "slice[String]", "element of a literal")
+  assertEqual(boundListLiteralType(cr, src, "[\"p\", \"q\"]"), "", "a literal of literals is not recorded here")
+  assertEqual(boundListLiteralType(cr, src, "[1, -2]"), "", "a literal of numbers is not recorded")
+  assertEqual(
+    boundListLiteralType(cr, src, "[\"h\", mk(n)]"),
+    "",
+    "a tuple element the annotation types is not recorded"
+  )
+}
+
+// The early return for a type that is not closed: a binding of the empty literal
+// has an open element type, so no site is recorded for it.
+test "an open bracket literal binding records no list literal type site" {
+  val src = "package P\nfunc f(n: in Int): Int {\n  val xs = []\n  var ys = []\n  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(boundListLiteralType(cr, src, "[]"), "", "val xs = []")
+  assertEqualInt(mapKeys(cr.symbols.listLiteralTypeSites).count, 0, "no site recorded at all")
+}
+
+test "a bracket literal in a contract clause is not recorded" {
+  val src = "package P\nfunc mk(n: in Int): String { \"m\" }\n" +
+    "func f(n: in Int): Int\n  requires: [mk(n), \"x\"].length >= 0\n{\n  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(boundListLiteralType(cr, src, "[mk(n), \"x\"]"), "", "contract literal")
+}
+
 // #8191, #8192, #8193: a bracket literal argument where a `List` is expected
 // is that `List`, a generic callee's type parameters bound by the other
 // arguments; the literals inside a `List[slice[Int]]` are recorded as slices.
