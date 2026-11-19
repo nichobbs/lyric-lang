@@ -70,7 +70,7 @@ STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 # own DLL set to produce that stage's runnable binary.
 AOT_PROJ="$COMPILER_DIR/src/Lyric.Cli.Aot"
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
-AOT_OUT="$AOT_PROJ/bin/$BUILD_CONFIG/net10.0/lyric"
+AOT_OUT="$AOT_PROJ/bin/$BUILD_CONFIG/lyric"
 
 # Temp base used by mktemp-style scratch dirs below.  On Unix .NET's
 # GetTempPath() returns $TMPDIR when set, else "/tmp"; we mirror that so any

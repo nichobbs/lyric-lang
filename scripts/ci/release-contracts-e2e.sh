@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-lyric_bin="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+lyric_bin="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric}"
 # Absolute, so a `cd` into a scratch project does not lose it (CI passes a
 # repo-relative LYRIC_BIN).
 case "$lyric_bin" in /*) ;; *) lyric_bin="$REPO_ROOT/$lyric_bin" ;; esac

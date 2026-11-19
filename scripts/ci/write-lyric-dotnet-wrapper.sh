@@ -24,7 +24,7 @@
 # #7041) before this extraction (#7042). Most jobs now reach it through the
 # `.github/actions/lyric-test-setup` composite action; the rest call it as:
 #   bash scripts/ci/write-lyric-dotnet-wrapper.sh \
-#     "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+#     "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 # ---------------------------------------------------------------------------
 set -euo pipefail
 

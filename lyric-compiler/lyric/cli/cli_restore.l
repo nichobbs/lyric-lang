@@ -20,6 +20,7 @@ import Lyric.Discovery as Disc
 import Lyric.Init as Init
 import Lyric.GitDep as GitDep
 import Lyric.Lockfile as LF
+import Lyric.DotnetTarget as DT
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Restore command
@@ -1891,8 +1892,8 @@ func restoreDependencies(
   val nugetUnneeded = (restoreTarget == "native" or restoreTarget == "jvm") and registryCount == 0
   if (nugetCount > 0 or registryCount > 0) and not nugetUnneeded {
     val target = match manifest.nuget {
-      case Some(n) -> match n.target { case Some(t) -> t; case None -> "net10.0" }
-      case None -> "net10.0"
+      case Some(n) -> match n.target { case Some(t) -> t; case None -> DT.dotnetTfm() }
+      case None -> DT.dotnetTfm()
     }
     val csproj = buildRestoreCsproj(manifest, target)
     val tmpCsproj = Path.join(mfDir, pkgName + "-restore.csproj")
