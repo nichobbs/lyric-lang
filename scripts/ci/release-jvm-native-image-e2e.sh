@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 bin_abs="$(pwd)/$lyric_bin"
 work="$(mktemp -d)"
 cat > "$work/hello.l" <<'LYR'

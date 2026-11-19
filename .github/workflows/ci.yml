@@ -95,7 +95,7 @@ concurrency:
 
 # Single build configuration shared across every dotnet build / test /
 # path-discovery step.  Changing it here flips the configuration for
-# every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
+# every dependent path (bin/$BUILD_CONFIG/...) at once — keeps
 # the AOT smoke + ecosystem test paths from drifting (#1080).
 env:
   BUILD_CONFIG: Debug
@@ -243,7 +243,7 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          bin_dir="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0"
+          bin_dir="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}"
           for dir in "$bin_dir" .bootstrap/stage1; do
             mkdir -p "$dir/selfhosted"
             cp -f .ci-cache/compiler-bundle/Lyric.Compiler.dll "$dir/selfhosted/"
@@ -260,7 +260,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           bin_dir="$(dirname "$lyric_bin")"
           bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$bin_dir" .bootstrap/stage1
 
@@ -294,14 +294,14 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
-          LYRIC_BIN="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" bash scripts/ci/project-all-packages.sh
+          LYRIC_BIN="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" bash scripts/ci/project-all-packages.sh
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::warning::AOT binary not found; skipping example proves"
             exit 0
@@ -341,7 +341,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .ci-cache/compiler-bundle
-          cp -f "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/selfhosted/Lyric.Compiler.dll" .ci-cache/compiler-bundle/
+          cp -f "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/selfhosted/Lyric.Compiler.dll" .ci-cache/compiler-bundle/
       - name: Upload the compiler bundle cache entry
         if: steps.changes.outputs.has_code_changes == 'true' && steps.bundle-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -397,6 +397,11 @@ jobs:
         run: |
           bash scripts/ci/check-decision-ids-self-test.sh
           bash scripts/ci/check-decision-ids.sh
+
+      # bootstrap/global.json chooses the .NET version; the compiler's emitted
+      # framework and the ILCompiler reference must name the same major.
+      - name: Check the .NET version is consistent
+        run: bash scripts/ci/check-dotnet-version.sh
 
       # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
       # has_native_changes backend-split regexes in
@@ -697,7 +702,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          bash scripts/ilverify-selfhosted.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 
   # Epic #1877 Stage 2+ zero-overhead gate for closure class synthesis (both targets).
   # These jobs compile closure_zero_overhead_self_test.l and disassemble the
@@ -729,7 +734,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: |
-          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2 || exit_code=$?
+          bash scripts/assert-no-box-msil.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" 2 || exit_code=$?
           exit_code=${exit_code:-0}
           # Exit code 77 means skip (ildasm unavailable); this is not a failure
           if [[ $exit_code -eq 77 ]]; then
@@ -757,7 +762,7 @@ jobs:
       - name: Measure JVM boxing calls (epic #1877 Stage 2+ zero-overhead gate)
         working-directory: ${{ github.workspace }}
         run: |
-          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" 2 || exit_code=$?
+          bash scripts/assert-no-box-jvm.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" 2 || exit_code=$?
           exit_code=${exit_code:-0}
           # Exit code 77 means skip (javap unavailable); this is not a failure
           if [[ $exit_code -eq 77 ]]; then
@@ -788,7 +793,7 @@ jobs:
       - name: Assert JVM LineNumberTable correctness (docs/63 band B2)
         working-directory: ${{ github.workspace }}
         run: |
-          bash scripts/assert-jvm-line-numbers.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" || exit_code=$?
+          bash scripts/assert-jvm-line-numbers.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" || exit_code=$?
           exit_code=${exit_code:-0}
           # 77 means javap was unavailable.  This job installs a JDK, so that
           # should not happen; treat it as a failure rather than a silent pass.
@@ -813,7 +818,7 @@ jobs:
           java: 'true'
           build-config: ${{ env.BUILD_CONFIG }}
       - name: Silent TyError census across the library manifests
-        run: bash scripts/ci/library-tyerr-census.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+        run: bash scripts/ci/library-tyerr-census.sh "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 
   # Placeholder job retained for workflow structure. The F# test suites
   # (Lexer, Parser, TypeChecker, Emitter, CLI) were deleted when the F#
@@ -1121,7 +1126,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping BuildInfo --define runtime test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping BuildInfo --define runtime test"
             exit 1
@@ -1211,7 +1216,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping println(Bool) self-test"
             exit 1
@@ -1255,7 +1260,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping println(UInt/ULong) self-test"
             exit 1
@@ -1343,7 +1348,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping docs/58 self-tests"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping docs/58 self-tests"
             exit 1
@@ -1991,6 +1996,17 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_array_abi_self_test.l
+
+      # `slice_literal_binding_array_self_test.l`: an unannotated binding of a
+      # bracket literal (`val parts = ["a", n.toString()]`) is built as the
+      # `slice[String]` the checker typed it as, not a `List<object>` the
+      # array-typed extern / cross-assembly parameter then misreads (memory-
+      # unsafe).  `--target dotnet` only: it binds a BCL `String[]` extern.
+      - name: Slice literal binding array-ABI self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_literal_binding_array_self_test.l
 
       # Concurrency cap: this first parallel group had grown to 28 background
       # steps — well past the ~18 peak this job's header comment documents as
@@ -2916,7 +2932,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir -p bin
-          ln -sf "../bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric" bin/lyric
+          ln -sf "../bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/lyric" bin/lyric
 
       # MSIL backend self-tests M2a-M2d (native lyric test, D-progress-474 / #66)
       # — replaces the deleted F# MsilSelfTestM2{a,b,c,d}.fs Expecto wrappers.
@@ -2949,7 +2965,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping MSIL backend self-tests"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping MSIL backend self-tests"
             exit 1
@@ -3669,14 +3685,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping console dotnet round-trip"
             exit 1
           fi
           work="$(mktemp -d)"
           "$lyric_bin" build lyric-compiler/msil/console_roundtrip_msil_main.l --target dotnet -o "$work/console.dll"
-          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/"
+          cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/Lyric.Stdlib*.dll "$work/"
           out="$(cd "$work" && printf 'alpha\nbeta\n' | dotnet exec console.dll 2>"$work/err.txt")"
           echo "$out"
           grep -qx "echo:alpha" <<< "$out" || { echo "::error::alpha echo missing"; exit 1; }
@@ -3841,7 +3857,7 @@ jobs:
         run: |
           set -euo pipefail
           dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::Rebuilt lyric binary not found or not executable at $lyric_bin"
             exit 1
@@ -3858,7 +3874,7 @@ jobs:
             echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           dir="$(mktemp -d)"
           src="$dir/hello.l"
           cat > "$src" <<'LYRIC'
@@ -5071,7 +5087,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping ambiguous-overload JVM negative test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping ambiguous-overload JVM negative test"
             exit 1
@@ -5128,7 +5144,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping genuine-primitive-array JVM negative test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping genuine-primitive-array JVM negative test"
             exit 1
@@ -5643,7 +5659,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping lyric run --target jvm smoke"
             exit 1
@@ -5694,7 +5710,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping lyric bench smoke"
             exit 1
@@ -5780,7 +5796,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping intra-impl JVM self-tests"
             exit 1
@@ -5842,7 +5858,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping console JVM round-trip"
             exit 1
@@ -5865,7 +5881,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Parse JVM tests"
             exit 1
@@ -5886,7 +5902,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Uuid JVM tests"
             exit 1
@@ -5905,7 +5921,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time JVM tests"
             exit 1
@@ -5925,7 +5941,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Task JVM tests"
             exit 1
@@ -5952,7 +5968,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Task ambient-slot JVM tests"
             exit 1
@@ -5985,7 +6001,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping entry-args JVM check"
             exit 1
@@ -6017,7 +6033,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Environment.args() JVM check"
             exit 1
@@ -6069,7 +6085,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Process piped-spawn JVM check"
             exit 1
@@ -6274,7 +6290,7 @@ jobs:
           set -euo pipefail
           flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 
@@ -6375,7 +6391,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM feature-resolution build"
             exit 1
@@ -6418,7 +6434,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping lyric-auth JVM security suite"
             exit 1
@@ -6558,7 +6574,7 @@ jobs:
           (matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') ||
           (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/lyric"
           bash scripts/ci/write-lyric-dotnet-wrapper.sh "$lyric_bin"
       - name: Run numbered ${{ matrix.set }} self-tests (shard ${{ matrix.shard }})
         if: |
@@ -6571,7 +6587,7 @@ jobs:
             echo "::error::stage 1 bundle missing; cannot run numbered self-tests"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; cannot run numbered self-tests"
             exit 1
@@ -6678,7 +6694,7 @@ jobs:
         # (the same pitfall that once made bench.yml fail validation with
         # zero jobs dispatched, #6247). Written to $GITHUB_ENV so every later
         # step in this job sees it as a real environment variable.
-        run: echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
+        run: echo "LYRIC_CLI_PATH=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" >> "$GITHUB_ENV"
 
       - name: Stage stdlib DLLs + local-dep resolver setup
         run: bash scripts/ci/stage-stdlib-dlls-localdep-resolver.sh
@@ -6948,12 +6964,12 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: ./scripts/verify-reproducible-emit.sh manifest "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" lyric-stdlib/lyric.full.toml
+        run: ./scripts/verify-reproducible-emit.sh manifest "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" lyric-stdlib/lyric.full.toml
       - name: Verify reproducible self-hosted emit (whole compiler closure)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: ./scripts/verify-reproducible-emit.sh closure "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+        run: ./scripts/verify-reproducible-emit.sh closure "bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
       - name: Wait for both reproducibility checks
         wait-all: true
       - name: Fail job if either check failed
@@ -6998,7 +7014,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7196,7 +7212,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping stdlib runtime suites"
             exit 1
@@ -7249,7 +7265,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping"
             exit 1
@@ -7264,7 +7280,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7280,7 +7296,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping process_tests JVM run"
             exit 1
@@ -7306,7 +7322,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping hash_tests JVM run"
             exit 1
@@ -7341,7 +7357,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping regex_safe_tests JVM run"
             exit 1
@@ -7439,7 +7455,7 @@ jobs:
             echo "::error::stage 1 bundle missing; skipping Std.Http HttpVersion round-trip self-test"
             exit 1
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Http HttpVersion round-trip self-test"
             exit 1
@@ -7478,7 +7494,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Uuid tests"
             exit 1
@@ -7499,7 +7515,7 @@ jobs:
           TZ: America/New_York
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Time tests"
             exit 1
@@ -7515,7 +7531,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping Std.Task tests"
             exit 1
@@ -7578,7 +7594,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7636,7 +7652,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7706,7 +7722,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7761,7 +7777,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7791,7 +7807,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           # Post-collapse (D111): Std.Sort ships inside the single Lyric.Stdlib.dll
           # bundle, not a per-package Lyric.Stdlib.Sort.dll.
           if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.dll" ]; then
@@ -7883,7 +7899,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7925,7 +7941,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -7970,7 +7986,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin"
             exit 1
@@ -8137,7 +8153,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping release e2e"
             exit 1
@@ -8254,7 +8270,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT binary not found at $lyric_bin; skipping watch e2e"
             exit 1

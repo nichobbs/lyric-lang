@@ -31,6 +31,7 @@ import Std.Collections
 import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
+import Lyric.DotnetTarget as DT
 
 // ─── shouldRetryRestore: NU1102 retries through the max attempt ──────────
 test "shouldRetryRestore: NU1102 in stdout retries on attempt 1" {
@@ -184,7 +185,7 @@ test "buildPublishNuspec: emits a dependency as nuspec metadata, never a Package
   )
 }
 
-test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/version" {
+test "buildPublishNuspec: packs the payload DLL into lib/<tfm> and carries id/version" {
   val ns = Cli.buildPublishNuspec(
     "Lyric.OTel",
     "1.2.3",
@@ -200,8 +201,8 @@ test "buildPublishNuspec: packs the payload DLL into lib/net10.0 and carries id/
   assertTrue(strContains(ns, "<id>Lyric.OTel</id>"), "id present")
   assertTrue(strContains(ns, "<version>1.2.3</version>"), "version present")
   assertTrue(
-    strContains(ns, "<file src=\"/abs/Lyric.OTel.dll\" target=\"lib/net10.0/Lyric.OTel.dll\" />"),
-    "payload DLL mapped into lib/net10.0"
+    strContains(ns, "<file src=\"/abs/Lyric.OTel.dll\" target=\"lib/" + DT.dotnetTfm() + "/Lyric.OTel.dll\" />"),
+    "payload DLL mapped into lib/<tfm>"
   )
   assertFalse(strContains(ns, "<dependencies>"), "no dependencies block when there are no deps")
 }
@@ -249,7 +250,7 @@ test "buildPublishNuspec: escapes XML metacharacters in its own fields" {
     strContains(ns, "<repository type=\"git\" url=\"https://ex.com/?a=1&amp;b=2\" />"),
     "repository element declares type=\"git\" (#5685 — all ecosystem manifests are git-hosted)"
   )
-  assertTrue(strContains(ns, "target=\"lib/net10.0/A&amp;B.dll\""), "dll basename escaped")
+  assertTrue(strContains(ns, "target=\"lib/" + DT.dotnetTfm() + "/A&amp;B.dll\""), "dll basename escaped")
   assertFalse(strContains(ns, "<id>A&B</id>"), "raw unescaped ampersand never appears in id")
 }
 
@@ -356,7 +357,7 @@ test "buildGeneratorNuspec: only lyric-plugin/, no lib/ and no dependencies" {
   authors.add("Acme")
   val nuspec = Cli.buildGeneratorNuspec("Acme.Describe", "0.1.0", authors, "", "MIT", None, "/stage/lyric-plugin")
   assertTrue(nuspec.contains("<file src=\"/stage/lyric-plugin/**\" target=\"lyric-plugin\" />"), "the artifact")
-  assertTrue(not nuspec.contains("lib/net10.0"), "no assembly to link")
+  assertTrue(not nuspec.contains("lib/" + DT.dotnetTfm()), "no assembly to link")
   assertTrue(not nuspec.contains("<dependencies>"), "no NuGet dependencies")
   assertTrue(nuspec.contains("<tags>lyric-package lyric-source-generator</tags>"), "tagged as a generator")
   assertTrue(nuspec.contains("<authors>Acme</authors>"), "shared metadata")

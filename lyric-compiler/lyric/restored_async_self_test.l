@@ -36,6 +36,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Emitter as Emitter
+import Lyric.DotnetTarget as DT
 
 // ─── Helpers (same shape as cross_package_generics_self_test.l) ──────────────
 func tempBase(): String {
@@ -52,12 +53,7 @@ func freshTempDir(label: in String): String {
 }
 
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfig(dllPath: in String): Unit {

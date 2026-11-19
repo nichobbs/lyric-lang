@@ -19,12 +19,13 @@ import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
 import Std.Ed25519 as Ed
 import Std.PluginSign as Sign
+import Lyric.DotnetTarget as DT
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Publish command
 // ─────────────────────────────────────────────────────────────────────────────
 // Build the `.nuspec` document for a published Lyric package.  Dependencies
-// are emitted as `<dependency>` metadata inside a single net10.0 group
+// are emitted as `<dependency>` metadata inside a single target-framework group
 // (`dependenciesMetadata` is the pre-rendered `<dependency .../>` lines) —
 // never as `<PackageReference>`, so `dotnet pack` copies them into the
 // package without a `dotnet restore` that would fail NU1102 on a
@@ -56,7 +57,7 @@ pub func buildPublishNuspec(
       dependenciesMetadata
     )
   nuspec = nuspec + "  <files>\n"
-  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(absDllPath) + "\" target=\"lib/net10.0/" +
+  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(absDllPath) + "\" target=\"lib/" + DT.dotnetTfm() + "/" +
     Pack.xmlEscape(dllBase) +
     "\" />\n"
   nuspec = nuspec + "  </files>\n"
@@ -142,7 +143,7 @@ func nuspecMetadata(
   nuspec = nuspec + "    <tags>" + Pack.xmlEscape(tags) + "</tags>\n"
   if not Str.isEmpty(dependenciesMetadata) {
     nuspec = nuspec + "    <dependencies>\n"
-    nuspec = nuspec + "      <group targetFramework=\"net10.0\">\n"
+    nuspec = nuspec + "      <group targetFramework=\"" + DT.dotnetTfm() + "\">\n"
     nuspec = nuspec + dependenciesMetadata
     nuspec = nuspec + "      </group>\n"
     nuspec = nuspec + "    </dependencies>\n"
@@ -888,7 +889,7 @@ func packAndPush(
   // files") is expected: there is nothing to compile, only a package to pack.
   var csproj = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
   csproj = csproj + "  <PropertyGroup>\n"
-  csproj = csproj + "    <TargetFramework>net10.0</TargetFramework>\n"
+  csproj = csproj + "    <TargetFramework>" + DT.dotnetTfm() + "</TargetFramework>\n"
   csproj = csproj + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
   csproj = csproj + "    <EnableDefaultItems>false</EnableDefaultItems>\n"

@@ -802,6 +802,11 @@ need direction and have nothing else productive to do**.  Specifically:
     plus `repositories` (default `["central"]`) and an optional
     `java_version`.  The Maven resolution/download path (M-7) is not
     yet wired.
+  - `dotnet_target.l` — `Lyric.DotnetTarget`: the .NET version `--target dotnet`
+    output is built for (`dotnetMajor`, `dotnetTfm`, `dotnetFrameworkVersion`,
+    `runtimeConfigJson`). The one place the compiler names it; it must match
+    the SDK pinned in `bootstrap/global.json`
+    (`scripts/ci/check-dotnet-version.sh`).
   - `cfg.l` — `Lyric.Cfg` compile-time feature erasure (D045 /
     D-progress-299).  Self-hosted port of `bootstrap/src/Lyric.Emitter/Cfg.fs`.
     Provides `applyCfgErasure(active, declared, sf): CfgErasureResult`

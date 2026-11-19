@@ -50,6 +50,7 @@ import Std.Uuid
 import Std.Environment as Env
 import Lyric.Emitter as Emitter
 import Std.Errors.{IOError}
+import Lyric.DotnetTarget as DT
 
 func tempBase(): String {
   Env.getVarOrDefault("TMPDIR", Env.getVarOrDefault("TEMP", Env.getVarOrDefault("TMP", "/tmp")))
@@ -72,12 +73,7 @@ func cleanupDir(dir: in String): Unit {
 }
 
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfigBeside(dllPath: in String): Unit {

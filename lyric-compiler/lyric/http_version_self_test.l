@@ -52,6 +52,7 @@ import Std.Testing
 import Std.Time as Time
 import Std.Uuid
 import Lyric.Emitter as Emitter
+import Lyric.DotnetTarget as DT
 
 func versionName(v: in HttpVersion): String {
   match v {
@@ -146,12 +147,7 @@ func freshTempDir(label: in String): String {
 }
 
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfig(dllPath: in String): Unit {

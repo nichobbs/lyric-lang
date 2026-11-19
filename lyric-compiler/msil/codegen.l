@@ -6350,8 +6350,11 @@ func msilSimpleTypeEq(a: in MsilType, b: in MsilType): Bool {
 // locals recovers `MInt`, not just `[9, 7]`.  Function calls, member access,
 // and other complex element expressions still resolve to `MObject` here (their
 // type needs call/name resolution the peek doesn't do), so a literal with any
-// such element keeps the legacy `List<object>` fallback — a residual of #5620
-// tracked in #5690.
+// such element keeps the legacy `List<object>` fallback.  The literal an
+// unannotated binding holds never reaches that fallback: the type checker
+// records its checked type (`recordLocalSliceLiteralTypes`) and `Lyric.Mono`
+// binds the literal to a local of that type, so the `MArray` arm of the `EList`
+// lowering builds it (#5690).
 func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
   match e.kind {
     case EPath(p) -> if p.segments.count == 1 {
@@ -6455,9 +6458,10 @@ func isSimpleListElemMsil(t: in MsilType): Bool {
 // Infer a single concrete element MsilType for an unannotated list literal when
 // every element shares one simple static type (#5620) — a literal, or a bare
 // local/param name (via `listLiteralElemTypeMsil`).  Returns None for an empty
-// list, any element whose type can't be peeked (calls, member access, …; #5690),
-// a non-simple element type, or a heterogeneous mix — those keep falling back to
-// the legacy `List<object>` path.  When Some(e) is returned, the no-hint `EList`
+// list, any element whose type can't be peeked (calls, member access, …), a
+// non-simple element type, or a heterogeneous mix — those keep falling back to
+// the legacy `List<object>` path, which a value bound to a `slice[T]` parameter
+// must not reach (see `listLiteralElemTypeMsil`).  When Some(e) is returned, the no-hint `EList`
 // arm builds a genuine `e[]` array (a bare literal is typed `slice[e]` by the
 // checker) so indexed reads recover the real element type instead of a boxed
 // `object` (which downstream arithmetic/println then mis-read as garbage).
@@ -13014,9 +13018,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // as garbage (#5620).  Building `T[]` here (not `List<T>`) is what
           // keeps a bare literal passed to a `slice`-typed parameter — e.g.
           // `xs.concat([4, 5])` — representation-correct.  A heterogeneous mix,
-          // an element whose type can't be peeked (calls, member access, …;
-          // residual #5690), or an element type with no array token keeps the
-          // legacy `List<object>` fallback.
+          // an element whose type can't be peeked (calls, member access, …),
+          // or an element type with no array token keeps the legacy
+          // `List<object>` fallback.  Syntax alone cannot say whether such a
+          // value is bound for a `slice[T]` (`T[]`) parameter, so a literal
+          // whose type matters is given its checked type before it gets here:
+          // an unannotated binding's literal by the type checker and
+          // `Lyric.Mono` (`recordLocalSliceLiteralTypes`), every other one by
+          // the position that expects a collection type (the `MArray` arm).
           match inferHomogeneousListElemTypeMsil(fctx, exprs) {
             case Some(e) -> {
               match arrayElemTokenOpt(cctx, e) {
@@ -19703,6 +19712,15 @@ func lowerFuncValueInvokeMsil(
       case MVoid -> {
         insns.add(MPop)
         MVoid
+      }
+      // A slice result is the `e[]` it was built as, or a `List`-backed one
+      // (#2539): convert, so a `T[]` parameter it reaches reads an array and
+      // the call verifies (`emitObjectToSliceArrayMsil`).
+      case MArray(e) -> {
+        if sliceElemHasArrayTokenMsil(e) {
+          emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
+        }
+        rt
       }
       case _ -> {
         materializeBoxedElemMsil(cctx, insns, rt)

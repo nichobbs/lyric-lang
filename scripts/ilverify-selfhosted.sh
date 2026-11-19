@@ -45,7 +45,7 @@ if [[ -z "${DOTNET_ROOT:-}" || ! -d "$DOTNET_ROOT" ]]; then
   fi
 fi
 
-LYRIC_BIN="${1:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric}"
+LYRIC_BIN="${1:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/lyric}"
 if [[ ! -x "$LYRIC_BIN" ]]; then
   echo "FATAL: self-hosted lyric binary not found at $LYRIC_BIN" >&2
   echo "  build it first: ./scripts/bootstrap.sh --stage 1 && dotnet build bootstrap/src/Lyric.Cli.Aot -c $BUILD_CONFIG" >&2
@@ -282,6 +282,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/generic_record_var_field_self_test.l
   lyric-compiler/lyric/range_subtype_self_test.l
   lyric-compiler/lyric/slice_array_abi_self_test.l
+  lyric-compiler/lyric/slice_literal_binding_array_self_test.l
   lyric-compiler/lyric/slice_fastpath_self_test.l
   lyric-compiler/lyric/list_literal_index_self_test.l
   lyric-compiler/lyric/generic_extern_methodspec_self_test.l
