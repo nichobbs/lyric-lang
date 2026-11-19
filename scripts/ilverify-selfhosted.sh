@@ -60,8 +60,10 @@ if [[ -z "$ILVERIFY" ]]; then
 fi
 if [[ -z "$ILVERIFY" ]]; then
   echo "[ilverify] installing dotnet-ilverify global tool"
-  # Pinned: dotnet-ilverify 11.x ships no tool settings for SDK 10 (same pin as #8987).
-  dotnet tool install -g dotnet-ilverify --version 10.0.0 >/dev/null 2>&1 || true
+  # ilverify of the pinned SDK's major: a newer one ships no tool settings
+  # for an older SDK (#8987).
+  ilverify_major="$(sed -n 's/.*"version"[^0-9]*\([0-9][0-9]*\)\..*/\1/p' "$REPO_ROOT/bootstrap/global.json" | head -1)"
+  dotnet tool install -g dotnet-ilverify --version "${ilverify_major}.0.0" >/dev/null 2>&1 || true
   export PATH="$PATH:$HOME/.dotnet/tools"
   ILVERIFY="$(command -v ilverify || true)"
 fi

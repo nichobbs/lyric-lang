@@ -6,7 +6,7 @@ Before you can write Lyric, you need a working compiler. This chapter gets you f
 
 The `lyric` compiler ships as a standalone binary. There are two install paths depending on whether you have the .NET SDK available.
 
-**Option A — .NET global tool (recommended if you already have the .NET 10 SDK):**
+**Option A — .NET global tool (recommended if you already have the .NET 11 SDK):**
 
 ```sh
 dotnet tool install -g lyric
