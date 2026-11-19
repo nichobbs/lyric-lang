@@ -1704,4 +1704,22 @@ else
   (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
 fi
+# A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is typed as its enum and
+# recorded as the case, so the builder builds it (#8613).
+check package_qualified_enum_case 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+import Std.Http
+
+func code(m: in HttpMethod): Int {
+  match m {
+    case GET -> 3
+    case _ -> 4
+  }
+}
+
+func main(): Int {
+  code(Std.Http.GET)
+}
+LYRIC
 exit $fail
