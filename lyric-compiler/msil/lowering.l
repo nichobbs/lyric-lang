@@ -35,6 +35,7 @@ import Std.Collections
 import Std.Math
 import Std.String as Str
 import Std.Console as Console
+import Lyric.DotnetTarget as DT
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -1552,10 +1553,10 @@ pub func newLoweringCtxWithVersions(
     TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
   )
 
-  // Find System.Runtime version from resolvedAssemblyVersions, fall back to 10.0.0.0
+  // Find System.Runtime version from resolvedAssemblyVersions, fall back to the targeted framework's
   val rtVer = match mapGet(resolvedAssemblyVersions, "System.Runtime") {
     case Some(ver) -> ver
-    case None -> Mdr.AssemblyVersion(major = 10, minor = 0, build = 0, revision = 0)
+    case None -> Mdr.AssemblyVersion(major = DT.dotnetMajor(), minor = 0, build = 0, revision = 0)
   }
 
   // AssemblyRef[1]: System.Runtime

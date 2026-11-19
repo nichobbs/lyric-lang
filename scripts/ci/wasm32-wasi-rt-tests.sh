@@ -87,7 +87,7 @@ WASI_SDK_PATH="$wasi_dir" bash scripts/audit-native-extern-abi.sh
 make -C lyric-rt test-wasm32-wasi WASI_SDK="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; cannot run the wasm32 self-test"
   exit 1

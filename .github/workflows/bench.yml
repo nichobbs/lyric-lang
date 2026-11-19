@@ -59,7 +59,7 @@ jobs:
       # every later step sees it as a real environment variable — same
       # pattern as ci.yml's LYRIC_CLI_PATH.
       - name: Resolve AOT binary path
-        run: echo "LYRIC_BIN=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" >> "$GITHUB_ENV"
+        run: echo "LYRIC_BIN=bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric" >> "$GITHUB_ENV"
 
       - name: Set up .NET
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73  # v6.1.0

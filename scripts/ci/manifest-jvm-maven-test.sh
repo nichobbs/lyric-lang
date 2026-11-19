@@ -40,7 +40,7 @@ flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
 export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; cannot run: lyric test --manifest $manifest $*" >&2
   exit 1

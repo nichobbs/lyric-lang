@@ -45,6 +45,7 @@ import Std.Encoding as Enc
 import Std.Zip as Zip
 import Jvm.NativeImage as NI
 import Lyric.PackageMerge as PM
+import Lyric.DotnetTarget as DT
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -219,12 +220,14 @@ func isOnPath(name: in String, os: in String): Bool {
 // `dotnet restore` pulls the ILC packages and writes `project.assets.json` so
 // we can read the NuGet cache location and ILC version without driving
 // `dotnet publish` or generating any C#.
-// The probe TFM must match the .NET SDK version we target. Native AOT via ILC
-// requires net8.0 minimum; we lock to net10.0 because that is the minimum SDK
-// version Lyric requires (see docs/05-implementation-plan.md §Prerequisites).
+// The probe TFM is the framework emitted programs target (Lyric.DotnetTarget),
+// which is the minimum SDK version Lyric requires (see
+// docs/05-implementation-plan.md §Prerequisites).
 func probeProjectContent(rid: in String): String {
   "<Project Sdk=\"Microsoft.NET.Sdk\">\n" + "  <PropertyGroup>\n" + "    <OutputType>Exe</OutputType>\n" +
-    "    <TargetFramework>net10.0</TargetFramework>\n" +
+    "    <TargetFramework>" +
+    DT.dotnetTfm() +
+    "</TargetFramework>\n" +
     "    <PublishAot>true</PublishAot>\n" +
     "    <RuntimeIdentifier>" +
     rid +
@@ -605,7 +608,7 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
 // reflection-heavy and JIT-dependent subsystems incompatible with static
 // compilation and trim unused framework code paths.  The list mirrors what
 // `dotnet publish -p:PublishAot=true` injects via Microsoft.NETCore.Native.targets
-// for net10.0.
+// for the targeted framework.
 func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--feature:Microsoft.Extensions.DependencyInjection.VerifyOpenGenericServiceTrimmability=true")
   lines.add("--feature:System.ComponentModel.DefaultValueAttribute.IsSupported=false")
@@ -731,7 +734,7 @@ func buildIlcRsp(
   lines.add(programDll)
   lines.add("-o:" + objFile)
 
-  // Framework DLLs from lib/net10.0/
+  // Framework DLLs from lib/<tfm>/
   match File.listFiles(paths.frameworkPath) {
     case Ok(fs) -> {
       var fi = 0
@@ -1872,7 +1875,7 @@ pub func buildStandaloneDotnet(
   val runtimesDir = Path.join(Path.join(root, "shared"), "Microsoft.NETCore.App")
   val configName = Str.substring(dllName, 0, dllName.length - 4) + ".runtimeconfig.json"
   val configText = match File.readText(Path.join(stageDir, configName)) { case Ok(t) -> t; case Err(_) -> "" }
-  val tfm = match jsonStringField(configText, "tfm") { case Some(t) -> t; case None -> "net10.0" }
+  val tfm = match jsonStringField(configText, "tfm") { case Some(t) -> t; case None -> DT.dotnetTfm() }
   val wantMajor = tfmMajor(tfm)
   val runtimeVer = match highestVersion(subdirNames(runtimesDir), wantMajor) {
     case Some(v) -> v
