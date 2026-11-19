@@ -1944,6 +1944,16 @@ test "a union case built in a lambda whose parameter type the checker erased bui
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a Unit function ending in a match whose arms all diverge builds (D348)" {
+  val c = censusOf(
+    "package App\nfunc boom(o: in Option[Int], msg: in String): Unit {\n  match o {\n    case Some(_) -> panic(\"has \" + msg)\n    case None -> panic(\"none \" + msg)\n  }\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a protected type's construction and entry call build as a construction and a receiver-first call" {
   val c = censusOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"
