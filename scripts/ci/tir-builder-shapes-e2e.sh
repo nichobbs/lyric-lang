@@ -1406,7 +1406,7 @@ else
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_local_receiver): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_local_receiver"; fi
 fi
 # A `Std.*` package sees the `internal` functions of another `Std.*` package (`Std.Tls`'s `rawHandle`
-# accessors, D432) and a user package does not: with `Std.HttpServer` imported, the two kernel functions
+# accessors, D432) and a user package does not: with `Std.HttpServer` imported (it re-exports `Std.TlsServerContext`), the two kernel functions
 # that call them are built, and a user call of the accessor stays unresolved.
 cat > "$WORK/std_internal_sigs.l" <<'LYRIC'
 package StdInternalSigs
@@ -1419,8 +1419,8 @@ func peek(id: in Identity): Int { 0 }
 func main(): Int { 0 }
 LYRIC
 (cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/std_internal_sigs.l" -o "$WORK/std_internal_sigs.jar" >"$WORK/std_internal_sigs.log" 2>&1)
-if grep -q "^TIR body.unbuilt.Std.HttpServer::build\(Identity\|ClientCa\)KeyStore" "$WORK/std_internal_sigs.log" || ! grep -q "^TIR body.built.Std.HttpServer::buildIdentityKeyStore" "$WORK/std_internal_sigs.log"; then
-  echo "FAIL (std_internal_sigs): a Std.HttpServer body that calls Std.Tls's internal accessor was not built"; fail=1
+if grep -q "^TIR body.unbuilt.Std.TlsServerContext::build\(Identity\|ClientCa\)KeyStore" "$WORK/std_internal_sigs.log" || ! grep -q "^TIR body.built.Std.TlsServerContext::buildIdentityKeyStore" "$WORK/std_internal_sigs.log"; then
+  echo "FAIL (std_internal_sigs): a Std.TlsServerContext body that calls Std.Tls's internal accessor was not built"; fail=1
 else
   echo "ok   std_internal_sigs"
 fi

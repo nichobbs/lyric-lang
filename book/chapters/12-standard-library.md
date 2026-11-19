@@ -55,6 +55,7 @@ Here is the full module inventory:
 | `Std.PluginCatalogue` | Per-application plugin catalogues (Chapter 33): `CatalogueSource`, `updateCatalogue`, `loadFollowedCatalogue`, `catalogueTrust`, `installPlugin`, `CatalogueError`, `catalogueErrorCode`, and the authoring functions behind `lyric plugin catalogue` |
 | `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `TrustPolicy`, `trustKeys`, `trustKeysAllowingUnsigned`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
+| `Std.TcpHost` | Raw TCP and server-side TLS transport on dotnet, the JVM and native: `hostListen`, `hostAccept`, `hostConnect`, `hostRead`, `hostWrite`, `hostSetIoTimeout`, `hostShutdown`, `hostClose`, `hostUpgradeServerTls`; the transport under `Std.HttpServer` and `lyric-ws`. See §12.8.1 |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
 | `Std.Testing.Property` | Property-based testing: `forAllInt`, `forAllBool`, `forAllDouble` |
@@ -607,6 +608,37 @@ The rationale: keeping `withInsecureSkipVerify()` in code during development, wi
 On `--target jvm` these options lower to a `java.security.KeyStore` fed to a `javax.net.ssl.TrustManagerFactory`/`KeyManagerFactory`/`SSLContext` rather than the .NET target's certificate-validation callback (`java.net.http.HttpClient` has no such callback to install) — `withCaCertificate`'s additive trust is a merged `KeyStore` (the configured CA plus every certificate the platform's own default trust manager accepts); `withExclusiveCaCertificate`'s exclusive trust is a `KeyStore` holding only the configured CA. One behavior differs from the table above on this target specifically: `java.net.http.HttpClient` enforces its own hostname verification unconditionally, with no public API to disable it — so `withInsecureSkipVerify()` on `--target jvm` disables chain/CA verification only, never hostname matching, which is *stricter* than the policy the table describes, not a gap.
 
 There is also a server-side surface in `Std.Http` for handling inbound requests, but it is `@experimental` and its shape is still being settled. For production HTTP service code, the current recommendation is to use the `Std.Http.HttpClient` interface for outbound calls and the `lyric-web` library (`Web` package) for server-side routing and handler dispatch — see chapter 24.
+
+### §12.8.1 `Std.TcpHost` — the transport under the servers
+
+`Std.TcpHost` is the byte transport the pure-Lyric servers (`Std.HttpServer`, `lyric-ws`) sit on. It has the same `host*` functions on `--target dotnet`, `--target jvm` and `--target native`, and every one returns `Result[_, TcpError]`: an SDK exception never escapes.
+
+```lyric
+import Std.TcpHost
+
+match hostListen("127.0.0.1", 0) {
+  case Err(e) -> println(TcpError.message(e))
+  case Ok(listener) -> {
+    match hostAccept(listener) {
+      case Err(_) -> ()
+      case Ok(conn) -> {
+        hostSetIoTimeout(conn, 30000)       // each blocking read or write: 30 s of inactivity
+        match hostRead(conn, 4096) {         // blocks for the first byte; empty slice = peer closed
+          case Ok(bytes) -> { val _ = hostWrite(conn, bytes); () }
+          case Err(_) -> ()
+        }
+        hostClose(conn)
+      }
+    }
+  }
+}
+```
+
+- `hostRead(conn, maxBytes)` blocks until at least one byte has arrived, returns what is available up to `maxBytes`, and returns an empty slice at end of stream. Reads on one connection must not run concurrently, and nor must writes.
+- `hostSetIoTimeout(conn, ms)` bounds each blocking read and write by `ms` of inactivity (`0` = none); an expired one is `Err(TransportFailed(...))`. On the JVM a write is bounded by one shared watchdog, and a write of at most 64 KiB must complete within the limit as a whole (larger writes get a fresh window per 64 KiB chunk); a timed-out write closes the connection.
+- `hostShutdown(conn)` ends a read or write blocked on `conn` from another thread without releasing it; the owner still calls `hostClose`. Use it to stop a server's connections.
+- `hostStopListener(listener)` ends a blocked `hostAccept` with `Err(AcceptFailed(...))`.
+- `hostPrepareServerTls` / `hostUpgradeServerTlsPrepared` terminate TLS (ALPN `h2` then `http/1.1`, optional mutual TLS) on an accepted connection; `hostAlpn` reports the negotiated protocol.
 
 ## §12.9 `Std.Rest`
 
