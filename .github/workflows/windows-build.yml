@@ -332,17 +332,6 @@ jobs:
         shell: pwsh
         run: choco install pkgconfiglite --no-progress -y
 
-      # The graphics examples build C++ (HarfBuzz) against the image's MSVC
-      # standard library.  From image 20261116 that is MSVC 14.52, whose
-      # headers refuse a Clang older than 22 (STL1000), and the image's own
-      # LLVM is 20.  Pin a Clang the headers accept; it replaces the image's
-      # in C:\Program Files\LLVM, which is already on PATH.
-      - name: Install LLVM 22
-        shell: pwsh
-        run: |
-          choco upgrade llvm --version=22.1.8 --no-progress -y
-          clang --version
-
       - name: Build lyric-rt
         shell: bash
         run: |
