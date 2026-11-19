@@ -1713,7 +1713,11 @@ package FormatBuiltinArgs
 func main(): Int {
   val a = format1("a={0}", 42)
   val b = format3("{0}-{1}-{2}", 1, true, "x")
+  val c = format2("{0}{1}", 1.5, 'c')
+  val d = format4("{0}{1}{2}{3}", 1, 2, true, "z")
   println(b)
+  println(c)
+  println(d)
   a.length
 }
 LYRIC
