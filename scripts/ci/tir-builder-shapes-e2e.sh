@@ -1422,4 +1422,18 @@ LYRIC
 }
 native_member_intrinsics
 
+# `format1`-`format4` take their arguments of any type, as `println` does (the checker types their
+# parameters with holes), so an `Int` or a `Bool` argument is not an argument the builder cannot check
+# (D407).  The program formats a number, a bool and a string and exits with their text's length: "a=42" is 4.
+check format_builtin_args 4 <<'LYRIC'
+package FormatBuiltinArgs
+
+func main(): Int {
+  val a = format1("a={0}", 42)
+  val b = format3("{0}-{1}-{2}", 1, true, "x")
+  println(b)
+  a.length
+}
+LYRIC
+
 exit $fail
