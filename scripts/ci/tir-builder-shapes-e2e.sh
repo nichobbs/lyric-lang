@@ -1127,6 +1127,108 @@ LYRIC
 restored_impl_defaults dotnet
 restored_impl_defaults jvm
 
+# A call on a restored package's generic record through an interface it implements through a generic
+# `impl[T]` is a dispatch on the interface: the checker resolves it to the interface's member (the
+# package interface keeps no `impl` member), and the receiver's own type arguments are not the callee's
+# owner generics (D402).  `Box(v = 1).size(4)` is 4 * 2 = 8, on both targets.
+restored_generic_impl_call() {
+  local target="$1" dir="$WORK/genimpl-$1"
+  mkdir -p "$dir/lib/src" "$dir/app/src"
+  cat > "$dir/lib/lyric.toml" <<'TOML'
+[package]
+name = "Gi.Lib"
+version = "0.1.0"
+
+[project]
+name = "Gi.Lib"
+output = "single"
+output_assembly = "GiLib.dll"
+
+[project.packages]
+"GiLib" = "src/lib.l"
+TOML
+  cat > "$dir/lib/src/lib.l" <<'LYRIC'
+package GiLib
+
+pub interface Sized {
+  func size(self: in Self, scale: in Int): Int
+}
+
+pub record Box[T] {
+  v: T
+}
+
+impl[T] Sized for Box[T] {
+  func size(self: in Box[T], scale: in Int): Int {
+    scale * 2
+  }
+}
+LYRIC
+  cat > "$dir/app/lyric.toml" <<'TOML'
+[package]
+name = "Gi.App"
+version = "0.1.0"
+
+[dependencies]
+"Gi.Lib" = { path = "../lib" }
+
+[project]
+name = "Gi.App"
+output = "single"
+output_assembly = "GiApp.dll"
+
+[project.packages]
+"GiApp" = "src/app.l"
+TOML
+  cat > "$dir/app/src/app.l" <<'LYRIC'
+package GiApp
+import GiLib
+
+func main(): Int {
+  Box(v = 1).size(4)
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --manifest "$dir/lib/lyric.toml" --target "$target" >"$dir/lib.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the library did not build"; tail -3 "$dir/lib.log"; fail=1; return; }
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/app/lyric.toml" --target "$target" >"$dir/app.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the consumer did not build"; tail -3 "$dir/app.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*app.l\]" "$dir/app.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (restored_generic_impl_call $target): $built of $total consumer bodies built"; grep -E "first error" "$dir/app.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*app.l\]: 0 diagnostic" "$dir/app.log"; then
+    echo "FAIL (restored_generic_impl_call $target): the verifier rejected a built body"; fail=1; return
+  fi
+  local got
+  (cd "$dir" && "$LYRIC" run --manifest "$dir/app/lyric.toml" --target "$target" >/dev/null 2>&1); got=$?
+  if [[ "$got" != "8" ]]; then echo "FAIL (restored_generic_impl_call $target): exit code $got, want 8"; fail=1; return; fi
+  echo "ok   restored_generic_impl_call $target"
+}
+restored_generic_impl_call dotnet
+restored_generic_impl_call jvm
+
+# `x.toString()` on a range-subtype or distinct value: the checker records no callee for it, so the builder
+# builds the built-in `toString` of the value (D406).  "5" and "12" have 3 characters.
+check range_to_string_method 3 <<'LYRIC'
+package RangeToStringMethod
+
+pub type Cents = Long range 0 ..= 1000000
+pub type Tag = Int
+
+func show(c: in Cents): String {
+  c.toString()
+}
+
+func showTag(t: in Tag): String {
+  t.toString()
+}
+
+func main(): Int {
+  show(Cents.from(5)).length + showTag(Tag.from(12)).length
+}
+LYRIC
+
 # Host chains the builder does not type stay counted and the verifier reports nothing: a chain on a
 # result that is a Lyric value (a string, a boxed number), and a member the host class has no overload
 # for.  The JVM build must finish and every body that builds must verify (D444, D445).
@@ -1451,4 +1553,69 @@ func main(): Int {
 }
 LYRIC
 
+# The host shapes of the JVM kernels (D435, D436): a host string held in a local and read as a `String`
+# (`Web.Kernel.Runtime.buildJvmRequest`), `.length` of a local holding a host byte array
+# (`Std.HashHost.hostSha512File`), a raw `Map.Entry`'s `Object` key and value passed to `String` parameters
+# (`Std.EnvironmentHost.hostForEachOverlayVar`), and the erased `Object` result of a `String` map read at `String?`
+# (`hostSetEnvironmentVariable`).  Every body builds and the verifier accepts it; the program is run.
+cat > "$WORK/jvm_host_kernel_shapes.l" <<'LYRIC'
+package JvmHostKernelShapes
+extern type JUri = "java.net.URI"
+extern type JFis = "java.io.FileInputStream"
+extern type JMap = "java.util.HashMap"
+extern type JIter = "java.util.Iterator"
+extern type JEntry = "java.util.Map$Entry"
+extern type JCm[K, V] = "java.util.concurrent.ConcurrentHashMap"
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+extern type JRunnable = "java.lang.Runnable"
+extern type JSb = "java.lang.StringBuilder"
+
+record Req { path: String }
+
+func stringLocal(u: in JUri): Req {
+  val path = u.getPath()
+  Req(path = path)
+}
+
+func arrayLength(s: in JFis): Int {
+  var chunk = s.readNBytes(4)
+  var rounds = 0
+  while chunk.length > 0 {
+    rounds = rounds + 1
+    chunk = s.readNBytes(4)
+  }
+  rounds
+}
+
+func entries(m: in JMap, action: in (String, String) -> Unit): Unit {
+  val it: JIter = m.entrySet().iterator()
+  while it.hasNext() {
+    val e: JEntry = it.next()
+    action(e.getKey(), e.getValue())
+  }
+}
+
+func putIgnored(m: in JCm[String, String]): Unit {
+  val _: String? = m.put("a", "b")
+}
+
+func submitIgnored(e: in JExecutorService, r: in JRunnable): Unit {
+  val _ = e.submit(r)
+}
+
+func appendTail(sb: in JSb, text: in String): Unit {
+  sb.append(text)
+}
+
+func main(): Int { 0 }
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_kernel_shapes.l" -o "$WORK/jvm_host_kernel_shapes.jar" >"$WORK/jvm_host_kernel_shapes.log" 2>&1)
+kline="$(grep "^TIR build census \[.*jvm_host_kernel_shapes.l\]" "$WORK/jvm_host_kernel_shapes.log" | head -1)"
+if [[ -z "$kline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$kline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$kline")" ]] || \
+   ! grep -q "^I0003 census \[.*jvm_host_kernel_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_kernel_shapes.log"; then
+  echo "FAIL (jvm_host_kernel_shapes): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_kernel_shapes.log" | head -4; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
+fi
 exit $fail
