@@ -1,0 +1,7 @@
+[package]
+name = "reject-nullable-string-read"
+version = "0.1.0"
+[project]
+name = "RejectNullableStringRead"
+[project.packages]
+"App" = "app"

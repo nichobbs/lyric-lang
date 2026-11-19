@@ -1058,7 +1058,7 @@ func childCount(path: in String): Int {
   val children: slice[JFile] = d.listFiles() ?? []
   var n = 0
   var i = 0
-  while i < children.count {
+  while i < children.length {
     val c: JFile = children[i]
     if c.isFile() {
       n = n + 1
@@ -1534,7 +1534,27 @@ func appendTail(sb: in JSb, text: in String): Unit {
   sb.append(text)
 }
 
-func main(): Int { 0 }
+func ignoreEntry(k: in String, v: in String): Unit {
+  ()
+}
+
+// The shapes run, not only build: each is called with a real host value.
+func main(): Int {
+  if stringLocal(JUri.create("http://h/p/q")).path != "/p/q" {
+    return 1
+  }
+  val sb = JSb.new()
+  appendTail(sb, "ab")
+  appendTail(sb, "cd")
+  if sb.toString() != "abcd" {
+    return 2
+  }
+  val m = JMap.new()
+  val cm: JCm[String, String] = JCm.new()
+  putIgnored(cm)
+  entries(m, ignoreEntry)
+  0
+}
 LYRIC
 (cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_kernel_shapes.l" -o "$WORK/jvm_host_kernel_shapes.jar" >"$WORK/jvm_host_kernel_shapes.log" 2>&1)
 kline="$(grep "^TIR build census \[.*jvm_host_kernel_shapes.l\]" "$WORK/jvm_host_kernel_shapes.log" | head -1)"

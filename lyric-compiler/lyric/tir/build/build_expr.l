@@ -719,6 +719,7 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // The logical operators are typed by the checker from their `Bool` operands or built as short-circuits (`shortOfBinop`).
   // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
   // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
   match e.kind {
@@ -1208,6 +1209,8 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case Some(lt0) -> match op {
           case BEq -> settleHole(env, rhs, lt0.ty)
           case BNeq -> settleHole(env, rhs, lt0.ty)
+          // `host() ?? []`: the default is the type the coalesce has, declared at the local it initialises.
+          case BCoalesce -> settleHole(env, rhs, ty)
           case _ -> ()
         }
         case None -> ()
@@ -2592,10 +2595,6 @@ func buildFnCore(
   }
 }
 
-/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
-/// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol.  Contracts are built with the body: a clause the
-/// builder has no case for fails it like any other expression.
 /// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
 func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
   match b.ty {
@@ -2620,6 +2619,10 @@ func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
   }
 }
 
+/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
+/// parameters become the outermost locals; a generic function binds its type
+/// parameters to its symbol.  Contracts are built with the body: a clause the
+/// builder has no case for fails it like any other expression.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
@@ -3406,6 +3409,8 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // A host collection's erased `Object` result read as the Lyric record or union stored in it
         // (`val state: RegistryState = registryMap.get(key)`): the checker instantiates the call at the
         // declared type.
+        // The stored value is not checked here: `CvFromHost` casts it at run time, so a host collection holding
+        // another type fails at that cast, as the checker's unchecked host result (docs/01 section 2.11) allows.
         case TNamed(sym, targs) -> (not isBuiltinSymbol(sym) and isHostObject(n)) or
           (isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
             (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
@@ -4466,6 +4471,8 @@ record LambdaSig {
 func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
   // A local is assigned at the type it was declared at, whether or not the checker recorded a type
   // for the target (a local bound to an unchecked host result, `chunk = s.readNBytes(4)`).
+  // Where the checker did record a type for the target it agrees with the declared one (an assignment of
+  // another type is rejected by the checker before the builder runs), so the declared type is the one used.
   match target.kind {
     case EPath(p) -> if p.segments.count == 1 {
       match lookupLocal(env, p.segments[0]) {
