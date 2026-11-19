@@ -916,6 +916,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - `format1` to `format4` take their arguments of any type as `println` does, so a number or `Bool` argument is built as the checker typed it (D407).
+  - A union case built where the checker erased an argument's type (a lambda parameter in a generic function) and recorded no signature takes its fields from the case at the type its node settled at (D429).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
