@@ -2335,7 +2335,7 @@ func pipeSpanOfMessage(msg: in String, within: in Span): Span {
   var i = msg.length - 1
   var best = -1
   while i >= 3 and best < 0 {
-    if msg.substring(i - 3, 4) == " at " {
+    if msg.substring(i - 3, 4) == " at " or msg.substring(i - 3, 4) == "(at " {
       best = i + 1
     }
     i = i - 1
