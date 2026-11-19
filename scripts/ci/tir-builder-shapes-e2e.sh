@@ -1033,6 +1033,73 @@ else
   (cd "$WORK" && java -jar jvm_host_static_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_static_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_static_shapes"; fi
 fi
+# Host overloads of one arity that differ in their result, chosen by the argument types where the checker
+# left the call untyped (D416): `Math.round(double)` is a `Long` and `Math.round(float)` an `Int`, a static
+# host chain whose result is a value class (`Duration.ofNanos(Math.round(..))`), and `Thread.join(long)` is
+# void where `join(Duration)` answers a `Boolean`.  A host array bound at a declared local through `??`
+# (`File.listFiles()` is null for a non-directory) is a slice of the host class.
+cat > "$WORK/jvm_host_overload_shapes.l" <<'LYRIC'
+package JvmHostOverloadShapes
+extern type JMath = "java.lang.Math"
+extern type Duration = "java.time.Duration"
+extern type JThread = "java.lang.Thread"
+extern type JFile = "java.io.File"
+
+func nanosOf(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 1000000.0))
+}
+
+func waitFor(t: in JThread, ms: in Long): Unit {
+  t.join(ms)
+}
+
+extern type JProcess = "java.lang.Process"
+
+// A host call whose value a `Unit` block discards keeps its host result type.
+func stopIf(p: in JProcess, flag: in Bool): Unit {
+  if flag {
+    p.destroyForcibly()
+  }
+}
+
+func childCount(path: in String): Int {
+  val d = JFile.new(path)
+  val children: slice[JFile] = d.listFiles() ?? []
+  var n = 0
+  var i = 0
+  while i < children.length {
+    val c: JFile = children[i]
+    if c.isFile() {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+func main(): Int {
+  val d = nanosOf(2.5)
+  if d.toNanos() != 2500000 {
+    return 1
+  }
+  if childCount("/definitely/not/a/directory") != 0 {
+    return 2
+  }
+  val t = JThread.new()
+  waitFor(t, 1)
+  0
+}
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_overload_shapes.l" -o "$WORK/jvm_host_overload_shapes.jar" >"$WORK/jvm_host_overload_shapes.log" 2>&1)
+oline="$(grep "^TIR build census \[.*jvm_host_overload_shapes.l\]" "$WORK/jvm_host_overload_shapes.log" | head -1)"
+if [[ -z "$oline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$oline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$oline")" ]]; then
+  echo "FAIL (jvm_host_overload_shapes): not every body built"; grep -E "first error" "$WORK/jvm_host_overload_shapes.log" | head -3; fail=1
+elif ! grep -q "^I0003 census \[.*jvm_host_overload_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_overload_shapes.log"; then
+  echo "FAIL (jvm_host_overload_shapes): the verifier rejected a built body"; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_overload_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_overload_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_overload_shapes"; fi
+fi
 # A call on a restored package's concrete type takes the default of the `impl` method it resolves to,
 # not the interface's (language reference 6.1): the interface carries a declaration for each non-generic
 # `impl` member that declares a default (D447).  Two types implement the same interface method (the language
@@ -1607,7 +1674,26 @@ func appendTail(sb: in JSb, text: in String): Unit {
   sb.append(text)
 }
 
-func main(): Int { 0 }
+func ignoreEntry(k: in String, v: in String): Unit {
+  ()
+}
+
+// The shapes run, not only build: each is called with a real host value (`putIgnored` and `submitIgnored` need a
+// generic or interface host value a program cannot construct yet, docs/48 Q48-001, so they are built only).
+func main(): Int {
+  if stringLocal(JUri.create("http://h/p/q")).path != "/p/q" {
+    return 1
+  }
+  val sb = JSb.new()
+  appendTail(sb, "ab")
+  appendTail(sb, "cd")
+  if sb.toString() != "abcd" {
+    return 2
+  }
+  val m = JMap.new()
+  entries(m, ignoreEntry)
+  0
+}
 LYRIC
 (cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_kernel_shapes.l" -o "$WORK/jvm_host_kernel_shapes.jar" >"$WORK/jvm_host_kernel_shapes.log" 2>&1)
 kline="$(grep "^TIR build census \[.*jvm_host_kernel_shapes.l\]" "$WORK/jvm_host_kernel_shapes.log" | head -1)"
