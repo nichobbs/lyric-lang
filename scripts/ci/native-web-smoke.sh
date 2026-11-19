@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-LYRIC="${LYRIC:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+LYRIC="${LYRIC:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric}"
 [ -x "$LYRIC" ] || LYRIC="$ROOT/bin/lyric"
 [ -x "$LYRIC" ] || { echo "::error::lyric binary not found"; exit 1; }
 # A private lyric_rt.a: this step runs in the background beside other

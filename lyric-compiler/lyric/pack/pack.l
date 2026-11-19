@@ -10,6 +10,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Lyric.Manifest
+import Lyric.DotnetTarget as DT
 
 // ─── Character helpers ────────────────────────────────────────────────────────
 pub func xmlEscape(s: in String): String {
@@ -70,8 +71,8 @@ pub func restoreCsproj(m: in Manifest): String {
   }
 
   val target = match m.nuget {
-    case Some(n) -> match n.target { case Some(t) -> t; case None -> "net10.0" }
-    case None -> "net10.0"
+    case Some(n) -> match n.target { case Some(t) -> t; case None -> DT.dotnetTfm() }
+    case None -> DT.dotnetTfm()
   }
 
   val combined = lyricDepsXml + nugetDepsXml

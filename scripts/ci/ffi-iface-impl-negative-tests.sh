@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; skipping F0021–F0023, F0034 negative tests"
   exit 1

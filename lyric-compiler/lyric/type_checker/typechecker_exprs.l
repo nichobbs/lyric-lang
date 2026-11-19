@@ -16357,17 +16357,53 @@ func joinOpenTypeLists(xs: in List[Type], ys: in List[Type]): List[Type] {
 }
 
 // Record the checked type `t` of a list literal typed with no collection type
-// expected of it (see `SymbolTable.listLiteralTypeSites`).  Only a literal
-// whose element type is or contains a generic instantiation is recorded: a
-// backend builds any other element type's literal from the elements alone.
-// `t` may name the enclosing function's type parameters, which `Lyric.Mono`
-// substitutes when it specialises the body; a type the join leaves open
-// (`[None, None]`) is left as written.
-func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: in Type): Unit {
-  if not typeMentionsGenericInst(t) {
+// expected of it (see `SymbolTable.listLiteralTypeSites`).  A literal whose
+// element type is or contains a generic instantiation is always recorded: a
+// backend cannot build it from the elements alone.  A literal of any other
+// closed slice type is recorded when an element is not itself a literal: the
+// backend then builds it from the elements' syntax, which names no type for a
+// call, a member access or an index, and the literal was built as an erased
+// `List` that reaches a `T[]` boundary (an `@externTarget` binding, a function
+// of another assembly) unconverted.  `[1, 2]` and `["a", "b"]` have element
+// types the backend reads off the literals, so they are left alone, as is any
+// literal in a contract (a clause is read by the verifier as written).  A
+// literal checked where a collection type is expected (`inferExprExpected`: an
+// annotated binding or tuple element, a `slice[Long]` an integer literal widens
+// into, a `List`, an `array[N, T]`) is built at the type that position gives it,
+// which its own bottom-up type may not be, so those arms withdraw the site with
+// `noteListLiteralInListContext` (unless a generic instantiation needs it).  `t`
+// may name the enclosing
+// function's type parameters, which `Lyric.Mono` substitutes when it
+// specialises the body; a type the join leaves open (`[None, None]`) is left
+// as written.
+func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: in Type, elems: in List[Expr]): Unit {
+  if typeMentionsGenericInst(t) {
+    recordListLiteralSite(sc, tbl, lit, t, false)
+    return
+  }
+  if sc.contractDepth.count > 0 or not typeIsClosed(t) or allLiteralElements(elems) {
     return
   }
   recordListLiteralSite(sc, tbl, lit, t, false)
+}
+
+// True when every element is a literal value (a number, string, character or
+// boolean, possibly negated), whose type a backend reads off its syntax.
+func allLiteralElements(elems: in List[Expr]): Bool {
+  for el in elems {
+    val plain = match stripExprParens(el).kind {
+      case ELiteral(_) -> true
+      case EPrefix(PreNeg, inner) -> match stripExprParens(inner).kind {
+        case ELiteral(_) -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+    if not plain {
+      return false
+    }
+  }
+  true
 }
 
 // Record a bracket literal `elem` that is an element of another bracket
@@ -16412,8 +16448,22 @@ func recordListLiteralSite(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: i
       val key = recordCopySiteKey(sp)
       val rendered = renderType(t)
       match mapGet(tbl.listLiteralTypeSites, key) {
-        case Some(prev) -> if prev.conflicting {
+        case Some(prev) -> if prev.conflicting and not (shapeRequired and prev.rendered == "") {
+          // (A literal its position built, withdrawn by `noteListLiteralInListContext`
+          // before the enclosing literal names its shape, takes that shape.)
           ()
+        } else if prev.conflicting {
+          tbl.listLiteralTypeSites.remove(key)
+          tbl.listLiteralTypeSites.add(
+            key,
+            ListLiteralTypeSite(
+              literalType = te,
+              rendered = rendered,
+              conflicting = false,
+              startOffset = sp.startPos.offset,
+              shapeRequired = true
+            )
+          )
         } else if prev.rendered != rendered {
           markListLiteralConflicting(tbl, key, prev.literalType, prev.rendered, prev.startOffset)
         } else if shapeRequired and not prev.shapeRequired {
@@ -20215,7 +20265,7 @@ func inferExprCore(
         joined = joinOpenTypes(joined, elemTs[k])
         k = k + 1
       }
-      recordListLiteralType(sc, tbl, e, TySlice(element = joined))
+      recordListLiteralType(sc, tbl, e, TySlice(element = joined), elems)
       var ni = 0
       while ni < elems.count {
         noteCallExpected(tbl, elems[ni], joined)
@@ -23749,6 +23799,9 @@ func inferExprExpectedCore(
           }
           ai = ai + 1
         }
+        if not typeMentionsGenericInst(elemTy) {
+          noteListLiteralInListContext(tbl, e)
+        }
         val litKey = recordCopySiteKey(e.span)
         if not tbl.arrayLiteralSites.containsKey(litKey) {
           match typeExprForRef(tbl, TyArray(size = Some(value = n), element = elemTy, sizeVar = None), e.span) {
@@ -23782,6 +23835,12 @@ func inferExprExpectedCore(
           }
           si = si + 1
         }
+        // Each element widens to the slice's element type here, which the
+        // literal's own bottom-up type (`slice[Int]` for a `slice[Long]`
+        // position) does not say: the position builds it, not a recorded type.
+        if not typeMentionsGenericInst(TySlice(element = elemTy)) {
+          noteListLiteralInListContext(tbl, e)
+        }
         TySlice(element = elemTy)
       } else {
         // The literal is typed bottom-up, but each element is still a value
@@ -23791,7 +23850,14 @@ func inferExprExpectedCore(
             noteCallExpected(tbl, el, elemTy)
           }
         }
-        inferExpr(sc, tbl, sigs, diag, e)
+        val own = inferExpr(sc, tbl, sigs, diag, e)
+        // The position names the slice type, which a backend builds the literal
+        // at: leave it out of `listLiteralTypeSites` unless its element type
+        // holds a generic instantiation (`recordListLiteralType`).
+        if not typeMentionsGenericInst(own) {
+          noteListLiteralInListContext(tbl, e)
+        }
+        own
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
