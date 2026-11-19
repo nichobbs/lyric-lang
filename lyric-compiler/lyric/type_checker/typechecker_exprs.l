@@ -21719,7 +21719,10 @@ func inferExprCore(
         match scopeTryFind(sc, caseSegs[0]) {
           case Some(_) -> ()
           case None -> match packageEnumCaseValueType(tbl, qualifierOfSegs(caseSegs), name) {
-            case Some(ct) -> return ct
+            case Some(ct) -> {
+              recordQualifiedEnumCaseRef(tbl, e.nodeId, ct, name)
+              return ct
+            }
             case None -> ()
           }
         }

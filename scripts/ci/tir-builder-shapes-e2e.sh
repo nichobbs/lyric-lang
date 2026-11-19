@@ -1769,6 +1769,25 @@ func main(): Int {
 }
 LYRIC
 
+# A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is typed as its enum and
+# recorded as the case, so the builder builds it (#8613).
+check package_qualified_enum_case 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+import Std.Http
+
+func code(m: in HttpMethod): Int {
+  match m {
+    case GET -> 3
+    case _ -> 4
+  }
+}
+
+func main(): Int {
+  code(Std.Http.GET)
+}
+LYRIC
+
 # Package-qualified calls in aspect advice copied from another package's template
 # (`Resilience.sleepMs(delay)` in `Resilience.Retry`) are folded like the consumer's own, so
 # the weaver-synthesized B-mode specialisations in lyric-resilience's tests build (#8613).
