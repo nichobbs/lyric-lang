@@ -36,13 +36,13 @@ func roundTrip(req: in GeneratorRequest): Result[GeneratorRequest, String] {
 test "AnnotationDescriptor: name and empty args" {
   val ann = AnnotationDescriptor(name = "required", args = [])
   assertTrue(ann.name == "required", "name field")
-  assertTrue(ann.args.toArray().count == 0, "empty args array")
+  assertTrue(ann.args.toArray().length == 0, "empty args array")
 }
 
 test "AnnotationDescriptor: name with multiple args" {
   val ann = AnnotationDescriptor(name = "since", args = ["\"1.0\"", "\"Json\""])
   assertTrue(ann.name == "since", "name field")
-  assertTrue(ann.args.toArray().count == 2, "two args")
+  assertTrue(ann.args.toArray().length == 2, "two args")
   val argArr = ann.args.toArray()
   assertTrue(argArr[0] == "\"1.0\"", "first arg")
   assertTrue(argArr[1] == "\"Json\"", "second arg")
@@ -93,13 +93,13 @@ test "FieldTypeKind.Generic: can be matched" {
 test "FieldType: primitive Int" {
   val ft = FieldType(kind = Primitive, name = "Int", typeArgs = [])
   assertTrue(ft.name == "Int", "name field")
-  assertTrue(ft.typeArgs.toArray().count == 0, "no type args")
+  assertTrue(ft.typeArgs.toArray().length == 0, "no type args")
 }
 
 test "FieldType: slice with String element" {
   val ft = FieldType(kind = Slice, name = "slice[String]", typeArgs = ["String"])
   assertTrue(ft.name == "slice[String]", "name includes brackets")
-  assertTrue(ft.typeArgs.toArray().count == 1, "one type arg")
+  assertTrue(ft.typeArgs.toArray().length == 1, "one type arg")
   assertTrue(ft.typeArgs.toArray()[0] == "String", "element type")
 }
 
@@ -129,7 +129,7 @@ test "FieldDescriptor: simple public field" {
   )
   assertTrue(fd.name == "id", "name")
   assertTrue(fd.isPublic, "public")
-  assertTrue(fd.annotations.toArray().count == 0, "no annotations")
+  assertTrue(fd.annotations.toArray().length == 0, "no annotations")
 }
 
 test "FieldDescriptor: private field" {
@@ -150,7 +150,7 @@ test "FieldDescriptor: field with annotation" {
     isPublic = true,
     annotations = [ann]
   )
-  assertTrue(fd.annotations.toArray().count == 1, "one annotation")
+  assertTrue(fd.annotations.toArray().length == 1, "one annotation")
   assertTrue(fd.annotations.toArray()[0].name == "required", "annotation name")
 }
 
@@ -252,7 +252,7 @@ test "TypeDescriptor: with annotations" {
     fields = [],
     annotations = [ann]
   )
-  assertTrue(td.annotations.toArray().count == 1, "one annotation")
+  assertTrue(td.annotations.toArray().length == 1, "one annotation")
 }
 
 test "TypeDescriptor: union type" {
@@ -585,8 +585,8 @@ test "GeneratorDiagnostic: info with empty code string" {
 test "GeneratorResponse: basic response" {
   val resp = GeneratorResponse(lyricSource = "pub func generated(): Unit {}", additionalImports = [], diagnostics = [])
   assertTrue(resp.lyricSource == "pub func generated(): Unit {}", "source")
-  assertTrue(resp.additionalImports.toArray().count == 0, "no imports")
-  assertTrue(resp.diagnostics.toArray().count == 0, "no diagnostics")
+  assertTrue(resp.additionalImports.toArray().length == 0, "no imports")
+  assertTrue(resp.diagnostics.toArray().length == 0, "no diagnostics")
 }
 
 test "GeneratorResponse: with imports" {
