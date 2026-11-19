@@ -959,6 +959,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A host `float` result is a `Float`, a member the checker has no case for on a language `String` is the host string's, and an `if`/`else` whose branches are untyped void host calls is `Unit`; the JVM wide census over the 21 ecosystem libraries has 0 I0003 (D418).
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
+  - A package-qualified call in advice copied from another package's aspect template (`Resilience.sleepMs(delay)` in `Resilience.Retry`) is folded by the alias rewriter after the weave, so the B-mode specialisations of lyric-resilience's tests build (D596).
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
