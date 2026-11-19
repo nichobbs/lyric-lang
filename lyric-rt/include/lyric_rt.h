@@ -1246,7 +1246,9 @@ LyricString* lyric_sock_peer_string(int32_t fd);
  * lyric_sock_try_read_bytes sets *status to 1 with the bytes read (empty at end
  * of stream), 2 when nothing is available yet, 0 on error.
  * lyric_sock_try_write_bytes writes what it can of the bytes from `offset` on:
- * the count, -2 when the send buffer is full, -1 on error.
+ * the count, -2 when the send buffer is full, -1 on error.  On macOS, where
+ * send(MSG_DONTWAIT) still waits on a full buffer, one attempt carries at most
+ * SO_SNDLOWAT bytes ("Sends that never wait for room" in lyric_tls.c).
  * lyric_sock_io_timeout_ms is the receive timeout lyric_sock_set_timeouts set,
  * or -1 for none. */
 int32_t lyric_sock_try_accept(int32_t listen_fd);
