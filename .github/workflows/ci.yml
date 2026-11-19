@@ -398,6 +398,11 @@ jobs:
           bash scripts/ci/check-decision-ids-self-test.sh
           bash scripts/ci/check-decision-ids.sh
 
+      # bootstrap/global.json chooses the .NET version; the compiler's emitted
+      # framework and the ILCompiler reference must name the same major.
+      - name: Check the .NET version is consistent
+        run: bash scripts/ci/check-dotnet-version.sh
+
       # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
       # has_native_changes backend-split regexes in
       # scripts/ci/detect-code-changes.sh fail *silently* when wrong -- the
