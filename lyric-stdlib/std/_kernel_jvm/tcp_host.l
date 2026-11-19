@@ -189,7 +189,9 @@ pub opaque type Listener {
 // compare-and-set from 1 decides between "the write finished" and "the
 // watchdog fired", so a write that completes is never closed after the fact.
 // The registry holds one guard per connection with an I/O timeout, shared by
-// the plain and the TLS-layered `Conn` of one socket.
+// the plain and the TLS-layered `Conn` of one socket. After a timeout `state`
+// stays 2 until the next `armWrite`; the closed `raw` makes any write on that
+// connection fail meanwhile.
 ref record WriteGuard {
   raw: JSocket
   state: JAtomicLong
@@ -736,6 +738,8 @@ func writeWithin(c: in Conn, bytes: in slice[Byte], timeoutMs: in Int): Result[U
 @experimental
 pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   try {
+    // `timeoutMs` is only ever set from an `Int` (`hostSetIoTimeout`), so the
+    // narrowing cannot lose bits.
     val limit = c.timeoutMs.get().toInt()
     if limit == 0 {
       c.output.write(bytes)
