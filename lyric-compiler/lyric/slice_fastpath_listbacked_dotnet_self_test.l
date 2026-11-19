@@ -33,6 +33,10 @@ func typeName(t: in NetType): String = ()
 @externTarget("System.Linq.Enumerable.ToList")
 func toObjectList(xs: in slice[String]): slice[String] = ()
 
+@externStatic
+@externTarget("System.IO.Path.Combine")
+func pathCombine(parts: in slice[String]): String = ""
+
 func listBacked(): slice[String] {
   toObjectList(["a", "b", "c"])
 }
@@ -68,4 +72,13 @@ test "slice copies fall back to the element loop" {
   val more = xs.append("d")
   assertEqual(more[3], "d", "append tail")
   assertEqual(more[0], "a", "append head")
+}
+
+// A closure call's result is typed `object` by the uniform function ABI; a
+// `List`-backed slice it carries must reach a `String[]` parameter as an array.
+test "a List-backed slice returned by a closure reaches a String[] parameter" {
+  val g = { -> listBacked() }
+  assertEqual(pathCombine(g()), "a/b/c", "closure result")
+  val h = { k: String -> toObjectList(["x", k, "z"]) }
+  assertEqual(pathCombine(h("y")), "x/y/z", "closure result with a parameter")
 }
