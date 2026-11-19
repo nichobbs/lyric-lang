@@ -12,15 +12,15 @@ import Std.Core
 
 /// Major version of the .NET release that emitted programs run on.
 pub func dotnetMajor(): Int {
-  10
+  11
 }
 
-/// Target framework moniker of emitted assemblies and packages ("net10.0").
+/// Target framework moniker of emitted assemblies and packages ("net11.0").
 pub func dotnetTfm(): String {
   "net" + toString(dotnetMajor()) + ".0"
 }
 
-/// Lowest `Microsoft.NETCore.App` version an emitted program accepts ("10.0.0").
+/// Lowest `Microsoft.NETCore.App` version an emitted program accepts ("11.0.0").
 pub func dotnetFrameworkVersion(): String {
   toString(dotnetMajor()) + ".0.0"
 }
