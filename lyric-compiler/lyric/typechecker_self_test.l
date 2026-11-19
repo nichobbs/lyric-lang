@@ -4504,6 +4504,49 @@ func shapedListLiteralType(cr: in CheckResult, src: in String, litText: in Strin
   ""
 }
 
+// D-progress-1055: the slice type recorded for the bracket literal starting at
+// `litText` in `src` as a literal no collection type is expected of, or ""
+// when none is (or the record is `conflicting`).
+func boundListLiteralType(cr: in CheckResult, src: in String, litText: in String): String {
+  val start = Str.indexOfRaw(src, litText)
+  if start < 0 {
+    return ""
+  }
+  for k in mapKeys(cr.symbols.listLiteralTypeSites) {
+    match mapGet(cr.symbols.listLiteralTypeSites, k) {
+      case Some(site) -> if site.startOffset == start and not site.conflicting { return site.rendered }
+      case None -> ()
+    }
+  }
+  ""
+}
+
+// D-progress-1055: the bracket literal an unannotated binding holds is recorded
+// at the binding's checked type, so a backend builds it as that `slice[T]`
+// (a CLR `T[]`) and not, for an element it cannot type from syntax, a `List`.
+test "an unannotated binding's bracket literal is recorded at its checked slice type (D-progress-1055)" {
+  val src = "package P\nfunc mk(n: in Int): String { \"m\" }\n" + "func f(n: in Int): Int {\n" +
+    "  val a = [\"a\", mk(n)]\n" +
+    "  var b = [1, 2]\n" +
+    "  val c = if n > 0 then [\"x\", mk(n)] else [\"y\"]\n" +
+    "  val d = match n {\n    case 7 -> [\"p\", mk(n)]\n    case _ -> [\"q\"]\n  }\n" +
+    "  val e: slice[String] = [\"z\", mk(n)]\n" +
+    "  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  assertEqual(boundListLiteralType(cr, src, "[\"a\", mk(n)]"), "slice[String]", "val with a call element")
+  assertEqual(boundListLiteralType(cr, src, "[1, 2]"), "slice[Int]", "var")
+  assertEqual(boundListLiteralType(cr, src, "[\"x\", mk(n)]"), "slice[String]", "if then branch")
+  assertEqual(boundListLiteralType(cr, src, "[\"y\"]"), "slice[String]", "if else branch")
+  assertEqual(boundListLiteralType(cr, src, "[\"p\", mk(n)]"), "slice[String]", "match arm")
+  assertEqual(boundListLiteralType(cr, src, "[\"q\"]"), "slice[String]", "second match arm")
+  assertEqual(
+    boundListLiteralType(cr, src, "[\"z\", mk(n)]"),
+    "",
+    "an annotated binding names its own type: not recorded"
+  )
+}
+
 // #8191, #8192, #8193: a bracket literal argument where a `List` is expected
 // is that `List`, a generic callee's type parameters bound by the other
 // arguments; the literals inside a `List[slice[Int]]` are recorded as slices.
