@@ -847,10 +847,7 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 /// (docs/01 section 2.11), as `CvFromHost` over the local.
 func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
   match declared {
-    case TNullable(TPrim(TPString)) -> match read {
-      case TPrim(TPString) -> true
-      case _ -> false
-    }
+    case TNullable(TPrim(TPString)) -> match read { case TPrim(TPString) -> true; case _ -> false }
     case _ -> false
   }
 }
@@ -936,7 +933,11 @@ func narrowByArgTys(
       }
     }
   }
-  if best.count == 0 { cands } else { best }
+  if best.count == 0 {
+    cands
+  } else {
+    best
+  }
 }
 
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
@@ -3396,7 +3397,10 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         case TSlice(_) -> n == hostArrayName()
         case TArray(_, _) -> n == hostArrayName()
         // An erased generic's `Object` result instantiated at `String` is a string the host may return null for.
-        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n) or isHostObject(n); case _ -> false }
+        case TNullable(inner) -> match inner {
+          case TPrim(TPString) -> isHostStringName(n) or isHostObject(n)
+          case _ -> false
+        }
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
@@ -3412,9 +3416,11 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // The stored value is not checked here: `CvFromHost` casts it at run time, so a host collection holding
         // another type fails at that cast, as the checker's unchecked host result (docs/01 section 2.11) allows.
         case TNamed(sym, targs) -> (not isBuiltinSymbol(sym) and isHostObject(n)) or
-          (isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
-            (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
-            isHostTaskName(n))
+          (
+            isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
+              (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
+              isHostTaskName(n)
+          )
         case _ -> false
       }
     }
@@ -4237,10 +4243,7 @@ func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String):
     case Some(t) -> match t {
       case TSlice(_) -> Some(value = "slice.length")
       case TArray(_, _) -> Some(value = "array.length")
-      case TPrim(k) -> match k {
-        case TPString -> Some(value = "String.length")
-        case _ -> None
-      }
+      case TPrim(k) -> match k { case TPString -> Some(value = "String.length"); case _ -> None }
       case _ -> None
     }
     case None -> None

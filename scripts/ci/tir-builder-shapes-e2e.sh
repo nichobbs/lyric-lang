@@ -1538,7 +1538,8 @@ func ignoreEntry(k: in String, v: in String): Unit {
   ()
 }
 
-// The shapes run, not only build: each is called with a real host value.
+// The shapes run, not only build: each is called with a real host value (`putIgnored` and `submitIgnored` need a
+// generic or interface host value a program cannot construct yet, docs/48 Q48-001, so they are built only).
 func main(): Int {
   if stringLocal(JUri.create("http://h/p/q")).path != "/p/q" {
     return 1
@@ -1550,8 +1551,6 @@ func main(): Int {
     return 2
   }
   val m = JMap.new()
-  val cm: JCm[String, String] = JCm.new()
-  putIgnored(cm)
   entries(m, ignoreEntry)
   0
 }

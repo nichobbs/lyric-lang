@@ -15853,7 +15853,9 @@ test "a member read and a Set method on a collection are T0113; dot-named and UF
 // still a user package.  The call `t.raw()` types as `Int` where `String` is returned, an error, only when the
 // dot-named `internal` function is visible to the file being checked.
 func internalVisibilityPackages(vis: in String): List[ImportedPackage] {
-  val key = parse("package Std.Key\npub record Thing { x: Int }\n" + vis + " func Thing.raw(t: in Thing): Int { t.x }\n")
+  val key = parse(
+    "package Std.Key\npub record Thing { x: Int }\n" + vis + " func Thing.raw(t: in Thing): Int { t.x }\n"
+  )
   val packages: List[ImportedPackage] = newList()
   packages.add(
     ImportedPackage(
@@ -15965,7 +15967,10 @@ test "a stdlib internal func is visible to a stdlib importer" {
 }
 
 test "a stdlib internal func is hidden from a user package" {
-  assertTrue(diagCount(checkInternalUse("App", "helper(1)", false)) > 0, "user importer: the internal func does not resolve")
+  assertTrue(
+    diagCount(checkInternalUse("App", "helper(1)", false)) > 0,
+    "user importer: the internal func does not resolve"
+  )
 }
 
 test "a stdlib internal val is hidden from a user package" {
@@ -15974,8 +15979,15 @@ test "a stdlib internal val is hidden from a user package" {
 }
 
 test "a stdlib internal extern func is hidden from a user package" {
-  assertEqualInt(diagCount(checkInternalUse("Std.Sibling", "rawCall(1)", true)), 0, "stdlib importer sees the extern func")
-  assertTrue(diagCount(checkInternalUse("App", "rawCall(1)", false)) > 0, "user importer: the internal extern func does not resolve")
+  assertEqualInt(
+    diagCount(checkInternalUse("Std.Sibling", "rawCall(1)", true)),
+    0,
+    "stdlib importer sees the extern func"
+  )
+  assertTrue(
+    diagCount(checkInternalUse("App", "rawCall(1)", false)) > 0,
+    "user importer: the internal extern func does not resolve"
+  )
 }
 
 test "a user package named Std dot something is not a stdlib importer" {
