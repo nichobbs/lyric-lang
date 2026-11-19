@@ -917,6 +917,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A `match` whose arms all diverge is typed `Never` (the join started at a silent `TyError`), so a `Unit` function ending in one builds (D348).
   - A bare `None` (or other expression the checker left open) in a `return` outside a lambda takes the function's declared return type, as a body's tail does (D409).
+  - A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is recorded as the case, so it builds (D349).
   - `x.toString()` on a range-subtype or distinct value, for which the checker records no callee, builds as the built-in `toString` of the value (D406).
   - A call of a method a restored package's generic record implements resolves to the non-generic interface's declaration and dispatches on it; the receiver's type arguments are not the callee's owner generics (D402).
   - A union case built where the checker erased an argument's type (a lambda parameter in a generic function) and recorded no signature takes its fields from the case at the type its node settled at (D429).
