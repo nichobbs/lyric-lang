@@ -2795,6 +2795,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildToStringMethod(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match ffiIntrinsicCall(env, fn) {
     case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
     case None -> ()
@@ -3032,6 +3036,39 @@ func buildUnderlyingConversion(
     case _ -> return None
   }
   Some(value = convertValueAs(env, e, unwrapped, ty))
+}
+
+/// `x.toString()` on a range-subtype or distinct value: the checker types the call `String` and records
+/// no callee, as for the numeric conversion methods.  It is the built-in `toString` of the value, which
+/// renders a range subtype or a distinct value as its underlying value, as `toString(x)` does.  None when
+/// the call is not such a method; Some(None) after the receiver could not be built.
+func buildToStringMethod(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 or not tyEq(ty, tyString()) {
+    return None
+  }
+  val recvE = match fn.kind {
+    case EMember(r, m) -> if m == "toString" { r } else { return None }
+    case _ -> return None
+  }
+  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
+  val refinedOrDistinct = match rt {
+    case TyRefined(_, _, _, _, _) -> true
+    case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
+      case Some(sym) -> match sym.kind {
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+  if not refinedOrDistinct {
+    return None
+  }
+  val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
+  Some(value = Some(value = stringPart(env, recv)))
 }
 
 /// `t` as a value of `ty` for the call `e`, or the counted reason it cannot be.
@@ -5651,11 +5688,17 @@ func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
   ty: in Ty,
-  sym: in SymbolId,
+  sym0: in SymbolId,
   site: in MethodCallSite,
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
+    None
+  } else {
+    ifaceOfImplMember(env, sym0)
+  }
+  val sym: SymbolId = match viaImpl { case Some(ii) -> ii.method; case None -> sym0 }
   // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
   // the enclosing method's own `self`.
   val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
@@ -5663,7 +5706,10 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
-  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceTy: Option[Type] = match viaImpl {
+    case Some(ii) -> Some(value = ii.iface)
+    case None -> if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
     case _ -> site.iface
@@ -5767,7 +5813,7 @@ func buildMethodCall(
   }
   val inst = match dotted {
     case Some(i) -> i
-    case None -> match instantiateMethod(env, e, sym, site, args) {
+    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym)) {
       case Some(i) -> i
       case None -> return None
     }
