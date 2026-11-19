@@ -1801,4 +1801,28 @@ else
   echo "ok   bmode_qualified_calls"
 fi
 
+# `.toArray()` of a slice is the identity and typed as the slice, so a call on one builds and its
+# result reads like any slice (#8613).
+check slice_to_array 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+record Ann {
+  name: String
+  args: slice[String]
+}
+
+func total(xs: in slice[Int]): Int {
+  xs.toArray().length
+}
+
+func main(): Int {
+  val a = Ann(name = "x", args = [])
+  if a.args.toArray().length != 0 {
+    return 1
+  }
+  total([1, 2, 3])
+}
+LYRIC
+
 exit $fail

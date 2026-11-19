@@ -960,6 +960,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
   - A package-qualified call in advice copied from another package's aspect template (`Resilience.sleepMs(delay)` in `Resilience.Retry`) is folded by the alias rewriter after the weave, so the B-mode specialisations of lyric-resilience's tests build (D596).
+  - `.toArray()` of a slice is typed as the slice, as the documented identity, so a call on one builds and a misuse of its result is reported (D601).
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).

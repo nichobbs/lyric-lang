@@ -112,7 +112,7 @@ test "FieldType: Option with String" {
 test "FieldType: Result with two type args" {
   val ft = FieldType(kind = ResultType, name = "Result[Int, String]", typeArgs = ["Int", "String"])
   val args = ft.typeArgs.toArray()
-  assertTrue(args.count == 2, "two type args")
+  assertTrue(args.length == 2, "two type args")
   assertTrue(args[0] == "Int", "success type")
   assertTrue(args[1] == "String", "error type")
 }
@@ -208,7 +208,7 @@ test "TypeDescriptor: generic type" {
     annotations = []
   )
   val params = td.typeParams.toArray()
-  assertTrue(params.count == 2, "two type parameters")
+  assertTrue(params.length == 2, "two type parameters")
   assertTrue(params[0] == "T", "first param")
   assertTrue(params[1] == "E", "second param")
 }
@@ -237,7 +237,7 @@ test "TypeDescriptor: with fields" {
     annotations = []
   )
   val fds = td.fields.toArray()
-  assertTrue(fds.count == 2, "two fields")
+  assertTrue(fds.length == 2, "two fields")
   assertTrue(fds[0].name == "id", "first field")
   assertTrue(fds[1].name == "name", "second field")
 }
@@ -539,19 +539,19 @@ test "encode: annotation with arguments" {
 // §9. GeneratorDiagnosticSeverity — diagnostic levels
 // ─────────────────────────────────────────────────────────────────────────────
 test "GeneratorDiagnosticSeverity.Error: can be matched" {
-  val sev = Error
+  val sev: GeneratorDiagnosticSeverity = Error
   val matched = match sev { case Error -> true; case _ -> false }
   assertTrue(matched, "Error variant")
 }
 
 test "GeneratorDiagnosticSeverity.Warning: can be matched" {
-  val sev = Warning
+  val sev: GeneratorDiagnosticSeverity = Warning
   val matched = match sev { case Warning -> true; case _ -> false }
   assertTrue(matched, "Warning variant")
 }
 
 test "GeneratorDiagnosticSeverity.Info: can be matched" {
-  val sev = Info
+  val sev: GeneratorDiagnosticSeverity = Info
   val matched = match sev { case Info -> true; case _ -> false }
   assertTrue(matched, "Info variant")
 }
@@ -596,7 +596,7 @@ test "GeneratorResponse: with imports" {
     diagnostics = []
   )
   val imports = resp.additionalImports.toArray()
-  assertTrue(imports.count == 2, "two imports")
+  assertTrue(imports.length == 2, "two imports")
   assertTrue(imports[0] == "import Std.Json", "first import")
 }
 
@@ -605,7 +605,7 @@ test "GeneratorResponse: with diagnostics" {
   val diag2 = GeneratorDiagnostic(severity = Warning, message = "Warning 1", code = Some(value = "W001"))
   val resp = GeneratorResponse(lyricSource = "", additionalImports = [], diagnostics = [diag1, diag2])
   val diags = resp.diagnostics.toArray()
-  assertTrue(diags.count == 2, "two diagnostics")
+  assertTrue(diags.length == 2, "two diagnostics")
   assertTrue(diags[0].severity == Error, "first is error")
   val hasCode = match diags[1].code { case Some(_) -> true; case None -> false }
   assertTrue(hasCode, "second has code")
