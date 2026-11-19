@@ -1914,6 +1914,16 @@ test "a range pattern bounded by a constant builds with the constant's value (D4
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a numeric conversion method of a range subtype builds as the underlying primitive's built-in (D428)" {
+  val c = censusOf(
+    "package App\ntype Population = UInt range 1000 ..= 4000000000\nfunc asInt(p: in Population): Int {\n  p.toInt()\n}\nfunc asLong(p: in Population): Long {\n  p.toLong()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a function body the checker left open takes the declared return type (D401)" {
   val c = censusOf(
     "package App\nunion Shape[N: Nat] {\n  case Poly(pts: array[N, Int])\n  case Empty\n}\nfunc a[N: Nat](): Shape[N] = Shape.Empty\nfunc b[N: Nat](): Shape[N] {\n  Shape.Empty\n}\n"

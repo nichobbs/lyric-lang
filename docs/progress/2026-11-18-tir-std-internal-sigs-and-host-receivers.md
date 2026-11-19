@@ -1,0 +1,3 @@
+# docs/70 phase 3a: the standard library's internal accessors and host chains on a local (D432, D434)
+
+A stdlib package (identified by where the loader found it, not by its name) now sees the `internal` functions of the other stdlib packages (`Std.Tls`'s `rawHandle` and `rawHandles`), which closes the silent `TyError` in `Std.HttpServer` and `Std.HttpHost`; user packages still do not (D432). The builder types a call on a local bound to a host result, a `void` host member as `Unit`, and a `java.util.concurrent` result that is not a future or task (D434). `Std.HttpServer` builds 54 of 54 bodies on the JVM. `tir-builder-shapes-e2e.sh` gains `std_internal_sigs`, `user_internal_hidden` and `jvm_host_local_receiver`.
