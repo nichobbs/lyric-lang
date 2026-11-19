@@ -4286,10 +4286,7 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
 func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
   val tbl = env.ctx.tbl
   match mapGet(tbl.exprTypes, recv.nodeId) {
-    case Some(rt) -> match rt {
-      case TyError(_) -> ()
-      case _ -> return None
-    }
+    case Some(rt) -> match rt { case TyError(_) -> (); case _ -> return None }
     case None -> ()
   }
   val enumName = match recv.kind {
@@ -4301,9 +4298,7 @@ func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in 
     case _ -> return None
   }
   match symbolOfDefId(tbl, owner) {
-    case Some(os) -> if os.name != enumName {
-      return None
-    }
+    case Some(os) -> if os.name != enumName { return None }
     case None -> return None
   }
   for cand in symTableTryFindAllNamed(tbl, name) {
@@ -4332,10 +4327,7 @@ func buildConfigFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr
   if tbl.exprTypes.containsKey(recv.nodeId) {
     return None
   }
-  val segs = match recv.kind {
-    case EPath(p) -> p.segments
-    case _ -> return None
-  }
+  val segs = match recv.kind { case EPath(p) -> p.segments; case _ -> return None }
   if segs.count == 0 {
     return None
   }
