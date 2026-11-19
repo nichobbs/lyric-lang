@@ -915,6 +915,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
+  - `x.toString()` on a range-subtype or distinct value, for which the checker records no callee, builds as the built-in `toString` of the value (D406).
   - A call of a method a restored package's generic record implements resolves to the non-generic interface's declaration and dispatches on it; the receiver's type arguments are not the callee's owner generics (D402).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
