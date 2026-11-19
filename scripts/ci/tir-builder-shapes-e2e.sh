@@ -1209,7 +1209,7 @@ restored_generic_impl_call dotnet
 restored_generic_impl_call jvm
 
 # `x.toString()` on a range-subtype or distinct value: the checker records no callee for it, so the builder
-# builds the built-in `toString` of the value (D402).  "5" and "12" have 3 characters.
+# builds the built-in `toString` of the value (D406).  "5" and "12" have 3 characters.
 check range_to_string_method 3 <<'LYRIC'
 package RangeToStringMethod
 
