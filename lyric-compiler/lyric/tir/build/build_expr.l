@@ -65,6 +65,9 @@ pub record BuildEnv {
   /// The value-generic parameters of the function being built (owner's first), by name: a bare
   /// read of one is an `XValueParam` (D469).
   valueParams: List[ValueParamRef] = newList()
+  /// The declared return type of the function being built (empty or one entry): a `return` outside a
+  /// lambda settles an expression the checker left open (a bare `None`) to it.
+  retTy: List[Ty] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -1872,9 +1875,14 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SReturn(v) -> match v {
       case None -> Some(value = stmtOf(s, TsReturn(value = None)))
-      case Some(x) -> match buildExpr(env, x) {
-        case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = t))))
-        case None -> None
+      case Some(x) -> {
+        if env.lambdas.count == 0 and env.retTy.count > 0 {
+          settleHole(env, x, env.retTy[0])
+        }
+        match buildExpr(env, x) {
+          case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = t))))
+          case None -> None
+        }
       }
     }
     case SBreak(label) -> Some(value = stmtOf(s, TsBreak(label = label)))
@@ -2378,6 +2386,10 @@ func buildFnCore(
       }
     }
     case None -> ()
+  }
+  env.retTy.clear()
+  if not functionIsGenerator(fn) {
+    env.retTy.add(ret)
   }
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
