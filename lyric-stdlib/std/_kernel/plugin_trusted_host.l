@@ -75,7 +75,7 @@ pub func trustedHostUnavailableReason(): String {
 // the plugin's context, or the plugin's `Std.Plugin` types would not be the
 // host's.
 func isSharedAssemblyFile(file: in String): Bool {
-  val name = NetIoPath.GetFileName(file)
+  val name: String = NetIoPath.GetFileName(file)
   name.startsWith("Lyric.Stdlib")
 }
 
@@ -85,7 +85,7 @@ func isSharedAssemblyFile(file: in String): Bool {
 pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   try {
     val context = NetAssemblyLoadContext.new("lyric-plugin:" + path, false)
-    val dir = NetIoPath.GetDirectoryName(path)
+    val dir: String = NetIoPath.GetDirectoryName(path) ?? ""
     for file in NetDirectory.GetFiles(dir, "*.dll") {
       if file != path and not isSharedAssemblyFile(file) {
         try {

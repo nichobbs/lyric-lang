@@ -3921,7 +3921,7 @@ func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr
     case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
     case _ -> false
   }
-  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+  if not hostResultFlowsTo(env, ret, ty, nullableString) {
     return None
   }
   val params: List[TParamTy] = newList()
@@ -3937,6 +3937,15 @@ func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr
   val args: List[TArg] = newList()
   args.add(TArgIn(value = rt))
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = args)))
+}
+
+/// Whether a host member's declared result `ret` is what the checker's `ty` stands for, so `hostResultNode` can
+/// give the node that type: the same type, a possibly null string, a result the checker types as a Lyric type, a
+/// host subclass of the class the context declares (`HttpRequestMessage.Headers` is an `HttpRequestHeaders` read as
+/// the `HttpHeaders` the function returns) or a base class of a more specific one.
+func hostResultFlowsTo(env: in BuildEnv, ret: in Ty, ty: in Ty, nullableString: in Bool): Bool {
+  tyEq(ret, ty) or nullableString or hostResultIsCallType(ret, ty) or isSome(hostUpcastKind(env, ret, ty)) or
+    hostResultNarrowsTo(env, ret, ty)
 }
 
 /// `JCharacter.TYPE`: a read of a static field or property of the host class an `extern type` names, where the
@@ -3970,7 +3979,7 @@ func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr,
     case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
     case _ -> false
   }
-  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+  if not hostResultFlowsTo(env, ret, ty, nullableString) {
     return None
   }
   val member = HostMemberRef(

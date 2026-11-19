@@ -537,6 +537,26 @@ func main(): Int {
 }
 LYRIC
 
+# A host property whose declared result is a subclass of the class the context declares: `HttpRequestMessage.Headers`
+# is an `HttpRequestHeaders`, read as the `HttpHeaders` the function returns (D417).  Every body must build and the
+# verifier must accept it.
+check host_property_upcast 0 <<'LYRIC'
+package Shapes40
+extern type HttpRequestMessage = "System.Net.Http.HttpRequestMessage"
+extern type ByteArrayContent = "System.Net.Http.ByteArrayContent"
+extern type HttpHeaders = "System.Net.Http.Headers.HttpHeaders"
+
+func requestHeaders(req: in HttpRequestMessage): HttpHeaders {
+  req.Headers
+}
+
+func contentHeaders(content: in ByteArrayContent): HttpHeaders {
+  content.Headers
+}
+
+func main(): Int { 0 }
+LYRIC
+
 # The TIR builds a write to a public host field (D478); the MSIL emitter does not lower one yet
 # (T0120), so the program is judged by the census alone and not run.
 check host_field_write "" <<'LYRIC'
