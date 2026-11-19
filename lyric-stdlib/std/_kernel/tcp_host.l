@@ -58,6 +58,19 @@
 //! itself provides (docs/01-language-reference.md §3.1) — the opaque
 //! representation is never cracked from outside its own package, exactly as
 //! the client-side `_kernel/http_host.l` does.
+//!
+//! ## Server-readiness surface (D621, docs/73 slice S1)
+//!
+//! `hostShutdown(conn)` interrupts a read or write blocked on the connection
+//! from another thread without releasing it (the owner still calls
+//! `hostClose`), the contract native already had. `hostRead` reuses a
+//! per-connection buffer and `hostSetIoTimeout` bounds each blocking read and
+//! write by `Socket.ReceiveTimeout`/`SendTimeout`. Every connection has
+//! `TCP_NODELAY` set (as the JVM kernel does): a server writes a response as
+//! one or two segments and must not wait out Nagle's algorithm against the
+//! peer's delayed ACK. The listen backlog is
+//! `TcpListener.Start()`'s default (SOMAXCONN, clamped by the operating
+//! system); the JVM and native kernels pass 128.
 @axiom("System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts")
 @io
 package Std.TcpHost
@@ -88,6 +101,8 @@ extern type SslStream = "System.Net.Security.SslStream"
 extern type Socket = "System.Net.Sockets.Socket"
 
 extern type EndPoint = "System.Net.EndPoint"
+
+extern type SocketShutdownMode = "System.Net.Sockets.SocketShutdown"
 
 extern type SslServerAuthOptions = "System.Net.Security.SslServerAuthenticationOptions"
 
@@ -224,6 +239,10 @@ func clientSetReceiveTimeout(c: in TcpClient, ms: in Int): Unit = ()
 @externTarget("System.Net.Sockets.TcpClient.set_SendTimeout")
 func clientSetSendTimeout(c: in TcpClient, ms: in Int): Unit = ()
 
+@externInstance
+@externTarget("System.Net.Sockets.TcpClient.set_NoDelay")
+func clientSetNoDelay(c: in TcpClient, on: in Bool): Unit = ()
+
 // `TcpClient.Client` (the underlying `Socket`) and `Socket.RemoteEndPoint`
 // back `hostRemoteAddress` (used by `lyric-ws`'s dotnet WebSocket kernel to
 // populate `onOpen`'s `remoteAddress` callback argument — docs/62 §6). The
@@ -235,6 +254,13 @@ func clientSocket(c: in TcpClient): Socket = ()
 
 @externTarget("System.Net.Sockets.Socket.get_RemoteEndPoint")
 func socketRemoteEndPoint(s: in Socket): EndPoint = ()
+
+@externTarget("System.Net.Sockets.SocketShutdown.Both")
+func socketShutdownBoth(): SocketShutdownMode = ()
+
+@externInstance
+@externTarget("System.Net.Sockets.Socket.Shutdown")
+func socketShutdown(s: in Socket, how: in SocketShutdownMode): Unit = ()
 
 @externTarget("System.Object.ToString")
 func endPointToString(e: in EndPoint): String = ()
@@ -513,6 +539,7 @@ pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): R
       clientClose(client)
       return Err(error = TransportFailed(message = b.message))
     }
+    clientSetNoDelay(client, true)
     Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
@@ -545,6 +572,7 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
       clientClose(client)
       return Err(error = AcceptFailed(message = b.message))
     }
+    clientSetNoDelay(client, true)
     Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = AcceptFailed(message = b.message))
@@ -820,6 +848,24 @@ pub func hostRemoteAddress(c: in Conn): String {
     endPointToString(socketRemoteEndPoint(clientSocket(c.client)))
   } catch Bug as _ {
     ""
+  }
+}
+
+/// Interrupt a blocking `hostRead`/`hostWrite` in progress on this connection
+/// FROM ANOTHER THREAD, without releasing the connection (that stays the owning
+/// thread's job, via `hostClose`). `Socket.Shutdown(Both)` on the underlying
+/// socket, for a plain and a TLS connection alike (a blocked `SslStream` read
+/// or write fails because its transport does): a blocked read returns end of
+/// stream or `Err(TransportFailed(...))` and a blocked write fails with
+/// `Err(TransportFailed(...))`. No TLS close_notify is sent. `hostClose` is
+/// still required afterwards and is safe to call after a shutdown. The same
+/// contract as native's `hostShutdown` (D621).
+@experimental
+pub func hostShutdown(c: in Conn): Unit {
+  try {
+    socketShutdown(clientSocket(c.client), socketShutdownBoth())
+  } catch Bug as _ {
+    ()
   }
 }
 
