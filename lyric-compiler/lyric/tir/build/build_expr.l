@@ -5466,6 +5466,10 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 func genericBuiltin(name: in String): Bool {
   ffiIntrinsicName(name) or name == "println" or name == "print" or name == "toString" or name == "hashCode" or
     name == "default" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
     Str.endsWith(name, ".wrappingAdd") or
     Str.endsWith(name, ".wrappingSub") or
     Str.endsWith(name, ".wrappingMul") or
