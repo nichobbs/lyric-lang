@@ -11,7 +11,7 @@
 //!
 //!   ./scripts/bootstrap.sh --stage 1
 //!   dotnet build bootstrap/src/Lyric.Cli.Aot
-//!   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric \
+//!   bootstrap/src/Lyric.Cli.Aot/bin/Debug/lyric \
 //!       run lyric-compiler/lyric/weaver_ci_test.l
 //!
 //! Unlike weaver_self_test.l (which is @test_module), this file is a

@@ -31,7 +31,7 @@ case "$target" in
 esac
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-lyric_bin="${LYRIC_CLI_PATH:-bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+lyric_bin="${LYRIC_CLI_PATH:-bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric}"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::lyric CLI not found at $lyric_bin" >&2
   exit 1

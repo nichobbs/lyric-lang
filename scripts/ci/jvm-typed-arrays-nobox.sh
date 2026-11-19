@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
-LYRIC="${1:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+LYRIC="${1:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric}"
 [ -x "$LYRIC" ] || LYRIC="$ROOT/bin/lyric"
 [ -x "$LYRIC" ] || { echo "::error::lyric binary not found"; exit 1; }
 JAVAP="$(command -v javap || true)"

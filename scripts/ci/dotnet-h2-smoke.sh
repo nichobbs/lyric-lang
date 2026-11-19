@@ -7,7 +7,7 @@
 # Kept out of ci.yml, which has a size ceiling (scripts/ci/check-workflow-size.sh).
 set -euo pipefail
 
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 log=/tmp/dotnet_h2_smoke.run.log
 base=https://127.0.0.1:8443

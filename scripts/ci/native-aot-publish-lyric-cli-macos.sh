@@ -25,7 +25,7 @@ func main(): Int {
 }
 LYRIC
 "$native_cli" build "$dir/hello.l" -o "$dir/bin/Hello.dll"
-cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$dir/bin/"
+cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/Lyric.Stdlib*.dll "$dir/bin/"
 out="$(cd "$dir/bin" && dotnet exec Hello.dll)"
 echo "native CLI build output: $out"
 if [ "$out" != "hello-native-cli" ]; then
@@ -71,7 +71,7 @@ func main(): Unit {
 LYR
 "$native_cli" build --manifest "$work/constdep/lyric.toml"
 "$native_cli" build --manifest "$work/app/lyric.toml"
-cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/Lyric.Stdlib*.dll "$work/app/bin/"
+cp bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/Lyric.Stdlib*.dll "$work/app/bin/"
 dep_out="$(cd "$work/app/bin" && dotnet exec App.dll | tr -d '\r\n')"
 echo "restored-dep consumer printed: '$dep_out'"
 if [ "$dep_out" != "42" ]; then

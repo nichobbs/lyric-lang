@@ -5,7 +5,7 @@ if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ];
   exit 1
 fi
 dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT entry-point binary not found at $lyric_bin"
   exit 1

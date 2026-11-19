@@ -7,7 +7,7 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 set -euo pipefail
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::warning::AOT binary not found; skipping example tests"
   exit 0

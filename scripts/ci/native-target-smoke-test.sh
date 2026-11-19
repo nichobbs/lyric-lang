@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 rt_build_dir="$(mktemp -d)/lyric-rt-build"
 make -C lyric-rt BUILD="$rt_build_dir"
 export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
