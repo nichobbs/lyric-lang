@@ -4285,8 +4285,12 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
 /// it named `name`.  None when the receiver is typed (a value) or the type is not an enum with that case.
 func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
   val tbl = env.ctx.tbl
-  if tbl.exprTypes.containsKey(recv.nodeId) {
-    return None
+  match mapGet(tbl.exprTypes, recv.nodeId) {
+    case Some(rt) -> match rt {
+      case TyError(_) -> ()
+      case _ -> return None
+    }
+    case None -> ()
   }
   val enumName = match recv.kind {
     case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { return None }
