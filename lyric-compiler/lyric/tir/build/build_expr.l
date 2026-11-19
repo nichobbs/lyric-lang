@@ -1006,6 +1006,12 @@ func hostChainResult(
         // override that returns the receiver's own class is the one a call binds.
         if isHostClassTy(t, host.name) {
           result = Some(value = t)
+        } else if isRootObjectTy(t) {
+          // A covariant override and the bridge method that returns the root class (`ByteBuffer.array()`
+          // is `byte[]`, `Buffer.array()` is `Object`): the override is the member a call binds.
+          ()
+        } else if isRootObjectTy(prev) {
+          result = Some(value = t)
         } else if not isHostClassTy(prev, host.name) {
           return None
         }
@@ -1016,6 +1022,14 @@ func hostChainResult(
     }
   }
   result
+}
+
+/// Whether `t` is the host's root object class.
+func isRootObjectTy(t: in Ty): Bool {
+  match t {
+    case TExtern(h) -> isHostObject(h.name)
+    case _ -> false
+  }
 }
 
 /// Whether `t` is the host class `name`.
@@ -5108,6 +5122,17 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   match convertValue(env, t, pty) {
     case Some(c) -> Some(value = c)
     case None -> {
+      // A host value passed where a Lyric collection of the host's root object class takes its element
+      // (`List[JObject].add(address)`): the host takes the reference.
+      match pty {
+        case TExtern(h) -> match t.ty {
+          case TExtern(_) -> if isHostObject(h.name) {
+            return Some(value = convertNode(env, t, pty, CvBoxToHost(host = h)))
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       noteUncoveredAt(env, "an argument conversion", t.span)
       env.errors.add(
         "I0002: the builder has no case for an argument conversion from " + renderTyNamed(env, t.ty) + " to " +
