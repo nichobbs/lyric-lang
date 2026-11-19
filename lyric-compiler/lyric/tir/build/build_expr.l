@@ -5710,7 +5710,7 @@ func buildMethodCall(
   }
   val inst = match dotted {
     case Some(i) -> i
-    case None -> match instantiateMethod(env, e, sym, site, args) {
+    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym)) {
       case Some(i) -> i
       case None -> return None
     }

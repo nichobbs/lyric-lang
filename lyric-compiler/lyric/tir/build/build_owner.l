@@ -154,57 +154,28 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
   }
 }
 
-/// Whether the callee `sym` is a member of an `impl` (of this package or a restored one) whose target is
-/// written over exactly the impl's own parameters in the order the signature lists them as the owner's
-/// generics, so the receiver's type arguments are the impl's, position by position.
-func isImplMemberOverOwnParams(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature): Bool {
-  val key = match defPathKeyOf(env.ctx.tbl.interner, sym) {
-    case Some(k) -> memberOwnerKey(k)
-    case None -> return false
-  }
-  if findSub(key, "::$impl(", 0) < 0 {
-    return false
-  }
-  val names = match implTargetNames(key) { case Some(ns) -> ns; case None -> return false }
-  if names.count == 0 or names.count != ownerGenericCount(sig) {
-    return false
-  }
-  var i = 0
-  while i < names.count {
-    if names[i] != sig.generics[i] {
-      return false
-    }
-    i = i + 1
-  }
-  true
-}
-
-func dbgJoin(xs: in List[String]): String {
-  var r = ""
-  for x in xs {
-    r = r + x + ","
-  }
-  r
-}
-
 /// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
 /// a member declared in the type's body) then the member's own (the checker's record, else
 /// inferred from the arguments and the result as a generic function's are).  The checker's
 /// signature lists only the member's own generics for a concrete receiver and none for a
 /// receiver typed over the caller's own parameters, so the owner's are never read from it.
+/// `viaIface`: the call is a dispatch on a non-generic interface the receiver implements (a
+/// restored package keeps no `impl` member of its own), so the receiver's arguments belong to
+/// its own type, not to the callee, which has no owner generics.
 pub func instantiateMethod(
   env: in BuildEnv,
   e: in Expr,
   sym: in SymbolId,
   site: in MethodCallSite,
   args: in List[CallArg],
+  viaIface: in Bool,
 ): Option[MethodInst] {
   val sig = site.sig
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
-  if recvArgs.count > 0 and not isSome(site.iface) {
-    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or isImplMemberOverOwnParams(env, sym, sig)) {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl DBG " + (match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }) + " gens=" + dbgJoin(sig.generics) + " owners=" + dbgJoin(sig.genericOwners))
+  if recvArgs.count > 0 and not isSome(site.iface) and not viaIface {
+    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
+      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
       return None
     }
     for ta in recvArgs {
