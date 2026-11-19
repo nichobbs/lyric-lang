@@ -16,6 +16,11 @@ The JVM kernels `Std.TimeHost` (`hostMillis` to `hostDays`), `Std.ConsoleHost::t
 - A primitive host result (`EIEPrim`) is typed as the Lyric primitive.
 - `a ?? b` settles an untyped `b` to the type of the whole expression, as `x == None` settles its right operand to the type of the left. The kernel declares the type of the local it binds, as docs/01 section 2.11 and D436 spell it: `val children: slice[JFile] = d.listFiles() ?? []`. Reading the declared `slice` with `.length` replaces `.count`, which only `List`, `Map` and `Set` have.
 
+- **Covariant bridge candidates.** Among disagreeing candidates, one that is the host's root `Object` is the bridge method of a covariant override and the other is the member a call binds (`ByteBuffer.array()` is `byte[]`, `Buffer.array()` is `Object`).
+- **A host value as a `List[JObject]` element.** `coerceArg` boxes a host value passed where the host's root `Object` is wanted (`args.add(address)`) with `CvBoxToHost`.
+- **A `Unit` block does not settle its tail.** `settleBlockTail` skips a `Unit` block: its tail is discarded, so `Unit` says nothing about the tail's own type, and an untyped host call kept its real result (`if stop { proc.destroyForcibly() }` was an I0003, `call-result-type: expected Process but found Unit`).
+- **Kernel locals.** The kernels declare the host results they bind, as docs/01 section 2.11 asks: the dotnet `LinkTarget ?? ""` reads in `Std.FileHost`, the JVM `getProperty`/`getValue` reads in the plugin, config-override and annotation-meta kernels, and the three `val _ = env.put(k, v)` of the process kernels.
+
 ## Results
 
-On `--target jvm`, `Std.TimeHost`, `Std.ConsoleHost::threadJoinMs`, `Std.Task::runWithin*` and `Std.FileHost::listChildren`/`deleteRecursively` build with 0 I0003. `tir-builder-shapes-e2e.sh` gains `jvm_host_overload_shapes` (built and run), and `jvm_host_kernel_shapes` now calls its shapes.
+On `--target jvm`, `Std.TimeHost`, `Std.ConsoleHost::threadJoinMs`, `Std.Task::runWithin*` and `Std.FileHost::listChildren`/`deleteRecursively`, `Std.HttpHost::readToEnd` and the three process kernels' environment overlays build with 0 I0003; `plugin_e2e_tests.l` builds on `--target jvm` with only `Std.Collections::mapEntries` unbuilt. `tir-builder-shapes-e2e.sh` gains `jvm_host_overload_shapes` (built and run), and `jvm_host_kernel_shapes` now calls its shapes.
