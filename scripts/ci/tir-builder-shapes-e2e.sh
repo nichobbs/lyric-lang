@@ -1524,6 +1524,35 @@ LYRIC
 }
 native_member_intrinsics
 
+# A bare `None` returned from a generic function (`return None` in `Option[T]`): the checker leaves it untyped,
+# so the `return` settles it to the function's declared return type (D409).  `c(0, 5)` is `None` and `c(1, 5)` is
+# `Some(5)`: 0 + 5 = 5.
+check return_hole_in_generic 5 <<'LYRIC'
+package ReturnHoleInGeneric
+import Std.Core
+
+func pick[T](n: in Int, x: in T): Option[T] {
+  if n == 0 {
+    return None
+  }
+  Some(value = x)
+}
+
+func main(): Int {
+  val a: Option[Int] = pick(0, 5)
+  val b: Option[Int] = pick(1, 5)
+  val x = match a {
+    case Some(v) -> v
+    case None -> 0
+  }
+  val y = match b {
+    case Some(v) -> v
+    case None -> 0
+  }
+  x + y
+}
+LYRIC
+
 # The host shapes of the JVM kernels (D435, D436): a host string held in a local and read as a `String`
 # (`Web.Kernel.Runtime.buildJvmRequest`), `.length` of a local holding a host byte array
 # (`Std.HashHost.hostSha512File`), a raw `Map.Entry`'s `Object` key and value passed to `String` parameters
