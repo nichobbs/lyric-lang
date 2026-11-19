@@ -708,6 +708,66 @@ LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* sta
     return list;
 }
 
+/* ── Sends that never wait for room ───────────────────────────────────────
+ *
+ * Linux honours send(MSG_DONTWAIT).  XNU does not: there the flag only keeps
+ * send from waiting for the send buffer's lock, and a send to a full buffer
+ * still sleeps until the peer reads (or SO_SNDTIMEO passes), however small
+ * the write.  O_NONBLOCK would do it, but it belongs to the socket, so
+ * switching it for one call and back would fail a blocking read another
+ * thread starts on the same connection meanwhile (D405 item 5 turns the same
+ * switch down on Winsock).  macOS instead relies on what poll promises: a
+ * socket it reports writable has at least SO_SNDLOWAT bytes of room, and a
+ * send of no more than the room never waits.  So there one send carries at
+ * most SO_SNDLOWAT bytes (2 KiB by default) and callers loop; only this
+ * connection's writer takes room away, and a connection has one writer.
+ * recv(MSG_DONTWAIT) is honoured on both systems. */
+
+/* The most bytes send_now may carry on `fd` at this moment: 0 when the send
+ * buffer is full, -1 with errno on error. */
+static int64_t send_room(int fd) {
+#if defined(__APPLE__)
+    struct pollfd p;
+    p.fd = fd;
+    p.events = POLLOUT;
+    p.revents = 0;
+    int rc;
+    do {
+        rc = poll(&p, 1, 0);
+    } while (rc < 0 && errno == EINTR);
+    if (rc < 0) return -1;
+    if (rc == 0) return 0;
+    /* An error or hang-up reports as ready too: the send returns it at once. */
+    int lowat = 0;
+    socklen_t len = sizeof lowat;
+    if (getsockopt(fd, SOL_SOCKET, SO_SNDLOWAT, &lowat, &len) != 0 || lowat < 1) {
+        lowat = 1;
+    }
+    return (int64_t)lowat;
+#else
+    (void)fd;
+    return INT64_MAX;
+#endif
+}
+
+/* One send of `n` bytes, `n` no more than send_room just returned: the count
+ * sent, or -1 with errno (EAGAIN or EWOULDBLOCK when the buffer is full).
+ * Never raises SIGPIPE. */
+static ssize_t send_now(int fd, const uint8_t* buf, size_t n) {
+    int flags = 0;
+#if !defined(__APPLE__)
+    flags |= MSG_DONTWAIT;
+#endif
+#if defined(MSG_NOSIGNAL)
+    flags |= MSG_NOSIGNAL; /* macOS: SO_NOSIGPIPE, see sock_nosigpipe */
+#endif
+    ssize_t w;
+    do {
+        w = send(fd, buf, n, flags);
+    } while (w < 0 && errno == EINTR);
+    return w;
+}
+
 /* One write attempt that never blocks, of the bytes from `offset` on: the
  * number written (0 when there is nothing left), -2 when the send buffer is
  * full, -1 on error. */
@@ -720,6 +780,17 @@ int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset)
     if (n > LYRIC_SOCK_TRY_WRITE_CHUNK) {
         n = LYRIC_SOCK_TRY_WRITE_CHUNK;
     }
+    int64_t room = send_room(fd);
+    if (room < 0) {
+        set_err("write: %s", strerror(errno));
+        return -1;
+    }
+    if (room == 0) {
+        return -2;
+    }
+    if (n > room) {
+        n = room;
+    }
     uint8_t* buf = (uint8_t*)malloc((size_t)n);
     if (!buf) {
         set_err("out of memory");
@@ -728,15 +799,10 @@ int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset)
     for (int64_t i = 0; i < n; i++) {
         buf[i] = (uint8_t)(list->data[offset + i] & 0xff);
     }
-    int flags = MSG_DONTWAIT;
-#if defined(MSG_NOSIGNAL)
-    flags |= MSG_NOSIGNAL;
-#endif
-    ssize_t w;
-    do {
-        w = send(fd, buf, (size_t)n, flags);
-    } while (w < 0 && errno == EINTR);
+    ssize_t w = send_now(fd, buf, (size_t)n);
+    int send_errno = errno;
     free(buf);
+    errno = send_errno;
     if (w < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return -2;
@@ -1099,19 +1165,20 @@ int32_t lyric_sock_write_bytes_bounded(int32_t fd, void* bytes_list, int64_t dea
     for (int64_t i = 0; i < n; i++) {
         buf[i] = (uint8_t)(list->data[i] & 0xff);
     }
-    int flags = MSG_DONTWAIT;
-#if defined(MSG_NOSIGNAL)
-    flags |= MSG_NOSIGNAL;
-#endif
     int st = LYRIC_BOUNDED_OK;
     int64_t off = 0;
     while (off < n) {
-        ssize_t w = send(fd, buf + off, (size_t)(n - off), flags);
+        int64_t room = send_room(fd);
+        ssize_t w = -1;
+        if (room == 0) {
+            errno = EAGAIN;
+        } else if (room > 0) {
+            w = send_now(fd, buf + off, (size_t)(n - off < room ? n - off : room));
+        }
         if (w > 0) {
             off += w;
             continue;
         }
-        if (w < 0 && errno == EINTR) continue;
         if (w == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
             set_err("write: %s", w == 0 ? "no progress" : strerror(errno));
             st = LYRIC_BOUNDED_ERROR;
