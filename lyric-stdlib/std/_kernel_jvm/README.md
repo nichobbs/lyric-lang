@@ -43,10 +43,23 @@ by design (Unix-socket clients and `https://` listener prefixes, which
 the JDK's client/server APIs cannot express here — see the file
 headers).
 
-`tcp_host.l` (`Std.TcpHost`, #9042) is the JVM twin of `_kernel/tcp_host.l`
+`tcp_host.l` (`Std.TcpHost`, #9042, D611) is the JVM twin of `_kernel/tcp_host.l`
 over `java.net.Socket`, `ServerSocket` and `SSLSocket`, with the same `host*`
-surface; its server `SSLContext` comes from `http_server.l`'s
-`serverSslContextFromConfig[Mtls]`.
+surface including `hostShutdown` (D621, docs/73 slice S1). A read fills a
+per-connection `ByteBuffer` in place (a Lyric `slice[Byte]` argument is a copy,
+so the buffer's `array()` is passed straight to `InputStream.read` and never
+bound to a Lyric name); the write timeout of `hostSetIoTimeout` is enforced by
+one shared watchdog virtual thread that closes the underlying socket of a
+connection whose armed write deadline passed, not a thread per write. Its
+server `SSLContext` comes from `tls_server_context.l` (`Std.TlsServerContext`),
+which `Std.HttpServer` re-exports; `tcp_host.l` no longer imports
+`Std.HttpServer`, so the shared server driver of docs/73 can import
+`Std.TcpHost`.
+
+`tls_server_context.l` (`Std.TlsServerContext`) is JVM-only (no `_kernel/`
+twin): the `KeyManagerFactory`/`KeyStore` reflection bridge and TLS 1.2 floor
+check that build a server `SSLContext` from a `Std.Tls` `Identity` (and a
+client CA for mutual TLS).
 
 ## What does NOT live here
 

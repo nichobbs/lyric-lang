@@ -15946,7 +15946,9 @@ test "a member read and a Set method on a collection are T0113; dot-named and UF
 // still a user package.  The call `t.raw()` types as `Int` where `String` is returned, an error, only when the
 // dot-named `internal` function is visible to the file being checked.
 func internalVisibilityPackages(vis: in String): List[ImportedPackage] {
-  val key = parse("package Std.Key\npub record Thing { x: Int }\n" + vis + " func Thing.raw(t: in Thing): Int { t.x }\n")
+  val key = parse(
+    "package Std.Key\npub record Thing { x: Int }\n" + vis + " func Thing.raw(t: in Thing): Int { t.x }\n"
+  )
   val packages: List[ImportedPackage] = newList()
   packages.add(
     ImportedPackage(
@@ -16017,4 +16019,73 @@ test "a package that is not listed does not see a stdlib package's internal func
   val hidden = internalVisibilityCallType("Unlisted", "unlisted")
   val control = internalVisibilityCallType("Unlisted", "unlisted", "pub")
   assertTrue(hidden != control, "an unlisted importer got '" + hidden + "', the same as a visible function")
+}
+
+// D432: a stdlib package's `internal` functions, values and extern functions are visible to another stdlib
+// package and hidden from every other importer, whatever the importer's own name.
+func stdlibInternalPackages(importerIsStdlib: in Bool): List[ImportedPackage] {
+  val lib = parse(
+    "package Std.InternalLib\ninternal val limit: Int = 3\ninternal func helper(x: in Int): Int { x }\n" +
+      "internal extern func rawCall(x: Int): Int = \"raw\"\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Std.InternalLib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports),
+      stdlib = true
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Std.Sibling",
+      items = newList(),
+      imports = newList(),
+      wholeImports = newList(),
+      stdlib = importerIsStdlib
+    )
+  )
+  packages
+}
+
+func checkInternalUse(pkgName: in String, body: in String, importerIsStdlib: in Bool): CheckResult {
+  val src = "package " + pkgName + "\nimport Std.InternalLib\nfunc f(): Int {\n  " + body + "\n}\n"
+  checkWithImportedPackages(parse(src).file, stdlibInternalPackages(importerIsStdlib))
+}
+
+test "a stdlib internal func is visible to a stdlib importer" {
+  assertEqualInt(diagCount(checkInternalUse("Std.Sibling", "helper(1)", true)), 0, "stdlib importer sees it")
+}
+
+test "a stdlib internal func is hidden from a user package" {
+  assertTrue(
+    diagCount(checkInternalUse("App", "helper(1)", false)) > 0,
+    "user importer: the internal func does not resolve"
+  )
+}
+
+test "a stdlib internal val is hidden from a user package" {
+  assertEqualInt(diagCount(checkInternalUse("Std.Sibling", "limit", true)), 0, "stdlib importer sees the val")
+  assertTrue(diagCount(checkInternalUse("App", "limit", false)) > 0, "user importer: the internal val does not resolve")
+}
+
+test "a stdlib internal extern func is hidden from a user package" {
+  assertEqualInt(
+    diagCount(checkInternalUse("Std.Sibling", "rawCall(1)", true)),
+    0,
+    "stdlib importer sees the extern func"
+  )
+  assertTrue(
+    diagCount(checkInternalUse("App", "rawCall(1)", false)) > 0,
+    "user importer: the internal extern func does not resolve"
+  )
+}
+
+test "a user package named Std dot something is not a stdlib importer" {
+  assertTrue(
+    diagCount(checkInternalUse("Std.MyOwn", "helper(1)", false)) > 0,
+    "a name is not stdlib identity: Std.MyOwn sees pub items only"
+  )
 }

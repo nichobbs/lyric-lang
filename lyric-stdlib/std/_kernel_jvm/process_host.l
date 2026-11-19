@@ -51,7 +51,7 @@ extern type JEnvMap[K, V] = "java.util.Map"
 // (see the module header).
 func applyEnvOverlay(pb: in JProcessBuilder): Unit {
   val env: JEnvMap[String, String] = pb.environment()
-  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
+  hostForEachOverlayVar({ k, v -> val _: String? = env.put(k, v); () })
 }
 
 // Spawn a child process.  `fileName` is the executable path or name;

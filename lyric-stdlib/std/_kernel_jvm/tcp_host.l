@@ -3,19 +3,23 @@
 //! The JVM twin of `_kernel/tcp_host.l`: the same public `host*` surface
 //! (`hostListen`/`hostLocalPort`/`hostConnect`/`hostAccept`/`hostAcceptTls`/
 //! `hostPrepareServerTls`/`hostUpgradeServerTls[Prepared]`/`hostSetIoTimeout`/
-//! `hostAlpn`/`hostRead`/`hostWrite`/`hostRemoteAddress`/`hostClose`) over
-//! `java.net.Socket`, `java.net.ServerSocket` and `javax.net.ssl.SSLSocket`
-//! through the JVM auto-FFI. Before this file existed the .NET kernel was
-//! compiled for the JVM and failed with `J002` (#9042).
+//! `hostAlpn`/`hostRead`/`hostWrite`/`hostShutdown`/`hostRemoteAddress`/
+//! `hostClose`) over `java.net.Socket`, `java.net.ServerSocket` and
+//! `javax.net.ssl.SSLSocket` through the JVM auto-FFI. Before this file
+//! existed the .NET kernel was compiled for the JVM and failed with `J002`
+//! (#9042). D621 (docs/73 slice S1) made it fit to carry a server.
 //!
-//! Semantics shared with the .NET kernel, so a program written against
-//! `Std.TcpHost` runs unchanged on both targets:
+//! Semantics shared with the .NET and native kernels, so a program written
+//! against `Std.TcpHost` runs unchanged on every target:
 //!
 //!   - every operation returns `Result[_, TcpError]`; an SDK exception never
 //!     escapes the public API;
-//!   - `hostRead` returns an empty slice at end of stream;
+//!   - `hostRead` blocks for the first byte, returns what has arrived up to
+//!     `maxBytes`, and returns an empty slice at end of stream;
 //!   - `hostSetIoTimeout` bounds each blocking read and write by `timeoutMs`
 //!     of inactivity (`0` = none) and a timeout is `Err(TransportFailed(...))`;
+//!   - `hostShutdown` ends a read or write blocked on the connection from
+//!     another thread without releasing it (see its doc comment);
 //!   - `hostConnect` takes a connect timeout (`0` = the operating system's);
 //!   - `hostStopListener` closes the listening socket, which ends a
 //!     concurrent `hostAccept` with `Err(AcceptFailed(...))`;
@@ -24,33 +28,79 @@
 //!     and `clientCa`; a `clientCa` without `requireClientCert` asks for a
 //!     client certificate and verifies one that is sent).
 //!
-//! Representation notes:
+//! ## Reads
 //!
-//!   - A read blocks for the first byte (`InputStream.read()`), then takes
-//!     what `available()` reports without blocking further. This is how a
-//!     blocking stream is given the "return what has arrived" contract of
-//!     `NetworkStream.Read`; `InputStream.read(byte[], int, int)` cannot be
-//!     used because a Lyric `slice[Byte]` argument is passed as a copy there,
-//!     so the bytes read would never reach the caller.
-//!   - A write has no `SO_SNDTIMEO` equivalent on a blocking `java.net.Socket`.
-//!     When an I/O timeout is set the write runs on a virtual thread that is
-//!     abandoned, and the socket closed, after `timeoutMs` ms without
-//!     progress (the same watchdog `Net.Tcp.Kernel` uses in `lyric-ecosystem`).
-//!   - The server `SSLContext` is built by `Std.HttpServer`
-//!     (`serverSslContextFromConfig[Mtls]`), the one place that owns the
-//!     `KeyManagerFactory`/`KeyStore` reflection bridge and the TLS 1.2 floor
-//!     check, so there is exactly one server-context construction on this
-//!     target. Array-typed JDK parameters (`SSLParameters.setProtocols`,
-//!     `setApplicationProtocols`) are filled through `java.lang.reflect`,
-//!     because a Lyric `slice[T]` of references erases to `Object[]` at the
-//!     call site.
+//! A Lyric `slice[Byte]` is an `Object[]` of boxed bytes on this target, and
+//! passing one to a JDK `byte[]` parameter materialises a COPY, so
+//! `InputStream.read(byte[], int, int)` can only fill a buffer the Lyric side
+//! never holds as a `slice`. Each connection therefore owns one reusable
+//! `ByteBuffer` (16 KiB, the .NET kernel's `readBufferSize`) whose backing
+//! array is fetched as an extern argument in the same expression that
+//! consumes it (`stream.read(buffer.array(), 0, n)`): the compiler hands the
+//! raw `byte[]` through, `read` fills it in place, and only the `n` bytes that
+//! arrived leave as a fresh slice (`Arrays.copyOfRange`, then the one boxing
+//! pass the slice representation requires). That is the whole per-call cost:
+//! no `ByteArrayOutputStream`, no `available()`/`readNBytes()` follow-up
+//! calls, no per-call buffer. The buffer is never bound to a Lyric name
+//! (T0157, #8730), which would turn it into a copy. Reads on one connection
+//! must not run concurrently (they share the buffer).
+//!
+//! One `InputStream.read(buf, 0, n)` already has the contract of `hostRead`:
+//! it blocks until at least one byte is available and returns what is
+//! available up to `n`, so no buffered stream and no `available()` probe are
+//! needed. That also makes a TLS (`SSLSocket`) connection correct without
+//! relying on `SSLSocket.available()`, which reports only bytes of the
+//! current decrypted record and is zero between records: the SSL stream's own
+//! `read(buf, 0, n)` decrypts the next record when none is buffered and
+//! returns its application data.
+//!
+//! ## Writes and the write timeout
+//!
+//! A write has no `SO_SNDTIMEO` equivalent on a blocking `java.net.Socket`.
+//! When an I/O timeout is set, ONE shared watchdog (a single virtual thread
+//! started on first use, sweeping every 50 ms) enforces it: `hostWrite` stamps
+//! the connection's guard with a deadline before each write and clears it
+//! after, on the caller's own thread, so a write costs two atomic stores and no
+//! thread. The watchdog closes the underlying socket of a guard whose armed
+//! deadline has passed, which makes the blocked `write` throw; `hostWrite`
+//! then reports `TransportFailed("write timed out: ...")`. Cost model: the
+//! deadline is detected within one sweep (50 ms) after it expires, a connection
+//! with a timeout set costs one atomic read per sweep, and a connection whose
+//! socket is closed leaves the registry at the next sweep.
+//!
+//! Progress semantics are explicit and chunk-granular. A write of at most
+//! 64 KiB is one `OutputStream.write`, which gives no visibility into partial
+//! progress: it must complete as a whole within `timeoutMs` or the connection is
+//! closed, even if the peer was still accepting data slowly. A larger write is
+//! sent in 64 KiB chunks and every completed chunk re-arms a fresh `timeoutMs`
+//! window, so a peer that keeps draining is never cut off, while a peer that
+//! accepts nothing for `timeoutMs` ends the write at the limit. A timed-out
+//! write closes the connection (some of the bytes may have been sent; the
+//! caller cannot know how many). Writes on one connection must not run
+//! concurrently (they share the guard).
+//!
+//! ## Shutdown and close on TLS
+//!
+//! `SSLSocket` does not support half-close (`shutdownInput`/`shutdownOutput`
+//! throw `UnsupportedOperationException`), and closing it from another thread
+//! while a write holds the TLS output lock can itself block. `hostShutdown`
+//! therefore acts on the underlying plain `Socket` (kept in `Conn.raw`) for
+//! both connection kinds, which is what native's raw `shutdown(2)` and
+//! dotnet's `Socket.Shutdown` do; the watchdog likewise closes `raw`.
+//!
+//! The server `SSLContext` comes from `Std.TlsServerContext`
+//! (`_kernel_jvm/tls_server_context.l`), shared with `Std.HttpServer`, so this
+//! kernel no longer imports `Std.HttpServer`. Array-typed JDK parameters
+//! (`SSLParameters.setProtocols`, `setApplicationProtocols`) are filled
+//! through `java.lang.reflect`, because a Lyric `slice[T]` of references erases
+//! to `Object[]` at the call site.
 @axiom("java.net.Socket, ServerSocket and javax.net.ssl.SSLSocket operations conform to their documented JVM contracts")
 @io
 package Std.TcpHost
 
 import Std.Core
 import Std.Tls as Tls
-import Std.HttpServer as HttpSrv
+import Std.TlsServerContext as Ctx
 
 extern type JSocket = "java.net.Socket"
 
@@ -64,13 +114,25 @@ extern type JInputStream = "java.io.InputStream"
 
 extern type JOutputStream = "java.io.OutputStream"
 
-extern type JBAOS = "java.io.ByteArrayOutputStream"
+extern type JByteBuffer = "java.nio.ByteBuffer"
+
+extern type JArrays = "java.util.Arrays"
 
 extern type JRunnable = "java.lang.Runnable"
 
 extern type JThread = "java.lang.Thread"
 
+extern type JSystem = "java.lang.System"
+
 extern type JAtomicLong = "java.util.concurrent.atomic.AtomicLong"
+
+extern type JAtomicBoolean = "java.util.concurrent.atomic.AtomicBoolean"
+
+extern type JConcurrentHashMap = "java.util.concurrent.ConcurrentHashMap"
+
+extern type JSet = "java.util.Set"
+
+extern type JIterator = "java.util.Iterator"
 
 extern type JObject = "java.lang.Object"
 
@@ -121,18 +183,36 @@ pub opaque type Listener {
   server: JServerSocket
 }
 
-/// One connection. `writeTimeoutMs` is the inactivity limit of a write
-/// (`0` = none; a plain `java.net.Socket` has no send timeout of its own, see
-/// the module header), shared by the plain and the TLS-layered `Conn` of one
-/// socket; `alpn` is the negotiated ALPN protocol (`""` for a plain
-/// connection, or a TLS connection where the peer offered none).
+// The write watchdog's per-connection record (module header). `state` is 0
+// (no write in flight), 1 (a write is armed with `deadlineNanos`) or 2 (the
+// watchdog fired: the write timed out and `raw` was closed); only a
+// compare-and-set from 1 decides between "the write finished" and "the
+// watchdog fired", so a write that completes is never closed after the fact.
+// The registry holds one guard per connection with an I/O timeout, shared by
+// the plain and the TLS-layered `Conn` of one socket.
+ref record WriteGuard {
+  raw: JSocket
+  state: JAtomicLong
+  deadlineNanos: JAtomicLong
+}
+
+/// One connection. `socket` is the plain socket or the `SSLSocket` over it;
+/// `raw` is always the underlying plain socket (the one the watchdog and
+/// `hostShutdown` act on, module header); `readBuf` is the per-connection read
+/// buffer; `timeoutMs` is the I/O timeout (`0` = none) shared by the plain
+/// and the TLS-layered `Conn` of one socket; `alpn` is the negotiated ALPN
+/// protocol (`""` for a plain connection, or a TLS connection where the peer
+/// offered none).
 @experimental
 pub opaque type Conn {
   socket: JSocket
+  raw: JSocket
   input: JInputStream
   output: JOutputStream
+  readBuf: JByteBuffer
   alpn: String
-  writeTimeoutMs: JAtomicLong
+  timeoutMs: JAtomicLong
+  guard: WriteGuard
 }
 
 /// A server TLS configuration prepared once and reused for every accepted
@@ -145,14 +225,22 @@ pub opaque type ServerTls {
   wantClientAuth: Bool
 }
 
+// The listen queue length passed to `ServerSocket`: native passes 128 too;
+// dotnet's `TcpListener.Start()` asks for SOMAXCONN, which the operating
+// system clamps to its own limit (often larger), so a connection storm can
+// queue deeper on dotnet (D621).
 val backlog: Int = 128
 
-func wrapSocket(socket: in JSocket, alpn: in String, writeTimeoutMs: in JAtomicLong): Conn {
-  socket.setTcpNoDelay(true)
-  val input: JInputStream = socket.getInputStream()
-  val output: JOutputStream = socket.getOutputStream()
-  Conn(socket = socket, input = input, output = output, alpn = alpn, writeTimeoutMs = writeTimeoutMs)
-}
+val readBufferSize: Int = 16384
+
+val writeChunkBytes: Int = 65536
+
+val watchdogTickMs: Int = 50
+
+// Registry of guards with an I/O timeout, swept by the one watchdog thread.
+val guards: JSet = JConcurrentHashMap.newKeySet()
+
+val watchdogStarted: JAtomicBoolean = JAtomicBoolean.new()
 
 func closeQuietly(socket: in JSocket): Unit {
   try {
@@ -160,6 +248,86 @@ func closeQuietly(socket: in JSocket): Unit {
   } catch Bug as _ {
     ()
   }
+}
+
+// Called by the watchdog sweep for every guard, on its own thread.
+impl JRunnable for WriteGuard {
+  func run(): Unit {
+    try {
+      if self.raw.isClosed() {
+        val _ = guards.remove(self)
+      } else if self.state.get() == 1i64 {
+        val expired = JSystem.nanoTime() - self.deadlineNanos.get() >= 0i64
+        if expired and self.state.compareAndSet(1i64, 2i64) {
+          closeQuietly(self.raw)
+        }
+      }
+    } catch Bug as _ {
+      ()
+    }
+  }
+}
+
+ref record Watchdog {
+  tickMs: Int
+}
+
+func sweep(): Unit {
+  val it: JIterator = guards.iterator()
+  while it.hasNext() {
+    val g: JRunnable = it.next()
+    g.run()
+  }
+}
+
+impl JRunnable for Watchdog {
+  func run(): Unit {
+    while true {
+      try {
+        JThread.sleep(self.tickMs.toLong())
+        sweep()
+      } catch Bug as _ {
+        ()
+      }
+    }
+  }
+}
+
+func ensureWatchdog(): Unit {
+  if watchdogStarted.compareAndSet(false, true) {
+    val _ = JThread.startVirtualThread(Watchdog(tickMs = watchdogTickMs))
+  }
+}
+
+func newGuard(raw: in JSocket): WriteGuard {
+  WriteGuard(raw = raw, state = JAtomicLong.new(), deadlineNanos = JAtomicLong.new())
+}
+
+func wrapSocket(
+  socket: in JSocket, raw: in JSocket, alpn: in String, timeoutMs: in JAtomicLong, guard: in WriteGuard
+): Conn {
+  try {
+    socket.setTcpNoDelay(true)
+    val input: JInputStream = socket.getInputStream()
+    val output: JOutputStream = socket.getOutputStream()
+    Conn(
+      socket = socket,
+      raw = raw,
+      input = input,
+      output = output,
+      readBuf = JByteBuffer.allocate(readBufferSize),
+      alpn = alpn,
+      timeoutMs = timeoutMs,
+      guard = guard
+    )
+  } catch Bug as b {
+    closeQuietly(socket)
+    panic(failureText(b.typeName, b.message))
+  }
+}
+
+func wrapPlain(socket: in JSocket): Conn {
+  wrapSocket(socket, socket, "", JAtomicLong.new(), newGuard(socket))
 }
 
 func isTimeout(typeName: in String): Bool {
@@ -207,18 +375,22 @@ pub func hostLocalPort(l: in Listener): Int {
 pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): Result[Conn, TcpError]
   requires: connectTimeoutMs >= 0
 {
-  val socket: JSocket = JSocket.new()
   try {
-    val address: JInetSocketAddress = JInetSocketAddress.new(host, port)
-    socket.connect(address, connectTimeoutMs)
-    Ok(value = wrapSocket(socket, "", JAtomicLong.new()))
-  } catch Bug as b {
-    closeQuietly(socket)
-    if isTimeout(b.typeName) {
-      Err(error = TransportFailed(message = "connect timed out after " + connectTimeoutMs.toString() + " ms"))
-    } else {
-      Err(error = TransportFailed(message = failureText(b.typeName, b.message)))
+    val socket: JSocket = JSocket.new()
+    try {
+      val address: JInetSocketAddress = JInetSocketAddress.new(host, port)
+      socket.connect(address, connectTimeoutMs)
+      Ok(value = wrapPlain(socket))
+    } catch Bug as b {
+      closeQuietly(socket)
+      if isTimeout(b.typeName) {
+        Err(error = TransportFailed(message = "connect timed out after " + connectTimeoutMs.toString() + " ms"))
+      } else {
+        Err(error = TransportFailed(message = failureText(b.typeName, b.message)))
+      }
     }
+  } catch Bug as b {
+    Err(error = TransportFailed(message = failureText(b.typeName, b.message)))
   }
 }
 
@@ -239,7 +411,7 @@ pub func hostStopListener(l: in Listener): Unit {
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
   try {
     val socket: JSocket = l.server.accept()
-    Ok(value = wrapSocket(socket, "", JAtomicLong.new()))
+    Ok(value = wrapPlain(socket))
   } catch Bug as b {
     Err(error = AcceptFailed(message = failureText(b.typeName, b.message)))
   }
@@ -264,13 +436,13 @@ func validateServerConfig(cfg: in Tls.TlsServerConfig): Option[TcpError] {
 func buildContext(cfg: in Tls.TlsServerConfig): JSSLContext {
   match cfg.clientCa {
     case Some(ca) -> {
-      val sc = HttpSrv.serverSslContextFromConfigMtls(cfg.identity, cfg.minVersion, ca)
-      val ctx: JSSLContext = HttpSrv.ServerSslContext.rawContext(sc)
+      val sc = Ctx.serverSslContextFromConfigMtls(cfg.identity, cfg.minVersion, ca)
+      val ctx: JSSLContext = Ctx.ServerSslContext.rawContext(sc)
       ctx
     }
     case None -> {
-      val sc = HttpSrv.serverSslContextFromConfig(cfg.identity, cfg.minVersion)
-      val ctx: JSSLContext = HttpSrv.ServerSslContext.rawContext(sc)
+      val sc = Ctx.serverSslContextFromConfig(cfg.identity, cfg.minVersion)
+      val ctx: JSSLContext = Ctx.ServerSslContext.rawContext(sc)
       ctx
     }
   }
@@ -413,7 +585,7 @@ pub func hostUpgradeServerTlsPrepared(
       ssl.setSoTimeout(settled)
       val layered: JSocket = ssl
       val negotiated: String = ssl.getApplicationProtocol()
-      Ok(value = wrapSocket(layered, negotiated, conn.writeTimeoutMs))
+      Ok(value = wrapSocket(layered, conn.raw, negotiated, conn.timeoutMs, conn.guard))
     } catch Bug as b {
       closeQuietly(ssl)
       Err(error = TlsHandshakeFailed(message = failureText(b.typeName, b.message)))
@@ -447,13 +619,21 @@ pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Resul
 /// milliseconds of inactivity (`0` = no limit). A read or write that times
 /// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
 /// already closed ignores the call (its next read or write fails anyway).
+/// A read is bounded by `SO_TIMEOUT`; a write by the shared watchdog with the
+/// chunk-granular progress rule in the module header.
 @experimental
 pub func hostSetIoTimeout(conn: in Conn, timeoutMs: in Int): Unit
   requires: timeoutMs >= 0
 {
   try {
     conn.socket.setSoTimeout(timeoutMs)
-    conn.writeTimeoutMs.set(timeoutMs.toLong())
+    conn.timeoutMs.set(timeoutMs.toLong())
+    if timeoutMs > 0 {
+      val _ = guards.add(conn.guard)
+      ensureWatchdog()
+    } else {
+      val _ = guards.remove(conn.guard)
+    }
   } catch Bug as _ {
     ()
   }
@@ -466,34 +646,21 @@ pub func hostAlpn(c: in Conn): String {
   c.alpn
 }
 
-func baosWriteByte(acc: in JBAOS, b: in Int): Unit {
-  acc.write(b)
-}
-
-func baosWriteBytes(acc: in JBAOS, bytes: in slice[Byte]): Unit {
-  acc.write(bytes)
-}
-
 func readChunk(c: in Conn, maxBytes: in Int): slice[Byte] {
-  val acc: JBAOS = JBAOS.new()
-  val first = c.input.read()
-  if first < 0 {
-    return acc.toByteArray()
+  val want = if maxBytes < readBufferSize { maxBytes } else { readBufferSize }
+  val n: Int = c.input.read(c.readBuf.array(), 0, want)
+  if n <= 0 {
+    return []
   }
-  baosWriteByte(acc, first)
-  val avail = c.input.available()
-  if avail > 0 and maxBytes > 1 {
-    val want = if avail < maxBytes - 1 { avail } else { maxBytes - 1 }
-    baosWriteBytes(acc, c.input.readNBytes(want))
-  }
-  acc.toByteArray()
+  JArrays.copyOfRange(c.readBuf.array(), 0, n)
 }
 
 /// Read up to `maxBytes` bytes from the connection, blocking until at least
-/// one byte arrives. Returns the bytes actually read; an empty slice means
-/// the peer closed its half of the connection (EOF). A socket error or an I/O
-/// timeout is `Err(TransportFailed(...))`. Reads on one connection must not
-/// run concurrently.
+/// one byte arrives. Returns the bytes actually read (at most 16 KiB per call);
+/// an empty slice means the peer closed its half of the connection (EOF). A
+/// socket error or an I/O timeout is `Err(TransportFailed(...))`. Reads on one
+/// connection must not run concurrently (they share the connection's read
+/// buffer).
 @experimental
 pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
@@ -509,89 +676,70 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   }
 }
 
-func writeAll(output: in JOutputStream, bytes: in slice[Byte]): Unit {
-  output.write(bytes)
-  output.flush()
+func armWrite(g: in WriteGuard, timeoutMs: in Int): Unit {
+  g.deadlineNanos.set(JSystem.nanoTime() + timeoutMs.toLong() * 1000000i64)
+  g.state.set(1i64)
 }
 
-val writeChunkBytes: Int = 65536
-
-ref record WriteJob {
-  output: JOutputStream
-  bytes: slice[Byte]
-  progress: JAtomicLong
-  var failure: String
+// True when the write that just ran finished before the watchdog fired.
+func disarmWrite(g: in WriteGuard): Bool {
+  g.state.compareAndSet(1i64, 0i64)
 }
 
-func writeChunks(job: in WriteJob): Unit {
-  val total = job.bytes.length
-  if total <= writeChunkBytes {
-    job.output.write(job.bytes)
-  } else {
-    var offset = 0
-    while offset < total {
-      val stop = if total - offset < writeChunkBytes { total } else { offset + writeChunkBytes }
-      job.output.write(job.bytes.slice(offset, stop))
-      val _ = job.progress.incrementAndGet()
-      offset = stop
-    }
-  }
-  job.output.flush()
-}
-
-impl JRunnable for WriteJob {
-  func run(): Unit {
-    try {
-      writeChunks(self)
-    } catch Bug as b {
-      self.failure = failureText(b.typeName, b.message)
-    }
-  }
-}
-
-func writerFinished(writer: in JThread, job: in WriteJob, timeoutMs: in Int): Bool {
-  var seen = 0i64
-  while true {
-    writer.join(timeoutMs.toLong())
-    if not writer.isAlive() {
-      return true
-    }
-    val now = job.progress.get()
-    if now == seen {
-      return false
-    }
-    seen = now
-  }
-  true
+func writeTimedOut(timeoutMs: in Int): TcpError {
+  TransportFailed(message = "write timed out: the peer accepted no data for " + timeoutMs.toString() + " ms")
 }
 
 func writeWithin(c: in Conn, bytes: in slice[Byte], timeoutMs: in Int): Result[Unit, TcpError] {
-  val job = WriteJob(output = c.output, bytes = bytes, progress = JAtomicLong.new(), failure = "")
-  val writer: JThread = JThread.startVirtualThread(job)
-  if not writerFinished(writer, job, timeoutMs) {
-    closeQuietly(c.socket)
-    return Err(
-      error = TransportFailed(
-        message = "write timed out: the peer accepted no data for " + timeoutMs.toString() + " ms"
-      )
-    )
-  }
-  if job.failure.length > 0 {
-    Err(error = TransportFailed(message = job.failure))
-  } else {
-    Ok(value = ())
+  val g = c.guard
+  val total = bytes.length
+  try {
+    armWrite(g, timeoutMs)
+    if total <= writeChunkBytes {
+      c.output.write(bytes)
+    } else {
+      var offset = 0
+      while offset < total {
+        val stop = if total - offset < writeChunkBytes { total } else { offset + writeChunkBytes }
+        c.output.write(bytes.slice(offset, stop))
+        offset = stop
+        if offset < total {
+          if g.state.get() != 1i64 {
+            return Err(error = writeTimedOut(timeoutMs))
+          }
+          g.deadlineNanos.set(JSystem.nanoTime() + timeoutMs.toLong() * 1000000i64)
+        }
+      }
+    }
+    c.output.flush()
+    if disarmWrite(g) {
+      Ok(value = ())
+    } else {
+      Err(error = writeTimedOut(timeoutMs))
+    }
+  } catch Bug as b {
+    if disarmWrite(g) {
+      Err(error = TransportFailed(message = failureText(b.typeName, b.message)))
+    } else {
+      Err(error = writeTimedOut(timeoutMs))
+    }
   }
 }
 
 /// Write all of `bytes` to the connection and flush. A broken pipe, a reset
 /// connection or an I/O timeout is `Err(TransportFailed(...))` rather than an
-/// uncaught exception.
+/// uncaught exception. With an I/O timeout set, the progress rule of the
+/// module header applies (a write of at most 64 KiB must complete within the
+/// limit; a larger one gets a fresh window per 64 KiB chunk) and a timed-out
+/// write closes the connection. Writes on one connection must not run
+/// concurrently.
 @experimental
 pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   try {
-    val limit = c.writeTimeoutMs.get().toInt()
+    val limit = c.timeoutMs.get().toInt()
     if limit == 0 {
-      writeAll(c.output, bytes)
+      c.output.write(bytes)
+      c.output.flush()
       Ok(value = ())
     } else {
       writeWithin(c, bytes, limit)
@@ -619,9 +767,33 @@ pub func hostRemoteAddress(c: in Conn): String {
   }
 }
 
+/// Interrupt a blocking `hostRead`/`hostWrite` in progress on this connection
+/// FROM ANOTHER THREAD, without releasing the connection (that stays the owning
+/// thread's job, via `hostClose`). Shuts down both directions of the underlying
+/// TCP socket, for a plain and a TLS connection alike (module header): a
+/// blocked read returns end of stream (an empty slice, or an `Err` on a TLS
+/// connection whose peer sent no close_notify) and a blocked write fails with
+/// `Err(TransportFailed(...))`. No TLS close_notify is sent. `hostClose` is
+/// still required afterwards and is safe to call after a shutdown.
+@experimental
+pub func hostShutdown(c: in Conn): Unit {
+  try {
+    c.raw.shutdownInput()
+  } catch Bug as _ {
+    ()
+  }
+  try {
+    c.raw.shutdownOutput()
+  } catch Bug as _ {
+    ()
+  }
+}
+
 /// Close the connection, releasing the socket (and, for a TLS connection, the
 /// `SSLSocket` over it). Swallows a double close.
 @experimental
 pub func hostClose(c: in Conn): Unit {
+  val _ = guards.remove(c.guard)
   closeQuietly(c.socket)
+  closeQuietly(c.raw)
 }

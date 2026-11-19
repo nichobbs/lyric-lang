@@ -31,7 +31,7 @@ pub func hostSetConfigOverride(key: in String, value: in String): Unit {
 
 /// The non-empty value registered for `key`, if any.
 pub func hostGetConfigOverride(key: in String): Option[String] {
-  val v = JCoSystem.getProperty(key) ?? ""
+  val v: String = JCoSystem.getProperty(key) ?? ""
   if v.length == 0 {
     None
   } else {
