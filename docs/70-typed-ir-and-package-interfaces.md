@@ -913,6 +913,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
+  - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
   - `typeHasUnsolved` matches `TyError(_)` rather than binding the bare name `TyError`, so it answers for its argument and builds (D455).
