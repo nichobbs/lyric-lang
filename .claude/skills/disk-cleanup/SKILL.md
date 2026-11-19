@@ -44,8 +44,8 @@ Bash commands initialise (a few MB is plenty):
 
 1. **Build artefacts under `bootstrap/`** — large but non-essential
    text files:
-   - `bootstrap/src/Lyric.<X>/obj/Debug/net10.0/project.assets.json`
-   - `bootstrap/src/Lyric.<X>/obj/Debug/net10.0/Lyric.<X>.deps.json`
+   - `bootstrap/src/Lyric.<X>/obj/Debug/<tfm>/project.assets.json`
+   - `bootstrap/src/Lyric.<X>/obj/Debug/<tfm>/Lyric.<X>.deps.json`
    - `bootstrap/tests/Lyric.<X>.Tests/obj/.../*.deps.json`
    - The `.csproj.FileListAbsolute.txt` files under any `obj/`.
    These all regenerate on the next `dotnet build`.

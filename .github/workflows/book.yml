@@ -83,7 +83,7 @@ jobs:
 
       - name: Generate stdlib API documentation
         run: |
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/lyric"
           chmod +x "$lyric_bin"
           cd lyric-stdlib
           "$PWD/../$lyric_bin" doc -o ../stdlib-docs

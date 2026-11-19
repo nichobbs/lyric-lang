@@ -22,7 +22,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 if [ -n "${BUILD_CONFIG:-}" ]; then
-  default_bin="$repo/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric"
+  default_bin="$repo/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/lyric"
 else
   default_bin="$repo/bin/lyric"
 fi

@@ -44,6 +44,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Emitter as Emitter
+import Lyric.DotnetTarget as DT
 
 // ─── Harness ─────────────────────────────────────────────────────────────────
 func tempBase(): String {
@@ -67,12 +68,7 @@ func cleanup(dir: in String): Unit {
 }
 
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfig(dllPath: in String): Unit {
@@ -618,14 +614,18 @@ test "a generic body's omitted default binds the checker's overload when special
 // and after the weave; the extern calls it makes must resolve both times, and a
 // sibling package with the original import list must keep resolving its own.
 func weaveInjectedImportLib(): String {
-  "package Rd.Lib\n\nextern type JMath = \"java.lang.Math\"\n\n" + "aspect Timing {\n  matches: name like \"timedAbs\"\n" +
+  "package Rd.Lib\n\nextern type JMath = \"java.lang.Math\"\n\n" +
+    "aspect Timing {\n  matches: name like \"timedAbs\"\n" +
     "  around(args) -> ret {\n    val r = proceed(args)\n    val e = call.elapsed\n    r\n  }\n}\n\n" +
-    "pub func timedAbs(x: in Int): Int {\n  JMath.abs(x)\n}\n\n" + "pub func plainMax(a: in Int, b: in Int): Int {\n  JMath.max(a, b)\n}\n"
+    "pub func timedAbs(x: in Int): Int {\n  JMath.abs(x)\n}\n\n" +
+    "pub func plainMax(a: in Int, b: in Int): Int {\n  JMath.max(a, b)\n}\n"
 }
 
 func weaveInjectedImportApp(): String {
   "package Rd.App\n\nimport Rd.Lib\n\nextern type JMath2 = \"java.lang.Math\"\n\nfunc main(): Unit {\n" +
-    "  println(toString(timedAbs(-7)))\n" + "  println(toString(plainMax(3, 9)))\n" + "  println(toString(JMath2.min(4, 2)))\n}\n"
+    "  println(toString(timedAbs(-7)))\n" +
+    "  println(toString(plainMax(3, 9)))\n" +
+    "  println(toString(JMath2.min(4, 2)))\n}\n"
 }
 
 test "extern calls resolve before and after the weave injects an import on the JVM (#7658)" {
@@ -633,7 +633,11 @@ test "extern calls resolve before and after the weave injects an import on the J
   e.add("7")
   e.add("9")
   e.add("2")
-  assertLines("jvm weave import", runBundle("weave-import", true, weaveInjectedImportLib(), weaveInjectedImportApp()), e)
+  assertLines(
+    "jvm weave import",
+    runBundle("weave-import", true, weaveInjectedImportLib(), weaveInjectedImportApp()),
+    e
+  )
 }
 
 // #7175: a restored `exposed record`, plain and generic, constructs and reads

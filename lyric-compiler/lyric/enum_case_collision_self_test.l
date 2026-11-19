@@ -182,6 +182,7 @@ import Lyric.Parser
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Lyric.Emitter as Emitter
+import Lyric.DotnetTarget as DT
 
 // ─── Shared fixture sources ─────────────────────────────────────────────────
 // `HttpVersion.Http11` is ordinal 1 (Http10 is 0); `ConnState.Http11` is
@@ -444,12 +445,7 @@ func cleanup(dir: in String): Unit {
 
 // ─── MSIL helpers (mirrors msil_project_bridge_self_test.l's compileAndRun) ──
 func runtimeConfigJson(): String {
-  "{\n" + "  \"runtimeOptions\": {\n" + "    \"tfm\": \"net10.0\",\n" + "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  DT.runtimeConfigJson("")
 }
 
 func writeRuntimeConfig(dllPath: in String): Unit {
