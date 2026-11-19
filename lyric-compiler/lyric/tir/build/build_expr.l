@@ -1774,8 +1774,13 @@ func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
   }
 }
 
-/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.  A `Unit` block discards its
+/// tail, so `Unit` says nothing about the tail's own type (a host call left untyped by the checker keeps its
+/// host result there, `if stop { proc.destroyForcibly() }`).
 func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if isUnitTy(ty) {
+    return
+  }
   if blk.statements.count > 0 {
     match blk.statements[blk.statements.count - 1].kind {
       case SExpr(tail) -> settleHole(env, tail, ty)

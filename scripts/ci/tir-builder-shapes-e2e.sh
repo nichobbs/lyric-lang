@@ -1053,6 +1053,15 @@ func waitFor(t: in JThread, ms: in Long): Unit {
   t.join(ms)
 }
 
+extern type JProcess = "java.lang.Process"
+
+// A host call whose value a `Unit` block discards keeps its host result type.
+func stopIf(p: in JProcess, flag: in Bool): Unit {
+  if flag {
+    p.destroyForcibly()
+  }
+}
+
 func childCount(path: in String): Int {
   val d = JFile.new(path)
   val children: slice[JFile] = d.listFiles() ?? []

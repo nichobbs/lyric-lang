@@ -68,7 +68,7 @@ pub func trustedHostRuntime(): String {
 
 /// Why this process cannot load a plugin jar, or `""` when it can.
 pub func trustedHostUnavailableReason(): String {
-  val imageCode = JSystem.getProperty("org.graalvm.nativeimage.imagecode") ?? ""
+  val imageCode: String = JSystem.getProperty("org.graalvm.nativeimage.imagecode") ?? ""
   if imageCode.length > 0 {
     "this host is a GraalVM native image, which cannot load a plugin jar; run the plugin in process or wasm mode, " +
       "or host it from the jar"
@@ -83,7 +83,7 @@ pub func trustedHostUnavailableReason(): String {
 pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   try {
     val jar = JJarFile.new(path)
-    val mainClass = jar.getManifest().getMainAttributes().getValue("Main-Class") ?? ""
+    val mainClass: String = jar.getManifest().getMainAttributes().getValue("Main-Class") ?? ""
     jar.close()
     if mainClass.length == 0 {
       return Err(error = path + " has no Main-Class; a trusted plugin jar is built from a @plugin record")

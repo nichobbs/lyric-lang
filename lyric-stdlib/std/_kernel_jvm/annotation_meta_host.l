@@ -80,7 +80,7 @@ pub func hostAnnotationMetaSupported(): Bool {
 /// carries one.
 pub func hostAnnotationMetaDocuments(): slice[String] {
   val acc: List[String] = newList()
-  val classPath = JAmSystem.getProperty("java.class.path") ?? ""
+  val classPath: String = JAmSystem.getProperty("java.class.path") ?? ""
   val entries = Str.split(classPath, JAmFile.pathSeparator)
   var i = 0
   while i < entries.length {
