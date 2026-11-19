@@ -63,7 +63,7 @@ func collectFromAssembly(asm: in NetAmAssembly, acc: in List[String]): Unit {
   if asm.IsDynamic {
     return
   }
-  val names = asm.GetManifestResourceNames()
+  val names: slice[String] = asm.GetManifestResourceNames()
   var i = 0
   while i < names.length {
     if isAnnotationMetaResource(names[i]) {

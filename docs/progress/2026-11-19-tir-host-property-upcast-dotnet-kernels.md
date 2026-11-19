@@ -1,0 +1,3 @@
+# docs/70 phase 3a: a host property read at a superclass, and the dotnet kernel locals (D417)
+
+`Std.HttpHost::requestHeaders` and `byteContentHeaders` (the `Headers` properties of `HttpRequestMessage` and `ByteArrayContent`) build: a host property or static member whose declared result is a subclass of the class the context declares is read through the same upcast `hostResultNode` already gives a call (D417). `Std.PluginTrustedHost` and `Std.AnnotationMetaHost` declare the host results they bind, which clears the other three dotnet standard-library bodies the always-on gate dry run found. New shape: `host_property_upcast`.
