@@ -221,7 +221,7 @@ pub func hostIsDirSymlink(path: in String): Bool {
   if not hostDirectoryExists(path) {
     return false
   }
-  val target = DirectoryInfo.new(path).LinkTarget ?? ""
+  val target: String = DirectoryInfo.new(path).LinkTarget ?? ""
   target.length > 0
 }
 
@@ -365,7 +365,7 @@ pub func hostRealPathResult(path: in String): Result[String, IOError] {
         if hops > maxSymlinkHops {
           return Err(error = IoError(path = path, message = "too many levels of symbolic links"))
         }
-        val target = DirectoryInfo.new(candidate).LinkTarget ?? ""
+        val target: String = DirectoryInfo.new(candidate).LinkTarget ?? ""
         if target.length == 0 {
           return Err(error = IoError(path = path, message = "cannot read the symbolic link"))
         }
@@ -463,7 +463,7 @@ func lstatFileType(path: in String): Int {
 @unsafe_ffi
 pub func hostPathKindNoFollow(path: in String): Int {
   if NetOs.IsWindows() {
-    val target = FileInfo.new(path).LinkTarget ?? ""
+    val target: String = FileInfo.new(path).LinkTarget ?? ""
     if target.length > 0 {
       return 3
     }

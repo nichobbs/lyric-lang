@@ -13931,7 +13931,9 @@ func inferMatchExprCore(
       case None -> ()
     }
   }
-  var acc: Type = tyErrorSilent()
+  // The fold starts at `Never`, which every arm type absorbs, so a `match` whose arms all diverge is
+  // `Never` (`TyError` here would leave the node with no type and no diagnostic, I0001/I0002).
+  var acc: Type = TyPrim(pt = PtNever)
   var ui = 0
   while ui < armTypes.count {
     acc = unifyBranchTypes(acc, armTypes[ui], armSpans[ui], diag, isValuePosition)

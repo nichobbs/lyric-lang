@@ -13,7 +13,7 @@ extern type JPluginSystem = "java.lang.System"
 /// The host operating system: `"linux"`, `"macos"`, `"windows"`, or
 /// `"other"`.
 pub func hostPluginOs(): String {
-  val name = JPluginSystem.getProperty("os.name") ?? ""
+  val name: String = JPluginSystem.getProperty("os.name") ?? ""
   if name.startsWith("Windows") {
     "windows"
   } else if name.startsWith("Mac") {
@@ -28,7 +28,7 @@ pub func hostPluginOs(): String {
 /// The processor architecture: `"x86_64"`, `"aarch64"`, or `"other"`.
 /// The JDK reports `amd64` on Linux and Windows and `x86_64` on macOS.
 pub func hostPluginArch(): String {
-  val arch = JPluginSystem.getProperty("os.arch") ?? ""
+  val arch: String = JPluginSystem.getProperty("os.arch") ?? ""
   if arch == "amd64" or arch == "x86_64" {
     "x86_64"
   } else if arch == "aarch64" or arch == "arm64" {

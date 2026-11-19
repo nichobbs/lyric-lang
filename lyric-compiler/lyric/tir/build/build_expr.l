@@ -722,6 +722,7 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // The logical operators are typed by the checker from their `Bool` operands or built as short-circuits (`shortOfBinop`).
   // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
   // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
   match e.kind {
@@ -763,14 +764,15 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
           name,
           args.count,
           false,
-          h.isStatic
+          h.isStatic,
+          checkerArgTys(env, args)
         )
         case None -> None
       }
       case _ -> None
     }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic)
+      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
       case None -> match openLocalBuiltinProperty(env, recv, name) {
         case Some(_) -> Some(value = tyInt())
         case None -> None
@@ -848,10 +850,7 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 /// (docs/01 section 2.11), as `CvFromHost` over the local.
 func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
   match declared {
-    case TNullable(TPrim(TPString)) -> match read {
-      case TPrim(TPString) -> true
-      case _ -> false
-    }
+    case TNullable(TPrim(TPString)) -> match read { case TPrim(TPString) -> true; case _ -> false }
     case _ -> false
   }
 }
@@ -890,6 +889,60 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   }
 }
 
+/// The checker's types of a call's positional arguments, or an empty list when any is named or untyped: the
+/// arguments an overload of an untyped host call is chosen by (`Math.round(d)`).
+func checkerArgTys(env: in BuildEnv, args: in List[CallArg]): List[Ty] {
+  val tys: List[Ty] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> tys.add(t)
+        case Err(_) -> return newList()
+      }
+      case CANamed(_, _, _) -> return newList()
+    }
+  }
+  tys
+}
+
+/// The candidates whose parameters fit the argument types best, when the host's overloads of one arity differ
+/// in their result (`Math.round(float): Int`, `Math.round(double): Long`) and the arguments are known.  A tie
+/// between distinct parameter lists, or no argument types, leaves every candidate.
+func narrowByArgTys(
+  env: in BuildEnv,
+  cands: in List[ExternMemberSig],
+  targs: in List[Ty],
+  argTys: in List[Ty],
+  argc: in Int,
+): List[ExternMemberSig] {
+  if cands.count < 2 or argTys.count != argc or argc == 0 {
+    return cands
+  }
+  var best: List[ExternMemberSig] = newList()
+  var bestScore = -1
+  for c in cands {
+    if c.params.count == argc {
+      match scoreOverload(env, c, targs, argTys) {
+        case Some(fit) -> {
+          if fit.score > bestScore {
+            bestScore = fit.score
+            best = newList()
+            best.add(c)
+          } else if fit.score == bestScore {
+            best.add(c)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  if best.count == 0 {
+    cands
+  } else {
+    best
+  }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv,
@@ -898,11 +951,13 @@ func hostChainResult(
   argc: in Int,
   isProperty: in Bool,
   wantStatic: in Bool,
+  argTys: in List[Ty],
 ): Option[Ty] {
-  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
+  val allCands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
     case Some(c) -> c
     case None -> return None
   }
+  val cands = narrowByArgTys(env, allCands, host.args, argTys, argc)
   var result: Option[Ty] = None
   for c in cands {
     if c.isStatic != wantStatic {
@@ -940,6 +995,10 @@ func hostChainResult(
             }
           }
         }
+        case EIEPrim(_) -> match hostElemTy(el, host.args, TirT.TNever) {
+          case Some(x) -> x
+          case None -> return None
+        }
         case _ -> return None
       }
     }
@@ -949,6 +1008,12 @@ func hostChainResult(
         // (`StringBuilder.append` also returns `AbstractStringBuilder` and `Appendable`): the covariant
         // override that returns the receiver's own class is the one a call binds.
         if isHostClassTy(t, host.name) {
+          result = Some(value = t)
+        } else if isRootObjectTy(t) {
+          // A covariant override and the bridge method that returns the root class (`ByteBuffer.array()`
+          // is `byte[]`, `Buffer.array()` is `Object`): the override is the member a call binds.
+          ()
+        } else if isRootObjectTy(prev) {
           result = Some(value = t)
         } else if not isHostClassTy(prev, host.name) {
           return None
@@ -960,6 +1025,14 @@ func hostChainResult(
     }
   }
   result
+}
+
+/// Whether `t` is the host's root object class.
+func isRootObjectTy(t: in Ty): Bool {
+  match t {
+    case TExtern(h) -> isHostObject(h.name)
+    case _ -> false
+  }
 }
 
 /// Whether `t` is the host class `name`.
@@ -1154,6 +1227,8 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case Some(lt0) -> match op {
           case BEq -> settleHole(env, rhs, lt0.ty)
           case BNeq -> settleHole(env, rhs, lt0.ty)
+          // `host() ?? []`: the default is the type the coalesce has, declared at the local it initialises.
+          case BCoalesce -> settleHole(env, rhs, ty)
           case _ -> ()
         }
         case None -> ()
@@ -1702,8 +1777,13 @@ func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
   }
 }
 
-/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.  A `Unit` block discards its
+/// tail, so `Unit` says nothing about the tail's own type (a host call left untyped by the checker keeps its
+/// host result there, `if stop { proc.destroyForcibly() }`).
 func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if isUnitTy(ty) {
+    return
+  }
   if blk.statements.count > 0 {
     match blk.statements[blk.statements.count - 1].kind {
       case SExpr(tail) -> settleHole(env, tail, ty)
@@ -2547,10 +2627,6 @@ func buildFnCore(
   }
 }
 
-/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
-/// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol.  Contracts are built with the body: a clause the
-/// builder has no case for fails it like any other expression.
 /// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
 func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
   match b.ty {
@@ -2575,6 +2651,10 @@ func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
   }
 }
 
+/// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
+/// parameters become the outermost locals; a generic function binds its type
+/// parameters to its symbol.  Contracts are built with the body: a clause the
+/// builder has no case for fails it like any other expression.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
@@ -3441,7 +3521,10 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         case TSlice(_) -> n == hostArrayName()
         case TArray(_, _) -> n == hostArrayName()
         // An erased generic's `Object` result instantiated at `String` is a string the host may return null for.
-        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n) or isHostObject(n); case _ -> false }
+        case TNullable(inner) -> match inner {
+          case TPrim(TPString) -> isHostStringName(n) or isHostObject(n)
+          case _ -> false
+        }
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
@@ -3454,10 +3537,14 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // A host collection's erased `Object` result read as the Lyric record or union stored in it
         // (`val state: RegistryState = registryMap.get(key)`): the checker instantiates the call at the
         // declared type.
+        // The stored value is not checked here: `CvFromHost` casts it at run time, so a host collection holding
+        // another type fails at that cast, as the checker's unchecked host result (docs/01 section 2.11) allows.
         case TNamed(sym, targs) -> (not isBuiltinSymbol(sym) and isHostObject(n)) or
-          (isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
-            (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
-            isHostTaskName(n))
+          (
+            isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
+              (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
+              isHostTaskName(n)
+          )
         case _ -> false
       }
     }
@@ -4280,10 +4367,7 @@ func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String):
     case Some(t) -> match t {
       case TSlice(_) -> Some(value = "slice.length")
       case TArray(_, _) -> Some(value = "array.length")
-      case TPrim(k) -> match k {
-        case TPString -> Some(value = "String.length")
-        case _ -> None
-      }
+      case TPrim(k) -> match k { case TPString -> Some(value = "String.length"); case _ -> None }
       case _ -> None
     }
     case None -> None
@@ -4513,7 +4597,9 @@ record LambdaSig {
 /// to a global, or through `self` or a host member, is counted.
 func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
   // A local is assigned at the type it was declared at, whether or not the checker recorded a type
-  // for the target (a local bound to an unchecked host result, `chunk = s.readNBytes(4)`).
+  // for the target (a local bound to an unchecked host result, `chunk = s.readNBytes(4)`).  Where the checker did
+  // record a type for the target it agrees with the declared one (an assignment of another type is rejected by the
+  // checker before the builder runs), so the declared type is the one used.
   match target.kind {
     case EPath(p) -> if p.segments.count == 1 {
       match lookupLocal(env, p.segments[0]) {
@@ -5146,6 +5232,17 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   match convertValue(env, t, pty) {
     case Some(c) -> Some(value = c)
     case None -> {
+      // A host value passed where a Lyric collection of the host's root object class takes its element
+      // (`List[JObject].add(address)`): the host takes the reference.
+      match pty {
+        case TExtern(h) -> match t.ty {
+          case TExtern(_) -> if isHostObject(h.name) {
+            return Some(value = convertNode(env, t, pty, CvBoxToHost(host = h)))
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       noteUncoveredAt(env, "an argument conversion", t.span)
       env.errors.add(
         "I0002: the builder has no case for an argument conversion from " + renderTyNamed(env, t.ty) + " to " +

@@ -174,7 +174,7 @@ func runImpl(
 // — see `_kernel_jvm/process_host.l`'s identical helper.
 func applyEnvOverlay(pb: in JProcessBuilder): Unit {
   val env: JEnvMap[String, String] = pb.environment()
-  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
+  hostForEachOverlayVar({ k, v -> val _: String? = env.put(k, v); () })
 }
 
 // Run the already-tokenised command line `cmdList` (executable first).

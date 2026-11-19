@@ -132,7 +132,7 @@ func nanoTime(): Long {
 func buildProcessBuilder(cmd: in List[String]): JProcessBuilder {
   val pb = JProcessBuilder.new(cmd)
   val env: JEnvMap[String, String] = pb.environment()
-  hostForEachOverlayVar({ k, v -> val _ = env.put(k, v); () })
+  hostForEachOverlayVar({ k, v -> val _: String? = env.put(k, v); () })
   val withErrInherit: JProcessBuilder = pb.redirectError(JRedirect.INHERIT)
   withErrInherit
 }
