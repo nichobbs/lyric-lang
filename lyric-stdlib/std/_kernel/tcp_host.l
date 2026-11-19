@@ -534,12 +534,13 @@ pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): R
     // here — after the client is already connected — closes the socket
     // before returning the error instead of leaking it (#6057).
     val stream = try {
-      clientStream(client)
+      val s = clientStream(client)
+      clientSetNoDelay(client, true)
+      s
     } catch Bug as b {
       clientClose(client)
       return Err(error = TransportFailed(message = b.message))
     }
-    clientSetNoDelay(client, true)
     Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
@@ -567,12 +568,13 @@ pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
     // here — after the socket is already accepted — closes it before
     // returning the error instead of leaking it (#6057).
     val stream = try {
-      clientStream(client)
+      val s = clientStream(client)
+      clientSetNoDelay(client, true)
+      s
     } catch Bug as b {
       clientClose(client)
       return Err(error = AcceptFailed(message = b.message))
     }
-    clientSetNoDelay(client, true)
     Ok(value = Conn(client = client, stream = stream, alpn = "", readBuf = allocBuffer(readBufferSize)))
   } catch Bug as b {
     Err(error = AcceptFailed(message = b.message))
