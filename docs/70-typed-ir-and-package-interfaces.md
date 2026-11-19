@@ -912,6 +912,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - An index of a range subtype or distinct type over an integer is that integer through an explicit unwrap (D497).
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
+  - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A union case built where the checker erased an argument's type (a lambda parameter in a generic function) and recorded no signature takes its fields from the case at the type its node settled at (D429).
