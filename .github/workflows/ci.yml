@@ -1992,6 +1992,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_array_abi_self_test.l
 
+      # `slice_literal_binding_array_self_test.l`: an unannotated binding of a
+      # bracket literal (`val parts = ["a", n.toString()]`) is built as the
+      # `slice[String]` the checker typed it as, not a `List<object>` the
+      # array-typed extern / cross-assembly parameter then misreads (memory-
+      # unsafe).  `--target dotnet` only: it binds a BCL `String[]` extern.
+      - name: Slice literal binding array-ABI self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/slice_literal_binding_array_self_test.l
+
       # Concurrency cap: this first parallel group had grown to 28 background
       # steps — well past the ~18 peak this job's header comment documents as
       # safe — and intermittently misreported an already-passing step as failed

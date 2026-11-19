@@ -850,6 +850,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case CvFromHost -> match inner.ty {
           case TExtern(_) -> ()
           case TSlice(TExtern(_)) -> ()
+          // A host string typed `String?` read as the `String` the checker wants (D435).
+          case TNullable(TPrim(TPString)) -> ()
           case _ -> report(
             c,
             e.id,
