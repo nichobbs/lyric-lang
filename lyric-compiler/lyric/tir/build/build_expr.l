@@ -741,8 +741,52 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case Some(t) -> Some(value = t)
     case None -> match openPropagateYield(env, e) {
       case Some(t) -> Some(value = t)
-      case None -> openHostChainTy(env, e)
+      case None -> match openHostChainTy(env, e) {
+        case Some(t) -> Some(value = t)
+        case None -> openIfTy(env, e)
+      }
     }
+  }
+}
+
+/// The type of an `if`/`else` the checker left untyped because its branches end in host calls it could not type
+/// (`if secure { t.connect(host, port, user, pw) } else { t.connect() }`): the type its two branches agree on.
+func openIfTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EIf(_, thenBranch, Some(elseBranch), _) -> match branchOpenTy(env, thenBranch) {
+      case Some(a) -> match branchOpenTy(env, elseBranch) {
+        case Some(b) -> if tyEq(a, b) {
+          Some(value = a)
+        } else {
+          None
+        }
+        case None -> None
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+func branchOpenTy(env: in BuildEnv, b: in ExprOrBlock): Option[Ty] {
+  match b {
+    case EOBExpr(x) -> exprOrOpenTy(env, x)
+    case EOBBlock(blk) -> {
+      if blk.statements.count == 0 {
+        return Some(value = tyUnit())
+      }
+      match blk.statements[blk.statements.count - 1].kind {
+        case SExpr(t) -> exprOrOpenTy(env, t)
+        case _ -> None
+      }
+    }
+  }
+}
+
+func exprOrOpenTy(env: in BuildEnv, x: in Expr): Option[Ty] {
+  match exprTy(env.ctx, x.nodeId) {
+    case Ok(t) -> Some(value = t)
+    case Err(_) -> openHoleTy(env, x)
   }
 }
 
@@ -821,7 +865,13 @@ func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
 /// gives, else the host class it names as an `extern type`.
 func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
   match exprTy(env.ctx, recv.nodeId) {
-    case Ok(t) -> match t { case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false)); case _ -> None }
+    case Ok(t) -> match t {
+      case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
+      // A language `String` is the host's string, so a member the checker has no case for
+      // (`encoded.getBytes("US-ASCII")`) is the host string class's own.
+      case TPrim(TPString) -> hostStringReceiver(env)
+      case _ -> None
+    }
     case Err(_) -> match openHostChainTy(env, recv) {
       case Some(t) -> match t {
         case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
@@ -843,6 +893,22 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
       }
     }
   }
+}
+
+/// The receiver of a member call on a language `String`: the host's string class, under the name the active
+/// target's metadata knows (the JVM resolver reads JDK classes, the dotnet one reference assemblies).  The first
+/// resolver is the only one: a build has one active target.
+func hostStringReceiver(env: in BuildEnv): Option[HostRecv] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  for n in ["java.lang.String", "System.String"] {
+    match env.ctx.tbl.externIterResolver[0].resolveBases(n) {
+      case Some(_) -> return Some(value = HostRecv(host = HostTypeRef(name = n, args = newList()), isStatic = false))
+      case None -> ()
+    }
+  }
+  None
 }
 
 /// A local declared `String?` (a host string, which the checker types `String?` because the host may
@@ -977,6 +1043,12 @@ func hostChainResult(
           } else if isHostStringName(rname) {
             // The checker types a host call's string as `String?` (the host may return null).
             TirT.TNullable(TPrim(kind = TPString))
+          } else if isHostSingleName(rname) {
+            // The host's 32-bit and 64-bit floating point results are `Float` and `Double` (D359); the
+            // call node converts the host's result with `CvFromHost`.
+            TPrim(kind = TPFloat)
+          } else if isHostDoubleName(rname) {
+            TPrim(kind = TPDouble)
           } else {
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
@@ -5394,6 +5466,10 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 func genericBuiltin(name: in String): Bool {
   ffiIntrinsicName(name) or name == "println" or name == "print" or name == "toString" or name == "hashCode" or
     name == "default" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
     Str.endsWith(name, ".wrappingAdd") or
     Str.endsWith(name, ".wrappingSub") or
     Str.endsWith(name, ".wrappingMul") or

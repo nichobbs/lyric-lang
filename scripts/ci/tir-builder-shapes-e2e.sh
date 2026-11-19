@@ -1082,6 +1082,28 @@ func stopIf(p: in JProcess, flag: in Bool): Unit {
   }
 }
 
+extern type JBuf = "java.nio.ByteBuffer"
+
+// A host `float` result is a `Float` (the checker types `getDouble` but not `getFloat`), a member the checker has
+// no case for on a language `String` is the host string's own, and an `if`/`else` whose branches are untyped void
+// host calls is `Unit` (D418).
+func floatText(b: in JBuf): String {
+  b.getFloat(0).toString()
+}
+
+func stringByteCount(s: in String): Int {
+  JBuf.wrap(s.getBytes("US-ASCII")).remaining()
+}
+
+func joinEither(t: in JThread, quick: in Bool): Unit {
+  if quick {
+    t.join(1i64)
+  } else {
+    t.join()
+  }
+  ()
+}
+
 func childCount(path: in String): Int {
   val d = JFile.new(path)
   val children: slice[JFile] = d.listFiles() ?? []
@@ -1107,6 +1129,11 @@ func main(): Int {
   }
   val t = JThread.new()
   waitFor(t, 1)
+  joinEither(t, true)
+  joinEither(t, false)
+  if stringByteCount("abc") != 3 {
+    return 3
+  }
   0
 }
 LYRIC
@@ -1724,6 +1751,24 @@ else
   (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
 fi
+# `format1`-`format4` take their arguments of any type, as `println` does (the checker types their
+# parameters with holes), so an `Int` or a `Bool` argument is not an argument the builder cannot check
+# (D407).  The program formats a number, a bool and a string and exits with their text's length: "a=42" is 4.
+check format_builtin_args 4 <<'LYRIC'
+package FormatBuiltinArgs
+
+func main(): Int {
+  val a = format1("a={0}", 42)
+  val b = format3("{0}-{1}-{2}", 1, true, "x")
+  val c = format2("{0}{1}", 1.5, 'c')
+  val d = format4("{0}{1}{2}{3}", 1, 2, true, "z")
+  println(b)
+  println(c)
+  println(d)
+  a.length
+}
+LYRIC
+
 # A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is typed as its enum and
 # recorded as the case, so the builder builds it (#8613).
 check package_qualified_enum_case 3 <<'LYRIC'
@@ -1742,4 +1787,5 @@ func main(): Int {
   code(Std.Http.GET)
 }
 LYRIC
+
 exit $fail

@@ -915,6 +915,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
+  - `format1` to `format4` take their arguments of any type as `println` does, so a number or `Bool` argument is built as the checker typed it (D407).
   - A `match` whose arms all diverge is typed `Never` (the join started at a silent `TyError`), so a `Unit` function ending in one builds (D348).
   - A bare `None` (or other expression the checker left open) in a `return` outside a lambda takes the function's declared return type, as a body's tail does (D409).
   - A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is recorded as the case, so it builds (D349).
@@ -955,6 +956,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A host chain whose candidates differ only in compiler-generated bridge methods binds the receiver's own class, and a `Unit` function discards the value of its last expression (D439).
   - A host call whose overloads of one arity differ in their result (`Math.round`, `Thread.join`) is typed from the overload its argument types choose, a primitive host result is typed, and the empty default of `host() ?? []` takes the type of the coalesce, so `Std.TimeHost`, the thread joins and `Std.FileHost`'s directory walks build (D416).
   - A host property or static member whose declared result is a subclass of the class the context declares (`HttpRequestMessage.Headers` read as `HttpHeaders`) is read through the upcast a host call already gets, so `Std.HttpHost`'s two header accessors build, and the dotnet kernels declare the host results they bind (D417).
+  - A host `float` result is a `Float`, a member the checker has no case for on a language `String` is the host string's, and an `if`/`else` whose branches are untyped void host calls is `Unit`; the JVM wide census over the 21 ecosystem libraries has 0 I0003 (D418).
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
