@@ -1383,6 +1383,7 @@ static void test_sock_try_ops(void) {
     /* Nobody reads the client side: the send buffer fills. */
     int64_t sent = first;
     int full = 0;
+    int64_t fill_start = mono_ms();
     for (int i = 0; i < 100000 && !full; i++) {
         int64_t w = lyric_sock_try_write_bytes(server, big, 0);
         CHECK(w != -1);
@@ -1394,6 +1395,9 @@ static void test_sock_try_ops(void) {
         }
     }
     CHECK(full);
+    /* The full buffer is reported at once, not when the socket's 5 s send
+     * timeout passes: macOS ignores send(MSG_DONTWAIT) on a full buffer. */
+    CHECK(mono_ms() - fill_start < 2000);
 
     /* A blocking write on the same socket waits for the peer instead of failing. */
     enum { TAIL = 100000 };

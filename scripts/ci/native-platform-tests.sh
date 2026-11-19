@@ -14,7 +14,11 @@
 #      and run Mach-O executables.
 #
 # Every suite runs even when an earlier one fails; the script prints a
-# summary and exits non-zero if any did.
+# summary and exits non-zero if any did.  Each suite has a wall-clock limit
+# (LYRIC_SUITE_TIMEOUT_SEC, default 600; LYRIC_STAGE_TIMEOUT_SEC, default 3600,
+# for staging the compiler bundle): a suite that hangs is killed with its
+# whole process group and reported by name as timed out, instead of the job
+# running into its own time limit with no log to show which suite it was.
 #
 # Usage: LYRIC_BIN=path/to/lyric bash scripts/ci/native-platform-tests.sh
 # ---------------------------------------------------------------------------
@@ -26,10 +30,57 @@ cd "$REPO_ROOT"
 lyric_bin="${LYRIC_BIN:?set LYRIC_BIN to the lyric executable}"
 failed=()
 
+# The slowest suite takes about 80 seconds on the CI runners and staging the
+# compiler bundle about 22 minutes (Linux arm64): the limits leave room for a
+# slow runner without letting one hang eat the job.
+suite_timeout="${LYRIC_SUITE_TIMEOUT_SEC:-600}"
+stage_timeout="${LYRIC_STAGE_TIMEOUT_SEC:-3600}"
+
+# run_limited <command...>: runs the command in its own process group and
+# exits with its status, or with 124 after killing the group when it is still
+# running after $suite_timeout seconds.  macOS ships no timeout(1); perl is
+# on every runner.
+run_limited() {
+  perl -e '
+    use strict; use warnings;
+    my $limit = shift @ARGV;
+    my $pid = fork();
+    die "run_limited: fork: $!\n" unless defined $pid;
+    if ($pid == 0) {
+      setpgrp(0, 0);
+      exec { $ARGV[0] } @ARGV or do { print STDERR "run_limited: exec $ARGV[0]: $!\n"; exit 127; };
+    }
+    my $timed_out = 0;
+    $SIG{ALRM} = sub {
+      $timed_out = 1;
+      print STDERR "run_limited: still running after ${limit}s; processes in the group:\n";
+      system("ps -A -o pid=,pgid=,etime=,command= | awk -v g=$pid \x27\$2 == g\x27 >&2");
+      kill "TERM", -$pid;
+      sleep 5;
+      kill "KILL", -$pid;
+    };
+    for my $sig ("INT", "TERM", "HUP") {
+      $SIG{$sig} = sub { kill "KILL", -$pid; exit 130; };
+    }
+    alarm $limit;
+    my $got;
+    do { $got = waitpid($pid, 0); } while ($got == -1 && $!{EINTR});
+    alarm 0;
+    exit 124 if $timed_out;
+    exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+  ' "$suite_timeout" "$@"
+}
+
 run_suite() {
   local label="$1"; shift
+  local started=$SECONDS rc=0
   echo "--- $label"
-  if "$@"; then :; else
+  run_limited "$@" || rc=$?
+  echo "    ($((SECONDS - started))s)"
+  if [ "$rc" -eq 124 ]; then
+    echo "::error::suite timed out after ${suite_timeout}s: $label"
+    failed+=("$label (timed out after ${suite_timeout}s)")
+  elif [ "$rc" -ne 0 ]; then
     echo "::error::suite failed: $label"
     failed+=("$label")
   fi
@@ -143,7 +194,10 @@ done
 run_suite "parse_tests" "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 
 echo "=== compiler-hosted native suites ==="
-bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")/lib" || failed+=("stage-selfhosted-compiler")
+default_suite_timeout="$suite_timeout"
+suite_timeout="$stage_timeout"
+run_suite "stage-selfhosted-compiler" bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")/lib"
+suite_timeout="$default_suite_timeout"
 for t in \
   lyric-compiler/lyric/llvm_ir_self_test.l \
   lyric-compiler/lyric/llvm_codegen_self_test.l \

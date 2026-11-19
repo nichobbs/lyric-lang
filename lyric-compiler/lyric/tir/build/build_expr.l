@@ -2433,6 +2433,15 @@ func buildFnCore(
   }
   var res: Option[TExpr] = None
   if ok and not sigOnly {
+    // The body's value meets the declared return type: an expression the checker left open (a nullary
+    // case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes it.
+    if not isUnitTy(ret) and not functionIsGenerator(fn) {
+      match fn.body {
+        case Some(FBBlock(b)) -> settleBlockTail(env, b, ret)
+        case Some(FBExpr(x)) -> settleHole(env, x, ret)
+        case None -> ()
+      }
+    }
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
@@ -2707,6 +2716,47 @@ func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
   }
 }
 
+/// The union-case construction `e` built at `ty`, the type its node settled at, when the checker recorded
+/// no constructor signature for it: each field is the call's argument (in field order, named or positional)
+/// converted to the case's field type at the arguments of `ty`.  None when the call is not such a construction;
+/// Some(None) after a part could not be built (counted or reported there).
+func buildSettledCaseCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if tbl.ctorSigByNode.containsKey(e.nodeId) {
+    return None
+  }
+  val sid = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val s = match symbolOfDefId(tbl, sid) { case Some(x) -> x; case None -> return None }
+  val uc = match s.kind { case DKUnionCase(_, c) -> c; case _ -> return None }
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  noteCaseSym(env, sid)
+  val en = match mapGet(env.syms, sid.id) { case Some(x) -> x; case None -> return None }
+  val sig = match en.sig { case Some(x) -> x; case None -> return None }
+  if sig.params.count != uc.fields.count or args.count != uc.fields.count {
+    return None
+  }
+  val fields: List[TExpr] = newList()
+  var i = 0
+  while i < uc.fields.count {
+    val fname = match uc.fields[i] { case UFNamed(n, _, _) -> n; case UFPos(_, _) -> "" }
+    val x = match args[i] {
+      case CAPositional(v) -> v
+      case CANamed(n, v, _) -> if n == fname {
+        v
+      } else {
+        return Some(value = uncoveredExpr(env, e, "a union case construction with its arguments out of field order"))
+      }
+    }
+    val target = substOwnerArgs(sig.params[i].ty, parent, targs)
+    val bv = match settleArg(env, x, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    val cv = match coerceArg(env, bv, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    fields.add(cv)
+    i = i + 1
+  }
+  Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
+}
+
 /// A call: a built-in by its recorded name, a call through a function value,
 /// or a call to a declared non-generic function with in-mode arguments.  Other
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
@@ -2753,6 +2803,13 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   match mapGet(tbl.externByNode, e.nodeId) {
     case Some(site) -> return buildExternCall(env, e, ty, site, fn, args)
+    case None -> ()
+  }
+  // A union-case construction whose type argument the checker left open and the context settled
+  // (`{ m -> App(msg = m) }` against `(M) -> Wrap[M]`, whose parameter type the checker erased): it
+  // recorded no signature, so the fields are the case's at the arguments the node settled at.
+  match buildSettledCaseCtor(env, e, ty, args) {
+    case Some(r) -> return r
     case None -> ()
   }
   if tbl.calleeByNode.containsKey(e.nodeId) {
@@ -3013,7 +3070,20 @@ func buildUnderlyingConversion(
 func convertValueAs(env: in BuildEnv, e: in Expr, t: in TExpr, ty: in Ty): Option[TExpr] {
   match convertValue(env, t, ty) {
     case Some(c) -> Some(value = c)
-    case None -> uncoveredExpr(env, e, "a conversion method whose result differs from the underlying type")
+    case None -> {
+      // The method is itself a numeric conversion of the underlying primitive (`toInt()` of a `UInt`-backed
+      // range subtype): the primitive's own built-in, as the call on the primitive itself is.
+      val m = match e.kind {
+        case ECall(fn, _) -> match fn.kind { case EMember(_, name) -> name; case _ -> "" }
+        case _ -> ""
+      }
+      if m != "" and isPrimTy(t.ty) and isPrimTy(ty) {
+        val one: List[TExpr] = newList()
+        one.add(t)
+        return Some(value = mkExpr(e, ty, intrinsicCall(IoBuiltin(name = renderTy(t.ty) + "." + m), one)))
+      }
+      uncoveredExpr(env, e, "a conversion method whose result differs from the underlying type")
+    }
   }
 }
 
@@ -4615,10 +4685,16 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
   Some(value = CvCovariant)
 }
 
+/// Whether `name` is the host type of a `List[T]`: the .NET `List<T>` the stdlib declares it as, or the JVM's.
+func isListHostName(name: in String): Bool {
+  name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList"
+}
+
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
 /// gave it no array context) used where a fixed-length array is wanted: the same elements
-/// as an array literal of that type, each converted to the element type.  None unless the
-/// literal has exactly the array's known length and its elements convert.
+/// as an array literal of that type, each converted to the element type; or where a `List[T]` is
+/// wanted, the same elements as a literal of that type.  None unless the array's known length is
+/// the literal's, and the elements convert.
 func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
   val elems = match t.kind { case XListLit(es) -> es; case _ -> return None }
   match t.ty {
@@ -4630,6 +4706,9 @@ func retypeListLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] 
       case ALKnown(n) -> if n == elems.count { element } else { return None }
       case _ -> return None
     }
+    // A `List[T]` is wanted (a field, an argument, a map's value): the literal is a `List[T]` of the
+    // same elements, as `[...]` is where a binding's annotation names one.
+    case TExtern(h) -> if h.args.count == 1 and isListHostName(h.name) { h.args[0] } else { return None }
     case _ -> return None
   }
   val converted: List[TExpr] = newList()
@@ -5220,10 +5299,26 @@ func buildBuiltinCall(
         }
         case _ -> ()
       }
-      match buildAll(env, xs) {
+      // The member's parameter types, when the receiver's type fixes them (`Map[String, List[String]].add`),
+      // settle an argument the checker typed with a hole (`newList()`).
+      val expected: Option[List[Ty]] = match recvT { case Some(r) -> memberArgTys(r.ty, name, xs.count); case None -> None }
+      val built: List[TExpr] = newList()
+      var argsOk = true
+      var ai = 0
+      for x in xs {
+        val bx = match expected { case Some(tys) -> settleArg(env, x, tys[ai]); case None -> buildExpr(env, x) }
+        match bx {
+          case Some(t) -> built.add(t)
+          case None -> {
+            argsOk = false
+          }
+        }
+        ai = ai + 1
+      }
+      val gate: Option[List[TExpr]] = if argsOk { Some(value = built) } else { None }
+      match gate {
         case None -> None
         case Some(ts) -> {
-          val expected: Option[List[Ty]] = match recvT { case Some(r) -> memberArgTys(r.ty, name, ts.count); case None -> None }
           val res: List[TExpr] = newList()
           match recvT {
             case Some(r) -> res.add(r)
