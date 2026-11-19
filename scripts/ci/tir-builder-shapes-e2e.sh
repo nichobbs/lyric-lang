@@ -1082,6 +1082,28 @@ func stopIf(p: in JProcess, flag: in Bool): Unit {
   }
 }
 
+extern type JBuf = "java.nio.ByteBuffer"
+
+// A host `float` result is a `Float` (the checker types `getDouble` but not `getFloat`), a member the checker has
+// no case for on a language `String` is the host string's own, and an `if`/`else` whose branches are untyped void
+// host calls is `Unit` (D418).
+func floatText(b: in JBuf): String {
+  b.getFloat(0).toString()
+}
+
+func stringByteCount(s: in String): Int {
+  JBuf.wrap(s.getBytes("US-ASCII")).remaining()
+}
+
+func joinEither(t: in JThread, quick: in Bool): Unit {
+  if quick {
+    t.join(1i64)
+  } else {
+    t.join()
+  }
+  ()
+}
+
 func childCount(path: in String): Int {
   val d = JFile.new(path)
   val children: slice[JFile] = d.listFiles() ?? []
@@ -1107,6 +1129,11 @@ func main(): Int {
   }
   val t = JThread.new()
   waitFor(t, 1)
+  joinEither(t, true)
+  joinEither(t, false)
+  if stringByteCount("abc") != 3 {
+    return 3
+  }
   0
 }
 LYRIC
