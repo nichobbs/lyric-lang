@@ -701,6 +701,31 @@ if grep -q "TIR build census \[.*src/b/b.l\]: 1 of 1 function bodies built" "$WO
 else
   echo "FAIL (package_qualified_type_function)"; grep -E "first error" "$WORK/proj.log" | head -3; fail=1
 fi
+# A list literal given where a `List[T]` is wanted (a generic record's field, a map's value) builds as that
+# `List`, and `newList()` passed to a map's `add` takes the map's value type (D426); the program is run.
+check list_literal_arguments 7 <<'LYRIC'
+package Shapes17
+import Std.Collections
+
+record GBox[T] {
+  items: List[T]
+}
+
+func boxOf[T](x: in T): GBox[T] {
+  GBox(items = [x, x])
+}
+
+func imports(): Map[String, List[String]] {
+  val m: Map[String, List[String]] = newMap()
+  m.add("a", ["b"])
+  m.add("c", newList())
+  m
+}
+
+func main(): Int {
+  boxOf(3).items[1] + imports().count + 2
+}
+LYRIC
 # A case name two enums of another package share, read through the package where the annotated type
 # decides which enum it is (`val b: Lib.Beam = Lib.On`), builds as that enum's case (D423).
 mkdir -p "$WORK/shared/src/lib" "$WORK/shared/src/app"
