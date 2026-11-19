@@ -335,6 +335,11 @@ get a per-operation inactivity timeout on reads and writes
 (`LYRIC_HTTP_IDLE_TIMEOUT_MS`, default 120000) via `hostSetIoTimeout`. Both
 overrides accept 1 to 86400000 ms (one day) on both targets; anything else
 falls back to the default. The
+write timeout is not the same measure on every target: dotnet applies
+`SendTimeout` to each blocking send, while the JVM kernel gives a write of up
+to 64 KiB one deadline window and larger writes a fresh window per 64 KiB
+chunk, so a peer that drains slowly is cut off by the JVM only if one chunk
+stalls for the whole timeout. The
 JVM server (`com.sun.net.httpserver.HttpsServer`) already handshakes off its
 dispatcher thread with one `SSLContext` per listener and applies the JDK's
 own idle limit (`sun.net.httpserver.idleInterval`).
