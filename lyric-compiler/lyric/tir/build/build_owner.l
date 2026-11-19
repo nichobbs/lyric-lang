@@ -160,7 +160,7 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
 /// resolves it to the interface's declaration.  The impl member's DefPath key is
 /// `Pkg::Box[T]::$impl(Iface)::name(params)` and the interface member's `Pkg::Iface::name(params)`;
 /// The caller applies it only to a member whose signature lists no generics (an in-package generic impl's
-/// members list the impl's).  `None` unless the interface is non-generic, declared in the impl's package, and has exactly one
+/// members list the impl's).  `None` unless the interface is non-generic, restored from the impl's package (an in-package impl is built from source), and has exactly one
 /// member of that name.
 pub record ImplIface {
   iface: Type
@@ -190,7 +190,7 @@ pub func ifaceOfImplMember(env: in BuildEnv, sym: in SymbolId): Option[ImplIface
   val tid = match symbolIdOfKey(tbl.interner, ifaceKey) { case Some(t) -> t; case None -> return None }
   val ty: Type = match symTableTypeSymbolOf(tbl, tid) {
     case Some(ts) -> match ts.kind {
-      case DKInterface(_, decl) -> if isSome(decl.generics) {
+      case DKInterface(_, decl) -> if isSome(decl.generics) or not ts.isImported {
         return None
       } else {
         TyUser(id = tid, name = ts.name, args = newList())
