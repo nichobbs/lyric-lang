@@ -542,7 +542,12 @@ element is built at the literal's element type. A literal with no collection
 type expected of it (`for o in [Some(1), None]`) is first bound by the middle
 end to a local annotated with its checked type, `slice[<joined element
 type>]`, so its elements are built at that type as well
-(`Lyric.Mono.desugarCheckedFile`, #7818). A `slice` of a class type keeps the
+(`Lyric.Mono.desugarCheckedFile`, #7818). The literal an unannotated `val`,
+`var` or `let` holds is bound the same way whatever its element type, so
+`val parts = ["a", n.toString()]` is built as the `String[]` its checked type
+is, as the annotated form is, and not as a `List<object>` an array-typed
+extern or cross-assembly parameter would misread
+(D-progress-1055). A `slice` of a class type keeps the
 erased `List<object>` representation, and both reads of an element, `for`
 and indexing, cast it back to the closed element type.
 

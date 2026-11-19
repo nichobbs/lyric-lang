@@ -923,7 +923,12 @@ func hostChainResult(
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
             // The root object of a non-generic host class is the class's own result (`Method.invoke`).
-            if not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
+            // The builder is asked only for a call the checker recorded no type for, so a `Future` here
+            // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
+            // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
+            // the host's own class too.
+            val unmappedFuture = rname == "java.util.concurrent.Future" or rname == "java.lang.Boolean"
+            if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
             match hostElemTy(el, host.args, TirT.TNever) {
@@ -936,13 +941,30 @@ func hostChainResult(
       }
     }
     match result {
-      case Some(prev) -> if not tyEq(prev, t) { return None }
+      case Some(prev) -> if not tyEq(prev, t) {
+        // The candidates of an overridden method differ in the bridge methods the host compiler adds
+        // (`StringBuilder.append` also returns `AbstractStringBuilder` and `Appendable`): the covariant
+        // override that returns the receiver's own class is the one a call binds.
+        if isHostClassTy(t, host.name) {
+          result = Some(value = t)
+        } else if not isHostClassTy(prev, host.name) {
+          return None
+        }
+      }
       case None -> {
         result = Some(value = t)
       }
     }
   }
   result
+}
+
+/// Whether `t` is the host class `name`.
+func isHostClassTy(t: in Ty, name: in String): Bool {
+  match t {
+    case TExtern(h) -> h.name == name
+    case _ -> false
+  }
 }
 
 /// Whether every type in `args` is a type parameter: a generic host class applied to the type parameters of
@@ -2467,6 +2489,15 @@ func buildFnCore(
         }
         case None -> ()
       }
+    } else if isUnitTy(ret) and not functionIsGenerator(fn) {
+      // A `Unit` function discards the value of its last expression (a host call that returns its
+      // receiver, `sb.append(s)`): the tail becomes a statement and the body is `Unit`.
+      match res {
+        case Some(b) -> {
+          res = Some(value = discardTailValue(env, b))
+        }
+        case None -> ()
+      }
     }
   }
   popScope(env)
@@ -2508,6 +2539,30 @@ func buildFnCore(
 /// parameters become the outermost locals; a generic function binds its type
 /// parameters to its symbol.  Contracts are built with the body: a clause the
 /// builder has no case for fails it like any other expression.
+/// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
+func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
+  match b.ty {
+    case TPrim(TPUnit) -> return b
+    case TNever -> return b
+    case _ -> ()
+  }
+  match b.kind {
+    case XBlock(stmts, Some(tail)) -> {
+      val all: List[TStmt] = newList()
+      for st in stmts {
+        all.add(st)
+      }
+      all.add(TStmt(id = freshNodeId(env), span = tail.span, kind = TsExpr(expr = tail)))
+      TExpr(id = b.id, ty = tyUnit(), span = b.span, kind = XBlock(stmts = all, tail = None))
+    }
+    case _ -> {
+      val one: List[TStmt] = newList()
+      one.add(TStmt(id = freshNodeId(env), span = b.span, kind = TsExpr(expr = b)))
+      TExpr(id = freshNodeId(env), ty = tyUnit(), span = b.span, kind = XBlock(stmts = one, tail = None))
+    }
+  }
+}
+
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   match buildFnCore(env, fn, tbl, false, 0) {
     case Some(c) -> c.body
@@ -2827,6 +2882,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildToStringMethod(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match ffiIntrinsicCall(env, fn) {
     case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
     case None -> ()
@@ -3064,6 +3123,39 @@ func buildUnderlyingConversion(
     case _ -> return None
   }
   Some(value = convertValueAs(env, e, unwrapped, ty))
+}
+
+/// `x.toString()` on a range-subtype or distinct value: the checker types the call `String` and records
+/// no callee, as for the numeric conversion methods.  It is the built-in `toString` of the value, which
+/// renders a range subtype or a distinct value as its underlying value, as `toString(x)` does.  None when
+/// the call is not such a method; Some(None) after the receiver could not be built.
+func buildToStringMethod(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 or not tyEq(ty, tyString()) {
+    return None
+  }
+  val recvE = match fn.kind {
+    case EMember(r, m) -> if m == "toString" { r } else { return None }
+    case _ -> return None
+  }
+  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
+  val refinedOrDistinct = match rt {
+    case TyRefined(_, _, _, _, _) -> true
+    case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
+      case Some(sym) -> match sym.kind {
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+  if not refinedOrDistinct {
+    return None
+  }
+  val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
+  Some(value = Some(value = stringPart(env, recv)))
 }
 
 /// `t` as a value of `ty` for the call `e`, or the counted reason it cannot be.
@@ -5730,11 +5822,17 @@ func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
   ty: in Ty,
-  sym: in SymbolId,
+  sym0: in SymbolId,
   site: in MethodCallSite,
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
+    None
+  } else {
+    ifaceOfImplMember(env, sym0)
+  }
+  val sym: SymbolId = match viaImpl { case Some(ii) -> ii.method; case None -> sym0 }
   // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
   // the enclosing method's own `self`.
   val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
@@ -5742,7 +5840,10 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
-  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceTy: Option[Type] = match viaImpl {
+    case Some(ii) -> Some(value = ii.iface)
+    case None -> if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
     case _ -> site.iface
@@ -5846,7 +5947,7 @@ func buildMethodCall(
   }
   val inst = match dotted {
     case Some(i) -> i
-    case None -> match instantiateMethod(env, e, sym, site, args) {
+    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym)) {
       case Some(i) -> i
       case None -> return None
     }

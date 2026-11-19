@@ -505,11 +505,15 @@ pub func serverSslContextFromConfigMtls(
 }
 
 /// Kernel-boundary accessor for the underlying `javax.net.ssl.SSLContext`.
-/// `internal` (visible across packages within this project but excluded
-/// from the published `Lyric.Contract` surface), mirroring `Std.Tls`'s
-/// `Identity.rawHandle` — the consuming kernel binds the returned value to
-/// its own `extern type = "javax.net.ssl.SSLContext"`.
-internal func ServerSslContext.rawContext(s: in ServerSslContext): JSSLContext {
+/// `pub` and `@experimental`, like `serverSslContextFromConfigMtls` it comes
+/// with: `lyric-web`'s Undertow kernel (`Web.Kernel.Runtime.serveTls`) is a
+/// separate project and binds the returned value to its own
+/// `extern type = "javax.net.ssl.SSLContext"`, which `internal` would hide
+/// from it (D437). Stdlib code reaches it the same way. Not part of the
+/// stable surface: a `lyric-web` constructor path that needs no raw context
+/// (docs/73's pure-Lyric server) removes it.
+@experimental
+pub func ServerSslContext.rawContext(s: in ServerSslContext): JSSLContext {
   s.ctx
 }
 

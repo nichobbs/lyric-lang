@@ -37,8 +37,10 @@ func maxOffset(file: in SourceFile): Int {
 }
 
 /// The first offset of generated spans for `file`: beyond every span of it. A
-/// generated span takes `base + 2 * origins.count` (the map gains one entry
-/// per span), so spans stay unique without a mutable counter.
+/// generated span takes the first free `base + 2 * k`, starting at
+/// `k = origins.count` (the map gains one entry per span), so spans stay
+/// unique without a mutable counter, also when `origins` holds the spans of
+/// the build's other packages.
 pub func generatedSpanBase(file: in SourceFile): Int {
   maxOffset(file) + 1
 }
@@ -57,17 +59,30 @@ pub func generatedSpanKey(sp: in Span): String {
 func freshSpan(
   base: in Int, like: in Span, cause: in Span, origins: in Map[String, Span], keepSourceLines: in Bool
 ): Span {
-  val n = base + 2 * origins.count
   val own = keepSourceLines and like.startPos.line > 0
   val src = if own { like } else { cause }
   val col = if keepSourceLines and not own { 0 } else { src.startPos.column }
   val fid = src.startPos.fileId
-  val sp = Span(
+  // A build's packages share one `origins` map (`DiagSink`), and each package
+  // has its own base, so `base + 2 * origins.count` can name a key an earlier
+  // package recorded. The add would then leave the map as it was and every
+  // later node of this package would take the same span, which the checker's
+  // span-keyed tables cannot tell apart. Step past the keys already taken.
+  var n = base + 2 * origins.count
+  var sp = generatedSpanAt(n, src, col, fid)
+  while origins.containsKey(spanKey(sp)) {
+    n = n + 2
+    sp = generatedSpanAt(n, src, col, fid)
+  }
+  origins.add(spanKey(sp), cause)
+  sp
+}
+
+func generatedSpanAt(n: in Int, src: in Span, col: in Int, fid: in Int): Span {
+  Span(
     startPos = Position(offset = n, line = src.startPos.line, column = col, fileId = fid),
     endPos = Position(offset = n + 1, line = src.startPos.line, column = col, fileId = fid)
   )
-  origins.add(spanKey(sp), cause)
-  sp
 }
 
 func respanFunc(d: in FunctionDecl, sp: in Span): FunctionDecl {

@@ -4,7 +4,7 @@
 
 ## Decision
 
-- **Declared locals.** `hostIsWindows`, `hostGetVarOpt` and `hostSetEnvironmentVariable` declare the host result they bind (`val name: String = JSystem.getProperty("os.name") ?? ""`, `val raw: String? = envOverlay.get(key)`); the checker then types the local and the builder converts the host result.
+- **Declared locals.** `hostIsWindows`, `hostGetVarOpt` and `hostSetEnvironmentVariable` (and, in `lyric-ws`'s JVM kernel, `WsCloseListener.handleEvent`, `WsOriginGuard.handleRequest` and `WsConnectCallback.onConnect`) declare the host result they bind (`val name: String = JSystem.getProperty("os.name") ?? ""`, `val raw: String? = envOverlay.get(key)`); the checker then types the local and the builder converts the host result.
 - **Erased `Object` as `String?`.** `hostResultIsCallType` takes the host `Object` of a `String` map's read or put as the `String?` the context declares, as it already does for `String` and for a host class.
 - **`Object` as a primitive argument.** `erasedHostKind` converts the host `Object` to a Lyric primitive or `String` argument with `CvFromHost` (`action(e.getKey(), e.getValue())` on a raw `Map.Entry`).
 - **`.length` of an untyped local.** `buildExpr` and `builtinPropertyName` read the `length` of a local the checker left untyped (`var chunk = fis.readNBytes(n)`) from the type the local was declared at.
