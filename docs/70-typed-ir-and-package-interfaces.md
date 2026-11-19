@@ -913,6 +913,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
+  - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A union case built where the checker erased an argument's type (a lambda parameter in a generic function) and recorded no signature takes its fields from the case at the type its node settled at (D429).
   - The five self-test builds the census could not check build and are judged: the compiler bundle carries `Lyric.ContractMetaEmit`, two stale tests are fixed and the JVM-bridge tests are built for dotnet (D450).
   - `toUInt()` and `toULong()` are recorded as built-in calls by the checker, so they build (D451).
@@ -930,6 +931,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A dot-named generic function called with method syntax (a value-generic record's method) builds as a call with the receiver first; an omitted array field builds as its zero value; a sibling call in a generic `impl` builds; a range pattern bounded by a constant builds as the folded value; a shared enum case read through its package records its reference (D423).
   - A function of another package used as a value through its import alias or package path (`AL.update`, `Reg.Lib.update`) records its reference under the node like a bare name, so it builds (D424).
   - A union case constructed through an alias or a package that re-exports the declaring one (`L.Circle(r = 3)`) is found through the resolver, so it records its callee and builds (D425).
+  - A list literal given where a `List[T]` is wanted builds as that `List`, and a built-in member's arguments are settled by its parameter types, so `m.add(k, newList())` builds (D426).
   - A call on a host result no `extern type` names is typed by the builder from the host's metadata (`m.entrySet().iterator()`), and a host `Object`, unapplied generic or `Object` array converts to the language's erased generic type with `CvFromHost` (D444).
   - A bare case name several enums share, read where the expected type decided the enum, builds as that enum's case (D446).
   - Static host members (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`), a host call's string as `String?`, `getClass()` on a type-parameter receiver, a root-`Object` result, an untyped host array as a slice, and a host result narrowed to a declared host class are typed by the builder too, with the checker unchanged (D445).
@@ -940,6 +942,8 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A restored package's `impl` members that carry a default are declared in its interface, so a call on the concrete type takes the `impl` method's own default (D447).
   - The CI census clears the libraries' untracked `bin/` outputs before the typed-IR census, so a JVM build's jar is not restored as a dotnet dependency.
   - A host member's erased `Object` result on a generic host class applied to the function's type parameters (`HashMap<K, V>.get`) is typed as the host `Object` and converted with `CvFromHost` (D431).
+  - A stdlib package (`ImportedPackage.stdlib`, set by the loader from the stdlib root, never from a package name) sees the `internal` items of the other stdlib packages (`Std.Tls`'s kernel accessors); every other package sees `pub` only (D432).
+  - A local bound to a host result is a host chain receiver, a `void` host member is `Unit`, and a `java.util.concurrent` result that is not a future or task is a plain host class (D434).
   - A slice of host `Object`s (an untyped host array result) used as the slice of a type parameter is a `CvFromHost` conversion (D430), which the verifier accepts on a slice of a host type.
   - A read of a local bound to an unchecked host result (`val v = m.computeIfAbsent(..)`) takes `CvFromHost` to the type the context wants, so the local's type and its reads agree (D433); this was the wide census's one I0003.
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.

@@ -1914,6 +1914,16 @@ test "a range pattern bounded by a constant builds with the constant's value (D4
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a numeric conversion method of a range subtype builds as the underlying primitive's built-in (D428)" {
+  val c = censusOf(
+    "package App\ntype Population = UInt range 1000 ..= 4000000000\nfunc asInt(p: in Population): Int {\n  p.toInt()\n}\nfunc asLong(p: in Population): Long {\n  p.toLong()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a union case built in a lambda whose parameter type the checker erased builds at the type its node settled at (D429)" {
   val c = censusOf(
     "package App\npub union Wrap[M] {\n  case App(msg: M)\n  case Other\n}\nfunc viaLambda[M](x: in M): Wrap[M] {\n  val f: (M) -> Wrap[M] = { m -> App(msg = m) }\n  f(x)\n}\nfunc direct[M](x: in M): Wrap[M] {\n  App(msg = x)\n}\n"
