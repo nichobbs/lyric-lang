@@ -1914,6 +1914,16 @@ test "a range pattern bounded by a constant builds with the constant's value (D4
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a numeric conversion method of a range subtype builds as the underlying primitive's built-in (D428)" {
+  val c = censusOf(
+    "package App\ntype Population = UInt range 1000 ..= 4000000000\nfunc asInt(p: in Population): Int {\n  p.toInt()\n}\nfunc asLong(p: in Population): Long {\n  p.toLong()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a protected type's construction and entry call build as a construction and a receiver-first call" {
   val c = censusOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\nfunc f(): Int {\n  val t = Total()\n  t.add(3)\n  t.get()\n}\n"
