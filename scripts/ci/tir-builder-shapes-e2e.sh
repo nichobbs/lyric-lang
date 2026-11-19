@@ -1769,4 +1769,17 @@ func main(): Int {
 }
 LYRIC
 
+# Package-qualified calls in aspect advice copied from another package's template
+# (`Resilience.sleepMs(delay)` in `Resilience.Retry`) are folded like the consumer's own, so
+# the weaver-synthesized B-mode specialisations in lyric-resilience's tests build (#8613).
+bmode_log="$WORK/bmode_qualified_calls.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-resilience/lyric.toml >"$bmode_log" 2>&1)
+bline="$(grep "^TIR build census \[.*resilience_tests.l\]" "$bmode_log" | head -1)"
+if [[ -z "$bline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$bline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$bline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$bmode_log"; then
+  echo "FAIL (bmode_qualified_calls): not every body of lyric-resilience's tests built, or they failed"; grep -E "first error|no callee" "$bmode_log" | head -4; fail=1
+else
+  echo "ok   bmode_qualified_calls"
+fi
+
 exit $fail
