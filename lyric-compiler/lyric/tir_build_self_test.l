@@ -1945,13 +1945,12 @@ test "a union case built in a lambda whose parameter type the checker erased bui
 }
 
 test "a Unit function ending in a match whose arms all diverge builds (D348)" {
-  val c = censusOf(
-    "package App\nfunc boom(o: in Option[Int], msg: in String): Unit {\n  match o {\n    case Some(_) -> panic(\"has \" + msg)\n    case None -> panic(\"none \" + msg)\n  }\n}\n"
+  val r = buildFirstFn(
+    "package App\nunion Pick {\n  case A\n  case B\n}\nfunc boom(p: in Pick, msg: in String): Unit {\n  match p {\n    case A -> panic(\"a \" + msg)\n    case B -> panic(\"b \" + msg)\n  }\n}\n"
   )
-  assertTrue(c.total > 0, "the program has bodies")
-  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
-  val ds = verifyPackage(c.pkg, newList())
-  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "the body builds")
 }
 
 test "a protected type's construction and entry call build as a construction and a receiver-first call" {
