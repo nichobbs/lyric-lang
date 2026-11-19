@@ -760,14 +760,15 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
           name,
           args.count,
           false,
-          h.isStatic
+          h.isStatic,
+          checkerArgTys(env, args)
         )
         case None -> None
       }
       case _ -> None
     }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic)
+      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
       case None -> match openLocalBuiltinProperty(env, recv, name) {
         case Some(_) -> Some(value = tyInt())
         case None -> None
@@ -887,6 +888,56 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   }
 }
 
+/// The checker's types of a call's positional arguments, or none when any is unnamed or untyped: the
+/// arguments an overload of an untyped host call is chosen by (`Math.round(d)`).
+func checkerArgTys(env: in BuildEnv, args: in List[CallArg]): List[Ty] {
+  val tys: List[Ty] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> tys.add(t)
+        case Err(_) -> return newList()
+      }
+      case CANamed(_, _, _) -> return newList()
+    }
+  }
+  tys
+}
+
+/// The candidates whose parameters fit the argument types best, when the host's overloads of one arity differ
+/// in their result (`Math.round(float): Int`, `Math.round(double): Long`) and the arguments are known.  A tie
+/// between distinct parameter lists, or no argument types, leaves every candidate.
+func narrowByArgTys(
+  env: in BuildEnv,
+  cands: in List[ExternMemberSig],
+  targs: in List[Ty],
+  argTys: in List[Ty],
+  argc: in Int,
+): List[ExternMemberSig] {
+  if cands.count < 2 or argTys.count != argc or argc == 0 {
+    return cands
+  }
+  var best: List[ExternMemberSig] = newList()
+  var bestScore = -1
+  for c in cands {
+    if c.params.count == argc {
+      match scoreOverload(env, c, targs, argTys) {
+        case Some(fit) -> {
+          if fit.score > bestScore {
+            bestScore = fit.score
+            best = newList()
+            best.add(c)
+          } else if fit.score == bestScore {
+            best.add(c)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  if best.count == 0 { cands } else { best }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv,
@@ -895,11 +946,13 @@ func hostChainResult(
   argc: in Int,
   isProperty: in Bool,
   wantStatic: in Bool,
+  argTys: in List[Ty],
 ): Option[Ty] {
-  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
+  val allCands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
     case Some(c) -> c
     case None -> return None
   }
+  val cands = narrowByArgTys(env, allCands, host.args, argTys, argc)
   var result: Option[Ty] = None
   for c in cands {
     if c.isStatic != wantStatic {
@@ -936,6 +989,10 @@ func hostChainResult(
               case None -> return None
             }
           }
+        }
+        case EIEPrim(_) -> match hostElemTy(el, host.args, TirT.TNever) {
+          case Some(x) -> x
+          case None -> return None
         }
         case _ -> return None
       }
