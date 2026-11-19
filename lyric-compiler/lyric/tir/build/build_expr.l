@@ -4279,10 +4279,58 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
   }
 }
 
+/// `Cfg.field` or `Pkg.Cfg.field`, a read of a field of a `config` block of the package (docs/25): a
+/// module-level value named `Pkg::Cfg::field`, as a union case is named `Pkg::Union::Case`.  The checker
+/// types the read and records no type for the block's name, which is no value, so a receiver the checker
+/// typed is a value and is left to the field read.  None when the receiver names no such block field.
+func buildConfigFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  if tbl.exprTypes.containsKey(recv.nodeId) {
+    return None
+  }
+  val segs = match recv.kind {
+    case EPath(p) -> p.segments
+    case _ -> return None
+  }
+  if segs.count == 0 {
+    return None
+  }
+  val cname = segs[segs.count - 1]
+  val found = if segs.count == 1 {
+    symTableTryFindOne(tbl, cname)
+  } else {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < segs.count - 1 {
+      pkgSegs.add(segs[i])
+      i = i + 1
+    }
+    symTableTryFindInPackage(tbl, modulePathJoin(pkgSegs), cname)
+  }
+  val sym = match found { case Some(s) -> s; case None -> return None }
+  val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
+  var declared = false
+  for f in cd.fields {
+    if f.name == name {
+      declared = true
+    }
+  }
+  if not declared or sym.originPackage.length == 0 {
+    return None
+  }
+  val id = internDefPathKey(tbl.interner, defPathKey(topDefPath(sym.originPackage, sym.name)) + "::" + name)
+  noteGlobalSym(env, id, ty)
+  Some(value = mkExpr(e, ty, XGlobal(sym = id, typeArgs = newList())))
+}
+
 /// `recv.name` where `recv` is a value of a record type declaring a field `name`: the
 /// receiver built, then the field.  Any other member (a collection's `count`, a host
 /// property, a config field, a tuple or union payload) is counted.
 func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  match buildConfigFieldRead(env, e, ty, recv, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
   match buildHostStaticRead(env, e, ty, recv, name) {
     case Some(x) -> return Some(value = x)
     case None -> ()
