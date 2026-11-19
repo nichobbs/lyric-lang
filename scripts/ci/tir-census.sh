@@ -9,8 +9,9 @@
 #
 #   I0003  verifier diagnostics over built bodies.  Zero, and a regression is a
 #          failure: a body the builder produced must be well formed.
-#   I0002  bodies the builder cannot build yet.  Reported per run, not gated;
-#          phase 3a drives it to zero, after which it becomes a gate too.
+#   I0002  bodies the builder cannot build.  The TIR gate (D347) makes both codes
+#          errors in every build, so a body that stops building fails its build; the
+#          census counts what is left and measures the checker's recorded types.
 #
 # A build that exits non-zero without a census line did not reach the checker's
 # end; it is listed as UNCHECKED and fails the run (as the I0001 census does,
@@ -22,8 +23,7 @@
 # With --wide the census also covers the compiler (its manifest), the ecosystem
 # library manifests (dotnet) and the *self_test*.l programs under lyric-compiler/,
 # and reports I0002/I0003 per area and per kind with a sample site.  The wide
-# census only counts: it never gates, because phase 3a has not driven those
-# areas to zero yet (docs/70 §13); the standard-library gate above is unchanged.
+# census only counts; the gate (D347) fails the build of any body that does not build.
 #
 # Bodies are counted once.  A package that several programs share (the standard library's
 # JVM kernels are source-loaded into each program, the compiler's packages into each
