@@ -2329,6 +2329,111 @@ pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
   TirBuild.newDepDefaults()
 }
 
+/// The position `line:column` a message ends in (`... at 5:3`, `(at 35:3)`), as a span within `within`'s
+/// file; `within` itself when the message names none.
+func pipeSpanOfMessage(msg: in String, within: in Span): Span {
+  var i = msg.length - 1
+  var best = -1
+  while i >= 3 and best < 0 {
+    if msg.substring(i - 3, 4) == " at " {
+      best = i + 1
+    }
+    i = i - 1
+  }
+  if best < 0 {
+    return within
+  }
+  var line = 0
+  var col = 0
+  var j = best
+  var seenColon = false
+  var digits = 0
+  var more = true
+  while more and j < msg.length {
+    val ch = msg.substring(j, 1)
+    match "0123456789".indexOf(ch) {
+      case Some(dv) -> {
+        if seenColon {
+          col = col * 10 + dv
+        } else {
+          line = line * 10 + dv
+        }
+        digits = digits + 1
+        j = j + 1
+      }
+      case None -> {
+        if ch == ":" and not seenColon and digits > 0 {
+          seenColon = true
+          j = j + 1
+        } else {
+          more = false
+        }
+      }
+    }
+  }
+  if line < 1 or col < 1 or not seenColon {
+    return within
+  }
+  val at = Position(offset = within.startPos.offset, line = line, column = col, fileId = within.startPos.fileId)
+  makeSpan(at, at)
+}
+
+/// `msg` without a leading `code: `.
+func pipeWithoutCode(msg: in String, code: in String): String {
+  val prefix = code + ": "
+  if Str.startsWith(msg, prefix) {
+    Str.substring(msg, prefix.length, msg.length - prefix.length)
+  } else {
+    msg
+  }
+}
+
+/// The TIR gate (docs/70 §12.2, D347): each function body the builder could not build is an I0002 error,
+/// at the node it has no case for, and each ill-formed node the verifier finds in a body that built is an
+/// I0003 error, at the function.  A body that does not build or verify has a backend that would
+/// have to infer what the checker did not record, so the build stops before any backend runs.
+pub func pipeTirDiagnostics(tbl: in SymbolTable, pb: in TirBuild.PackageBuild): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  val none = makeSpan(initialPosition(), initialPosition())
+  for f in pb.failed {
+    val declSpan = match f.sym {
+      case Some(s) -> match symbolOfDefId(tbl, s) { case Some(sym) -> sym.declSpan; case None -> none }
+      case None -> none
+    }
+    if f.messages.count == 0 {
+      diags.add(
+        errorDiagnostic(
+          "I0002",
+          "internal compiler error: the TIR builder could not build `" + f.name + "` and recorded no reason",
+          declSpan
+        )
+      )
+    } else {
+      val msg = f.messages[0]
+      diags.add(
+        errorDiagnostic(
+          "I0002",
+          "internal compiler error in `" + f.name + "`: " + pipeWithoutCode(msg, "I0002"),
+          pipeSpanOfMessage(msg, declSpan)
+        )
+      )
+    }
+  }
+  for d in TirVerify.verifyPackage(pb.pkg, newList()) {
+    val declSpan = match symbolOfDefId(tbl, d.fnSym) { case Some(sym) -> sym.declSpan; case None -> none }
+    val fnKey = match defPathKeyOf(tbl.interner, d.fnSym) { case Some(k) -> k; case None -> "?" }
+    diags.add(
+      errorDiagnostic(
+        "I0003",
+        "internal compiler error in `" + fnKey + "`: " +
+          pipeWithoutCode(TirVerify.renderVerifyDiag("builder", d), "I0003"),
+        declSpan
+      )
+    )
+  }
+  diags
+}
+
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
 /// check, with its diagnostics sent to `sink`.  None after an error.
 /// `lyric prove` runs exactly this, so it rejects what a build rejects up to
@@ -2339,14 +2444,12 @@ pub func pipeCheckFront(
   opts: in MiddleEndOptions,
   sink: in DiagSink,
 ): Option[CheckFront] {
-  // `LYRIC_VERIFY_IR` (docs/70 §6.4, D360): number the file's nodes so the
-  // checker records a type per expression, and report the I0002 census after
-  // the check.  Off by default: no extra copy of the tree.
+  // `LYRIC_VERIFY_IR` (docs/70 §6.4, D360): report the census of what the checker recorded and the
+  // builder could build, as numbers, after the check.  The gate below does not depend on it.
   val verifyIr = tirVerifyIrEnabled()
-  // A package interface carries parameter defaults built from the checker's per-node tables
-  // (docs/70 §9.2, D460), so a library build that writes one numbers the nodes too.
-  val wantsInterface = opts.buildInterface and not IfaceBuild.isExecutable(file00)
-  val file0 = if verifyIr or opts.wantTir or wantsInterface { Resolve.renumberNodeIds(file00).file } else { file00 }
+  // The file's nodes are numbered for the checker's per-node tables, which the TIR gate and the package
+  // interface (docs/70 §9.2, D460) read.
+  val file0 = Resolve.renumberNodeIds(file00).file
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val tcRes = checkWithImportedPackagesForTargetIter(
     file0,
@@ -2359,15 +2462,20 @@ pub func pipeCheckFront(
   if verifyIr and errorCount(tcRes.diagnostics) == 0 {
     pipeReportTirCensus(opts.pkgLabel, file0, tcRes, opts.depDefaults)
   }
-  if opts.wantTir and errorCount(tcRes.diagnostics) == 0 {
-    opts.tirOut.add(
-      TirBuild.buildPackage(
-        TirBuild.newTyConvCtxWith(tcRes.symbols, opts.depDefaults),
-        tcRes.symbols,
-        file0,
-        opts.pkgLabel
-      )
+  if errorCount(tcRes.diagnostics) == 0 {
+    // The TIR gate (docs/70 §12.2, D347): every function body builds as TIR and the verifier accepts it.
+    val pb = TirBuild.buildPackage(
+      TirBuild.newTyConvCtxWith(tcRes.symbols, opts.depDefaults),
+      tcRes.symbols,
+      file0,
+      opts.pkgLabel
     )
+    if opts.wantTir {
+      opts.tirOut.add(pb)
+    }
+    if gateTo(sink, opts.pkgLabel, opts.filePaths, pipeTirDiagnostics(tcRes.symbols, pb)) {
+      return None
+    }
   }
 
   if opts.tcFatal {
