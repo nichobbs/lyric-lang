@@ -154,6 +154,31 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
   }
 }
 
+/// Whether the callee `sym` is a member of an `impl` (of this package or a restored one) whose target is
+/// written over exactly the impl's own parameters in the order the signature lists them as the owner's
+/// generics, so the receiver's type arguments are the impl's, position by position.
+func isImplMemberOverOwnParams(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature): Bool {
+  val key = match defPathKeyOf(env.ctx.tbl.interner, sym) {
+    case Some(k) -> memberOwnerKey(k)
+    case None -> return false
+  }
+  if findSub(key, "::$impl(", 0) < 0 {
+    return false
+  }
+  val names = match implTargetNames(key) { case Some(ns) -> ns; case None -> return false }
+  if names.count == 0 or names.count != ownerGenericCount(sig) {
+    return false
+  }
+  var i = 0
+  while i < names.count {
+    if names[i] != sig.generics[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 /// The method call `e` instantiated: the owner's arguments (the receiver's type arguments, for
 /// a member declared in the type's body) then the member's own (the checker's record, else
 /// inferred from the arguments and the result as a generic function's are).  The checker's
@@ -170,7 +195,7 @@ pub func instantiateMethod(
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) {
-    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
+    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or isImplMemberOverOwnParams(env, sym, sig)) {
       val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
       return None
     }
