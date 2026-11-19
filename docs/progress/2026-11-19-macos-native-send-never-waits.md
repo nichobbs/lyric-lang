@@ -1,4 +1,4 @@
-# Native on macOS: bounded and try writes no longer wait on a full send buffer; per-suite limits in the native platform suite
+# Native on macOS: bounded and try writes no longer wait on a full send buffer; per-suite limits in the native platform suite (#9241)
 
 The `macos` job of the "Native platforms" workflow ran into its 90-minute limit on every run after #9129 merged (2026-11-15), where it used to take about 34 minutes. GitHub keeps no log for a job that times out, so the suite that hung was unknown.
 
