@@ -5594,11 +5594,17 @@ func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
   ty: in Ty,
-  sym: in SymbolId,
+  sym0: in SymbolId,
   site: in MethodCallSite,
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or isSome(ifaceOwnerOfMethod(env, sym0)) {
+    None
+  } else {
+    ifaceOfImplMember(env, sym0)
+  }
+  val sym: SymbolId = match viaImpl { case Some(ii) -> ii.method; case None -> sym0 }
   // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
   // the enclosing method's own `self`.
   val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
@@ -5606,7 +5612,10 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
-  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceTy: Option[Type] = match viaImpl {
+    case Some(ii) -> Some(value = ii.iface)
+    case None -> if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
     case _ -> site.iface
