@@ -86,7 +86,8 @@ pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   try {
     val context = NetAssemblyLoadContext.new("lyric-plugin:" + path, false)
     val dir: String = NetIoPath.GetDirectoryName(path) ?? ""
-    for file in NetDirectory.GetFiles(dir, "*.dll") {
+    val files: slice[String] = NetDirectory.GetFiles(dir, "*.dll")
+    for file in files {
       if file != path and not isSharedAssemblyFile(file) {
         try {
           val _ = context.LoadFromAssemblyPath(file)
