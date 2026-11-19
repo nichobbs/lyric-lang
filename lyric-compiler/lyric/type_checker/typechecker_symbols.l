@@ -438,6 +438,11 @@ pub record MethodCallSite {
   sig: ResolvedSignature
   recvTy: Type
   iface: Option[SymbolId]
+  /// The full signature (receiver first) of a dot-named function the call resolved to, when
+  /// it is generic or its receiver is an instance of a generic type: such a call is a call of
+  /// that function with the receiver as its first argument, instantiated from the
+  /// receiver's and the arguments' types (a value-generic record's methods, D173).
+  full: Option[ResolvedSignature] = None
 }
 
 @stable(since = "0.1")
@@ -1989,6 +1994,30 @@ pub func symTableQualifiedType(tbl: in SymbolTable, segs: in List[String]): Opti
   None
 }
 
+// The union case the qualified name `segs` (`L.Circle`) denotes, as the resolver answers it: through an
+// alias, and through a package that re-exports the declaring one (`pub use`).  None when it names no case.
+pub func symTableQualifiedCase(tbl: in SymbolTable, segs: in List[String]): Option[Symbol] {
+  val order = match resolverFileOrder(tbl) { case Some(o) -> o; case None -> return None }
+  val ctx = tbl.resolveCtx[0]
+  val name = segs[segs.count - 1]
+  for fid in order {
+    val pr = resolvePath(ctx.tbl, scopeOfFile(ctx, fid), segs, UseValue)
+    if pr.consumed == segs.count {
+      match pr.res {
+        case RSymbol(id) -> match symbolOfDefIdNamed(tbl, id, name) {
+          case Some(sym) -> match sym.kind {
+            case DKUnionCase(_, _) -> return Some(value = sym)
+            case _ -> ()
+          }
+          case None -> ()
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
 func resolverFileFor(tbl: in SymbolTable): Option[Int] {
   match resolverFileOrder(tbl) {
     case Some(order) -> Some(value = order[0])
@@ -2738,6 +2767,21 @@ pub func symTableAliasOfPackage(tbl: in SymbolTable, pkg: in String): Option[Str
       if fsc.aliases[alias] == pkg {
         return Some(value = alias)
       }
+    }
+  }
+  None
+}
+
+// The package the alias `name` of an aliased import (`import P as name`) stands for, in the
+// checked package's files.
+pub func symTablePackageOfAlias(tbl: in SymbolTable, name: in String): Option[String] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  for fsc in tbl.resolveCtx[0].scopes {
+    match mapGet(fsc.aliases, name) {
+      case Some(pkg) -> return Some(value = pkg)
+      case None -> ()
     }
   }
   None

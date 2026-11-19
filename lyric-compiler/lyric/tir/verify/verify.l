@@ -893,6 +893,15 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which is not a closure and a userdata pointer"
           )
         }
+        case CvUserdataSlot -> if not (isUserdataSlotTy(inner.ty) and isUserdataSlotTy(e.ty)) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvUserdataSlot takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) +
+              ", which are not both spellings of a C callback's userdata slot"
+          )
+        }
         case CvNeverFn -> if not isNeverFnOf(inner.ty, e.ty) {
           report(
             c,

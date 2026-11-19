@@ -154,6 +154,9 @@ pub union ConvKind {
   /// A function value whose result is `Never` used as one with the same parameters and another
   /// result: it never returns, so the conversion changes the type only.
   case CvNeverFn
+  /// A pointer in one spelling of a C callback's userdata slot used as the other (`NativePtr[Byte]`, which
+  /// `nativeKeepCallback` returns, where a `NativeUserdata` is wanted, or back): the same pointer.
+  case CvUserdataSlot
 }
 
 pub union ShortOp {
