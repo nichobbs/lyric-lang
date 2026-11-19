@@ -304,7 +304,7 @@ boundary is kernel. Being sans-IO makes it:
 | Target | Accept + bytes | TLS |
 |---|---|---|
 | dotnet | `System.Net.Sockets.TcpListener` / `NetworkStream` (new `_kernel/tcp_host.l`) | `System.Net.Security.SslStream` server-auth (`X509Certificate2` from `Std.Tls`), ALPN via `SslServerAuthenticationOptions.ApplicationProtocols`, mTLS via `ClientCertificateRequired` + a `CertificateChainPolicy` (`CustomRootTrust` over `clientCa`) — the callback-free path, since `RemoteCertificateValidationCallback` is a custom delegate the FFI bridge cannot construct (#5947); see D-progress-697 |
-| jvm (later, evidence-gated) | virtual-thread `ServerSocket` | `SSLServerSocket` / `SSLEngine`, `setNeedClientAuth` |
+| jvm | `java.net.ServerSocket` / `Socket` (`_kernel_jvm/tcp_host.l`, `Std.TcpHost`, D611); fit to carry a server since D621 (docs/73 S1): per-connection read buffer, a shared write-timeout watchdog, `hostShutdown`; the `Std.HttpServer` JVM kernel still uses `com.sun.net.httpserver` until docs/73 S4 | `SSLSocket` layered over the accepted socket, server `SSLContext` from `Std.TlsServerContext`, ALPN `h2` then `http/1.1`, `setNeedClientAuth` / `setWantClientAuth` |
 | native (phase 5) | POSIX sockets in `lyric-rt` | OpenSSL 3.x (§7) |
 
 Using `SslStream` is emphatically **not** the "implement TLS by hand,
