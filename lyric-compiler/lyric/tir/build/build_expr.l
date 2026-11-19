@@ -805,9 +805,19 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
         case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
         case _ -> None
       }
-      case None -> match hostStaticReceiver(env, recv) {
-        case Some(h) -> Some(value = HostRecv(host = h, isStatic = true))
-        case None -> None
+      case None -> match openLocalTy(env, recv) {
+        // A local bound to an unchecked host result (`val server = JHttpServer.create(..)`) is read at
+        // the host class it was declared at, though the checker recorded no type for the read.
+        case Some(t) -> match t {
+          case TExtern(h) -> Some(
+            value = HostRecv(host = h, isStatic = false)
+          )
+          case _ -> None
+        }
+        case None -> match hostStaticReceiver(env, recv) {
+          case Some(h) -> Some(value = HostRecv(host = h, isStatic = true))
+          case None -> None
+        }
       }
     }
   }
@@ -815,8 +825,7 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
-  not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.") and
-    not Str.startsWith(name, "java.util.concurrent.")
+  not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
 }
 
 /// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
@@ -867,7 +876,7 @@ func hostChainResult(
       return None
     }
     val t = match c.ret {
-      case EMTVoid -> return None
+      case EMTVoid -> tyUnit()
       case EMTType(el) -> match el {
         case EIEHost(rname, _) -> {
           if rname == hostArrayName() {
@@ -3352,6 +3361,18 @@ func hostResultNode(env: in BuildEnv, e: in Expr, ty: in Ty, ret: in Ty, call: i
         return mkExpr(e, ty, XConvert(kind = k, inner = c))
       }
       case None -> ()
+    }
+    // A host result, an array included, read as the host `Object` the context declares
+    // (`val o: JObject = tmf.getTrustManagers()`): the call keeps the host's result type.
+    match ret {
+      case TExtern(r) -> match ty {
+        case TExtern(t) -> if isHostObject(t.name) and not isHostObject(r.name) {
+          val c = TExpr(id = freshNodeId(env), ty = ret, span = e.span, kind = call)
+          return mkExpr(e, ty, XConvert(kind = CvBoxToHost(host = t), inner = c))
+        }
+        case _ -> ()
+      }
+      case _ -> ()
     }
     // The checker lets a host result flow into a more specific host type the context declares
     // (`val c: X509Certificate = cf.generateCertificate(in)`): the host's result is the base class.
