@@ -190,12 +190,12 @@ func listChildren(path: in String, kind: in Int): slice[String] {
   val out2: List[String] = newList()
   // `listFiles()` returns NULL for a non-directory or an I/O error (#4781)
   // — treat both as "no children" rather than NPE.
-  val children = d.listFiles()
+  val children: slice[JFile] = d.listFiles()
   if JObjects.isNull(children) {
     return out2.toArray()
   }
   var i = 0
-  while i < children.count {
+  while i < children.length {
     val c = children[i]
     var keep = true
     if kind == 1 {
