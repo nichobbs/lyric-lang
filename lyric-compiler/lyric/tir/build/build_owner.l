@@ -196,7 +196,7 @@ pub func instantiateMethod(
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) {
     if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or isImplMemberOverOwnParams(env, sym, sig)) {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
+      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl DBG " + (match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }) + " gens=" + sig.generics.join(",") + " owners=" + sig.genericOwners.join(","))
       return None
     }
     for ta in recvArgs {
