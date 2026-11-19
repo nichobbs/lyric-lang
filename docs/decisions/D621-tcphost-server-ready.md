@@ -91,6 +91,10 @@ could never import `Std.TcpHost`.
 
 ## Not done
 
+- JVM loopback throughput for 16 KiB and larger messages stays 3.5x to 8.5x below
+  dotnet because a `slice[Byte]` is a boxed `Object[]` on the JVM; closing it needs
+  a compiler change (a `byte[]` representation or a bulk-conversion intrinsic),
+  tracked in #9245.
 - #9184 (native `hostStopListener` leaves the listening fd open) is not part of
   this slice. The split between `hostStopListener` (signal) and `hostCloseListener`
   (release after the accept thread exited) is deliberate (#6883, an fd-reuse

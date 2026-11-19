@@ -958,6 +958,7 @@ func expectedClrValueTypes(): List[String] {
   xs.add("System.Net.Sockets.AddressFamily")
   xs.add("System.Net.Sockets.SocketType")
   xs.add("System.Net.Sockets.ProtocolType")
+  xs.add("System.Net.Sockets.SocketShutdown")
   xs.add("System.Net.Http.HttpVersionPolicy")
   xs.add("System.Net.Security.SslPolicyErrors")
   xs.add("System.Security.Authentication.SslProtocols")
