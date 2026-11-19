@@ -282,6 +282,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/generic_record_var_field_self_test.l
   lyric-compiler/lyric/range_subtype_self_test.l
   lyric-compiler/lyric/slice_array_abi_self_test.l
+  lyric-compiler/lyric/slice_literal_binding_array_self_test.l
   lyric-compiler/lyric/slice_fastpath_self_test.l
   lyric-compiler/lyric/list_literal_index_self_test.l
   lyric-compiler/lyric/generic_extern_methodspec_self_test.l

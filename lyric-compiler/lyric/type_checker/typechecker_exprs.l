@@ -14320,6 +14320,65 @@ func recordLocalBranchType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit
   }
 }
 
+// Record the checked type of each bracket literal an unannotated local
+// binding's initializer evaluates to, in `SymbolTable.listLiteralTypeSites`:
+// the initializer itself (`val parts = ["a", n.toString()]`), or a branch of
+// an `if`/`match` that is one.  The binding names no collection type, so the
+// literal is checked with none expected, and a backend that builds a literal
+// from its elements alone cannot always tell the type: an element that is a
+// call, a member access or an index has no type the backend can peek, and the
+// literal was built as an erased `List` where a later use of the binding wants
+// a `slice[String]`, a real `String[]` at an extern or cross-assembly boundary.
+// The binding's own checked type is the type of each such literal: the
+// branches of one `if`/`match` agree on a type.  A literal whose element type
+// holds a generic instantiation is recorded by `recordListLiteralType`, and
+// one whose element type is not closed keeps being built from its elements.
+func recordLocalSliceLiteralTypes(sc: in Scope, tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
+  if typeMentionsGenericInst(t) or not typeIsClosed(t) {
+    return
+  }
+  match unrefine(t) {
+    case TySlice(_) -> {
+      val lits: List[Expr] = newList()
+      collectBindingLiterals(init, lits)
+      for lit in lits {
+        recordListLiteralSite(sc, tbl, lit, unrefine(t), false)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// The bracket literals `e` evaluates to: `e` itself under any parentheses, or
+// the literals of the branches of an `if`/`match` (see
+// `recordLocalSliceLiteralTypes`).
+func collectBindingLiterals(e: in Expr, acc: in List[Expr]): Unit {
+  val v = stripExprParens(e)
+  match v.kind {
+    case EList(_) -> acc.add(v)
+    case EIf(_, thenBranch, elseBranch, _) -> {
+      collectBranchLiterals(thenBranch, acc)
+      match elseBranch {
+        case Some(eb) -> collectBranchLiterals(eb, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        collectBranchLiterals(arm.body, acc)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func collectBranchLiterals(b: in ExprOrBlock, acc: in List[Expr]): Unit {
+  match branchValueExpr(b) {
+    case Some(ve) -> collectBindingLiterals(ve, acc)
+    case None -> ()
+  }
+}
+
 // Record the checked type of an unannotated local binding's function-valued
 // initializer (see `SymbolTable.localBindingTypeSites`).  An async function, one
 // that never returns, and a type with no source spelling (an error) stay
