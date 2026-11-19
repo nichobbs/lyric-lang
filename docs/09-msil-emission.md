@@ -547,7 +547,11 @@ type>]`, so its elements are built at that type as well
 `val parts = ["a", n.toString()]` is built as the `String[]` its checked type
 is, as the annotated form is, and not as a `List<object>` an array-typed
 extern or cross-assembly parameter would misread
-(D-progress-1055). A `slice` of a class type keeps the
+(D-progress-1055). So is any other literal with a call, member-access or
+index element that no collection type is expected of (a lambda's result, a
+tuple element, a generic constructor argument, a method receiver, an element of
+another literal); a literal its position types (`slice[Long]`, an annotation, a
+`List`) is built from that position (D-progress-1056). A `slice` of a class type keeps the
 erased `List<object>` representation, and both reads of an element, `for`
 and indexing, cast it back to the closed element type.
 
