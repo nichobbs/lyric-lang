@@ -41,7 +41,7 @@ unverified code from ordinary Lyric code.
 
 [nuget.options]
 allow_native = false      # default: refuse packages with native deps
-target       = "net10.0"  # default: project's target framework
+target       = "net11.0"  # default: project's target framework
 ```
 
 | Field | Default | Meaning |

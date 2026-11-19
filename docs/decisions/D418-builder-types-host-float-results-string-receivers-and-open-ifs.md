@@ -24,4 +24,6 @@ The JVM wide census (21 ecosystem libraries built and tested on `--target jvm` w
 
 ## Not covered
 
+`openIfTy` types only an `if` with an `else` whose two branch tails have the same type, taken from the checker or from the builder's host chain typing. A branch that ends in a statement that is not an expression, or two branch types that differ only by a host upcast, stays counted.
+
 The remaining unbuilt JVM bodies belong to other kinds, not host results: `list.toArray().count` chains in `lyric-generator-sdk`'s tests, the weaver's synthesized B-mode specialisations in `lyric-resilience`'s tests, the "checker recorded no type" bodies of `lyric-docker` and `lyric-grpc`, and `Std.Iter::find`.

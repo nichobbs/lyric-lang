@@ -827,14 +827,14 @@ func buildIlcRsp(
   appendAotFeatureLines(lines)
 
   lines.add("--runtimeknob:RUNTIME_IDENTIFIER=" + rid)
-  lines.add("--stacktracedata")
+  lines.add("--stacktracedata:frames")
   lines.add("--scanreflection")
   lines.add("--methodbodyfolding:generic")
   lines.add("--resilient")
 
   // Exports file for the linker version script (controls symbol visibility).
   lines.add("--exportsfile:" + exportsFile)
-  lines.add("--export-dynamic-symbol:DotNetRuntimeDebugHeader")
+  lines.add("--export-dynamic-symbol:DotNetRuntimeContractDescriptor")
 
   // Build the RSP text: one arg per line.
   var rsp = ""
@@ -884,8 +884,8 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libbootstrapper.o"))
   args.add(Path.join(sdk, "libRuntime.WorkstationGC.a"))
   args.add(Path.join(sdk, "libeventpipe-disabled.a"))
-  // VxSort support (x64 only)
-  if arch == "x64" {
+  // VxSort support (x64 and arm64)
+  if arch == "x64" or arch == "arm64" {
     args.add(Path.join(sdk, "libRuntime.VxsortDisabled.a"))
   }
   args.add(Path.join(sdk, "libstandalonegc-disabled.a"))
@@ -898,10 +898,21 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libbrotlienc.a"))
   args.add(Path.join(sdk, "libbrotlidec.a"))
   args.add(Path.join(sdk, "libbrotlicommon.a"))
+  // zstd comes after System.IO.Compression.Native, which depends on it.  A
+  // source-built SDK ships no libzstd.a and links the system library.
+  val libzstd = Path.join(sdk, "libzstd.a")
+  if File.fileExists(libzstd) {
+    args.add(libzstd)
+  } else {
+    args.add("-lzstd")
+  }
 
   // Linker flags for PIE, symbol visibility, debug info
   args.add("-Wl,--version-script=" + exportsFile)
   args.add("-Wl,--export-dynamic")
+  // Keep the descriptor debuggers and diagnostic tools read (as the SDK's
+  // targets do); --gc-sections would otherwise drop it.
+  args.add("-Wl,-u,DotNetRuntimeContractDescriptor")
   args.add("-Wl,--discard-all")
   args.add("-Wl,--gc-sections")
   args.add("-Wl,--build-id=sha1")
@@ -918,6 +929,20 @@ func buildLinkerArgsUnix(
   args.add("-lm")
 
   args
+}
+
+// Where a source-built SDK's system libraries (brotli, zstd) live on macOS:
+// Homebrew's prefix, which clang does not search by default.  With
+// -dead_strip_dylibs a library the program never calls is not recorded, so
+// the binary does not need it at run time.
+func appendMacSystemLibDirs(args: in List[String]): Unit {
+  args.add("-Wl,-dead_strip_dylibs")
+  if File.dirExists("/opt/homebrew/lib") {
+    args.add("-L/opt/homebrew/lib")
+  }
+  if File.dirExists("/usr/local/lib") {
+    args.add("-L/usr/local/lib")
+  }
 }
 
 // Build the clang linker argument list for a macOS native executable.
@@ -947,8 +972,8 @@ func buildLinkerArgsMac(
   args.add(Path.join(sdkPath, "libbootstrapper.o"))
   args.add(Path.join(sdkPath, "libRuntime.WorkstationGC.a"))
   args.add(Path.join(sdkPath, "libeventpipe-disabled.a"))
-  // VxSort is disabled on macOS x64 via the VxsortDisabled stub to prevent unresolved symbols.
-  if arch == "x64" {
+  // The VxsortDisabled stub resolves the GC's vxsort symbols (x64 and arm64).
+  if arch == "x64" or arch == "arm64" {
     args.add(Path.join(sdkPath, "libRuntime.VxsortDisabled.a"))
   }
   args.add(Path.join(sdkPath, "libstandalonegc-disabled.a"))
@@ -967,19 +992,27 @@ func buildLinkerArgsMac(
     args.add("-lz")
   }
 
+  // A source-built SDK (Homebrew's) ships none of the brotli and zstd
+  // archives and links the system libraries, as the SDK's own targets do.
+  // brotlicommon goes last; zstd follows System.IO.Compression.Native.
   val libbrotlienc = Path.join(sdkPath, "libbrotlienc.a")
+  val libzstd = Path.join(sdkPath, "libzstd.a")
+  if not File.fileExists(libbrotlienc) or not File.fileExists(libzstd) {
+    appendMacSystemLibDirs(args)
+  }
   if File.fileExists(libbrotlienc) {
     args.add(libbrotlienc)
+    args.add(Path.join(sdkPath, "libbrotlidec.a"))
+    args.add(Path.join(sdkPath, "libbrotlicommon.a"))
+  } else {
+    args.add("-lbrotlienc")
+    args.add("-lbrotlidec")
+    args.add("-lbrotlicommon")
   }
-
-  val libbrotlidec = Path.join(sdkPath, "libbrotlidec.a")
-  if File.fileExists(libbrotlidec) {
-    args.add(libbrotlidec)
-  }
-
-  val libbrotlicommon = Path.join(sdkPath, "libbrotlicommon.a")
-  if File.fileExists(libbrotlicommon) {
-    args.add(libbrotlicommon)
+  if File.fileExists(libzstd) {
+    args.add(libzstd)
+  } else {
+    args.add("-lzstd")
   }
 
   // Linker flags for symbol visibility and dead code stripping

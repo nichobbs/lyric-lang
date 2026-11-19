@@ -896,7 +896,8 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
 }
 
 /// The receiver of a member call on a language `String`: the host's string class, under the name the active
-/// target's metadata knows (the JVM resolver reads JDK classes, the dotnet one reference assemblies).
+/// target's metadata knows (the JVM resolver reads JDK classes, the dotnet one reference assemblies).  The first
+/// resolver is the only one: a build has one active target.
 func hostStringReceiver(env: in BuildEnv): Option[HostRecv] {
   if env.ctx.tbl.externIterResolver.count == 0 {
     return None
