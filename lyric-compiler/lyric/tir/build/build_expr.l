@@ -4279,6 +4279,43 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
   }
 }
 
+/// `Enum.Case` or `Pkg.Enum.Case` where several enums of the program share the name `Enum` (`LogLevel` of
+/// `Std.Log` and `Std.Logging`): the checker leaves the read untyped and the expected type decides which enum it
+/// is, as for a bare shared case (`sharedCaseRead`).  The node's type is that enum's, and the case is the one of
+/// it named `name`.  None when the receiver is typed (a value) or the type is not an enum with that case.
+func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  if tbl.exprTypes.containsKey(recv.nodeId) {
+    return None
+  }
+  val enumName = match recv.kind {
+    case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { return None }
+    case _ -> return None
+  }
+  val owner = match ty {
+    case TNamed(did, targs) -> if targs.count == 0 { did } else { return None }
+    case _ -> return None
+  }
+  if typeNameOfId(tbl, owner) != enumName {
+    return None
+  }
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    match cand.kind {
+      case DKEnumCase(pid, _) -> if symbolIdEq(pid, owner) {
+        match caseSymbolId(tbl, cand, pid, name) {
+          case Some(id) -> {
+            noteCaseSym(env, id)
+            return Some(value = mkExpr(e, ty, XConstruct(sym = id, fields = newList())))
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 /// `Cfg.field` or `Pkg.Cfg.field`, a read of a field of a `config` block of the package (docs/25): a
 /// module-level value named `Pkg::Cfg::field`, as a union case is named `Pkg::Union::Case`.  The checker
 /// types the read and records no type for the block's name, which is no value, so a receiver the checker
@@ -4328,6 +4365,10 @@ func buildConfigFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr
 /// property, a config field, a tuple or union payload) is counted.
 func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
   match buildConfigFieldRead(env, e, ty, recv, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
+  match buildQualifiedSharedCase(env, e, ty, recv, name) {
     case Some(x) -> return Some(value = x)
     case None -> ()
   }
