@@ -737,6 +737,13 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // `Err(x)?` and `None?` never yield: the failure is the operand itself.
+  match e.kind {
+    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) {
+      return Some(value = TirT.TNever)
+    }
+    case _ -> ()
+  }
   // The logical operators are typed by the checker from their `Bool` operands or built as short-circuits (`shortOfBinop`).
   // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
   // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
