@@ -759,6 +759,9 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
           case Err(_) -> ()
         }
       }
+      if head.isNone() {
+        head = ctorListJoinTy(env, xs)
+      }
       match head {
         case Some(h) -> {
           for x in xs {
@@ -841,6 +844,130 @@ func branchOpenTy(env: in BuildEnv, b: in ExprOrBlock): Option[Ty] {
       }
     }
   }
+}
+
+/// The name a `Some(x)`, `None`, `Ok(x)` or `Err(e)` construction is written with, and its one payload.
+func ctorShape(x: in Expr): Option[String] {
+  match unparen(x).kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> Some(value = p.segments[p.segments.count - 1])
+      case _ -> None
+    }
+    case EPath(p) -> Some(value = p.segments[p.segments.count - 1])
+    case _ -> None
+  }
+}
+
+/// The payload of the construction `x`, when it has exactly one argument.
+func ctorPayload(x: in Expr): Option[Expr] {
+  match unparen(x).kind {
+    case ECall(_, cargs) -> if cargs.count == 1 {
+      match cargs[0] {
+        case CAPositional(v) -> Some(value = v)
+        case CANamed(_, v, _) -> Some(value = v)
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// The `Std.Core` union `name` (`Option`, `Result`) as a symbol.
+func stdCoreUnionSym(env: in BuildEnv, name: in String): Option[SymbolId] {
+  match symTableTryFindInPackage(env.ctx.tbl, "Std.Core", name) {
+    case Some(sym) -> match sym.kind {
+      case DKUnion(id, _) -> Some(value = id)
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+/// The type of a bracket literal whose elements are all `Some(x)` and `None` (an `Option` of the payload's
+/// type) or all `Ok(x)` and `Err(e)` (a `Result` of the two payloads' types), when the checker left it open
+/// and the payloads give one type each.  None otherwise.
+func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
+  var kind = 0
+  var someT: Option[Ty] = None
+  var okT: Option[Ty] = None
+  var errT: Option[Ty] = None
+  for x in xs {
+    val name = match ctorShape(x) { case Some(n) -> n; case None -> return None }
+    if name == "None" {
+      if kind == 2 {
+        return None
+      }
+      kind = 1
+    } else {
+      val payload = match ctorPayload(x) { case Some(v) -> v; case None -> return None }
+      val pt = match exprOrOpenTy(env, payload) { case Some(t) -> t; case None -> return None }
+      if name == "Some" {
+        if kind == 2 {
+          return None
+        }
+        kind = 1
+        match someT {
+          case Some(prev) -> if not tyEq(prev, pt) {
+            return None
+          }
+          case None -> {
+            someT = Some(value = pt)
+          }
+        }
+      } else if name == "Ok" {
+        if kind == 1 {
+          return None
+        }
+        kind = 2
+        match okT {
+          case Some(prev) -> if not tyEq(prev, pt) {
+            return None
+          }
+          case None -> {
+            okT = Some(value = pt)
+          }
+        }
+      } else if name == "Err" {
+        if kind == 1 {
+          return None
+        }
+        kind = 2
+        match errT {
+          case Some(prev) -> if not tyEq(prev, pt) {
+            return None
+          }
+          case None -> {
+            errT = Some(value = pt)
+          }
+        }
+      } else {
+        return None
+      }
+    }
+  }
+  if kind == 1 {
+    match someT {
+      case Some(t) -> match stdCoreUnionSym(env, "Option") {
+        case Some(sym) -> return Some(value = TNamed(sym = sym, args = [t]))
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  if kind == 2 {
+    match okT {
+      case Some(o) -> match errT {
+        case Some(er) -> match stdCoreUnionSym(env, "Result") {
+          case Some(sym) -> return Some(value = TNamed(sym = sym, args = [o, er]))
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  None
 }
 
 /// An operand `lhs` of `==` or `!=` the checker left untyped takes the type of `rhs` when that is typed.
