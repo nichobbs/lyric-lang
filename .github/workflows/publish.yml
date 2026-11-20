@@ -249,6 +249,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '22'
+          cache: maven
+          cache-dependency-path: resolver/pom.xml
 
       - name: Build stage 2 (self-hosted compiler)
         shell: bash
@@ -490,6 +492,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '22'
+          cache: maven
+          cache-dependency-path: resolver/pom.xml
 
       # docs/44-jvm-production-readiness-plan.md finding M-7: bundle
       # lyric-resolver.jar into the NuGet global tool too (Lyric.Cli.Aot.csproj

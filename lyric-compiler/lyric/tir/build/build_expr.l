@@ -65,6 +65,9 @@ pub record BuildEnv {
   /// The value-generic parameters of the function being built (owner's first), by name: a bare
   /// read of one is an `XValueParam` (D469).
   valueParams: List[ValueParamRef] = newList()
+  /// The declared return type of the function being built (empty or one entry): a `return` outside a
+  /// lambda settles an expression the checker left open (a bare `None`) to it.
+  retTy: List[Ty] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -384,6 +387,11 @@ func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs
 func buildDeclaredBinary(
   env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
+  // A left operand that never yields (`Err(e)? == x`) ends the expression there; the right is unreachable.
+  match lt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = lt)))
+    case _ -> ()
+  }
   val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
   match rhs {
     case Some(r2) -> {
@@ -583,6 +591,18 @@ func exprNeverCompletes(e: in Expr): Bool {
       case None -> false
     }
     case EBlock(bl) -> blockNeverCompletes(bl)
+    // `Err(e)?` and `None?` always propagate: the operand is the failure itself, so the `?` never yields
+    // (its success type is free, and nothing fixes it).
+    case EPropagate(inner) -> propagatesAlways(unparen(inner))
+    case _ -> false
+  }
+}
+
+/// Whether `x` is a construction of the failure case of `Result` or `Option`: `Err(...)` or `None`.
+func propagatesAlways(x: in Expr): Bool {
+  match x.kind {
+    case ECall(fn, _) -> match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1] == "Err"; case _ -> false }
+    case EPath(p) -> p.segments[p.segments.count - 1] == "None"
     case _ -> false
   }
 }
@@ -719,12 +739,87 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // `Err(x)?` and `None?` never yield: the failure is the operand itself.
+  match e.kind {
+    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
+    // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
+    case ETuple(xs) -> {
+      val ts: List[Ty] = newList()
+      for x in xs {
+        match exprOrOpenTy(env, x) {
+          case Some(t) -> ts.add(t)
+          case None -> return None
+        }
+      }
+      return Some(value = TTuple(elems = ts))
+    }
+    case _ -> ()
+  }
+  // The logical operators are typed by the checker from their `Bool` operands or built as short-circuits (`shortOfBinop`).
+  // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
+  // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
+  match e.kind {
+    case EBinop(op, _, _) -> match op {
+      case BEq -> return Some(value = tyBool())
+      case BNeq -> return Some(value = tyBool())
+      case BLt -> return Some(value = tyBool())
+      case BLte -> return Some(value = tyBool())
+      case BGt -> return Some(value = tyBool())
+      case BGte -> return Some(value = tyBool())
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   match openLocalTy(env, e) {
     case Some(t) -> Some(value = t)
     case None -> match openPropagateYield(env, e) {
       case Some(t) -> Some(value = t)
-      case None -> openHostChainTy(env, e)
+      case None -> match openHostChainTy(env, e) {
+        case Some(t) -> Some(value = t)
+        case None -> openIfTy(env, e)
+      }
     }
+  }
+}
+
+/// The type of an `if`/`else` the checker left untyped because its branches end in host calls it could not type
+/// (`if secure { t.connect(host, port, user, pw) } else { t.connect() }`): the type its two branches agree on.
+func openIfTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EIf(_, thenBranch, Some(elseBranch), _) -> match branchOpenTy(env, thenBranch) {
+      case Some(a) -> match branchOpenTy(env, elseBranch) {
+        case Some(b) -> if tyEq(a, b) {
+          Some(value = a)
+        } else {
+          None
+        }
+        case None -> None
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+func branchOpenTy(env: in BuildEnv, b: in ExprOrBlock): Option[Ty] {
+  match b {
+    case EOBExpr(x) -> exprOrOpenTy(env, x)
+    case EOBBlock(blk) -> {
+      if blk.statements.count == 0 {
+        return Some(value = tyUnit())
+      }
+      match blk.statements[blk.statements.count - 1].kind {
+        case SExpr(t) -> exprOrOpenTy(env, t)
+        case _ -> None
+      }
+    }
+  }
+}
+
+func exprOrOpenTy(env: in BuildEnv, x: in Expr): Option[Ty] {
+  match exprTy(env.ctx, x.nodeId) {
+    case Ok(t) -> Some(value = t)
+    case Err(_) -> openHoleTy(env, x)
   }
 }
 
@@ -746,15 +841,19 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
           name,
           args.count,
           false,
-          h.isStatic
+          h.isStatic,
+          checkerArgTys(env, args)
         )
         case None -> None
       }
       case _ -> None
     }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
-      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic)
-      case None -> None
+      case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
+      case None -> match openLocalBuiltinProperty(env, recv, name) {
+        case Some(_) -> Some(value = tyInt())
+        case None -> None
+      }
     }
     case _ -> None
   }
@@ -799,7 +898,13 @@ func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
 /// gives, else the host class it names as an `extern type`.
 func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
   match exprTy(env.ctx, recv.nodeId) {
-    case Ok(t) -> match t { case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false)); case _ -> None }
+    case Ok(t) -> match t {
+      case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
+      // A language `String` is the host's string, so a member the checker has no case for
+      // (`encoded.getBytes("US-ASCII")`) is the host string class's own.
+      case TPrim(TPString) -> hostStringReceiver(env)
+      case _ -> None
+    }
     case Err(_) -> match openHostChainTy(env, recv) {
       case Some(t) -> match t {
         case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
@@ -820,6 +925,32 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
         }
       }
     }
+  }
+}
+
+/// The receiver of a member call on a language `String`: the host's string class, under the name the active
+/// target's metadata knows (the JVM resolver reads JDK classes, the dotnet one reference assemblies).  The first
+/// resolver is the only one: a build has one active target.
+func hostStringReceiver(env: in BuildEnv): Option[HostRecv] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  for n in ["java.lang.String", "System.String"] {
+    match env.ctx.tbl.externIterResolver[0].resolveBases(n) {
+      case Some(_) -> return Some(value = HostRecv(host = HostTypeRef(name = n, args = newList()), isStatic = false))
+      case None -> ()
+    }
+  }
+  None
+}
+
+/// A local declared `String?` (a host string, which the checker types `String?` because the host may
+/// return null) read where the checker wants a `String`: the checker lets a host string flow unchecked
+/// (docs/01 section 2.11), as `CvFromHost` over the local.
+func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
+  match declared {
+    case TNullable(TPrim(TPString)) -> match read { case TPrim(TPString) -> true; case _ -> false }
+    case _ -> false
   }
 }
 
@@ -857,6 +988,60 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   }
 }
 
+/// The checker's types of a call's positional arguments, or an empty list when any is named or untyped: the
+/// arguments an overload of an untyped host call is chosen by (`Math.round(d)`).
+func checkerArgTys(env: in BuildEnv, args: in List[CallArg]): List[Ty] {
+  val tys: List[Ty] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> tys.add(t)
+        case Err(_) -> return newList()
+      }
+      case CANamed(_, _, _) -> return newList()
+    }
+  }
+  tys
+}
+
+/// The candidates whose parameters fit the argument types best, when the host's overloads of one arity differ
+/// in their result (`Math.round(float): Int`, `Math.round(double): Long`) and the arguments are known.  A tie
+/// between distinct parameter lists, or no argument types, leaves every candidate.
+func narrowByArgTys(
+  env: in BuildEnv,
+  cands: in List[ExternMemberSig],
+  targs: in List[Ty],
+  argTys: in List[Ty],
+  argc: in Int,
+): List[ExternMemberSig] {
+  if cands.count < 2 or argTys.count != argc or argc == 0 {
+    return cands
+  }
+  var best: List[ExternMemberSig] = newList()
+  var bestScore = -1
+  for c in cands {
+    if c.params.count == argc {
+      match scoreOverload(env, c, targs, argTys) {
+        case Some(fit) -> {
+          if fit.score > bestScore {
+            bestScore = fit.score
+            best = newList()
+            best.add(c)
+          } else if fit.score == bestScore {
+            best.add(c)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  if best.count == 0 {
+    cands
+  } else {
+    best
+  }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv,
@@ -865,11 +1050,13 @@ func hostChainResult(
   argc: in Int,
   isProperty: in Bool,
   wantStatic: in Bool,
+  argTys: in List[Ty],
 ): Option[Ty] {
-  val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
+  val allCands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, argc, isProperty) {
     case Some(c) -> c
     case None -> return None
   }
+  val cands = narrowByArgTys(env, allCands, host.args, argTys, argc)
   var result: Option[Ty] = None
   for c in cands {
     if c.isStatic != wantStatic {
@@ -889,11 +1076,22 @@ func hostChainResult(
           } else if isHostStringName(rname) {
             // The checker types a host call's string as `String?` (the host may return null).
             TirT.TNullable(TPrim(kind = TPString))
+          } else if isHostSingleName(rname) {
+            // The host's 32-bit and 64-bit floating point results are `Float` and `Double` (D359); the
+            // call node converts the host's result with `CvFromHost`.
+            TPrim(kind = TPFloat)
+          } else if isHostDoubleName(rname) {
+            TPrim(kind = TPDouble)
           } else {
             // A result the checker types as a Lyric type (an array as a slice, a boxed number, a task,
             // the root object) is not a plain host class: the checker's own type applies there.
             // The root object of a non-generic host class is the class's own result (`Method.invoke`).
-            if not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
+            // The builder is asked only for a call the checker recorded no type for, so a `Future` here
+            // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
+            // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
+            // the host's own class too.
+            val unmappedFuture = rname == "java.util.concurrent.Future" or rname == "java.lang.Boolean"
+            if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
             match hostElemTy(el, host.args, TirT.TNever) {
@@ -902,17 +1100,52 @@ func hostChainResult(
             }
           }
         }
+        case EIEPrim(_) -> match hostElemTy(el, host.args, TirT.TNever) {
+          case Some(x) -> x
+          case None -> return None
+        }
         case _ -> return None
       }
     }
     match result {
-      case Some(prev) -> if not tyEq(prev, t) { return None }
+      case Some(prev) -> if not tyEq(prev, t) {
+        // The candidates of an overridden method differ in the bridge methods the host compiler adds
+        // (`StringBuilder.append` also returns `AbstractStringBuilder` and `Appendable`): the covariant
+        // override that returns the receiver's own class is the one a call binds.
+        if isHostClassTy(t, host.name) {
+          result = Some(value = t)
+        } else if isRootObjectTy(t) {
+          // A covariant override and the bridge method that returns the root class (`ByteBuffer.array()`
+          // is `byte[]`, `Buffer.array()` is `Object`): the override is the member a call binds.
+          ()
+        } else if isRootObjectTy(prev) {
+          result = Some(value = t)
+        } else if not isHostClassTy(prev, host.name) {
+          return None
+        }
+      }
       case None -> {
         result = Some(value = t)
       }
     }
   }
   result
+}
+
+/// Whether `t` is the host's root object class.
+func isRootObjectTy(t: in Ty): Bool {
+  match t {
+    case TExtern(h) -> isHostObject(h.name)
+    case _ -> false
+  }
+}
+
+/// Whether `t` is the host class `name`.
+func isHostClassTy(t: in Ty, name: in String): Bool {
+  match t {
+    case TExtern(h) -> h.name == name
+    case _ -> false
+  }
 }
 
 /// Whether every type in `args` is a type parameter: a generic host class applied to the type parameters of
@@ -957,6 +1190,25 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
         }
       }
       Some(value = t)
+    }
+    case None -> None
+  }
+}
+
+/// The condition `cond` of an `if` or `while`, built.  One that never yields (`if Err(e)? { ... }`) is
+/// converted to the `Bool` the construct takes, as a value of no type converts to any.
+func buildCondition(env: in BuildEnv, cond: in Expr): Option[TExpr] {
+  match buildExpr(env, cond) {
+    case Some(t) -> match t.ty {
+      case TirT.TNever -> Some(
+        value = TExpr(
+          id = freshNodeId(env),
+          ty = tyBool(),
+          span = t.span,
+          kind = XConvert(kind = CvFromNever, inner = t)
+        )
+      )
+      case _ -> Some(value = t)
     }
     case None -> None
   }
@@ -1030,7 +1282,9 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
             // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
             // takes the same conversion the call would have.
-            if not tyEq(d.ty, ty) and hostResultIsCallType(d.ty, ty) {
+            // A host string the call typed `String?` is read as the `String` the context wants
+            // (`val path = exchange.getRequestPath()`, then `Request(path = path)`).
+            if not tyEq(d.ty, ty) and (hostResultIsCallType(d.ty, ty) or hostStringReadAsString(d.ty, ty)) {
               val inner = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
               return Some(value = mkExpr(e, ty, XConvert(kind = CvFromHost, inner = inner)))
             }
@@ -1097,6 +1351,8 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case Some(lt0) -> match op {
           case BEq -> settleHole(env, rhs, lt0.ty)
           case BNeq -> settleHole(env, rhs, lt0.ty)
+          // `host() ?? []`: the default is the type the coalesce has, declared at the local it initialises.
+          case BCoalesce -> settleHole(env, rhs, ty)
           case _ -> ()
         }
         case None -> ()
@@ -1130,7 +1386,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val t = buildOrBlock(env, thenBranch, ty)
       var el: Option[TExpr] = None
       var elOk = true
@@ -1645,8 +1901,13 @@ func settleHole(env: in BuildEnv, x: in Expr, ty: in Ty): Unit {
   }
 }
 
-/// The tail expression of `blk`, when its last statement is one, settled to `ty`.
+/// The tail expression of `blk`, when its last statement is one, settled to `ty`.  A `Unit` block discards its
+/// tail, so `Unit` says nothing about the tail's own type (a host call left untyped by the checker keeps its
+/// host result there, `if stop { proc.destroyForcibly() }`).
 func settleBlockTail(env: in BuildEnv, blk: in Block, ty: in Ty): Unit {
+  if isUnitTy(ty) {
+    return
+  }
   if blk.statements.count > 0 {
     match blk.statements[blk.statements.count - 1].kind {
       case SExpr(tail) -> settleHole(env, tail, ty)
@@ -1872,16 +2133,21 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SReturn(v) -> match v {
       case None -> Some(value = stmtOf(s, TsReturn(value = None)))
-      case Some(x) -> match buildExpr(env, x) {
-        case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = t))))
-        case None -> None
+      case Some(x) -> {
+        if env.lambdas.count == 0 and env.retTy.count > 0 {
+          settleHole(env, x, env.retTy[0])
+        }
+        match buildExpr(env, x) {
+          case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = t))))
+          case None -> None
+        }
       }
     }
     case SBreak(label) -> Some(value = stmtOf(s, TsBreak(label = label)))
     case SContinue(label) -> Some(value = stmtOf(s, TsContinue(label = label)))
     case SLocal(binding) -> buildLocal(env, s, binding)
     case SWhile(label, cond, body) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val bd = loopBody(env, body)
       match c {
         case Some(ct) -> match bd {
@@ -2379,6 +2645,10 @@ func buildFnCore(
     }
     case None -> ()
   }
+  env.retTy.clear()
+  if not functionIsGenerator(fn) {
+    env.retTy.add(ret)
+  }
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
   var barrier: Option[TExpr] = None
@@ -2435,6 +2705,15 @@ func buildFnCore(
         }
         case None -> ()
       }
+    } else if isUnitTy(ret) and not functionIsGenerator(fn) {
+      // A `Unit` function discards the value of its last expression (a host call that returns its
+      // receiver, `sb.append(s)`): the tail becomes a statement and the body is `Unit`.
+      match res {
+        case Some(b) -> {
+          res = Some(value = discardTailValue(env, b))
+        }
+        case None -> ()
+      }
     }
   }
   popScope(env)
@@ -2469,6 +2748,30 @@ func buildFnCore(
       )
     )
     case None -> None
+  }
+}
+
+/// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
+func discardTailValue(env: in BuildEnv, b: in TExpr): TExpr {
+  match b.ty {
+    case TPrim(TPUnit) -> return b
+    case TNever -> return b
+    case _ -> ()
+  }
+  match b.kind {
+    case XBlock(stmts, Some(tail)) -> {
+      val all: List[TStmt] = newList()
+      for st in stmts {
+        all.add(st)
+      }
+      all.add(TStmt(id = freshNodeId(env), span = tail.span, kind = TsExpr(expr = tail)))
+      TExpr(id = b.id, ty = tyUnit(), span = b.span, kind = XBlock(stmts = all, tail = None))
+    }
+    case _ -> {
+      val one: List[TStmt] = newList()
+      one.add(TStmt(id = freshNodeId(env), span = b.span, kind = TsExpr(expr = b)))
+      TExpr(id = freshNodeId(env), ty = tyUnit(), span = b.span, kind = XBlock(stmts = one, tail = None))
+    }
   }
 }
 
@@ -2725,6 +3028,58 @@ func buildSettledCaseCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List
   Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
 }
 
+/// The construction `e` of a generic record built at `ty`, the type its node settled at, when the checker
+/// recorded no constructor signature for it (a lambda's parameter types the checker erased, so the
+/// record's arguments are open): each field is the call's argument (by name, or by position) converted to
+/// the field's type at the arguments of `ty`.  None when the call is not such a construction; Some(None)
+/// after a part could not be built (counted or reported there).
+func buildSettledRecordCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if tbl.ctorSigByNode.containsKey(e.nodeId) {
+    return None
+  }
+  val sid = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val s = match symbolOfDefId(tbl, sid) { case Some(x) -> x; case None -> return None }
+  val rid = match s.kind { case DKRecord(i, _) -> i; case _ -> return None }
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  val names = recordGenericNamesOf(tbl, rid)
+  if not symbolIdEq(parent, rid) or names.count == 0 or names.count != targs.count {
+    return None
+  }
+  val ctx = newTyConvCtx(tbl)
+  tyConvBind(ctx, s.name, rid, names)
+  val declared = fieldsOfRecord(tbl, rid)
+  if args.count != declared.count {
+    return None
+  }
+  val fields: List[TExpr] = newList()
+  var i = 0
+  while i < declared.count {
+    val x = match args[i] {
+      case CAPositional(v) -> v
+      case CANamed(n, v, _) -> if n == declared[i].name {
+        v
+      } else {
+        return Some(value = uncoveredExpr(env, e, "a record construction with its arguments out of field order"))
+      }
+    }
+    val fty = match tyOfType(ctx, declared[i].ty) {
+      case Ok(t) -> t
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return Some(value = None)
+      }
+    }
+    val target = substOwnerArgs(fty, rid, targs)
+    val bv = match settleArg(env, x, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    val cv = match coerceArg(env, bv, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    fields.add(cv)
+    i = i + 1
+  }
+  Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
+}
+
 /// A call: a built-in by its recorded name, a call through a function value,
 /// or a call to a declared non-generic function with in-mode arguments.  Other
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
@@ -2780,6 +3135,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildSettledRecordCtor(env, e, ty, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
@@ -2792,6 +3151,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case None -> ()
   }
   match buildDistinctFactory(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
+  match buildToStringMethod(env, e, ty, fn, args) {
     case Some(r) -> return r
     case None -> ()
   }
@@ -3034,6 +3397,39 @@ func buildUnderlyingConversion(
   Some(value = convertValueAs(env, e, unwrapped, ty))
 }
 
+/// `x.toString()` on a range-subtype or distinct value: the checker types the call `String` and records
+/// no callee, as for the numeric conversion methods.  It is the built-in `toString` of the value, which
+/// renders a range subtype or a distinct value as its underlying value, as `toString(x)` does.  None when
+/// the call is not such a method; Some(None) after the receiver could not be built.
+func buildToStringMethod(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 or not tyEq(ty, tyString()) {
+    return None
+  }
+  val recvE = match fn.kind {
+    case EMember(r, m) -> if m == "toString" { r } else { return None }
+    case _ -> return None
+  }
+  val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
+  val refinedOrDistinct = match rt {
+    case TyRefined(_, _, _, _, _) -> true
+    case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
+      case Some(sym) -> match sym.kind {
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+  if not refinedOrDistinct {
+    return None
+  }
+  val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
+  Some(value = Some(value = stringPart(env, recv)))
+}
+
 /// `t` as a value of `ty` for the call `e`, or the counted reason it cannot be.
 func convertValueAs(env: in BuildEnv, e: in Expr, t: in TExpr, ty: in Ty): Option[TExpr] {
   match convertValue(env, t, ty) {
@@ -3248,7 +3644,11 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
       match callTy {
         case TSlice(_) -> n == hostArrayName()
         case TArray(_, _) -> n == hostArrayName()
-        case TNullable(inner) -> match inner { case TPrim(TPString) -> isHostStringName(n); case _ -> false }
+        // An erased generic's `Object` result instantiated at `String` is a string the host may return null for.
+        case TNullable(inner) -> match inner {
+          case TPrim(TPString) -> isHostStringName(n) or isHostObject(n)
+          case _ -> false
+        }
         // A generic member's erased result (`BlockingQueue<HttpExchange>.take()` returns `Object`)
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
@@ -3258,9 +3658,17 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         case TPrim(TPFloat) -> isHostSingleName(n) or isHostObject(n)
         case TPrim(TPDouble) -> isHostDoubleName(n) or isHostObject(n)
         case TPrim(TPInt) -> n != hostArrayName() and not isHostStringName(n)
-        case TNamed(sym, targs) -> isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
-          (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
-          isHostTaskName(n)
+        // A host collection's erased `Object` result read as the Lyric record or union stored in it
+        // (`val state: RegistryState = registryMap.get(key)`): the checker instantiates the call at the
+        // declared type.
+        // The stored value is not checked here: `CvFromHost` casts it at run time, so a host collection holding
+        // another type fails at that cast, as the checker's unchecked host result (docs/01 section 2.11) allows.
+        case TNamed(sym, targs) -> (not isBuiltinSymbol(sym) and isHostObject(n)) or
+          (
+            isBuiltinSymbol(sym) and targs.count == 1 and h.args.count == 1 and
+              (tyEq(h.args[0], targs[0]) or hostResultIsCallType(h.args[0], targs[0])) and
+              isHostTaskName(n)
+          )
         case _ -> false
       }
     }
@@ -3705,7 +4113,7 @@ func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr
     case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
     case _ -> false
   }
-  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+  if not hostResultFlowsTo(env, ret, ty, nullableString) {
     return None
   }
   val params: List[TParamTy] = newList()
@@ -3721,6 +4129,15 @@ func buildHostPropertyRead(env: in BuildEnv, e: in Expr, ty: in Ty, rt: in TExpr
   val args: List[TArg] = newList()
   args.add(TArgIn(value = rt))
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = args)))
+}
+
+/// Whether a host member's declared result `ret` is what the checker's `ty` stands for, so `hostResultNode` can
+/// give the node that type: the same type, a possibly null string, a result the checker types as a Lyric type, a
+/// host subclass of the class the context declares (`HttpRequestMessage.Headers` is an `HttpRequestHeaders` read as
+/// the `HttpHeaders` the function returns) or a base class of a more specific one.
+func hostResultFlowsTo(env: in BuildEnv, ret: in Ty, ty: in Ty, nullableString: in Bool): Bool {
+  tyEq(ret, ty) or nullableString or hostResultIsCallType(ret, ty) or isSome(hostUpcastKind(env, ret, ty)) or
+    hostResultNarrowsTo(env, ret, ty)
 }
 
 /// `JCharacter.TYPE`: a read of a static field or property of the host class an `extern type` names, where the
@@ -3754,7 +4171,7 @@ func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr,
     case TNullable(TPrim(TPString)) -> tyEq(ret, TPrim(kind = TPString))
     case _ -> false
   }
-  if not tyEq(ret, ty) and not nullableString and not hostResultIsCallType(ret, ty) {
+  if not hostResultFlowsTo(env, ret, ty, nullableString) {
     return None
   }
   val member = HostMemberRef(
@@ -3970,15 +4387,108 @@ func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] 
   }
 }
 
+/// `Enum.Case` or `Pkg.Enum.Case` where several enums of the program share the name `Enum` (`LogLevel` of
+/// `Std.Log` and `Std.Logging`): the checker leaves the read untyped and the expected type decides which enum it
+/// is, as for a bare shared case (`sharedCaseRead`).  The node's type is that enum's, and the case is the one of
+/// it named `name`.  None when the receiver is typed (a value) or the type is not an enum with that case.
+func buildQualifiedSharedCase(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  match mapGet(tbl.exprTypes, recv.nodeId) {
+    case Some(rt) -> match rt { case TyError(_) -> (); case _ -> return None }
+    case None -> ()
+  }
+  val enumName = match recv.kind {
+    case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { return None }
+    case _ -> return None
+  }
+  val owner = match ty {
+    case TNamed(did, targs) -> if targs.count == 0 { did } else { return None }
+    case _ -> return None
+  }
+  match symbolOfDefId(tbl, owner) {
+    case Some(os) -> if os.name != enumName { return None }
+    case None -> return None
+  }
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    match cand.kind {
+      case DKEnumCase(pid, _) -> if symbolIdEq(pid, owner) {
+        match caseSymbolId(tbl, cand, pid, name) {
+          case Some(id) -> {
+            noteCaseSym(env, id)
+            return Some(value = mkExpr(e, ty, XConstruct(sym = id, fields = newList())))
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// `Cfg.field` or `Pkg.Cfg.field`, a read of a field of a `config` block of the package (docs/25): a
+/// module-level value named `Pkg::Cfg::field`, as a union case is named `Pkg::Union::Case`.  The checker
+/// types the read and records no type for the block's name, which is no value, so a receiver the checker
+/// typed is a value and is left to the field read.  None when the receiver names no such block field.
+func buildConfigFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  if tbl.exprTypes.containsKey(recv.nodeId) {
+    return None
+  }
+  val segs = match recv.kind { case EPath(p) -> p.segments; case _ -> return None }
+  if segs.count == 0 {
+    return None
+  }
+  val cname = segs[segs.count - 1]
+  val found = if segs.count == 1 {
+    symTableTryFindOne(tbl, cname)
+  } else {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < segs.count - 1 {
+      pkgSegs.add(segs[i])
+      i = i + 1
+    }
+    symTableTryFindInPackage(tbl, modulePathJoin(pkgSegs), cname)
+  }
+  val sym = match found { case Some(s) -> s; case None -> return None }
+  val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
+  var declared = false
+  for f in cd.fields {
+    if f.name == name {
+      declared = true
+    }
+  }
+  if not declared or sym.originPackage.length == 0 {
+    return None
+  }
+  val id = internDefPathKey(tbl.interner, defPathKey(topDefPath(sym.originPackage, sym.name)) + "::" + name)
+  noteGlobalSym(env, id, ty)
+  Some(value = mkExpr(e, ty, XGlobal(sym = id, typeArgs = newList())))
+}
+
 /// `recv.name` where `recv` is a value of a record type declaring a field `name`: the
 /// receiver built, then the field.  Any other member (a collection's `count`, a host
 /// property, a config field, a tuple or union payload) is counted.
 func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  match buildConfigFieldRead(env, e, ty, recv, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
+  match buildQualifiedSharedCase(env, e, ty, recv, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
   match buildHostStaticRead(env, e, ty, recv, name) {
     case Some(x) -> return Some(value = x)
     case None -> ()
   }
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  // A member of a value that never exists (`None?.length`): the read is unreachable, the receiver's own end.
+  match rt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = rt)))
+    case _ -> ()
+  }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
     case None -> match buildHostPropertyRead(env, e, ty, rt, name) {
@@ -4073,11 +4583,31 @@ func stdCoreProjection(env: in BuildEnv, id: in SymbolId, hd: in String, name: i
   }
 }
 
+/// `length` of a local the checker left untyped at the read (`var chunk = fis.readNBytes(n)`: a host
+/// array result), by the type the local was declared at.
+func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
+  if name != "length" {
+    return None
+  }
+  match openLocalTy(env, recv) {
+    case Some(t) -> match t {
+      case TSlice(_) -> Some(value = "slice.length")
+      case TArray(_, _) -> Some(value = "array.length")
+      case TPrim(k) -> match k { case TPString -> Some(value = "String.length"); case _ -> None }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 /// The built-in a property read names: a stdlib collection's `count` and a string's
 /// `length`, as the checker names the built-in members (`List.count`).  A user type
 /// that happens to be named `List` is not the stdlib's.
 func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
-  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) { case Some(t) -> t; case None -> return None }
+  val rty = match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
+    case Some(t) -> t
+    case None -> return openLocalBuiltinProperty(env, recv, name)
+  }
   match rty {
     case TyPrim(PtString) -> if name == "length" { return Some(value = "String.length") }
     case TySlice(_) -> if name == "length" { return Some(value = "slice.length") }
@@ -4103,7 +4633,7 @@ func builtinPropertyName(env: in BuildEnv, recv: in Expr, name: in String): Opti
     }
     case _ -> ()
   }
-  None
+  openLocalBuiltinProperty(env, recv, name)
 }
 
 /// How `recv[idx]` is performed, from the receiver's type: arrays, slices and strings by
@@ -4292,6 +4822,23 @@ record LambdaSig {
 /// The place an assignment writes: a local, a record field or an element.  An assignment
 /// to a global, or through `self` or a host member, is counted.
 func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
+  // A local is assigned at the type it was declared at, whether or not the checker recorded a type
+  // for the target (a local bound to an unchecked host result, `chunk = s.readNBytes(4)`).  Where the checker did
+  // record a type for the target it agrees with the declared one (an assignment of another type is rejected by the
+  // checker before the builder runs), so the declared type is the one used.
+  match target.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match lookupLocal(env, p.segments[0]) {
+        case Some(d) -> {
+          if d.id.id >= 0 {
+            return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
   val pty = match exprTy(env.ctx, target.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> {
@@ -4507,6 +5054,10 @@ pub func erasedHostKind(from: in Ty, to: in Ty): Option[ConvKind] {
   match from {
     case TExtern(a) -> match to {
       case TParam(_, _) -> if isHostObject(a.name) { Some(value = CvFromHost) } else { None }
+      // The host's `Object` where a Lyric primitive or string is wanted (`action(e.getKey(), e.getValue())`
+      // on a raw `Map.Entry`): the checker leaves a host result unchecked (docs/01 section 2.11) and
+      // types it at the type its context wants, as D433 reads a local.
+      case TPrim(_) -> if isHostObject(a.name) { Some(value = CvFromHost) } else { None }
       case TExtern(b) -> if externHostBase(a.name) == externHostBase(b.name) and not tyEq(from, to) {
         Some(value = CvFromHost)
       } else {
@@ -4907,6 +5458,17 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   match convertValue(env, t, pty) {
     case Some(c) -> Some(value = c)
     case None -> {
+      // A host value passed where a Lyric collection of the host's root object class takes its element
+      // (`List[JObject].add(address)`): the host takes the reference.
+      match pty {
+        case TExtern(h) -> match t.ty {
+          case TExtern(_) -> if isHostObject(h.name) {
+            return Some(value = convertNode(env, t, pty, CvBoxToHost(host = h)))
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       noteUncoveredAt(env, "an argument conversion", t.span)
       env.errors.add(
         "I0002: the builder has no case for an argument conversion from " + renderTyNamed(env, t.ty) + " to " +
@@ -5105,6 +5667,10 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
 func genericBuiltin(name: in String): Bool {
   ffiIntrinsicName(name) or name == "println" or name == "print" or name == "toString" or name == "hashCode" or
     name == "default" or
+    name == "format1" or
+    name == "format2" or
+    name == "format3" or
+    name == "format4" or
     Str.endsWith(name, ".wrappingAdd") or
     Str.endsWith(name, ".wrappingSub") or
     Str.endsWith(name, ".wrappingMul") or
@@ -5651,11 +6217,17 @@ func buildMethodCall(
   env: in BuildEnv,
   e: in Expr,
   ty: in Ty,
-  sym: in SymbolId,
+  sym0: in SymbolId,
   site: in MethodCallSite,
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
+    None
+  } else {
+    ifaceOfImplMember(env, sym0)
+  }
+  val sym: SymbolId = match viaImpl { case Some(ii) -> ii.method; case None -> sym0 }
   // A bare call of a sibling method (`m(1)` inside a method of the same type) is called on
   // the enclosing method's own `self`.
   val bareSelf = match fn.kind { case EPath(path) -> path.segments.count == 1; case _ -> false }
@@ -5663,7 +6235,10 @@ func buildMethodCall(
   if not bareSelf and not isMemberExpr(fn) {
     return uncoveredExpr(env, e, "a method call whose callee is not a member access")
   }
-  val ifaceTy: Option[Type] = if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  val ifaceTy: Option[Type] = match viaImpl {
+    case Some(ii) -> Some(value = ii.iface)
+    case None -> if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+  }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
     case _ -> site.iface
@@ -5767,7 +6342,7 @@ func buildMethodCall(
   }
   val inst = match dotted {
     case Some(i) -> i
-    case None -> match instantiateMethod(env, e, sym, site, args) {
+    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym)) {
       case Some(i) -> i
       case None -> return None
     }

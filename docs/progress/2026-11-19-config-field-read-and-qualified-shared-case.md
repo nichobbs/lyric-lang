@@ -1,0 +1,3 @@
+# A config block field read and a shared `Enum.Case` build in the typed IR (D419)
+
+The TIR builder counted `Settings.port` (a read of a `config` block field) and `LogLevel.Info` (an enum name two packages share) unbuilt: four `Grpc` bodies, one `Web` test body and six `Lyric.Logging` test bodies. A config field read is now the module value `Pkg::Cfg::field` and a shared qualified case is the case of the enum the node settled at; the checker and the backends are unchanged. Tests: the `config_field_read` and `logging_shared_case` checks in `scripts/ci/tir-builder-shapes-e2e.sh`; `config_block_self_test.l` still passes on dotnet and the JVM.

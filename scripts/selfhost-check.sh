@@ -45,7 +45,7 @@ fi
 
 # LYRIC_BIN may be overridden (e.g. to point at a lyric-seeded bootstrap binary
 # staged elsewhere); defaults to the AOT entry point built by `make lyric`.
-LYRIC_BIN="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric}"
+LYRIC_BIN="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/lyric}"
 LIB_DIR="$(dirname "$LYRIC_BIN")"
 if [[ ! -x "$LYRIC_BIN" ]]; then
   echo "FATAL: lyric toolchain not built at $LYRIC_BIN" >&2
@@ -87,8 +87,10 @@ if [[ -z "$ILVERIFY" ]]; then
   ILVERIFY="$(command -v ilverify || true)"
 fi
 if [[ -z "$ILVERIFY" ]]; then
-  # Pinned: dotnet-ilverify 11.x ships no tool settings for SDK 10 (same pin as #8987).
-  dotnet tool install -g dotnet-ilverify --version 10.0.0 >/dev/null 2>&1 || true
+  # ilverify of the pinned SDK's major: a newer one ships no tool settings
+  # for an older SDK (#8987).
+  ilverify_major="$(sed -n 's/.*"version"[^0-9]*\([0-9][0-9]*\)\..*/\1/p' "$REPO_ROOT/bootstrap/global.json" | head -1)"
+  dotnet tool install -g dotnet-ilverify --version "${ilverify_major}.0.0" >/dev/null 2>&1 || true
   export PATH="$PATH:$HOME/.dotnet/tools"
   ILVERIFY="$(command -v ilverify || true)"
 fi
@@ -97,7 +99,9 @@ if [[ -n "$ILVERIFY" ]]; then
   refs=()
   for d in "$WORK"/*.dll; do [[ "$d" == "$OUT_DLL" ]] && continue; refs+=(-r "$d"); done
   # System refs from the .NET ref pack.
-  REFPACK="$(find "${DOTNET_ROOT:-/usr/share/dotnet}" /root/.dotnet -path '*Microsoft.NETCore.App.Ref*/ref/net10.0' -type d 2>/dev/null | head -1 || true)"
+  # The framework is the one bootstrap/global.json pins (11.0.100 -> net11.0).
+  PINNED_NET="net$(sed -n 's/.*"version"[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$REPO_ROOT/bootstrap/global.json" | head -1)"
+  REFPACK="$(find "${DOTNET_ROOT:-/usr/share/dotnet}" /root/.dotnet -path "*Microsoft.NETCore.App.Ref*/ref/$PINNED_NET" -type d 2>/dev/null | head -1 || true)"
   [[ -n "$REFPACK" ]] && for d in "$REFPACK"/*.dll; do refs+=(-r "$d"); done
   # `|| true` on both: under `set -e`, ilverify's non-zero exit on IL errors (the
   # very condition we're checking for) would otherwise abort the script here

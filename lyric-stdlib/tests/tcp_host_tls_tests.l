@@ -470,3 +470,79 @@ test "TLS 1.3 minVersion still completes the handshake and round trip" {
   assertTrue(body.startsWith("alpn="), "Tls13 server echoed its ALPN report over the round trip: " + body)
   assertTrue(not body.contains("alpn=h2"), "an http/1.1-pinned client is not served as h2 under Tls13: " + body)
 }
+
+// Accept one TLS connection, read its request, then block in a second read
+// (the client waits for a response and sends nothing); `blocked` is signalled
+// just before that read and the second read's outcome is appended to
+// `outcome`. The connection is published in `conns` for the thread that shuts
+// it down.
+func serveThenBlockInRead(
+  listener: in Listener,
+  cfg: in TlsServerConfig,
+  conns: in List[Conn],
+  blocked: in List[String],
+  outcome: in List[String],
+): Unit {
+  match hostAcceptTls(listener, cfg) {
+    case Err(e) -> outcome.add("handshake:" + TcpError.message(e))
+    case Ok(conn) -> {
+      conns.add(conn)
+      match hostRead(conn, 4096) {
+        case Err(e) -> outcome.add("first-read:" + TcpError.message(e))
+        case Ok(_) -> {
+          blocked.add("go")
+          match hostRead(conn, 4096) {
+            case Ok(chunk) -> outcome.add("read:" + chunk.length.toString())
+            case Err(_) -> outcome.add("error")
+          }
+        }
+      }
+      hostClose(conn)
+      // A client may retry an idempotent request on a new connection once the
+      // first one ended without a response; stopping the listener refuses or
+      // resets that retry, so the request fails instead of waiting for an
+      // accept that never comes.
+      hostStopListener(listener)
+    }
+  }
+}
+
+test "hostShutdown ends a read blocked on a TLS connection from another thread" {
+  val listener = match hostListen("127.0.0.1", 0) {
+    case Ok(l) -> l
+    case Err(e) -> panic("listen failed: " + TcpError.message(e))
+  }
+  val port = hostLocalPort(listener)
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val conns: List[Conn] = newList()
+  val blocked: List[String] = newList()
+  val outcome: List[String] = newList()
+  val server = taskRun({ -> serveThenBlockInRead(listener, cfg, conns, blocked, outcome) })
+  val shutter = taskRun(
+    { -> waitReady(blocked, 200); Time.sleepMillis(300); if conns.count > 0 { hostShutdown(conns[0]) } }
+  )
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withHttpVersion(
+      HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate()),
+      Http11
+    )
+  )
+  val started = Time.monotonicNanos()
+  // The server never answers; the shutdown resets the connection, so the
+  // request fails promptly instead of waiting out the client's own timeout.
+  match await client.get("https://localhost:" + port.toString() + "/") {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  val _ = await Task.awaitAll(shutter)
+  val _2 = await Task.awaitAll(server)
+  val elapsedMs = (Time.monotonicNanos() - started) / 1000000i64
+  hostStopListener(listener)
+  assertEqualInt(blocked.count, 1, "the server reached its blocking read")
+  assertEqualInt(outcome.count, 1, "the blocked TLS read returned")
+  assertTrue(
+    outcome[0] == "read:0" or outcome[0] == "error",
+    "a shut-down TLS read is end of stream or an error: " + outcome[0]
+  )
+  assertTrue(elapsedMs < 20000i64, "the shutdown ended the exchange promptly: " + elapsedMs.toString() + " ms")
+}

@@ -713,7 +713,7 @@ Lyric.Web = { path = "../lyric-web" }  # local-path dep (pre-built DLL in <dep>/
 
 [nuget.options]
 allow_native = false               # allow packages with native binaries
-target       = "net10.0"           # target framework moniker (default: net10.0)
+target       = "net11.0"           # target framework moniker (default: net11.0)
 
 # Native (--target native / LLVM backend) build defaults — see chapter 20 / lang-ref §3.6
 [native]

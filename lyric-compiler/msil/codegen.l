@@ -19713,6 +19713,15 @@ func lowerFuncValueInvokeMsil(
         insns.add(MPop)
         MVoid
       }
+      // A slice result is the `e[]` it was built as, or a `List`-backed one
+      // (#2539): convert, so a `T[]` parameter it reaches reads an array and
+      // the call verifies (`emitObjectToSliceArrayMsil`).
+      case MArray(e) -> {
+        if sliceElemHasArrayTokenMsil(e) {
+          emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
+        }
+        rt
+      }
       case _ -> {
         materializeBoxedElemMsil(cctx, insns, rt)
         rt
@@ -24413,6 +24422,15 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
     if memberName == "toByte" {
+      // A floating-point receiver truncates to Int first and then wraps
+      // modulo 256, as on the JVM (`(byte)(int)x`).  `conv.u1` straight from
+      // a float is unspecified for a value outside 0..255: the runtime
+      // wrapped it up to .NET 10 and saturates it to 255 from .NET 11.
+      match recvTy {
+        case MFloat -> insns.add(MConvI4)
+        case MDouble -> insns.add(MConvI4)
+        case _ -> ()
+      }
       insns.add(MConvU1)
       MByte
     } else if memberName == "toChar" {

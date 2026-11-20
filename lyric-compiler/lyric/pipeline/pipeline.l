@@ -2868,7 +2868,12 @@ func pipeWeaveEarly(
       batch.add(res.file.items[cursor])
       cursor = cursor + 1
     }
-    for g in Expand.respanGenerated(res.file, batch, base, run.cause, opts.sink.origins, true) {
+    // Aspect advice copied from another package's template is written in terms of the
+    // consumer's imports, as its bare names are; the alias rewriter ran before the
+    // weave, so the package-qualified chains it holds (`Resilience.sleepMs(ms)`) are
+    // folded here, or the checker reads them as a member call on a type.
+    val qualified = Aliases.rewriteFile(res.file.copy(items = batch)).items
+    for g in Expand.respanGenerated(res.file, qualified, base, run.cause, opts.sink.origins, true) {
       items.add(g)
     }
   }

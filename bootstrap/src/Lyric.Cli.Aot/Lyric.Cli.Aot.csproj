@@ -2,7 +2,16 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- bootstrap/global.json is the one place the .NET version is chosen.
+         The target framework is read from its SDK version (11.0.100 gives
+         net11.0) rather than taken from the SDK that happens to run the
+         build: a `dotnet` started outside bootstrap/ does not see
+         global.json and uses the newest installed SDK.  The output path
+         carries no framework directory (bin/<Configuration>/lyric), so no
+         script, workflow or Makefile names the framework. -->
+    <PinnedDotnetVersion>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../global.json')), '"version"\s*:\s*"(\d+\.\d+)').Groups.get_Item(1).Value)</PinnedDotnetVersion>
+    <TargetFramework>net$(PinnedDotnetVersion)</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AssemblyName>lyric</AssemblyName>
     <RootNamespace>Lyric.Cli.Aot</RootNamespace>
     <Nullable>enable</Nullable>
@@ -62,21 +71,20 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.Text.Json" Version="10.0.0" />
-    <!-- Explicit ILCompiler pin: the SDK-bundled known version (10.0.7)
-         carries GHSA-p3jp-9v83-76w9 (NU1903, an error under
-         TreatWarningsAsErrors). An explicit reference overrides the SDK's
-         implicit one; NuGet audit stays on.
-         The version MUST equal the ILCompiler the pinned SDK ships with:
-         an SDK's Native AOT publish targets only produce the
-         PrivateSdkAssemblies item group for their own ILCompiler, so a
-         mismatch fails with "The PrivateSdkAssemblies ItemGroup is required"
-         (#8988: SDK 10.0.404 against 10.0.14; SDK 10.0.107 fails the same
-         way). bootstrap/global.json therefore pins the SDK exactly
-         (rollForward "disable"), because setup-dotnet used to float the
-         feature band and moved CI to a new SDK without any repo change.
-         Move the SDK and this version together (10.0.404 <-> 10.0.15). -->
-    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="10.0.15" />
+    <PackageReference Include="System.Text.Json" Version="$(PinnedDotnetVersion).0" />
+    <!-- Explicit ILCompiler reference.  The version MUST equal the
+         ILCompiler the pinned SDK ships with: an SDK's Native AOT publish
+         targets only produce the PrivateSdkAssemblies item group for their
+         own ILCompiler, so a mismatch fails with "The PrivateSdkAssemblies
+         ItemGroup is required" (#8988).  bootstrap/global.json therefore
+         pins the SDK exactly (rollForward "disable"), because setup-dotnet
+         used to float the feature band and moved CI to a new SDK without
+         any repo change.  Keeping the reference explicit lets a servicing
+         release that fixes an advisory be taken with its SDK (NuGet audit
+         is on and NU1903 is an error here).  Move the SDK and this version
+         together (11.0.100 <-> 11.0.0); scripts/ci/check-dotnet-version.sh
+         checks the major. -->
+    <PackageReference Include="Microsoft.DotNet.ILCompiler" Version="11.0.0" />
   </ItemGroup>
 
   <!-- Bundle lyric-resolver.jar into the packed NuGet global tool, landing

@@ -35,6 +35,7 @@ import Std.Collections
 import Std.Math
 import Std.String as Str
 import Std.Console as Console
+import Lyric.DotnetTarget as DT
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -1552,10 +1553,10 @@ pub func newLoweringCtxWithVersions(
     TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
   )
 
-  // Find System.Runtime version from resolvedAssemblyVersions, fall back to 10.0.0.0
+  // Find System.Runtime version from resolvedAssemblyVersions, fall back to the targeted framework's
   val rtVer = match mapGet(resolvedAssemblyVersions, "System.Runtime") {
     case Some(ver) -> ver
-    case None -> Mdr.AssemblyVersion(major = 10, minor = 0, build = 0, revision = 0)
+    case None -> Mdr.AssemblyVersion(major = DT.dotnetMajor(), minor = 0, build = 0, revision = 0)
   }
 
   // AssemblyRef[1]: System.Runtime
@@ -1937,6 +1938,18 @@ pub func cellElemTypeTokenWithCtx(ctx: in LoweringCtx, elemTy: in MsilType): Int
       val refRow = findTypeRefRowByName(ctx, name)
       if refRow > 0 {
         return 0x01000000 + refRow
+      }
+    }
+    // A plain value type is named by its own TypeDef or TypeRef token.  A
+    // TypeSpec whose blob is `VALUETYPE <type>` is not one of the forms
+    // ECMA-335 II.23.2.14 allows, and ilverify 11 rejects it (BadTypeSpec).
+    // `code` is a TypeDefOrRef coded index: row << 2 | tag (0 TypeDef, 1 TypeRef).
+    case MValueTypeRef(code, _) -> {
+      if code % 4 == 0 {
+        return 0x02000000 + code / 4
+      }
+      if code % 4 == 1 {
+        return 0x01000000 + code / 4
       }
     }
     case _ -> ()

@@ -87,6 +87,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '22'
+          cache: maven
+          cache-dependency-path: resolver/pom.xml
 
       - name: Build stage 2 (self-hosted compiler)
         shell: bash

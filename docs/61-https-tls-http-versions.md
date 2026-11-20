@@ -304,7 +304,7 @@ boundary is kernel. Being sans-IO makes it:
 | Target | Accept + bytes | TLS |
 |---|---|---|
 | dotnet | `System.Net.Sockets.TcpListener` / `NetworkStream` (new `_kernel/tcp_host.l`) | `System.Net.Security.SslStream` server-auth (`X509Certificate2` from `Std.Tls`), ALPN via `SslServerAuthenticationOptions.ApplicationProtocols`, mTLS via `ClientCertificateRequired` + a `CertificateChainPolicy` (`CustomRootTrust` over `clientCa`) — the callback-free path, since `RemoteCertificateValidationCallback` is a custom delegate the FFI bridge cannot construct (#5947); see D-progress-697 |
-| jvm (later, evidence-gated) | virtual-thread `ServerSocket` | `SSLServerSocket` / `SSLEngine`, `setNeedClientAuth` |
+| jvm | `java.net.ServerSocket` / `Socket` (`_kernel_jvm/tcp_host.l`, `Std.TcpHost`, D611); fit to carry a server since D621 (docs/73 S1): per-connection read buffer, a shared write-timeout watchdog, `hostShutdown`; the `Std.HttpServer` JVM kernel still uses `com.sun.net.httpserver` until docs/73 S4 | `SSLSocket` layered over the accepted socket, server `SSLContext` from `Std.TlsServerContext`, ALPN `h2` then `http/1.1`, `setNeedClientAuth` / `setWantClientAuth` |
 | native (phase 5) | POSIX sockets in `lyric-rt` | OpenSSL 3.x (§7) |
 
 Using `SslStream` is emphatically **not** the "implement TLS by hand,
@@ -335,6 +335,11 @@ get a per-operation inactivity timeout on reads and writes
 (`LYRIC_HTTP_IDLE_TIMEOUT_MS`, default 120000) via `hostSetIoTimeout`. Both
 overrides accept 1 to 86400000 ms (one day) on both targets; anything else
 falls back to the default. The
+write timeout is not the same measure on every target: dotnet applies
+`SendTimeout` to each blocking send, while the JVM kernel gives a write of up
+to 64 KiB one deadline window and larger writes a fresh window per 64 KiB
+chunk, so a peer that drains slowly is cut off by the JVM only if one chunk
+stalls for the whole timeout. The
 JVM server (`com.sun.net.httpserver.HttpsServer`) already handshakes off its
 dispatcher thread with one `SSLContext` per listener and applies the JDK's
 own idle limit (`sun.net.httpserver.idleInterval`).
@@ -646,6 +651,8 @@ items marked ∥ are independent and can proceed in parallel.
    than silently downgrading. Applies uniformly to both the non-mTLS
    (`buildServerSslContext`) and mTLS (`buildServerSslContextWithClientCa`)
    context constructors via the shared `buildServerSslContextCore` helper.
+   `ServerSslContext.rawContext` (the `SSLContext` the two `serverSslContextFromConfig*` constructors wrap) is
+   `@experimental pub` on the JVM so `lyric-web`'s Undertow `serveTls` can read it from its own project (D437).
    Verified by `tls_server_jvm_tests.l`: a real handshake proving
    negotiation lands on TLSv1.2 or TLSv1.3, and a client whose own socket is
    pinned to TLSv1.1 alone (`SSLParameters.setProtocols`) failing the

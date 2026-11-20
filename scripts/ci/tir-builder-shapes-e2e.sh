@@ -537,6 +537,26 @@ func main(): Int {
 }
 LYRIC
 
+# A host property whose declared result is a subclass of the class the context declares: `HttpRequestMessage.Headers`
+# is an `HttpRequestHeaders`, read as the `HttpHeaders` the function returns (D417).  Every body must build and the
+# verifier must accept it.
+check host_property_upcast 0 <<'LYRIC'
+package Shapes40
+extern type HttpRequestMessage = "System.Net.Http.HttpRequestMessage"
+extern type ByteArrayContent = "System.Net.Http.ByteArrayContent"
+extern type HttpHeaders = "System.Net.Http.Headers.HttpHeaders"
+
+func requestHeaders(req: in HttpRequestMessage): HttpHeaders {
+  req.Headers
+}
+
+func contentHeaders(content: in ByteArrayContent): HttpHeaders {
+  content.Headers
+}
+
+func main(): Int { 0 }
+LYRIC
+
 # The TIR builds a write to a public host field (D478); the MSIL emitter does not lower one yet
 # (T0120), so the program is judged by the census alone and not run.
 check host_field_write "" <<'LYRIC'
@@ -1033,6 +1053,100 @@ else
   (cd "$WORK" && java -jar jvm_host_static_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_static_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_static_shapes"; fi
 fi
+# Host overloads of one arity that differ in their result, chosen by the argument types where the checker
+# left the call untyped (D416): `Math.round(double)` is a `Long` and `Math.round(float)` an `Int`, a static
+# host chain whose result is a value class (`Duration.ofNanos(Math.round(..))`), and `Thread.join(long)` is
+# void where `join(Duration)` answers a `Boolean`.  A host array bound at a declared local through `??`
+# (`File.listFiles()` is null for a non-directory) is a slice of the host class.
+cat > "$WORK/jvm_host_overload_shapes.l" <<'LYRIC'
+package JvmHostOverloadShapes
+extern type JMath = "java.lang.Math"
+extern type Duration = "java.time.Duration"
+extern type JThread = "java.lang.Thread"
+extern type JFile = "java.io.File"
+
+func nanosOf(n: in Double): Duration {
+  Duration.ofNanos(JMath.round(n * 1000000.0))
+}
+
+func waitFor(t: in JThread, ms: in Long): Unit {
+  t.join(ms)
+}
+
+extern type JProcess = "java.lang.Process"
+
+// A host call whose value a `Unit` block discards keeps its host result type.
+func stopIf(p: in JProcess, flag: in Bool): Unit {
+  if flag {
+    p.destroyForcibly()
+  }
+}
+
+extern type JBuf = "java.nio.ByteBuffer"
+
+// A host `float` result is a `Float` (the checker types `getDouble` but not `getFloat`), a member the checker has
+// no case for on a language `String` is the host string's own, and an `if`/`else` whose branches are untyped void
+// host calls is `Unit` (D418).
+func floatText(b: in JBuf): String {
+  b.getFloat(0).toString()
+}
+
+func stringByteCount(s: in String): Int {
+  JBuf.wrap(s.getBytes("US-ASCII")).remaining()
+}
+
+func joinEither(t: in JThread, quick: in Bool): Unit {
+  if quick {
+    t.join(1i64)
+  } else {
+    t.join()
+  }
+  ()
+}
+
+func childCount(path: in String): Int {
+  val d = JFile.new(path)
+  val children: slice[JFile] = d.listFiles() ?? []
+  var n = 0
+  var i = 0
+  while i < children.length {
+    val c: JFile = children[i]
+    if c.isFile() {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+func main(): Int {
+  val d = nanosOf(2.5)
+  if d.toNanos() != 2500000 {
+    return 1
+  }
+  if childCount("/definitely/not/a/directory") != 0 {
+    return 2
+  }
+  val t = JThread.new()
+  waitFor(t, 1)
+  joinEither(t, true)
+  joinEither(t, false)
+  if stringByteCount("abc") != 3 {
+    return 3
+  }
+  0
+}
+LYRIC
+(cd "$WORK" && "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_overload_shapes.l" -o "$WORK/jvm_host_overload_shapes.jar" >"$WORK/jvm_host_overload_shapes.log" 2>&1)
+oline="$(grep "^TIR build census \[.*jvm_host_overload_shapes.l\]" "$WORK/jvm_host_overload_shapes.log" | head -1)"
+if [[ -z "$oline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$oline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$oline")" ]]; then
+  echo "FAIL (jvm_host_overload_shapes): not every body built"; grep -E "first error" "$WORK/jvm_host_overload_shapes.log" | head -3; fail=1
+elif ! grep -q "^I0003 census \[.*jvm_host_overload_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_overload_shapes.log"; then
+  echo "FAIL (jvm_host_overload_shapes): the verifier rejected a built body"; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_overload_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_overload_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_overload_shapes"; fi
+fi
 # A call on a restored package's concrete type takes the default of the `impl` method it resolves to,
 # not the interface's (language reference 6.1): the interface carries a declaration for each non-generic
 # `impl` member that declares a default (D447).  Two types implement the same interface method (the language
@@ -1127,6 +1241,108 @@ LYRIC
 restored_impl_defaults dotnet
 restored_impl_defaults jvm
 
+# A call on a restored package's generic record through an interface it implements through a generic
+# `impl[T]` is a dispatch on the interface: the checker resolves it to the interface's member (the
+# package interface keeps no `impl` member), and the receiver's own type arguments are not the callee's
+# owner generics (D402).  `Box(v = 1).size(4)` is 4 * 2 = 8, on both targets.
+restored_generic_impl_call() {
+  local target="$1" dir="$WORK/genimpl-$1"
+  mkdir -p "$dir/lib/src" "$dir/app/src"
+  cat > "$dir/lib/lyric.toml" <<'TOML'
+[package]
+name = "Gi.Lib"
+version = "0.1.0"
+
+[project]
+name = "Gi.Lib"
+output = "single"
+output_assembly = "GiLib.dll"
+
+[project.packages]
+"GiLib" = "src/lib.l"
+TOML
+  cat > "$dir/lib/src/lib.l" <<'LYRIC'
+package GiLib
+
+pub interface Sized {
+  func size(self: in Self, scale: in Int): Int
+}
+
+pub record Box[T] {
+  v: T
+}
+
+impl[T] Sized for Box[T] {
+  func size(self: in Box[T], scale: in Int): Int {
+    scale * 2
+  }
+}
+LYRIC
+  cat > "$dir/app/lyric.toml" <<'TOML'
+[package]
+name = "Gi.App"
+version = "0.1.0"
+
+[dependencies]
+"Gi.Lib" = { path = "../lib" }
+
+[project]
+name = "Gi.App"
+output = "single"
+output_assembly = "GiApp.dll"
+
+[project.packages]
+"GiApp" = "src/app.l"
+TOML
+  cat > "$dir/app/src/app.l" <<'LYRIC'
+package GiApp
+import GiLib
+
+func main(): Int {
+  Box(v = 1).size(4)
+}
+LYRIC
+  (cd "$dir" && "$LYRIC" build --manifest "$dir/lib/lyric.toml" --target "$target" >"$dir/lib.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the library did not build"; tail -3 "$dir/lib.log"; fail=1; return; }
+  (cd "$dir" && "$LYRIC" build --verify-ir --manifest "$dir/app/lyric.toml" --target "$target" >"$dir/app.log" 2>&1) || { echo "FAIL (restored_generic_impl_call $target): the consumer did not build"; tail -3 "$dir/app.log"; fail=1; return; }
+  local line built total
+  line="$(grep "^TIR build census \[.*app.l\]" "$dir/app.log" | head -1)"
+  built="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$line")"
+  total="$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$line")"
+  if [[ -z "$line" || "$built" != "$total" ]]; then
+    echo "FAIL (restored_generic_impl_call $target): $built of $total consumer bodies built"; grep -E "first error" "$dir/app.log" | head -3; fail=1; return
+  fi
+  if ! grep -q "^I0003 census \[.*app.l\]: 0 diagnostic" "$dir/app.log"; then
+    echo "FAIL (restored_generic_impl_call $target): the verifier rejected a built body"; fail=1; return
+  fi
+  local got
+  (cd "$dir" && "$LYRIC" run --manifest "$dir/app/lyric.toml" --target "$target" >/dev/null 2>&1); got=$?
+  if [[ "$got" != "8" ]]; then echo "FAIL (restored_generic_impl_call $target): exit code $got, want 8"; fail=1; return; fi
+  echo "ok   restored_generic_impl_call $target"
+}
+restored_generic_impl_call dotnet
+restored_generic_impl_call jvm
+
+# `x.toString()` on a range-subtype or distinct value: the checker records no callee for it, so the builder
+# builds the built-in `toString` of the value (D406).  "5" and "12" have 3 characters.
+check range_to_string_method 3 <<'LYRIC'
+package RangeToStringMethod
+
+pub type Cents = Long range 0 ..= 1000000
+pub type Tag = Int
+
+func show(c: in Cents): String {
+  c.toString()
+}
+
+func showTag(t: in Tag): String {
+  t.toString()
+}
+
+func main(): Int {
+  show(Cents.from(5)).length + showTag(Tag.from(12)).length
+}
+LYRIC
+
 # Host chains the builder does not type stay counted and the verifier reports nothing: a chain on a
 # result that is a Lyric value (a string, a boxed number), and a member the host class has no overload
 # for.  The JVM build must finish and every body that builds must verify (D444, D445).
@@ -1190,7 +1406,7 @@ else
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_local_receiver): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_local_receiver"; fi
 fi
 # A `Std.*` package sees the `internal` functions of another `Std.*` package (`Std.Tls`'s `rawHandle`
-# accessors, D432) and a user package does not: with `Std.HttpServer` imported, the two kernel functions
+# accessors, D432) and a user package does not: with `Std.HttpServer` imported (it re-exports `Std.TlsServerContext`), the two kernel functions
 # that call them are built, and a user call of the accessor stays unresolved.
 cat > "$WORK/std_internal_sigs.l" <<'LYRIC'
 package StdInternalSigs
@@ -1203,8 +1419,8 @@ func peek(id: in Identity): Int { 0 }
 func main(): Int { 0 }
 LYRIC
 (cd "$WORK" && LYRIC_TIR_CENSUS_BODIES=1 timeout 900 "$LYRIC" build --verify-ir --target jvm "$WORK/std_internal_sigs.l" -o "$WORK/std_internal_sigs.jar" >"$WORK/std_internal_sigs.log" 2>&1)
-if grep -q "^TIR body.unbuilt.Std.HttpServer::build\(Identity\|ClientCa\)KeyStore" "$WORK/std_internal_sigs.log" || ! grep -q "^TIR body.built.Std.HttpServer::buildIdentityKeyStore" "$WORK/std_internal_sigs.log"; then
-  echo "FAIL (std_internal_sigs): a Std.HttpServer body that calls Std.Tls's internal accessor was not built"; fail=1
+if grep -q "^TIR body.unbuilt.Std.TlsServerContext::build\(Identity\|ClientCa\)KeyStore" "$WORK/std_internal_sigs.log" || ! grep -q "^TIR body.built.Std.TlsServerContext::buildIdentityKeyStore" "$WORK/std_internal_sigs.log"; then
+  echo "FAIL (std_internal_sigs): a Std.TlsServerContext body that calls Std.Tls's internal accessor was not built"; fail=1
 else
   echo "ok   std_internal_sigs"
 fi
@@ -1421,5 +1637,313 @@ LYRIC
   echo "ok   native_member_intrinsics"
 }
 native_member_intrinsics
+
+# A bare `None` returned from a generic function (`return None` in `Option[T]`): the checker leaves it untyped,
+# so the `return` settles it to the function's declared return type (D409).  `c(0, 5)` is `None` and `c(1, 5)` is
+# `Some(5)`: 0 + 5 = 5.
+check return_hole_in_generic 5 <<'LYRIC'
+package ReturnHoleInGeneric
+import Std.Core
+
+func pick[T](n: in Int, x: in T): Option[T] {
+  if n == 0 {
+    return None
+  }
+  Some(value = x)
+}
+
+func main(): Int {
+  val a: Option[Int] = pick(0, 5)
+  val b: Option[Int] = pick(1, 5)
+  val x = match a {
+    case Some(v) -> v
+    case None -> 0
+  }
+  val y = match b {
+    case Some(v) -> v
+    case None -> 0
+  }
+  x + y
+}
+LYRIC
+
+# The host shapes of the JVM kernels (D435, D436): a host string held in a local and read as a `String`
+# (`Web.Kernel.Runtime.buildJvmRequest`), `.length` of a local holding a host byte array
+# (`Std.HashHost.hostSha512File`), a raw `Map.Entry`'s `Object` key and value passed to `String` parameters
+# (`Std.EnvironmentHost.hostForEachOverlayVar`), and the erased `Object` result of a `String` map read at `String?`
+# (`hostSetEnvironmentVariable`).  Every body builds and the verifier accepts it; the program is run.
+cat > "$WORK/jvm_host_kernel_shapes.l" <<'LYRIC'
+package JvmHostKernelShapes
+extern type JUri = "java.net.URI"
+extern type JFis = "java.io.FileInputStream"
+extern type JMap = "java.util.HashMap"
+extern type JIter = "java.util.Iterator"
+extern type JEntry = "java.util.Map$Entry"
+extern type JCm[K, V] = "java.util.concurrent.ConcurrentHashMap"
+extern type JExecutorService = "java.util.concurrent.ExecutorService"
+extern type JRunnable = "java.lang.Runnable"
+extern type JSb = "java.lang.StringBuilder"
+
+record Req { path: String }
+
+func stringLocal(u: in JUri): Req {
+  val path = u.getPath()
+  Req(path = path)
+}
+
+func arrayLength(s: in JFis): Int {
+  var chunk = s.readNBytes(4)
+  var rounds = 0
+  while chunk.length > 0 {
+    rounds = rounds + 1
+    chunk = s.readNBytes(4)
+  }
+  rounds
+}
+
+func entries(m: in JMap, action: in (String, String) -> Unit): Unit {
+  val it: JIter = m.entrySet().iterator()
+  while it.hasNext() {
+    val e: JEntry = it.next()
+    action(e.getKey(), e.getValue())
+  }
+}
+
+func putIgnored(m: in JCm[String, String]): Unit {
+  val _: String? = m.put("a", "b")
+}
+
+func submitIgnored(e: in JExecutorService, r: in JRunnable): Unit {
+  val _ = e.submit(r)
+}
+
+func appendTail(sb: in JSb, text: in String): Unit {
+  sb.append(text)
+}
+
+func ignoreEntry(k: in String, v: in String): Unit {
+  ()
+}
+
+// The shapes run, not only build: each is called with a real host value (`putIgnored` and `submitIgnored` need a
+// generic or interface host value a program cannot construct yet, docs/48 Q48-001, so they are built only).
+func main(): Int {
+  if stringLocal(JUri.create("http://h/p/q")).path != "/p/q" {
+    return 1
+  }
+  val sb = JSb.new()
+  appendTail(sb, "ab")
+  appendTail(sb, "cd")
+  if sb.toString() != "abcd" {
+    return 2
+  }
+  val m = JMap.new()
+  entries(m, ignoreEntry)
+  0
+}
+LYRIC
+(cd "$WORK" && timeout 600 "$LYRIC" build --verify-ir --target jvm "$WORK/jvm_host_kernel_shapes.l" -o "$WORK/jvm_host_kernel_shapes.jar" >"$WORK/jvm_host_kernel_shapes.log" 2>&1)
+kline="$(grep "^TIR build census \[.*jvm_host_kernel_shapes.l\]" "$WORK/jvm_host_kernel_shapes.log" | head -1)"
+if [[ -z "$kline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$kline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$kline")" ]] || \
+   ! grep -q "^I0003 census \[.*jvm_host_kernel_shapes.l\]: 0 diagnostic" "$WORK/jvm_host_kernel_shapes.log"; then
+  echo "FAIL (jvm_host_kernel_shapes): not every body built, or the verifier rejected one"; grep -E "first error|I0003" "$WORK/jvm_host_kernel_shapes.log" | head -4; fail=1
+else
+  (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
+  if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
+fi
+# `format1`-`format4` take their arguments of any type, as `println` does (the checker types their
+# parameters with holes), so an `Int` or a `Bool` argument is not an argument the builder cannot check
+# (D407).  The program formats a number, a bool and a string and exits with their text's length: "a=42" is 4.
+check format_builtin_args 4 <<'LYRIC'
+package FormatBuiltinArgs
+
+func main(): Int {
+  val a = format1("a={0}", 42)
+  val b = format3("{0}-{1}-{2}", 1, true, "x")
+  val c = format2("{0}{1}", 1.5, 'c')
+  val d = format4("{0}{1}{2}{3}", 1, 2, true, "z")
+  println(b)
+  println(c)
+  println(d)
+  a.length
+}
+LYRIC
+
+# A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is typed as its enum and
+# recorded as the case, so the builder builds it (#8613).
+check package_qualified_enum_case 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+import Std.Http
+
+func code(m: in HttpMethod): Int {
+  match m {
+    case GET -> 3
+    case _ -> 4
+  }
+}
+
+func main(): Int {
+  code(Std.Http.GET)
+}
+LYRIC
+
+# Package-qualified calls in aspect advice copied from another package's template
+# (`Resilience.sleepMs(delay)` in `Resilience.Retry`) are folded like the consumer's own, so
+# the weaver-synthesized B-mode specialisations in lyric-resilience's tests build (#8613).
+bmode_log="$WORK/bmode_qualified_calls.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-resilience/lyric.toml >"$bmode_log" 2>&1)
+bline="$(grep "^TIR build census \[.*resilience_tests.l\]" "$bmode_log" | head -1)"
+if [[ -z "$bline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$bline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$bline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$bmode_log"; then
+  echo "FAIL (bmode_qualified_calls): not every body of lyric-resilience's tests built, or they failed"; grep -E "first error|no callee" "$bmode_log" | head -4; fail=1
+else
+  echo "ok   bmode_qualified_calls"
+fi
+
+# `.toArray()` of a slice is the identity and typed as the slice, so a call on one builds and its
+# result reads like any slice (#8613).
+check slice_to_array 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+record Ann {
+  name: String
+  args: slice[String]
+}
+
+func total(xs: in slice[Int]): Int {
+  xs.toArray().length
+}
+
+func main(): Int {
+  val a = Ann(name = "x", args = [])
+  if a.args.toArray().length != 0 {
+    return 1
+  }
+  total([1, 2, 3])
+}
+LYRIC
+
+# A read of a `config` block field (`Settings.port`) is a module value of the package, built as one
+# named `Pkg::Settings::port` (#8613).
+check config_field_read 7 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+config Settings {
+  port: Int = 7
+  host: String = "localhost"
+}
+
+func portPlusOne(): Int {
+  Settings.port + 1
+}
+
+func main(): Int {
+  val h: String = Settings.host
+  if h.length == 0 {
+    return 1
+  }
+  portPlusOne() - 1
+}
+LYRIC
+
+# `LogLevel.Info` where two packages declare an enum `LogLevel` (`Std.Log`, `Std.Logging`): the checker
+# leaves the read to the expected type, and the builder settles it as that enum's case (#8613).
+sline_log="$WORK/logging_shared_case.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-logging/lyric.toml >"$sline_log" 2>&1)
+sline="$(grep "^TIR build census \[.*logging_tests.l\]" "$sline_log" | head -1)"
+if [[ -z "$sline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$sline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$sline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$sline_log"; then
+  echo "FAIL (logging_shared_case): not every body of lyric-logging's tests built, or they failed"; grep -E "first error" "$sline_log" | head -4; fail=1
+else
+  echo "ok   logging_shared_case"
+fi
+
+# A generic record constructed in a lambda whose parameter types the checker erased (`{ k, v -> out.add(Ent(key = k,
+# value = v)) }` against a generic callee's `(K, V) -> Unit`): the checker recorded no constructor signature, so
+# the fields are the record's at the arguments the node settled at (D408).  One entry is added: exit 1.
+check settled_record_ctor 1 <<'LYRIC'
+package SettledRecordCtor
+import Std.Collections
+
+pub record Ent[K, V] {
+  key: K
+  value: V
+}
+
+func entries[K, V](m: in Map[K, V]): List[Ent[K, V]] {
+  val result: List[Ent[K, V]] = newListWithCapacity(m.count)
+  dictForEachEntry(m, { k, v -> result.add(Ent(key = k, value = v)) })
+  result
+}
+
+func main(): Int {
+  val m: Map[String, Int] = newMap()
+  m.add("a", 1)
+  entries(m).count
+}
+LYRIC
+
+# `Err(e)?` and `None?` never yield: the failure is the operand itself.  As a statement, bound to a
+# local that is read, as the left operand of `==`, and as a condition, each builds and runs (#8613).
+check propagate_never 15 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+func a(fail: in Bool): Result[Int, String] {
+  if fail {
+    Err(error = "stopped")?
+  }
+  Ok(value = 1)
+}
+
+func b(fail: in Bool): Option[Int] {
+  if fail {
+    None?
+  }
+  Some(value = 2)
+}
+
+func c(fail: in Bool): Option[Int] {
+  if fail {
+    val s = None?
+    return Some(value = s.length)
+  }
+  Some(value = 3)
+}
+
+func d(fail: in Bool): Result[Int, String] {
+  if fail {
+    if Err(error = "eq")? == "s" {
+      return Ok(value = 9)
+    }
+  }
+  Ok(value = 4)
+}
+
+func e(fail: in Bool): Result[Int, String] {
+  if fail {
+    if Err(error = "c")? {
+      return Ok(value = 9)
+    }
+  }
+  Ok(value = 5)
+}
+
+func unwrapped(r: in Result[Int, String]): Int {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> 100
+  }
+}
+
+func main(): Int {
+  val ob = match b(false) { case Some(v) -> v; case None -> 100 }
+  val oc = match c(false) { case Some(v) -> v; case None -> 100 }
+  unwrapped(a(false)) + ob + oc + unwrapped(d(false)) + unwrapped(e(false))
+}
+LYRIC
 
 exit $fail

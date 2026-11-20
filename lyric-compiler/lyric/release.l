@@ -45,6 +45,7 @@ import Std.Encoding as Enc
 import Std.Zip as Zip
 import Jvm.NativeImage as NI
 import Lyric.PackageMerge as PM
+import Lyric.DotnetTarget as DT
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -219,12 +220,14 @@ func isOnPath(name: in String, os: in String): Bool {
 // `dotnet restore` pulls the ILC packages and writes `project.assets.json` so
 // we can read the NuGet cache location and ILC version without driving
 // `dotnet publish` or generating any C#.
-// The probe TFM must match the .NET SDK version we target. Native AOT via ILC
-// requires net8.0 minimum; we lock to net10.0 because that is the minimum SDK
-// version Lyric requires (see docs/05-implementation-plan.md §Prerequisites).
+// The probe TFM is the framework emitted programs target (Lyric.DotnetTarget),
+// which is the minimum SDK version Lyric requires (see
+// docs/05-implementation-plan.md §Prerequisites).
 func probeProjectContent(rid: in String): String {
   "<Project Sdk=\"Microsoft.NET.Sdk\">\n" + "  <PropertyGroup>\n" + "    <OutputType>Exe</OutputType>\n" +
-    "    <TargetFramework>net10.0</TargetFramework>\n" +
+    "    <TargetFramework>" +
+    DT.dotnetTfm() +
+    "</TargetFramework>\n" +
     "    <PublishAot>true</PublishAot>\n" +
     "    <RuntimeIdentifier>" +
     rid +
@@ -605,7 +608,7 @@ func restoreIlcProbe(stageDir: in String, rid: in String): Result[IlcPaths, Stri
 // reflection-heavy and JIT-dependent subsystems incompatible with static
 // compilation and trim unused framework code paths.  The list mirrors what
 // `dotnet publish -p:PublishAot=true` injects via Microsoft.NETCore.Native.targets
-// for net10.0.
+// for the targeted framework.
 func appendAotFeatureLines(lines: in List[String]): Unit {
   lines.add("--feature:Microsoft.Extensions.DependencyInjection.VerifyOpenGenericServiceTrimmability=true")
   lines.add("--feature:System.ComponentModel.DefaultValueAttribute.IsSupported=false")
@@ -731,7 +734,7 @@ func buildIlcRsp(
   lines.add(programDll)
   lines.add("-o:" + objFile)
 
-  // Framework DLLs from lib/net10.0/
+  // Framework DLLs from lib/<tfm>/
   match File.listFiles(paths.frameworkPath) {
     case Ok(fs) -> {
       var fi = 0
@@ -824,14 +827,14 @@ func buildIlcRsp(
   appendAotFeatureLines(lines)
 
   lines.add("--runtimeknob:RUNTIME_IDENTIFIER=" + rid)
-  lines.add("--stacktracedata")
+  lines.add("--stacktracedata:frames")
   lines.add("--scanreflection")
   lines.add("--methodbodyfolding:generic")
   lines.add("--resilient")
 
   // Exports file for the linker version script (controls symbol visibility).
   lines.add("--exportsfile:" + exportsFile)
-  lines.add("--export-dynamic-symbol:DotNetRuntimeDebugHeader")
+  lines.add("--export-dynamic-symbol:DotNetRuntimeContractDescriptor")
 
   // Build the RSP text: one arg per line.
   var rsp = ""
@@ -881,8 +884,8 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libbootstrapper.o"))
   args.add(Path.join(sdk, "libRuntime.WorkstationGC.a"))
   args.add(Path.join(sdk, "libeventpipe-disabled.a"))
-  // VxSort support (x64 only)
-  if arch == "x64" {
+  // VxSort support (x64 and arm64)
+  if arch == "x64" or arch == "arm64" {
     args.add(Path.join(sdk, "libRuntime.VxsortDisabled.a"))
   }
   args.add(Path.join(sdk, "libstandalonegc-disabled.a"))
@@ -895,10 +898,21 @@ func buildLinkerArgsUnix(
   args.add(Path.join(sdk, "libbrotlienc.a"))
   args.add(Path.join(sdk, "libbrotlidec.a"))
   args.add(Path.join(sdk, "libbrotlicommon.a"))
+  // zstd comes after System.IO.Compression.Native, which depends on it.  A
+  // source-built SDK ships no libzstd.a and links the system library.
+  val libzstd = Path.join(sdk, "libzstd.a")
+  if File.fileExists(libzstd) {
+    args.add(libzstd)
+  } else {
+    args.add("-lzstd")
+  }
 
   // Linker flags for PIE, symbol visibility, debug info
   args.add("-Wl,--version-script=" + exportsFile)
   args.add("-Wl,--export-dynamic")
+  // Keep the descriptor debuggers and diagnostic tools read (as the SDK's
+  // targets do); --gc-sections would otherwise drop it.
+  args.add("-Wl,-u,DotNetRuntimeContractDescriptor")
   args.add("-Wl,--discard-all")
   args.add("-Wl,--gc-sections")
   args.add("-Wl,--build-id=sha1")
@@ -915,6 +929,20 @@ func buildLinkerArgsUnix(
   args.add("-lm")
 
   args
+}
+
+// Where a source-built SDK's system libraries (brotli, zstd) live on macOS:
+// Homebrew's prefix, which clang does not search by default.  With
+// -dead_strip_dylibs a library the program never calls is not recorded, so
+// the binary does not need it at run time.
+func appendMacSystemLibDirs(args: in List[String]): Unit {
+  args.add("-Wl,-dead_strip_dylibs")
+  if File.dirExists("/opt/homebrew/lib") {
+    args.add("-L/opt/homebrew/lib")
+  }
+  if File.dirExists("/usr/local/lib") {
+    args.add("-L/usr/local/lib")
+  }
 }
 
 // Build the clang linker argument list for a macOS native executable.
@@ -944,8 +972,8 @@ func buildLinkerArgsMac(
   args.add(Path.join(sdkPath, "libbootstrapper.o"))
   args.add(Path.join(sdkPath, "libRuntime.WorkstationGC.a"))
   args.add(Path.join(sdkPath, "libeventpipe-disabled.a"))
-  // VxSort is disabled on macOS x64 via the VxsortDisabled stub to prevent unresolved symbols.
-  if arch == "x64" {
+  // The VxsortDisabled stub resolves the GC's vxsort symbols (x64 and arm64).
+  if arch == "x64" or arch == "arm64" {
     args.add(Path.join(sdkPath, "libRuntime.VxsortDisabled.a"))
   }
   args.add(Path.join(sdkPath, "libstandalonegc-disabled.a"))
@@ -964,19 +992,27 @@ func buildLinkerArgsMac(
     args.add("-lz")
   }
 
+  // A source-built SDK (Homebrew's) ships none of the brotli and zstd
+  // archives and links the system libraries, as the SDK's own targets do.
+  // brotlicommon goes last; zstd follows System.IO.Compression.Native.
   val libbrotlienc = Path.join(sdkPath, "libbrotlienc.a")
+  val libzstd = Path.join(sdkPath, "libzstd.a")
+  if not File.fileExists(libbrotlienc) or not File.fileExists(libzstd) {
+    appendMacSystemLibDirs(args)
+  }
   if File.fileExists(libbrotlienc) {
     args.add(libbrotlienc)
+    args.add(Path.join(sdkPath, "libbrotlidec.a"))
+    args.add(Path.join(sdkPath, "libbrotlicommon.a"))
+  } else {
+    args.add("-lbrotlienc")
+    args.add("-lbrotlidec")
+    args.add("-lbrotlicommon")
   }
-
-  val libbrotlidec = Path.join(sdkPath, "libbrotlidec.a")
-  if File.fileExists(libbrotlidec) {
-    args.add(libbrotlidec)
-  }
-
-  val libbrotlicommon = Path.join(sdkPath, "libbrotlicommon.a")
-  if File.fileExists(libbrotlicommon) {
-    args.add(libbrotlicommon)
+  if File.fileExists(libzstd) {
+    args.add(libzstd)
+  } else {
+    args.add("-lzstd")
   }
 
   // Linker flags for symbol visibility and dead code stripping
@@ -1872,7 +1908,7 @@ pub func buildStandaloneDotnet(
   val runtimesDir = Path.join(Path.join(root, "shared"), "Microsoft.NETCore.App")
   val configName = Str.substring(dllName, 0, dllName.length - 4) + ".runtimeconfig.json"
   val configText = match File.readText(Path.join(stageDir, configName)) { case Ok(t) -> t; case Err(_) -> "" }
-  val tfm = match jsonStringField(configText, "tfm") { case Some(t) -> t; case None -> "net10.0" }
+  val tfm = match jsonStringField(configText, "tfm") { case Some(t) -> t; case None -> DT.dotnetTfm() }
   val wantMajor = tfmMajor(tfm)
   val runtimeVer = match highestVersion(subdirNames(runtimesDir), wantMajor) {
     case Some(v) -> v

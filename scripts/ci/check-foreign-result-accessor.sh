@@ -50,7 +50,7 @@ if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ];
   exit 1
 fi
 
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; skipping #6630 foreign-Result negative test (--target $target)" >&2
   exit 1
