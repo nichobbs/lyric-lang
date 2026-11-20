@@ -68,6 +68,8 @@ pub record BuildEnv {
   /// The declared return type of the function being built (empty or one entry): a `return` outside a
   /// lambda settles an expression the checker left open (a bare `None`) to it.
   retTy: List[Ty] = newList()
+  /// The type a generator yields (its declared result type), empty outside a generator.
+  yieldTy: List[Ty] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -1067,23 +1069,134 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case _ -> ()
   }
   match openLocalTy(env, e) {
-    case Some(t) -> Some(value = t)
-    case None -> match openPropagateYield(env, e) {
-      case Some(t) -> Some(value = t)
-      case None -> match openHostChainTy(env, e) {
-        case Some(t) -> Some(value = t)
-        case None -> match openIfTy(env, e) {
-          case Some(t) -> Some(value = t)
-          case None -> match openRefValueTy(env, e) {
-            case Some(t) -> Some(value = t)
-            case None -> match openGenericFieldReadTy(env, e) {
-              case Some(t) -> Some(value = t)
-              case None -> openBareOwnCaseTy(env, e)
-            }
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openPropagateYield(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openHostChainTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openIfTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openRefValueTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openGenericFieldReadTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openBareOwnCaseTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openIndexTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match openConvMethodTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  openHoistedTy(env, e)
+}
+
+/// `xs[i]` or `m[k]` on a receiver whose own type the checker left open (a local whose uses fixed its type,
+/// an element of an open tuple): the element type of the receiver's type as the builder has it.
+func openIndexTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EIndex(recv, idxs) -> if idxs.count == 1 {
+      match exprOrOpenTy(env, recv) {
+        case Some(rt) -> match rt {
+          case TSlice(el) -> Some(value = el)
+          case TArray(_, el) -> Some(value = el)
+          case TExtern(h) -> if h.args.count == 1 {
+            Some(value = h.args[0])
+          } else if h.args.count == 2 {
+            Some(value = h.args[1])
+          } else {
+            None
           }
+          case _ -> None
         }
+        case None -> None
       }
+    } else {
+      None
     }
+    case _ -> None
+  }
+}
+
+/// `s.toLong()` (`toInt`, `toDouble`, ...) on a numeric value, a refined one included: the primitive the
+/// method names.  The checker records none for it when the call is an operand (`s.toLong() + 1`).
+func openConvMethodTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val parts = match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(recv, name) -> if args.count == 0 {
+        Some(value = (recv, name))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+  val (recv, name) = match parts { case Some(x) -> x; case None -> return None }
+  val k = match convMethodTarget(name) { case Some(x) -> x; case None -> return None }
+  match exprOrOpenTy(env, recv) {
+    case Some(rt) -> match rt {
+      case TPrim(p) -> if isNumericPrimKind(p) { Some(value = TPrim(kind = k)) } else { None }
+      case TRefined(_, _, _, _) -> Some(value = TPrim(kind = k))
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func convMethodTarget(name: in String): Option[TPrimKind] {
+  if name == "toInt" {
+    return Some(value = TPInt)
+  }
+  if name == "toLong" {
+    return Some(value = TPLong)
+  }
+  if name == "toDouble" {
+    return Some(value = TPDouble)
+  }
+  if name == "toFloat" {
+    return Some(value = TPFloat)
+  }
+  None
+}
+
+func isNumericPrimKind(p: in TPrimKind): Bool {
+  match p {
+    case TPBool -> false
+    case TPString -> false
+    case TPUnit -> false
+    case TPChar -> false
+    case _ -> true
+  }
+}
+
+/// The type the checker recorded for an expression it could not type itself, closed by the context that
+/// consumes it: a call receiver whose own type leaves an argument open (`emptyCell().orDefault(5)`)
+/// takes the method's receiver parameter instantiated from the other arguments (`hoistOperandTypeSites`).
+func openHoistedTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match mapGet(env.ctx.tbl.hoistOperandTypeSites, recordCopySiteKey(e.span)) {
+    case Some(site) -> if site.conflicting or site.operandKind != exprKindTag(e) {
+      None
+    } else {
+      annotatedTy(env, site.operandType)
+    }
+    case None -> None
   }
 }
 
@@ -1114,16 +1227,18 @@ record GenericFieldRead {
 func openGenericFieldReadTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   val tbl = env.ctx.tbl
   val parts = match e.kind {
-    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
-      case Ok(rt) -> match rt {
-        case TNamed(did, targs) -> if targs.count > 0 {
-          Some(value = GenericFieldRead(owner = did, targs = targs, name = name))
-        } else {
-          None
-        }
+    case EMember(recv, name) -> match exprOrOpenTy(env, recv) {
+      case Some(rt) -> match rt {
+        case TNamed(did, targs) -> Some(
+          value = GenericFieldRead(
+            owner = did,
+            targs = targs,
+            name = name
+          )
+        )
         case _ -> None
       }
-      case Err(_) -> None
+      case None -> None
     }
     case _ -> None
   }
@@ -1132,17 +1247,41 @@ func openGenericFieldReadTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   val targs = p.targs
   val rsym = match symbolOfDefId(tbl, rid) { case Some(x) -> x; case None -> return None }
   val names = recordGenericNamesOf(tbl, rid)
-  if names.count != targs.count {
-    return None
-  }
-  val ctx = newTyConvCtx(tbl)
-  tyConvBind(ctx, rsym.name, rid, names)
-  for f in fieldsOfRecord(tbl, rid) {
-    if f.name == p.name {
-      match tyOfType(ctx, f.ty) {
-        case Ok(fty) -> return Some(value = substOwnerArgs(fty, rid, targs))
-        case Err(_) -> return None
+  if names.count == targs.count {
+    val ctx = newTyConvCtx(tbl)
+    tyConvBind(ctx, rsym.name, rid, names)
+    for f in fieldsOfRecord(tbl, rid) {
+      if f.name == p.name {
+        match tyOfType(ctx, f.ty) {
+          case Ok(fty) -> return Some(value = substOwnerArgs(fty, rid, targs))
+          case Err(_) -> return None
+        }
       }
+    }
+  }
+  // A field of an opaque type declared in this package, read where its representation is visible.
+  for s in tbl.symbols {
+    match s.kind {
+      case DKOpaque(oid, od) -> if oid.id == rid.id and not s.isImported {
+        val onames = extractGenericNames(od.generics)
+        if onames.count != targs.count {
+          return None
+        }
+        val octx = newTyConvCtx(tbl)
+        tyConvBind(octx, rsym.name, rid, onames)
+        val ogc = newGenericContext()
+        gctxPushOwned(ogc, onames, od.name)
+        for fd in ownOpaqueFields(tbl, rid) {
+          if fd.name == p.name {
+            val odiag: List[Diagnostic] = newList()
+            match tyOfType(octx, resolveType(tbl, ogc, odiag, fd.ty)) {
+              case Ok(fty) -> return Some(value = substOwnerArgs(fty, rid, targs))
+              case Err(_) -> return None
+            }
+          }
+        }
+      }
+      case _ -> ()
     }
   }
   None
@@ -1166,28 +1305,46 @@ func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, tbl.interner)
 }
 
-/// The DefPath key of the `val` or `const` of another package a bare name stands for, when the checker
-/// recorded no reference for it (it could not type the value).
+/// The DefPath key of the `val` or `const` of another package a bare name (`answer`) or a package-qualified
+/// one (`Pkg.Lib.answer`) stands for, when the checker recorded no reference for it (it could not type the value).
 func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
   val tbl = env.ctx.tbl
-  val name = match e.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
-    case _ -> return None
+  val segs = match e.kind { case EPath(p) -> p.segments; case _ -> return None }
+  if segs.count == 0 {
+    return None
   }
-  match lookupLocal(env, name) {
+  // A local named like the first segment shadows the package.
+  match lookupLocal(env, segs[0]) {
     case Some(_) -> return None
     case None -> ()
   }
-  match symTableTryFindOne(tbl, name) {
-    case Some(sym) -> {
-      val isValue = match sym.kind { case DKVal(_) -> true; case DKConst(_) -> true; case _ -> false }
-      if isValue and sym.originPackage.length > 0 {
-        Some(value = defPathKey(topDefPath(sym.originPackage, sym.name)))
-      } else {
-        None
+  val name = segs[segs.count - 1]
+  if segs.count == 1 {
+    return match symTableTryFindOne(tbl, name) { case Some(sym) -> foreignValKeyOf(sym); case None -> None }
+  }
+  var pkg = segs[0]
+  var i = 1
+  while i < segs.count - 1 {
+    pkg = pkg + "." + segs[i]
+    i = i + 1
+  }
+  for sym in symTableTryFindAllNamed(tbl, name) {
+    if sym.originPackage == pkg {
+      match foreignValKeyOf(sym) {
+        case Some(k) -> return Some(value = k)
+        case None -> ()
       }
     }
-    case None -> None
+  }
+  None
+}
+
+func foreignValKeyOf(sym: in Symbol): Option[String] {
+  val isValue = match sym.kind { case DKVal(_) -> true; case DKConst(_) -> true; case _ -> false }
+  if isValue and sym.originPackage.length > 0 {
+    Some(value = defPathKey(topDefPath(sym.originPackage, sym.name)))
+  } else {
+    None
   }
 }
 
@@ -1852,6 +2009,8 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             settleHole(env, x, el)
           }
         }
+        // A literal passed as a `List` parameter: its elements take the list's element type.
+        case TExtern(h) -> if h.args.count == 1 { for x in xs { settleHole(env, x, h.args[0]) } }
         case _ -> ()
       }
       match buildAll(env, xs) {
@@ -1926,9 +2085,15 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case Some(t) -> Some(value = mkExpr(e, ty, XSpawn(inner = t)))
       case None -> None
     }
-    case EYield(inner) -> match buildExpr(env, inner) {
-      case Some(t) -> Some(value = mkExpr(e, ty, XYield(inner = t)))
-      case None -> None
+    case EYield(inner) -> {
+      // An async generator yields values of its declared result type: an open operand (`yield None`) takes it.
+      if env.lambdas.count == 0 and env.yieldTy.count > 0 {
+        settleHole(env, inner, env.yieldTy[0])
+      }
+      match buildExpr(env, inner) {
+        case Some(t) -> Some(value = mkExpr(e, ty, XYield(inner = t)))
+        case None -> None
+      }
     }
     case EPropagate(inner) -> {
       match propagateOperandTy(env, inner, ty) {
@@ -2809,6 +2974,12 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SFor(label, pat, iter, body) -> {
       val it = match buildForIter(env, iter) { case Some(x) -> x; case None -> return None }
+      // A binder the checker left open (the elements of a local whose own type its uses fixed) takes the
+      // element type of the iterable it ranges over.
+      match patTy(env.ctx, pat.nodeId) {
+        case Err(_) -> match iterElemTy(it.ty) { case Some(el) -> settlePat(env, pat, el); case None -> () }
+        case Ok(_) -> ()
+      }
       pushScope(env)
       val built = match buildPat(env, pat) {
         case Some(tp) -> match loopBody(env, body) {
@@ -2896,6 +3067,37 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     }
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")
     case SItem(_) -> uncoveredStmt(env, s, "a local item")
+  }
+}
+
+/// The element type a `for` over a value of type `t` binds: a slice, array, `List` or `Set`.
+func iterElemTy(t: in Ty): Option[Ty] {
+  match t {
+    case TSlice(el) -> Some(value = el)
+    case TArray(_, el) -> Some(value = el)
+    case TExtern(h) -> if h.args.count == 1 { Some(value = h.args[0]) } else { None }
+    case _ -> None
+  }
+}
+
+/// A pattern the checker recorded no type for, settled to `ty` (a tuple pattern element-wise).
+func settlePat(env: in BuildEnv, p: in Pattern, ty: in Ty): Unit {
+  if not env.settled.containsKey(p.nodeId) {
+    env.settled.add(p.nodeId, ty)
+  }
+  match p.kind {
+    case PParen(inner) -> settlePat(env, inner, ty)
+    case PTuple(ps) -> match ty {
+      case TTuple(ts) -> if ps.count == ts.count {
+        var i = 0
+        while i < ps.count {
+          settlePat(env, ps[i], ts[i])
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
   }
 }
 
@@ -3290,8 +3492,11 @@ func buildFnCore(
     case None -> ()
   }
   env.retTy.clear()
+  env.yieldTy.clear()
   if not functionIsGenerator(fn) {
     env.retTy.add(ret)
+  } else {
+    env.yieldTy.add(ret)
   }
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
@@ -3822,7 +4027,46 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildParamDefault(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `T.default()` in a generic body, `T` a type parameter bounded by `Default`: the zero value of the
+/// parameter, the built-in `default` at the node's own type.  The checker records no callee for it; each
+/// instantiation of the body takes the zero of its own `T`.
+func buildParamDefault(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 {
+    return None
+  }
+  match ty {
+    case TParam(_, _) -> ()
+    case _ -> return None
+  }
+  match fn.kind {
+    case EMember(recv, name) -> if name == "default" {
+      match recv.kind {
+        case EPath(p) -> if p.segments.count == 1 and lookupLocal(env, p.segments[0]).isNone() {
+          return Some(
+            value = Some(
+              value = mkExpr(
+                e,
+                ty,
+                XCall(callee = Intrinsic(op = IoBuiltin(name = "default")), args = newList())
+              )
+            )
+          )
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+  None
 }
 
 /// `x.unknownMember().name(...)` where `x` is a host value whose class the metadata cannot locate: the JVM
@@ -5611,9 +5855,14 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
   }
   val pty = match exprTy(env.ctx, target.nodeId) {
     case Ok(t) -> t
-    case Err(msg) -> {
-      env.errors.add(msg)
-      return None
+    case Err(msg) -> match openHoleTy(env, target) {
+      case Some(t) -> t
+      case None -> {
+        env.errors.add(
+          msg + " (at " + toString(target.span.startPos.line) + ":" + toString(target.span.startPos.column) + ")"
+        )
+        return None
+      }
     }
   }
   match target.kind {
@@ -5705,10 +5954,8 @@ func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp,
   // A value the checker left open (`item = None` into a field of a generic protected type) is the place's type.
   match op {
     case AssEq -> match unparen(value).kind {
-      case EPath(_) -> match exprTy(env.ctx, value.nodeId) {
-        case Err(_) -> settleHole(env, value, place.ty)
-        case Ok(_) -> ()
-      }
+      case EPath(_) -> settleHole(env, value, place.ty)
+      case ETuple(_) -> settleHole(env, value, place.ty)
       case _ -> ()
     }
     case _ -> ()

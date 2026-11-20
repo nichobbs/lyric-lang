@@ -133,7 +133,8 @@ func pathGetFullPath(path: in String): String {
       continue
     }
     val candidate = if cur.length == 0 and isUnc { "//" + seg } else { cur + "/" + seg }
-    val rawLink = NetDirInfo.new(candidate).LinkTarget ?? ""
+    val linkTarget: String? = NetDirInfo.new(candidate).LinkTarget
+    val rawLink = linkTarget ?? ""
     val link = if win { rawLink.replace("\\", "/") } else { rawLink }
     if link.length == 0 {
       cur = candidate
