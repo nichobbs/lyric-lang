@@ -1277,6 +1277,9 @@ func padText(n: in Int): String {
 // must be a little larger, with the same parity), so the test derives a package
 // after a slightly larger one for each leading-comment length 0..3, which meets
 // the parity case whatever the sources' own lengths are.
+// With the earlier `freshSpan` (the offset taken from the map's size and never
+// stepped past a key already present) this test fails at "a derived item's span
+// is unique in its package".
 test "generated spans stay unique when the origins map is shared across packages (D370)" {
   val srcB = "package PB\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Q { x: Int; y: Int }\n"
   var pad = 0
