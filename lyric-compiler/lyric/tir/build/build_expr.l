@@ -1200,6 +1200,20 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   }
 }
 
+/// The condition `cond` of an `if` or `while`, built.  One that never yields (`if Err(e)? { ... }`) is
+/// converted to the `Bool` the construct takes, as a value of no type converts to any.
+func buildCondition(env: in BuildEnv, cond: in Expr): Option[TExpr] {
+  match buildExpr(env, cond) {
+    case Some(t) -> match t.ty {
+      case TirT.TNever -> Some(
+        value = TExpr(id = freshNodeId(env), ty = tyBool(), span = t.span, kind = XConvert(kind = CvFromNever, inner = t))
+      )
+      case _ -> Some(value = t)
+    }
+    case None -> None
+  }
+}
+
 func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
@@ -1372,7 +1386,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val t = buildOrBlock(env, thenBranch, ty)
       var el: Option[TExpr] = None
       var elOk = true
@@ -2133,7 +2147,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SContinue(label) -> Some(value = stmtOf(s, TsContinue(label = label)))
     case SLocal(binding) -> buildLocal(env, s, binding)
     case SWhile(label, cond, body) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val bd = loopBody(env, body)
       match c {
         case Some(ct) -> match bd {
