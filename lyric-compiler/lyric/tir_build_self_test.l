@@ -1628,6 +1628,14 @@ test "a lambda captures an outer value by value and a var by reference" {
   }
 }
 
+func allFirstErrors(c: in BuildCensus): String {
+  var s = ""
+  for e in c.firstErrors {
+    s = s + e + " | "
+  }
+  s
+}
+
 func censusOf(src: in String): BuildCensus {
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
@@ -3216,7 +3224,7 @@ test "a propagated Err or None never yields, so a statement of one builds and ve
     "package App\nfunc a(fail: Bool): Result[Int, String] {\n  if fail {\n    Err(error = \"stopped\")?\n  }\n  Ok(value = 1)\n}\n" +
       "func b(fail: Bool): Option[Int] {\n  if fail {\n    None?\n  }\n  Some(value = 1)\n}\n"
   )
-  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  assertEqualInt(c.built, 2, allFirstErrors(c))
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
