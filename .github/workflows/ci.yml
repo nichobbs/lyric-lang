@@ -480,6 +480,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '22'
+          cache: maven
+          cache-dependency-path: resolver/pom.xml
       - name: Build Maven resolver jar
         run: make maven-resolver
 
@@ -6754,6 +6756,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '22'
+          cache: maven
+          cache-dependency-path: resolver/pom.xml
       - name: SMTP round trip (mail, dotnet and jvm)
         if: matrix.id == 'mail'
         run: |

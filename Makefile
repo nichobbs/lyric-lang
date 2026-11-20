@@ -495,7 +495,7 @@ test-native: native-rt ## Run the native backend self-tests (needs clang and ./b
 # `clean: true` wipes resolver/target/ at the start of every run.
 maven-resolver: ## Build resolver/pom.xml into resolver/target/lyric-resolver.jar
 	@[ -f resolver/target/lyric-resolver.jar ] && echo "lyric-resolver.jar already built: resolver/target/lyric-resolver.jar" || \
-	  ( mvn package -q -DskipTests -f resolver/pom.xml && echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar" )
+	  ( bash scripts/ci/build-maven-resolver.sh && echo "lyric-resolver.jar built: resolver/target/lyric-resolver.jar" )
 
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
