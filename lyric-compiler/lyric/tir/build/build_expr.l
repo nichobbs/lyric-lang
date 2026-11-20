@@ -586,6 +586,21 @@ func exprNeverCompletes(e: in Expr): Bool {
       case None -> false
     }
     case EBlock(bl) -> blockNeverCompletes(bl)
+    // `Err(e)?` and `None?` always propagate: the operand is the failure itself, so the `?` never yields
+    // (its success type is free, and nothing fixes it).
+    case EPropagate(inner) -> propagatesAlways(unparen(inner))
+    case _ -> false
+  }
+}
+
+/// Whether `x` is a construction of the failure case of `Result` or `Option`: `Err(...)` or `None`.
+func propagatesAlways(x: in Expr): Bool {
+  match x.kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> p.segments[p.segments.count - 1] == "Err"
+      case _ -> false
+    }
+    case EPath(p) -> p.segments[p.segments.count - 1] == "None"
     case _ -> false
   }
 }

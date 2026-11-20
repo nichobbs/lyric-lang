@@ -3210,3 +3210,22 @@ test "an array indexed by a range subtype is indexed by its underlying integer (
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+test "a propagated Err or None never yields, so a statement of one builds and verifies" {
+  val c = censusOf(
+    "package App\nfunc a(fail: Bool): Result[Int, String] {\n  if fail {\n    Err(error = \"stopped\")?\n  }\n  Ok(value = 1)\n}\n" +
+      "func b(fail: Bool): Option[Int] {\n  if fail {\n    None?\n  }\n  Some(value = 1)\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a propagated None bound to a local builds and verifies" {
+  val c = censusOf(
+    "package App\nfunc n(fail: Bool): Option[Int] {\n  if fail {\n    val s = None?\n    return Some(value = s.length)\n  }\n  Some(value = 1)\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
