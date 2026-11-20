@@ -13,6 +13,9 @@
 #          errors in every build, so a body that stops building fails its build; the
 #          census counts what is left and measures the checker's recorded types.
 #
+# A program the checker rejects (its log holds an `error[T...]`, `F`, `V`, `P` or `L` diagnostic) never reaches
+# the builder: the gate runs only after a clean check (D347), so it has no I0002 or I0003 to count, and the
+# census lists it as rejected by the checker, not as a hole in it.
 # A build that exits non-zero without a census line did not reach the checker's
 # end; it is listed as UNCHECKED and fails the run (as the I0001 census does,
 # D386), so a file the census cannot judge is a hole in it, not a pass.
@@ -109,7 +112,7 @@ declare -A kinds
 declare -A samples
 # Per area (the wide census): bodies built, bodies total, I0003, builds judged / attempted.
 declare -A a_built a_total a_i0003 a_judged a_tried
-declare -A a_kinds a_samples a_unchecked
+declare -A a_kinds a_samples a_unchecked a_rejected
 # Why each unchecked wide build failed: its name, then the first error lines of its log.
 unchecked_why=()
 
@@ -154,6 +157,12 @@ unique_bodies() {
     }' "$f"
 }
 
+# Whether the checker rejected the program of this build log (a T, F, V, P or L error): such a build never
+# reaches the builder, so it has no census line and is not a hole in the census.
+rejected_by_checker() {
+  grep -qE 'error\[[TFVPL][0-9]{4}\]' "$1"
+}
+
 # Reads the census lines of one build log into the totals under the area name.  A
 # project build prints one census per package, so every line counts, not only the first.
 absorb_log() {
@@ -162,7 +171,9 @@ absorb_log() {
   lines="$(grep -c '^TIR build census' "$log" || true)"
   a_tried[$area]=$(( ${a_tried[$area]:-0} + 1 ))
   if [[ "$lines" -eq 0 ]]; then
-    if [[ $rc -ne 0 ]]; then
+    if [[ $rc -ne 0 ]] && rejected_by_checker "$log"; then
+      a_rejected[$area]="${a_rejected[$area]:-}${name} "
+    elif [[ $rc -ne 0 ]]; then
       a_unchecked[$area]="${a_unchecked[$area]:-}${name}(exit=$rc) "
       unchecked_why+=("${name} (exit=$rc): $(grep -m3 -iE 'error|^build:|exception|unhandled|not found|failed' "$log" | cut -c1-300 | tr '\n' '|')")
     fi
@@ -231,7 +242,7 @@ for f in "${FILES[@]}"; do
   log="$OUT/log.txt"
   "$LYRIC" build --verify-ir --target "$(target_of "$f")" "$f" -o "$OUT/out.dll" >"$log" 2>&1
   rc=$?
-  if ! grep -q '^TIR build census' "$log" && [[ $rc -ne 0 ]]; then unchecked+=("$f"); fi
+  if ! grep -q '^TIR build census' "$log" && [[ $rc -ne 0 ]] && ! rejected_by_checker "$log"; then unchecked+=("$f"); fi
   absorb_log stdlib-tests "$f" "$log" "$rc"
 done
 
@@ -399,6 +410,9 @@ for area in stdlib-tests compiler ecosystem self-tests; do
     [[ ${#ub[@]} -gt 1 ]] && printf '%s\n' "${ub[@]:1}" | sort -n -r | head -15 | while IFS=$'\t' read -r head site; do
       echo "    I0002 kind ${head#* }: ${head%% *} (e.g. ${site})"
     done
+  fi
+  if [[ -n "${a_rejected[$area]:-}" ]]; then
+    echo "    rejected by the checker (no I0002/I0003 to judge): $(wc -w <<<"${a_rejected[$area]}")"
   fi
   if [[ -n "${a_unchecked[$area]:-}" ]]; then
     echo "    unchecked builds: $(wc -w <<<"${a_unchecked[$area]}")"

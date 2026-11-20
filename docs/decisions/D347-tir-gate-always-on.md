@@ -15,6 +15,8 @@ The builder (`Lyric.Tir.Build`) and the verifier (`Lyric.Tir.Verify`) ran only u
 
 Both stop the build before any backend runs, in every package of a build (dependencies, the standard library and the compiler's own packages included), for `lyric build`, `lyric test`, `lyric run` and `lyric prove`. There is no opt-out. `--verify-ir` and `LYRIC_VERIFY_IR=1` keep their meaning of printing the census (counts per kind, the expression and callee censuses, sample sites); the expression and callee censuses stay informational because they count the exempt callee and qualifier positions that I0001 allows. The TIR build the gate makes is the one `opts.wantTir` consumers (the native backend, the interface builder) read, so a build builds the package once.
 
+A program the checker rejects (a T, F, V or P error) never reaches the builder: the gate runs only after a clean check, so a fixture meant to fail checking has no I0002 or I0003 to count, and `tir-census.sh` lists such a build as rejected by the checker, not as an unchecked build.
+
 This resolves Q-TIR-001 for I0002 and I0003: both always stop the build, in release builds too, because a body that does not build as TIR has a backend that would have to infer what the checker did not record.
 
 ## Results
