@@ -387,6 +387,11 @@ func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs
 func buildDeclaredBinary(
   env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
+  // A left operand that never yields (`Err(e)? == x`) ends the expression there; the right is unreachable.
+  match lt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = lt)))
+    case _ -> ()
+  }
   val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
   match rhs {
     case Some(r2) -> {
@@ -741,6 +746,17 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   match e.kind {
     case EPropagate(inner) -> if propagatesAlways(unparen(inner)) {
       return Some(value = TirT.TNever)
+    }
+    // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
+    case ETuple(xs) -> {
+      val ts: List[Ty] = newList()
+      for x in xs {
+        match exprOrOpenTy(env, x) {
+          case Some(t) -> ts.add(t)
+          case None -> return None
+        }
+      }
+      return Some(value = TTuple(elems = ts))
     }
     case _ -> ()
   }
@@ -4310,6 +4326,11 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
     case None -> ()
   }
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  // A member of a value that never exists (`None?.length`): the read is unreachable, the receiver's own end.
+  match rt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = rt)))
+    case _ -> ()
+  }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
     case None -> match buildHostPropertyRead(env, e, ty, rt, name) {
