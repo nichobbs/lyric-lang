@@ -3028,6 +3028,58 @@ func buildSettledCaseCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List
   Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
 }
 
+/// The construction `e` of a generic record built at `ty`, the type its node settled at, when the checker
+/// recorded no constructor signature for it (a lambda's parameter types the checker erased, so the
+/// record's arguments are open): each field is the call's argument (by name, or by position) converted to
+/// the field's type at the arguments of `ty`.  None when the call is not such a construction; Some(None)
+/// after a part could not be built (counted or reported there).
+func buildSettledRecordCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if tbl.ctorSigByNode.containsKey(e.nodeId) {
+    return None
+  }
+  val sid = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val s = match symbolOfDefId(tbl, sid) { case Some(x) -> x; case None -> return None }
+  val rid = match s.kind { case DKRecord(i, _) -> i; case _ -> return None }
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  val names = recordGenericNamesOf(tbl, rid)
+  if not symbolIdEq(parent, rid) or names.count == 0 or names.count != targs.count {
+    return None
+  }
+  val ctx = newTyConvCtx(tbl)
+  tyConvBind(ctx, s.name, rid, names)
+  val declared = fieldsOfRecord(tbl, rid)
+  if args.count != declared.count {
+    return None
+  }
+  val fields: List[TExpr] = newList()
+  var i = 0
+  while i < declared.count {
+    val x = match args[i] {
+      case CAPositional(v) -> v
+      case CANamed(n, v, _) -> if n == declared[i].name {
+        v
+      } else {
+        return Some(value = uncoveredExpr(env, e, "a record construction with its arguments out of field order"))
+      }
+    }
+    val fty = match tyOfType(ctx, declared[i].ty) {
+      case Ok(t) -> t
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return Some(value = None)
+      }
+    }
+    val target = substOwnerArgs(fty, rid, targs)
+    val bv = match settleArg(env, x, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    val cv = match coerceArg(env, bv, target) { case Some(t) -> t; case None -> return Some(value = None) }
+    fields.add(cv)
+    i = i + 1
+  }
+  Some(value = Some(value = mkExpr(e, ty, XConstruct(sym = sid, fields = fields))))
+}
+
 /// A call: a built-in by its recorded name, a call through a function value,
 /// or a call to a declared non-generic function with in-mode arguments.  Other
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
@@ -3080,6 +3132,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   // (`{ m -> App(msg = m) }` against `(M) -> Wrap[M]`, whose parameter type the checker erased): it
   // recorded no signature, so the fields are the case's at the arguments the node settled at.
   match buildSettledCaseCtor(env, e, ty, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
+  match buildSettledRecordCtor(env, e, ty, args) {
     case Some(r) -> return r
     case None -> ()
   }
