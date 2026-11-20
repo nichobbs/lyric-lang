@@ -27,6 +27,9 @@ pub record FnBuildFailure {
   /// first met (`line:column`): the per-body part of the `--verify-ir` census (D474).
   uncovered: Map[String, Int] = newMap()
   sites: Map[String, String] = newMap()
+  /// The body is a program the host metadata shows can never link (D616): the build error is the
+  /// backend's own, and the body is not an unbuilt one in the census.
+  rejected: Bool = false
 }
 
 /// The outcome of building a file.  `pkg.funcs` holds one `TFnDecl` per built function,
@@ -152,9 +155,13 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
                   messages = env.errors,
                   path = defPathKey(tbl, fsym),
                   uncovered = env.uncovered,
-                  sites = env.sites
+                  sites = env.sites,
+                  rejected = env.errors.count > 0 and isRejectionMessage(env.errors[0])
                 )
               )
+              if env.errors.count > 0 and isRejectionMessage(env.errors[0]) {
+                total = total - 1
+              }
             }
           }
           absorbEnv(env, syms, sums, sites)
@@ -191,9 +198,13 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
             messages = env.errors,
             path = defPathKey(tbl, msym),
             uncovered = env.uncovered,
-            sites = env.sites
+            sites = env.sites,
+            rejected = env.errors.count > 0 and isRejectionMessage(env.errors[0])
           )
         )
+        if env.errors.count > 0 and isRejectionMessage(env.errors[0]) {
+          total = total - 1
+        }
         // The member still has a signature: describe it by its declaration, so a call site's
         // instantiated signature is not taken for it.
         match buildMemberSig(newBuildEnvSharing(ctx, counter), tbl, pkgName, site) {
@@ -404,6 +415,80 @@ func noteFieldDefaults(
   }
 }
 
+/// The initialiser of a protected type's field, which is the field's default: a construction that
+/// leaves the field out takes it (`SessionRegistry()`).  A non-generic protected type only.
+record FieldInit {
+  name: String
+  init: Expr
+}
+
+func protectedFieldInit(pf: in ProtectedField): Option[FieldInit] {
+  match pf {
+    case PFVar(name, _, init, _, _, _) -> match init {
+      case Some(x) -> Some(value = FieldInit(name = name, init = x))
+      case None -> None
+    }
+    case PFLet(name, _, init, _, _, _) -> match init {
+      case Some(x) -> Some(value = FieldInit(name = name, init = x))
+      case None -> None
+    }
+    case PFImmutable(fd) -> match fd.dflt {
+      case Some(x) -> Some(value = FieldInit(name = fd.name, init = x))
+      case None -> None
+    }
+  }
+}
+
+/// The defaults of the fields of the non-generic protected type `decl`, as `noteFieldDefaults` does
+/// for a record.
+func noteProtectedFieldDefaults(
+  ctx: in TyConvCtx,
+  tbl: in SymbolTable,
+  pkg: in String,
+  counter: in List[Int],
+  acc: in Map[String, Map[String, IfDefault]],
+  decl: in ProtectedTypeDecl,
+): Unit {
+  if decl.generics.isSome() {
+    return
+  }
+  val built: List[IfDefault] = newList()
+  val names: List[String] = newList()
+  val env = newBuildEnvSharing(ctx, counter)
+  pushScope(env)
+  for m in decl.members {
+    match m {
+      case PMField(pf) -> match protectedFieldInit(pf) {
+        case Some(fi) -> match buildExpr(env, fi.init) {
+          case Some(t) -> {
+            names.add(fi.name)
+            built.add(IfDefault(expr = t, entries = newList()))
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
+  if names.count == 0 {
+    return
+  }
+  val es = entriesOf(env)
+  val byName: Map[String, IfDefault] = newMap()
+  var i = 0
+  while i < names.count {
+    if not byName.containsKey(names[i]) {
+      byName.add(names[i], IfDefault(expr = built[i].expr, entries = es))
+    }
+    i = i + 1
+  }
+  match defPathKey(tbl, Some(value = symTableTypeSymbolId(tbl, pkg, decl.name))) {
+    case Some(k) -> if not acc.containsKey(k) { acc.add(k, byName) }
+    case None -> ()
+  }
+}
+
 /// The default of every parameter and record field that declares one, built for a package
 /// interface (docs/70 section 9.2, D482): the parameters of a package's functions and of its
 /// methods, by the function's DefPath key and then the parameter's name, and the fields of its
@@ -428,6 +513,7 @@ pub func buildPackageDefaults(
         }
       }
       case IRecord(decl) -> noteFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
+      case IProtected(decl) -> noteProtectedFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
       case _ -> ()
     }
   }

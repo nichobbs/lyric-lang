@@ -980,6 +980,17 @@ func fakeHost(): FakeHost {
   val cmp: List[ExternMemberSig] = newList()
   cmp.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.String", "compareTo", 1), cmp)
+  val objString: List[ExternMemberSig] = newList()
+  objString.add(fhSig(false, newList(), EMTType(elem = fhHost("java.lang.String"))))
+  sigs.add(fhKey("java.lang.Object", "toString", 0), objString)
+  val objHash: List[ExternMemberSig] = newList()
+  objHash.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.Object", "hashCode", 0), objHash)
+  val objEquals: List[ExternMemberSig] = newList()
+  objEquals.add(fhSig(false, fhParams1(fhHost("java.lang.Object")), EMTType(elem = fhPrim("Bool"))))
+  sigs.add(fhKey("java.lang.Object", "equals", 1), objEquals)
+  val objNone: List[ExternMemberSig] = newList()
+  sigs.add(fhKey("java.lang.Object", "toLower", 0), objNone)
   FakeHost(sigs = sigs)
 }
 
@@ -1009,6 +1020,10 @@ impl ExternIterResolver for FakeHost {
     clrName: in String, member: in String, argc: in Int, isProperty: in Bool
   ): Option[List[ExternMemberSig]] {
     mapGet(self.sigs, fhKey(clrName, member, argc))
+  }
+
+  func resolveIsAbstract(clrName: in String): Option[Bool] {
+    None
   }
 }
 
@@ -3187,6 +3202,51 @@ test "an interface method's parameter default is written to the package defaults
   match mapGet(ds, "App::Shape::area(Shape,Int)") {
     case Some(m) -> assertTrue(m.containsKey("scale"), "keyed by the parameter")
     case None -> assertTrue(false, "the interface method has defaults")
+  }
+}
+
+test "a message under a build error's code is a rejection, an I0002 is not (D616)" {
+  assertTrue(isRejectionMessage("J005: JVM auto-FFI: cannot construct abstract class 'X' at 6:11"), "J005")
+  assertTrue(isRejectionMessage("J008: no matching instance or inherited method at 6:3"), "J008")
+  assertTrue(isRejectionMessage("T0119: extern member access 'System.Math.PIE' at 4:11"), "T0119")
+  assertFalse(isRejectionMessage("I0002: the builder has no case for a call at 4:3"), "I0002")
+  assertFalse(isRejectionMessage("the checker recorded no type for expression node #4"), "free text")
+  assertFalse(isRejectionMessage("J00"), "too short")
+}
+
+func goneHead(): String {
+  "package App\nextern type Gone = \"com.example.Gone\"\n"
+}
+
+test "toString, hashCode and equals on a host value of an unlocated class are the root object's members (D616)" {
+  val a = buildFirstFnHost(goneHead() + "func f(x: in Gone): Int {\n  x.hashCode()\n}\n")
+  assertTrue(a.env.errors.count == 0, if a.env.errors.count > 0 { a.env.errors[0] } else { "no I0002" })
+  match externCallOf(a.body) {
+    case Some(m) -> assertEqual(m.owner.name, "java.lang.Object", "the root object's hashCode")
+    case None -> assertTrue(false, "an extern call")
+  }
+  val b = buildFirstFnHost(goneHead() + "func g(x: in Gone, y: in Gone): Bool {\n  x.equals(y)\n}\n")
+  assertTrue(b.env.errors.count == 0, if b.env.errors.count > 0 { b.env.errors[0] } else { "no I0002" })
+}
+
+test "a call on the untyped result of an unknown member of an unlocated class is the backend's J008 (D616)" {
+  val r = buildFirstFnHost(goneHead() + "func f(x: in Gone): String {\n  x.madeUp().toLower()\n}\n")
+  assertTrue(r.env.errors.count > 0, "the body does not build")
+  assertTrue(isRejectionMessage(r.env.errors[0]), "a rejection, not an I0002: " + r.env.errors[0])
+  assertTrue(Str.contains(r.env.errors[0], "no matching instance or inherited method"), "the backend's wording")
+}
+
+test "a protected type's field initialisers are written to the package defaults (D615)" {
+  val file = renumberNodeIds(parse("package App\nprotected type Cell {\n  var handle: Int = 5\n  var limit: Int = 7\n  entry get(): Int {\n    return handle\n  }\n}\n").file).file
+  val cr = check(file)
+  val ds = buildPackageDefaults(newTyConvCtx(cr.symbols), cr.symbols, file)
+  assertTrue(ds.containsKey("App::Cell"), "the protected type carries its field defaults")
+  match mapGet(ds, "App::Cell") {
+    case Some(m) -> {
+      assertTrue(m.containsKey("handle"), "keyed by the field")
+      assertTrue(m.containsKey("limit"), "every initialiser")
+    }
+    case None -> assertTrue(false, "the protected type has defaults")
   }
 }
 

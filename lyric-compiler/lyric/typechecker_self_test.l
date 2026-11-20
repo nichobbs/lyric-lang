@@ -15590,6 +15590,10 @@ impl ExternIterResolver for FakeHostHierarchy {
   ): Option[List[ExternMemberSig]] {
     None
   }
+
+  func resolveIsAbstract(clrName: in String): Option[Bool] {
+    None
+  }
 }
 
 func fakeHostHierarchy(): FakeHostHierarchy {

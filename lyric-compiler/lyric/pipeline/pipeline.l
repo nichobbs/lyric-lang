@@ -2345,7 +2345,7 @@ pub func pipeCheckFront(
   val verifyIr = tirVerifyIrEnabled()
   // A package interface carries parameter defaults built from the checker's per-node tables
   // (docs/70 §9.2, D460), so a library build that writes one numbers the nodes too.
-  val wantsInterface = opts.buildInterface and not IfaceBuild.isExecutable(file00)
+  val wantsInterface = opts.buildInterface
   val file0 = if verifyIr or opts.wantTir or wantsInterface { Resolve.renumberNodeIds(file00).file } else { file00 }
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val tcRes = checkWithImportedPackagesForTargetIter(
@@ -2444,24 +2444,27 @@ pub func pipeCheckFront(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
-  if opts.buildInterface and not IfaceBuild.isExecutable(tcRes.file) {
+  // An executable's interface is built too: the compiler's own executable package `Lyric.Cli` is
+  // imported by its self-tests, and a call into it that leaves out an argument takes the default its
+  // interface carries (D615).  Nothing depends on an executable otherwise, so a declaration its
+  // interface cannot record is not an error there: the package embeds no interface (D327).
+  val exe = IfaceBuild.isExecutable(tcRes.file)
+  if opts.buildInterface {
     // The interfaces this package was built against are empty until a
     // dependency ships its own interface (docs/70 phase 5b); the header field
     // exists so the format does not change when they do.
     val outcome = IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets)
-    opts.interfaceOut.add(outcome)
     match outcome {
-      case IfaceBuild.IOBuilt(b) -> TirBuild.registerInterface(
-        opts.depDefaults,
-        modulePathJoin(tcRes.file.packageDecl.path.segments),
-        b.bytes
-      )
-      case _ -> ()
+      case IfaceBuild.IOBuilt(b) -> {
+        opts.interfaceOut.add(outcome)
+        TirBuild.registerInterface(opts.depDefaults, modulePathJoin(tcRes.file.packageDecl.path.segments), b.bytes)
+      }
+      case _ -> if not exe { opts.interfaceOut.add(outcome) }
     }
-    if gateTo(sink, opts.pkgLabel, opts.filePaths, IfaceBuild.outcomeDiagnostics(outcome, tcRes.file)) {
+    if not exe and gateTo(sink, opts.pkgLabel, opts.filePaths, IfaceBuild.outcomeDiagnostics(outcome, tcRes.file)) {
       return None
     }
-  } else if (verifyIr or opts.wantTir) and not IfaceBuild.isExecutable(tcRes.file) {
+  } else if verifyIr or opts.wantTir {
     // A build that only checks (the census, a TIR build) still gives the packages checked after
     // this one the defaults its interface carries (D482); nothing is reported or written.
     match IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets) {

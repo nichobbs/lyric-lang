@@ -5,7 +5,8 @@
 #   - a library of several declaration kinds embeds an interface that
 #     `lyric interface dump` prints, with its hash;
 #   - building the same library twice gives the same interface hash;
-#   - an executable embeds no interface;
+#   - an executable's interface is embedded too on dotnet and the JVM (D615), so a package that
+#     imports one (the compiler's own `Lyric.Cli`) reads the defaults it carries;
 #   - an unannotated `pub val` is recorded at the type its package checked.
 #
 #   bash scripts/ci/interface-embed-e2e.sh [dotnet] [jvm] [native]
@@ -106,7 +107,7 @@ func hidden(): Int {
 LYRIC
   if [ "$target" = native ]; then
     # A native build links an executable: the library gets an entry package
-    # beside it, which writes no interface of its own.
+    # beside it, which writes an interface of its own like any executable (D615).
     mkdir -p "$dir/app"
     printf '"App" = "app"\n' >> "$dir/lyric.toml"
     cat > "$dir/app/main.l" <<'LYRIC'
@@ -120,8 +121,8 @@ LYRIC
   if ! build "$dir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the library build failed"; cat "$work/log"; fail=1; continue
   fi
-  if [ "$target" = native ] && [ -e "$dir/out/App.lyri" ]; then
-    echo "FAIL [$target] the entry package wrote an interface"; fail=1
+  if [ "$target" = native ] && [ ! -e "$dir/out/App.lyri" ]; then
+    echo "FAIL [$target] the entry package wrote no interface (D615)"; fail=1
   fi
   dump="$(cd "$dir" && "$lyric_bin" interface dump "$(dumpable "$target")" 2>"$work/err")" || {
     echo "FAIL [$target] interface dump failed"; cat "$work/err"; fail=1; continue
@@ -157,19 +158,24 @@ LYRIC
   cat > "$edir/src/main.l" <<'LYRIC'
 package Lib
 
-func main(): Int {
+pub func main(): Int {
   0
 }
 LYRIC
   if ! build "$edir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the executable build failed"; cat "$work/log"; fail=1; continue
   fi
-  if (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1; then
-    echo "FAIL [$target] an executable embeds an interface"; fail=1
-  elif grep -qE "carries no|cannot read" "$work/log"; then
-    echo "PASS [$target] an executable embeds no interface"
+  if [ "$target" = native ]; then
+    # A native executable is linked, not restored, but its interface is written beside it (D615).
+    if (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1; then
+      echo "PASS [$target] a native executable writes its interface"
+    else
+      echo "FAIL [$target] a native executable wrote no readable interface"; cat "$work/log"; fail=1
+    fi
+  elif (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1 && grep -q "main" "$work/log"; then
+    echo "PASS [$target] an executable embeds its interface, with main"
   else
-    echo "FAIL [$target] unexpected dump output for an executable"; cat "$work/log"; fail=1
+    echo "FAIL [$target] an executable embeds no interface naming main (D615)"; cat "$work/log"; fail=1
   fi
 done
 
