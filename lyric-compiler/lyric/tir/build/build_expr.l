@@ -742,6 +742,33 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   // `Err(x)?` and `None?` never yield: the failure is the operand itself.
   match e.kind {
     case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
+    // A bracket literal mixing a typed construction with open ones (`[None, Some(5)]`): every typed
+    // element has one type, the open elements take it, and the literal is a slice of it.
+    case EList(xs) -> {
+      var head: Option[Ty] = None
+      for x in xs {
+        match exprTy(env.ctx, x.nodeId) {
+          case Ok(t) -> match head {
+            case Some(h) -> if not tyEq(h, t) {
+              return None
+            }
+            case None -> {
+              head = Some(value = t)
+            }
+          }
+          case Err(_) -> ()
+        }
+      }
+      match head {
+        case Some(h) -> {
+          for x in xs {
+            settleHole(env, x, h)
+          }
+          return Some(value = TSlice(element = h))
+        }
+        case None -> ()
+      }
+    }
     // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
     case ETuple(xs) -> {
       val ts: List[Ty] = newList()
@@ -812,6 +839,17 @@ func branchOpenTy(env: in BuildEnv, b: in ExprOrBlock): Option[Ty] {
         case SExpr(t) -> exprOrOpenTy(env, t)
         case _ -> None
       }
+    }
+  }
+}
+
+/// An operand `lhs` of `==` or `!=` the checker left untyped takes the type of `rhs` when that is typed.
+func settleLeftFromRight(env: in BuildEnv, lhs: in Expr, rhs: in Expr): Unit {
+  match exprTy(env.ctx, lhs.nodeId) {
+    case Ok(_) -> ()
+    case Err(_) -> match exprOrOpenTy(env, rhs) {
+      case Some(rt) -> settleHole(env, lhs, rt)
+      case None -> ()
     }
   }
 }
@@ -1343,6 +1381,13 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       // lowering does that, and TIR has no node for it yet, so the body stays counted.
       if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
         return buildRecordArith(env, e, ty, op, lhs, rhs)
+      }
+      // `None == x`: the checker leaves the bare left operand untyped, and equality takes its type
+      // from the right one.
+      match op {
+        case BEq -> settleLeftFromRight(env, lhs, rhs)
+        case BNeq -> settleLeftFromRight(env, lhs, rhs)
+        case _ -> ()
       }
       val l = buildExpr(env, lhs)
       // `x == None`: the checker leaves the bare right operand untyped, and equality
