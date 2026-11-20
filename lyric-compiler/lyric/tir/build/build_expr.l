@@ -1406,9 +1406,25 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case Some(ts) -> Some(value = mkExpr(e, ty, XTuple(elems = ts)))
       case None -> None
     }
-    case EList(xs) -> match buildAll(env, xs) {
-      case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
-      case None -> None
+    case EList(xs) -> {
+      // An element the checker left open (`None` in `[Some(1), None]`) takes the literal's element type.
+      match ty {
+        case TSlice(el) -> {
+          for x in xs {
+            settleHole(env, x, el)
+          }
+        }
+        case TArray(_, el) -> {
+          for x in xs {
+            settleHole(env, x, el)
+          }
+        }
+        case _ -> ()
+      }
+      match buildAll(env, xs) {
+        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
+        case None -> None
+      }
     }
     case EInterpolated(segs) -> {
       val parts: List[TExpr] = newList()
