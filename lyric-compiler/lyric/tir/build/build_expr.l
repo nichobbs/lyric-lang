@@ -749,9 +749,7 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       for x in xs {
         match exprTy(env.ctx, x.nodeId) {
           case Ok(t) -> match head {
-            case Some(h) -> if not tyEq(h, t) {
-              return None
-            }
+            case Some(h) -> if not tyEq(h, t) { return None }
             case None -> {
               head = Some(value = t)
             }
@@ -876,10 +874,7 @@ func ctorPayload(x: in Expr): Option[Expr] {
 /// The `Std.Core` union `name` (`Option`, `Result`) as a symbol.
 func stdCoreUnionSym(env: in BuildEnv, name: in String): Option[SymbolId] {
   match symTableTryFindInPackage(env.ctx.tbl, "Std.Core", name) {
-    case Some(sym) -> match sym.kind {
-      case DKUnion(id, _) -> Some(value = id)
-      case _ -> None
-    }
+    case Some(sym) -> match sym.kind { case DKUnion(id, _) -> Some(value = id); case _ -> None }
     case None -> None
   }
 }
@@ -908,9 +903,7 @@ func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
         }
         kind = 1
         match someT {
-          case Some(prev) -> if not tyEq(prev, pt) {
-            return None
-          }
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
           case None -> {
             someT = Some(value = pt)
           }
@@ -921,9 +914,7 @@ func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
         }
         kind = 2
         match okT {
-          case Some(prev) -> if not tyEq(prev, pt) {
-            return None
-          }
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
           case None -> {
             okT = Some(value = pt)
           }
@@ -934,9 +925,7 @@ func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
         }
         kind = 2
         match errT {
-          case Some(prev) -> if not tyEq(prev, pt) {
-            return None
-          }
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
           case None -> {
             errT = Some(value = pt)
           }
@@ -974,10 +963,7 @@ func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
 func settleLeftFromRight(env: in BuildEnv, lhs: in Expr, rhs: in Expr): Unit {
   match exprTy(env.ctx, lhs.nodeId) {
     case Ok(_) -> ()
-    case Err(_) -> match exprOrOpenTy(env, rhs) {
-      case Some(rt) -> settleHole(env, lhs, rt)
-      case None -> ()
-    }
+    case Err(_) -> match exprOrOpenTy(env, rhs) { case Some(rt) -> settleHole(env, lhs, rt); case None -> () }
   }
 }
 
