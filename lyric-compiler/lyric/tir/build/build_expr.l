@@ -387,6 +387,11 @@ func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs
 func buildDeclaredBinary(
   env: in BuildEnv, e: in Expr, ty: in Ty, iop: in IntrinsicOp, lt: in TExpr, rt: in TExpr
 ): Option[TExpr] {
+  // A left operand that never yields (`Err(e)? == x`) ends the expression there; the right is unreachable.
+  match lt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = lt)))
+    case _ -> ()
+  }
   val rhs = if tyEq(lt.ty, rt.ty) { Some(value = rt) } else { convertValue(env, rt, lt.ty) }
   match rhs {
     case Some(r2) -> {
@@ -586,6 +591,18 @@ func exprNeverCompletes(e: in Expr): Bool {
       case None -> false
     }
     case EBlock(bl) -> blockNeverCompletes(bl)
+    // `Err(e)?` and `None?` always propagate: the operand is the failure itself, so the `?` never yields
+    // (its success type is free, and nothing fixes it).
+    case EPropagate(inner) -> propagatesAlways(unparen(inner))
+    case _ -> false
+  }
+}
+
+/// Whether `x` is a construction of the failure case of `Result` or `Option`: `Err(...)` or `None`.
+func propagatesAlways(x: in Expr): Bool {
+  match x.kind {
+    case ECall(fn, _) -> match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1] == "Err"; case _ -> false }
+    case EPath(p) -> p.segments[p.segments.count - 1] == "None"
     case _ -> false
   }
 }
@@ -722,6 +739,22 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  // `Err(x)?` and `None?` never yield: the failure is the operand itself.
+  match e.kind {
+    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
+    // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
+    case ETuple(xs) -> {
+      val ts: List[Ty] = newList()
+      for x in xs {
+        match exprOrOpenTy(env, x) {
+          case Some(t) -> ts.add(t)
+          case None -> return None
+        }
+      }
+      return Some(value = TTuple(elems = ts))
+    }
+    case _ -> ()
+  }
   // The logical operators are typed by the checker from their `Bool` operands or built as short-circuits (`shortOfBinop`).
   // A comparison is a `Bool` whatever its operands: one with an operand the checker left untyped
   // (`chunk.length > 0` on a local holding a host array) has no recorded type of its own.
@@ -1162,6 +1195,25 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   }
 }
 
+/// The condition `cond` of an `if` or `while`, built.  One that never yields (`if Err(e)? { ... }`) is
+/// converted to the `Bool` the construct takes, as a value of no type converts to any.
+func buildCondition(env: in BuildEnv, cond: in Expr): Option[TExpr] {
+  match buildExpr(env, cond) {
+    case Some(t) -> match t.ty {
+      case TirT.TNever -> Some(
+        value = TExpr(
+          id = freshNodeId(env),
+          ty = tyBool(),
+          span = t.span,
+          kind = XConvert(kind = CvFromNever, inner = t)
+        )
+      )
+      case _ -> Some(value = t)
+    }
+    case None -> None
+  }
+}
+
 func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
@@ -1334,7 +1386,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val t = buildOrBlock(env, thenBranch, ty)
       var el: Option[TExpr] = None
       var elOk = true
@@ -2095,7 +2147,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SContinue(label) -> Some(value = stmtOf(s, TsContinue(label = label)))
     case SLocal(binding) -> buildLocal(env, s, binding)
     case SWhile(label, cond, body) -> {
-      val c = buildExpr(env, cond)
+      val c = buildCondition(env, cond)
       val bd = loopBody(env, body)
       match c {
         case Some(ct) -> match bd {
@@ -4432,6 +4484,11 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
     case None -> ()
   }
   val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  // A member of a value that never exists (`None?.length`): the read is unreachable, the receiver's own end.
+  match rt.ty {
+    case TirT.TNever -> return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = rt)))
+    case _ -> ()
+  }
   match fieldRefOf(env, rt.ty, name) {
     case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
     case None -> match buildHostPropertyRead(env, e, ty, rt, name) {

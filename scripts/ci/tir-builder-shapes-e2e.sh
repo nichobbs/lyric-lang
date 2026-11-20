@@ -1886,4 +1886,64 @@ func main(): Int {
 }
 LYRIC
 
+# `Err(e)?` and `None?` never yield: the failure is the operand itself.  As a statement, bound to a
+# local that is read, as the left operand of `==`, and as a condition, each builds and runs (#8613).
+check propagate_never 15 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+func a(fail: in Bool): Result[Int, String] {
+  if fail {
+    Err(error = "stopped")?
+  }
+  Ok(value = 1)
+}
+
+func b(fail: in Bool): Option[Int] {
+  if fail {
+    None?
+  }
+  Some(value = 2)
+}
+
+func c(fail: in Bool): Option[Int] {
+  if fail {
+    val s = None?
+    return Some(value = s.length)
+  }
+  Some(value = 3)
+}
+
+func d(fail: in Bool): Result[Int, String] {
+  if fail {
+    if Err(error = "eq")? == "s" {
+      return Ok(value = 9)
+    }
+  }
+  Ok(value = 4)
+}
+
+func e(fail: in Bool): Result[Int, String] {
+  if fail {
+    if Err(error = "c")? {
+      return Ok(value = 9)
+    }
+  }
+  Ok(value = 5)
+}
+
+func unwrapped(r: in Result[Int, String]): Int {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> 100
+  }
+}
+
+func main(): Int {
+  val ob = match b(false) { case Some(v) -> v; case None -> 100 }
+  val oc = match c(false) { case Some(v) -> v; case None -> 100 }
+  unwrapped(a(false)) + ob + oc + unwrapped(d(false)) + unwrapped(e(false))
+}
+LYRIC
+
 exit $fail
