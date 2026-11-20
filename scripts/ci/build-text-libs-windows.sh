@@ -54,8 +54,15 @@ cmake -S "$work/freetype-$FT_VERSION" -B "$work/ft-build" -G Ninja \
 cmake --build "$work/ft-build"
 cmake --install "$work/ft-build"
 
+# HarfBuzz is the one C++ build here.  The MSVC 14.52 standard library
+# headers (runner image 20261116) refuse a Clang older than 22 (STL1000) and
+# the image's LLVM is 20; _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH is the
+# switch the headers name for that.  Installing LLVM 22 instead is not an
+# option yet: `lyric bindgen` misreads Clang 22's AST output and the binding
+# freshness check in windows-graphics-e2e.sh fails.
 cmake -S "$work/harfbuzz-$HB_VERSION" -B "$work/hb-build" -G Ninja \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_CXX_FLAGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$mprefix" -DCMAKE_PREFIX_PATH="$mprefix" \
   -DHB_HAVE_FREETYPE=ON -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF

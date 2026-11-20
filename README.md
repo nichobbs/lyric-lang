@@ -42,7 +42,7 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 
 ### Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [.NET 11 SDK](https://dotnet.microsoft.com/download/dotnet/11.0)
 
 ### Install Lyric (binary release)
 

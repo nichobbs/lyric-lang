@@ -24422,6 +24422,15 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
     if memberName == "toByte" {
+      // A floating-point receiver truncates to Int first and then wraps
+      // modulo 256, as on the JVM (`(byte)(int)x`).  `conv.u1` straight from
+      // a float is unspecified for a value outside 0..255: the runtime
+      // wrapped it up to .NET 10 and saturates it to 255 from .NET 11.
+      match recvTy {
+        case MFloat -> insns.add(MConvI4)
+        case MDouble -> insns.add(MConvI4)
+        case _ -> ()
+      }
       insns.add(MConvU1)
       MByte
     } else if memberName == "toChar" {

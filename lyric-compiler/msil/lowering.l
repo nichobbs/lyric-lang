@@ -1940,6 +1940,18 @@ pub func cellElemTypeTokenWithCtx(ctx: in LoweringCtx, elemTy: in MsilType): Int
         return 0x01000000 + refRow
       }
     }
+    // A plain value type is named by its own TypeDef or TypeRef token.  A
+    // TypeSpec whose blob is `VALUETYPE <type>` is not one of the forms
+    // ECMA-335 II.23.2.14 allows, and ilverify 11 rejects it (BadTypeSpec).
+    // `code` is a TypeDefOrRef coded index: row << 2 | tag (0 TypeDef, 1 TypeRef).
+    case MValueTypeRef(code, _) -> {
+      if code % 4 == 0 {
+        return 0x02000000 + code / 4
+      }
+      if code % 4 == 1 {
+        return 0x01000000 + code / 4
+      }
+    }
     case _ -> ()
   }
   val w = bufNew()

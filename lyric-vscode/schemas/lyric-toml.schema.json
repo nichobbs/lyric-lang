@@ -85,7 +85,7 @@
                     "items": { "type": "string" }
                 },
                 "target_framework": {
-                    "description": "Target framework moniker for NuGet restore (e.g. \"net10.0\"). Defaults to the compiler's TFM.",
+                    "description": "Target framework moniker for NuGet restore (e.g. \"net11.0\"). Defaults to the compiler's TFM.",
                     "type": "string"
                 },
                 "no_cache": {

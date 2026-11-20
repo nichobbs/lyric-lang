@@ -537,6 +537,26 @@ func main(): Int {
 }
 LYRIC
 
+# A host property whose declared result is a subclass of the class the context declares: `HttpRequestMessage.Headers`
+# is an `HttpRequestHeaders`, read as the `HttpHeaders` the function returns (D417).  Every body must build and the
+# verifier must accept it.
+check host_property_upcast 0 <<'LYRIC'
+package Shapes40
+extern type HttpRequestMessage = "System.Net.Http.HttpRequestMessage"
+extern type ByteArrayContent = "System.Net.Http.ByteArrayContent"
+extern type HttpHeaders = "System.Net.Http.Headers.HttpHeaders"
+
+func requestHeaders(req: in HttpRequestMessage): HttpHeaders {
+  req.Headers
+}
+
+func contentHeaders(content: in ByteArrayContent): HttpHeaders {
+  content.Headers
+}
+
+func main(): Int { 0 }
+LYRIC
+
 # The TIR builds a write to a public host field (D478); the MSIL emitter does not lower one yet
 # (T0120), so the program is judged by the census alone and not run.
 check host_field_write "" <<'LYRIC'
@@ -1062,6 +1082,28 @@ func stopIf(p: in JProcess, flag: in Bool): Unit {
   }
 }
 
+extern type JBuf = "java.nio.ByteBuffer"
+
+// A host `float` result is a `Float` (the checker types `getDouble` but not `getFloat`), a member the checker has
+// no case for on a language `String` is the host string's own, and an `if`/`else` whose branches are untyped void
+// host calls is `Unit` (D418).
+func floatText(b: in JBuf): String {
+  b.getFloat(0).toString()
+}
+
+func stringByteCount(s: in String): Int {
+  JBuf.wrap(s.getBytes("US-ASCII")).remaining()
+}
+
+func joinEither(t: in JThread, quick: in Bool): Unit {
+  if quick {
+    t.join(1i64)
+  } else {
+    t.join()
+  }
+  ()
+}
+
 func childCount(path: in String): Int {
   val d = JFile.new(path)
   val children: slice[JFile] = d.listFiles() ?? []
@@ -1087,6 +1129,11 @@ func main(): Int {
   }
   val t = JThread.new()
   waitFor(t, 1)
+  joinEither(t, true)
+  joinEither(t, false)
+  if stringByteCount("abc") != 3 {
+    return 3
+  }
   0
 }
 LYRIC
@@ -1704,6 +1751,116 @@ else
   (cd "$WORK" && java -jar jvm_host_kernel_shapes.jar >/dev/null 2>&1); got=$?
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_kernel_shapes): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_kernel_shapes"; fi
 fi
+# `format1`-`format4` take their arguments of any type, as `println` does (the checker types their
+# parameters with holes), so an `Int` or a `Bool` argument is not an argument the builder cannot check
+# (D407).  The program formats a number, a bool and a string and exits with their text's length: "a=42" is 4.
+check format_builtin_args 4 <<'LYRIC'
+package FormatBuiltinArgs
+
+func main(): Int {
+  val a = format1("a={0}", 42)
+  val b = format3("{0}-{1}-{2}", 1, true, "x")
+  val c = format2("{0}{1}", 1.5, 'c')
+  val d = format4("{0}{1}{2}{3}", 1, 2, true, "z")
+  println(b)
+  println(c)
+  println(d)
+  a.length
+}
+LYRIC
+
+# A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is typed as its enum and
+# recorded as the case, so the builder builds it (#8613).
+check package_qualified_enum_case 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+import Std.Http
+
+func code(m: in HttpMethod): Int {
+  match m {
+    case GET -> 3
+    case _ -> 4
+  }
+}
+
+func main(): Int {
+  code(Std.Http.GET)
+}
+LYRIC
+
+# Package-qualified calls in aspect advice copied from another package's template
+# (`Resilience.sleepMs(delay)` in `Resilience.Retry`) are folded like the consumer's own, so
+# the weaver-synthesized B-mode specialisations in lyric-resilience's tests build (#8613).
+bmode_log="$WORK/bmode_qualified_calls.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-resilience/lyric.toml >"$bmode_log" 2>&1)
+bline="$(grep "^TIR build census \[.*resilience_tests.l\]" "$bmode_log" | head -1)"
+if [[ -z "$bline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$bline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$bline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$bmode_log"; then
+  echo "FAIL (bmode_qualified_calls): not every body of lyric-resilience's tests built, or they failed"; grep -E "first error|no callee" "$bmode_log" | head -4; fail=1
+else
+  echo "ok   bmode_qualified_calls"
+fi
+
+# `.toArray()` of a slice is the identity and typed as the slice, so a call on one builds and its
+# result reads like any slice (#8613).
+check slice_to_array 3 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+record Ann {
+  name: String
+  args: slice[String]
+}
+
+func total(xs: in slice[Int]): Int {
+  xs.toArray().length
+}
+
+func main(): Int {
+  val a = Ann(name = "x", args = [])
+  if a.args.toArray().length != 0 {
+    return 1
+  }
+  total([1, 2, 3])
+}
+LYRIC
+
+# A read of a `config` block field (`Settings.port`) is a module value of the package, built as one
+# named `Pkg::Settings::port` (#8613).
+check config_field_read 7 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+config Settings {
+  port: Int = 7
+  host: String = "localhost"
+}
+
+func portPlusOne(): Int {
+  Settings.port + 1
+}
+
+func main(): Int {
+  val h: String = Settings.host
+  if h.length == 0 {
+    return 1
+  }
+  portPlusOne() - 1
+}
+LYRIC
+
+# `LogLevel.Info` where two packages declare an enum `LogLevel` (`Std.Log`, `Std.Logging`): the checker
+# leaves the read to the expected type, and the builder settles it as that enum's case (#8613).
+sline_log="$WORK/logging_shared_case.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-logging/lyric.toml >"$sline_log" 2>&1)
+sline="$(grep "^TIR build census \[.*logging_tests.l\]" "$sline_log" | head -1)"
+if [[ -z "$sline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$sline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$sline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$sline_log"; then
+  echo "FAIL (logging_shared_case): not every body of lyric-logging's tests built, or they failed"; grep -E "first error" "$sline_log" | head -4; fail=1
+else
+  echo "ok   logging_shared_case"
+fi
+
 # A generic record constructed in a lambda whose parameter types the checker erased (`{ k, v -> out.add(Ent(key = k,
 # value = v)) }` against a generic callee's `(K, V) -> Unit`): the checker recorded no constructor signature, so
 # the fields are the record's at the arguments the node settled at (D408).  One entry is added: exit 1.

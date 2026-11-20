@@ -3258,6 +3258,12 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
         ps.add(TyPrim(pt = PtInt))
         return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
       }
+      // `.toArray()` of a slice is the identity (docs/01 §2, slices and arrays): the same slice, so a call on one
+      // is typed as the slice it is, as `.toList()`'s result is typed as the `List` it builds.
+      if name == "toArray" {
+        val ps: List[Type] = newList()
+        return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
+      }
       None
     }
     case TyArray(_, elem, _) -> {
@@ -21719,7 +21725,10 @@ func inferExprCore(
         match scopeTryFind(sc, caseSegs[0]) {
           case Some(_) -> ()
           case None -> match packageEnumCaseValueType(tbl, qualifierOfSegs(caseSegs), name) {
-            case Some(ct) -> return ct
+            case Some(ct) -> {
+              recordQualifiedEnumCaseRef(tbl, e.nodeId, ct, name)
+              return ct
+            }
             case None -> ()
           }
         }

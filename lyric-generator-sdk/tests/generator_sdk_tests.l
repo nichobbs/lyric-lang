@@ -36,13 +36,13 @@ func roundTrip(req: in GeneratorRequest): Result[GeneratorRequest, String] {
 test "AnnotationDescriptor: name and empty args" {
   val ann = AnnotationDescriptor(name = "required", args = [])
   assertTrue(ann.name == "required", "name field")
-  assertTrue(ann.args.toArray().count == 0, "empty args array")
+  assertTrue(ann.args.toArray().length == 0, "empty args array")
 }
 
 test "AnnotationDescriptor: name with multiple args" {
   val ann = AnnotationDescriptor(name = "since", args = ["\"1.0\"", "\"Json\""])
   assertTrue(ann.name == "since", "name field")
-  assertTrue(ann.args.toArray().count == 2, "two args")
+  assertTrue(ann.args.toArray().length == 2, "two args")
   val argArr = ann.args.toArray()
   assertTrue(argArr[0] == "\"1.0\"", "first arg")
   assertTrue(argArr[1] == "\"Json\"", "second arg")
@@ -93,13 +93,13 @@ test "FieldTypeKind.Generic: can be matched" {
 test "FieldType: primitive Int" {
   val ft = FieldType(kind = Primitive, name = "Int", typeArgs = [])
   assertTrue(ft.name == "Int", "name field")
-  assertTrue(ft.typeArgs.toArray().count == 0, "no type args")
+  assertTrue(ft.typeArgs.toArray().length == 0, "no type args")
 }
 
 test "FieldType: slice with String element" {
   val ft = FieldType(kind = Slice, name = "slice[String]", typeArgs = ["String"])
   assertTrue(ft.name == "slice[String]", "name includes brackets")
-  assertTrue(ft.typeArgs.toArray().count == 1, "one type arg")
+  assertTrue(ft.typeArgs.toArray().length == 1, "one type arg")
   assertTrue(ft.typeArgs.toArray()[0] == "String", "element type")
 }
 
@@ -112,7 +112,7 @@ test "FieldType: Option with String" {
 test "FieldType: Result with two type args" {
   val ft = FieldType(kind = ResultType, name = "Result[Int, String]", typeArgs = ["Int", "String"])
   val args = ft.typeArgs.toArray()
-  assertTrue(args.count == 2, "two type args")
+  assertTrue(args.length == 2, "two type args")
   assertTrue(args[0] == "Int", "success type")
   assertTrue(args[1] == "String", "error type")
 }
@@ -129,7 +129,7 @@ test "FieldDescriptor: simple public field" {
   )
   assertTrue(fd.name == "id", "name")
   assertTrue(fd.isPublic, "public")
-  assertTrue(fd.annotations.toArray().count == 0, "no annotations")
+  assertTrue(fd.annotations.toArray().length == 0, "no annotations")
 }
 
 test "FieldDescriptor: private field" {
@@ -150,7 +150,7 @@ test "FieldDescriptor: field with annotation" {
     isPublic = true,
     annotations = [ann]
   )
-  assertTrue(fd.annotations.toArray().count == 1, "one annotation")
+  assertTrue(fd.annotations.toArray().length == 1, "one annotation")
   assertTrue(fd.annotations.toArray()[0].name == "required", "annotation name")
 }
 
@@ -208,7 +208,7 @@ test "TypeDescriptor: generic type" {
     annotations = []
   )
   val params = td.typeParams.toArray()
-  assertTrue(params.count == 2, "two type parameters")
+  assertTrue(params.length == 2, "two type parameters")
   assertTrue(params[0] == "T", "first param")
   assertTrue(params[1] == "E", "second param")
 }
@@ -237,7 +237,7 @@ test "TypeDescriptor: with fields" {
     annotations = []
   )
   val fds = td.fields.toArray()
-  assertTrue(fds.count == 2, "two fields")
+  assertTrue(fds.length == 2, "two fields")
   assertTrue(fds[0].name == "id", "first field")
   assertTrue(fds[1].name == "name", "second field")
 }
@@ -252,7 +252,7 @@ test "TypeDescriptor: with annotations" {
     fields = [],
     annotations = [ann]
   )
-  assertTrue(td.annotations.toArray().count == 1, "one annotation")
+  assertTrue(td.annotations.toArray().length == 1, "one annotation")
 }
 
 test "TypeDescriptor: union type" {
@@ -539,19 +539,19 @@ test "encode: annotation with arguments" {
 // §9. GeneratorDiagnosticSeverity — diagnostic levels
 // ─────────────────────────────────────────────────────────────────────────────
 test "GeneratorDiagnosticSeverity.Error: can be matched" {
-  val sev = Error
+  val sev: GeneratorDiagnosticSeverity = Error
   val matched = match sev { case Error -> true; case _ -> false }
   assertTrue(matched, "Error variant")
 }
 
 test "GeneratorDiagnosticSeverity.Warning: can be matched" {
-  val sev = Warning
+  val sev: GeneratorDiagnosticSeverity = Warning
   val matched = match sev { case Warning -> true; case _ -> false }
   assertTrue(matched, "Warning variant")
 }
 
 test "GeneratorDiagnosticSeverity.Info: can be matched" {
-  val sev = Info
+  val sev: GeneratorDiagnosticSeverity = Info
   val matched = match sev { case Info -> true; case _ -> false }
   assertTrue(matched, "Info variant")
 }
@@ -585,8 +585,8 @@ test "GeneratorDiagnostic: info with empty code string" {
 test "GeneratorResponse: basic response" {
   val resp = GeneratorResponse(lyricSource = "pub func generated(): Unit {}", additionalImports = [], diagnostics = [])
   assertTrue(resp.lyricSource == "pub func generated(): Unit {}", "source")
-  assertTrue(resp.additionalImports.toArray().count == 0, "no imports")
-  assertTrue(resp.diagnostics.toArray().count == 0, "no diagnostics")
+  assertTrue(resp.additionalImports.toArray().length == 0, "no imports")
+  assertTrue(resp.diagnostics.toArray().length == 0, "no diagnostics")
 }
 
 test "GeneratorResponse: with imports" {
@@ -596,7 +596,7 @@ test "GeneratorResponse: with imports" {
     diagnostics = []
   )
   val imports = resp.additionalImports.toArray()
-  assertTrue(imports.count == 2, "two imports")
+  assertTrue(imports.length == 2, "two imports")
   assertTrue(imports[0] == "import Std.Json", "first import")
 }
 
@@ -605,7 +605,7 @@ test "GeneratorResponse: with diagnostics" {
   val diag2 = GeneratorDiagnostic(severity = Warning, message = "Warning 1", code = Some(value = "W001"))
   val resp = GeneratorResponse(lyricSource = "", additionalImports = [], diagnostics = [diag1, diag2])
   val diags = resp.diagnostics.toArray()
-  assertTrue(diags.count == 2, "two diagnostics")
+  assertTrue(diags.length == 2, "two diagnostics")
   assertTrue(diags[0].severity == Error, "first is error")
   val hasCode = match diags[1].code { case Some(_) -> true; case None -> false }
   assertTrue(hasCode, "second has code")

@@ -224,7 +224,7 @@ pub func hostDoubleToString(x: in Double, fmt: in String, culture: in CultureInf
   val bd = JBigDecimal.new(x)
   val mode = JRoundingMode.HALF_EVEN
   val scaled = bd.setScale(decimals, mode)
-  val s = scaled.toPlainString()
+  val s: String = scaled.toPlainString()
   // BigDecimal has no negative zero and drops the sign of any negative value
   // that rounds to zero; .NET keeps it ((-0.0)→"-0.00", (-0.4)→"F0"→"-0").
   val negative = x < 0.0 or (x == 0.0 and 1.0 / x < 0.0)
