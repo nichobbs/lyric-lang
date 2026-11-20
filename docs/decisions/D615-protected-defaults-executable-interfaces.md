@@ -13,7 +13,7 @@ A construction that leaves a field or parameter out takes its default, and the t
 
 `buildPackageDefaults` builds the initialiser of every field of a non-generic protected type (`noteProtectedFieldDefaults`, as `noteFieldDefaults` does for a record), and the interface producer writes a protected type as `IfDRecord` with its fields (`fieldsOfProtected`: the field's type, whether it is mutable, and its default), as the model describes. A consumer reads the default as it reads a record field's, by the type's DefPath key.
 
-An executable's interface is built and embedded too. A declaration the interface cannot record is T0223 for a library, because its importers would lose the declaration; for an executable it is not an error, and the package then embeds nothing (the previous behaviour), since nothing normally imports one. `scripts/ci/interface-embed-e2e.sh` now checks that a dotnet or JVM executable embeds an interface that names `main`; a native executable is linked, not restored, and writes none.
+An executable's interface is built and embedded too. A declaration the interface cannot record is T0223 for a library, because its importers would lose the declaration; for an executable it is not an error, and the package then embeds nothing (the previous behaviour), since nothing normally imports one. `scripts/ci/interface-embed-e2e.sh` now checks that a dotnet or JVM executable embeds an interface that names `main`; a native executable writes its interface beside the binary.
 
 ## Results
 
