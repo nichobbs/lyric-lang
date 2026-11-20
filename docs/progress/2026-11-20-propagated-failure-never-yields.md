@@ -1,0 +1,3 @@
+# A propagated `Err` or `None` never yields (D326)
+
+The TIR builder counted every use of `Err(e)?` or `None?`, whose success type is free, as unbuilt (about twenty fixture bodies). The `?` of a failure constructor is now `Never`, and a field read, an operator's left operand, a condition and a tuple element that never yield build as `CvFromNever` conversions or element types. `propagate_ctor_operand_self_test.l` builds 58 of 58 bodies (was 52) and `propagate_never_value_self_test.l` 8 of 13 (was 4); the compound-operand forms (`(if c { Err(a) } else { Err(b) })?`) remain. Test: the `propagate_never` shape in `scripts/ci/tir-builder-shapes-e2e.sh`.

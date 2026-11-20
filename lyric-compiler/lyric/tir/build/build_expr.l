@@ -601,10 +601,7 @@ func exprNeverCompletes(e: in Expr): Bool {
 /// Whether `x` is a construction of the failure case of `Result` or `Option`: `Err(...)` or `None`.
 func propagatesAlways(x: in Expr): Bool {
   match x.kind {
-    case ECall(fn, _) -> match fn.kind {
-      case EPath(p) -> p.segments[p.segments.count - 1] == "Err"
-      case _ -> false
-    }
+    case ECall(fn, _) -> match fn.kind { case EPath(p) -> p.segments[p.segments.count - 1] == "Err"; case _ -> false }
     case EPath(p) -> p.segments[p.segments.count - 1] == "None"
     case _ -> false
   }
@@ -744,9 +741,7 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   // `Err(x)?` and `None?` never yield: the failure is the operand itself.
   match e.kind {
-    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) {
-      return Some(value = TirT.TNever)
-    }
+    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
     // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
     case ETuple(xs) -> {
       val ts: List[Ty] = newList()
@@ -1206,7 +1201,12 @@ func buildCondition(env: in BuildEnv, cond: in Expr): Option[TExpr] {
   match buildExpr(env, cond) {
     case Some(t) -> match t.ty {
       case TirT.TNever -> Some(
-        value = TExpr(id = freshNodeId(env), ty = tyBool(), span = t.span, kind = XConvert(kind = CvFromNever, inner = t))
+        value = TExpr(
+          id = freshNodeId(env),
+          ty = tyBool(),
+          span = t.span,
+          kind = XConvert(kind = CvFromNever, inner = t)
+        )
       )
       case _ -> Some(value = t)
     }
