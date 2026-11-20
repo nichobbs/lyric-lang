@@ -164,7 +164,7 @@ func mapItem(it: in Item, m: in AstMapper): Item {
                 annotations = ed.annotations,
                 visibility = ed.visibility,
                 name = ed.name,
-                params = ed.params,
+                params = mapParams(ed.params, m),
                 ret = ed.ret,
                 contracts = mapContracts(ed.contracts, m),
                 body = mapFunctionBody(ed.body, m),

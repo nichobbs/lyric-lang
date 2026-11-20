@@ -1946,4 +1946,57 @@ func main(): Int {
 }
 LYRIC
 
+# `?` of an `if`, `match` or block whose every branch fails, a tuple element and a member of a value that never
+# exists, and a bare `None` assigned into a field of a generic protected type each build and run (#8613, D618).
+check propagate_compound 112 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+func ifAll(c: in Bool): Result[Int, String] {
+  val s = (if c { Err(error = "then") } else { Err(error = "else") })?
+  Ok(value = s.length)
+}
+
+func matchAll(n: in Int): Option[Int] {
+  val s = (match n { case 0 -> None; case _ -> None })?
+  Some(value = s.length)
+}
+
+func tupleMember(fail: in Bool): Result[Int, String] {
+  if fail {
+    val (s, n) = (Err(error = "t")?, 1)
+    return Ok(value = s.length + n)
+  }
+  Ok(value = 3)
+}
+
+protected type Slot[T] {
+  var item: Option[T] = None
+  entry put(v: in T): Unit {
+    item = Some(value = v)
+  }
+  entry take(): Option[T] {
+    val taken = item
+    item = None
+    taken
+  }
+}
+
+func unwrapped(r: in Result[Int, String]): Int {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> 100
+  }
+}
+
+func main(): Int {
+  val a = match ifAll(true) { case Ok(v) -> v; case Err(_) -> 4 }
+  val b = match matchAll(0) { case Some(v) -> v; case None -> 5 }
+  val s: Slot[Int] = Slot()
+  s.put(3)
+  val t = match s.take() { case Some(v) -> v; case None -> 0 }
+  a + b + unwrapped(tupleMember(true)) + t
+}
+LYRIC
+
 exit $fail

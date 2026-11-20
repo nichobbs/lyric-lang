@@ -5,7 +5,8 @@
 #   - a library of several declaration kinds embeds an interface that
 #     `lyric interface dump` prints, with its hash;
 #   - building the same library twice gives the same interface hash;
-#   - an executable embeds no interface;
+#   - an executable's interface is embedded too on dotnet and the JVM (D615), so a package that
+#     imports one (the compiler's own `Lyric.Cli`) reads the defaults it carries;
 #   - an unannotated `pub val` is recorded at the type its package checked.
 #
 #   bash scripts/ci/interface-embed-e2e.sh [dotnet] [jvm] [native]
@@ -157,19 +158,26 @@ LYRIC
   cat > "$edir/src/main.l" <<'LYRIC'
 package Lib
 
-func main(): Int {
+pub func main(): Int {
   0
 }
 LYRIC
   if ! build "$edir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the executable build failed"; cat "$work/log"; fail=1; continue
   fi
-  if (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1; then
-    echo "FAIL [$target] an executable embeds an interface"; fail=1
-  elif grep -qE "carries no|cannot read" "$work/log"; then
-    echo "PASS [$target] an executable embeds no interface"
+  if [ "$target" = native ]; then
+    # A native executable is linked, not restored: no interface is written beside it.
+    if (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1; then
+      echo "FAIL [$target] a native executable writes an interface"; fail=1
+    elif grep -qE "carries no|cannot read" "$work/log"; then
+      echo "PASS [$target] a native executable writes no interface"
+    else
+      echo "FAIL [$target] unexpected dump output for a native executable"; cat "$work/log"; fail=1
+    fi
+  elif (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1 && grep -q "main" "$work/log"; then
+    echo "PASS [$target] an executable embeds its interface, with main"
   else
-    echo "FAIL [$target] unexpected dump output for an executable"; cat "$work/log"; fail=1
+    echo "FAIL [$target] an executable embeds no interface naming main (D615)"; cat "$work/log"; fail=1
   fi
 done
 

@@ -294,6 +294,46 @@ func fieldsOfRecord(
   res
 }
 
+/// A protected type's fields, with the default each initialiser gives (`SessionRegistry()` leaves them out).
+func fieldsOfProtected(
+  bc: in BuildCtx, frames: in List[ConvFrame], members: in List[ProtectedMember], what: in String
+): List[IfField] {
+  val res: List[IfField] = newList()
+  for m in members {
+    match m {
+      case PMField(pf) -> {
+        val name = match pf {
+          case PFVar(n, _, _, _, _, _) -> n
+          case PFLet(n, _, _, _, _, _) -> n
+          case PFImmutable(fd) -> fd.name
+        }
+        val tyExpr = match pf {
+          case PFVar(_, t, _, _, _, _) -> t
+          case PFLet(_, t, _, _, _, _) -> t
+          case PFImmutable(fd) -> fd.ty
+        }
+        val mutable = match pf {
+          case PFVar(_, _, _, _, _, _) -> true
+          case PFLet(_, _, _, _, _, _) -> false
+          case PFImmutable(fd) -> fd.isMutable
+        }
+        val hasDefault = match pf {
+          case PFVar(_, _, i, _, _, _) -> isSome(i)
+          case PFLet(_, _, i, _, _, _) -> isSome(i)
+          case PFImmutable(fd) -> isSome(fd.dflt)
+        }
+        val field = mkField(name, resolveTy(bc, frames, None, tyExpr, what + "." + name), mutable, hasDefault)
+        match builtDefault(bc, what, name) {
+          case Some(d) -> res.add(field.copy(dflt = Some(value = d.expr), dfltEntries = d.entries))
+          case None -> res.add(field)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
 func fieldsOfCase(
   bc: in BuildCtx, frames: in List[ConvFrame], fields: in List[UnionField], what: in String
 ): List[IfField] {
@@ -499,7 +539,10 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
         path,
         IfKProtected,
         vis,
-        IfDType(typeParams = typeParamsOf(bc, frames, decl.generics, decl.whereClause, defPathKey(path)))
+        IfDRecord(
+          typeParams = typeParamsOf(bc, frames, decl.generics, decl.whereClause, defPathKey(path)),
+          fields = fieldsOfProtected(bc, frames, decl.members, defPathKey(path))
+        )
       )
       for m in decl.members {
         match m {

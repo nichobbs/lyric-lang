@@ -1623,6 +1623,10 @@ impl ExternIterResolver for MsilHostIterIndex {
     }
     mapGet(self.memberSigs, key)
   }
+
+  func resolveIsAbstract(clrName: in String): Option[Bool] {
+    None
+  }
 }
 
 /// The resolver a check reads the reference pack (and restored DLLs) through,
@@ -2389,7 +2393,11 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         // `internal` functions stay in the checker's view so a stdlib package can call another's
         // kernel accessor (`Std.Tls`'s `rawHandle`, D432); the checker hides them from every other
         // importer, and the codegen registrars below take `pub` functions only.
-        case IFunc(decl) -> match decl.visibility { case Some(VisPub(_)) -> true; case Some(VisInternal(_)) -> true; case _ -> false }
+        case IFunc(decl) -> match decl.visibility {
+          case Some(VisPub(_)) -> true
+          case Some(VisInternal(_)) -> true
+          case _ -> false
+        }
         // A literal constant: the consumer inlines it (`stdlibInlinableConstMsil`).
         case IConst(_) -> isSome(stdlibInlinableConstMsil(it))
         case IVal(_) -> isSome(stdlibInlinableConstMsil(it))

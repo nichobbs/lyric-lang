@@ -219,6 +219,185 @@ func uncoveredExprDetail(env: in BuildEnv, e: in Expr, what: in String, detail: 
   None
 }
 
+/// A program the host's metadata shows can never link, reported as the build error the backend would give
+/// (D616): the builder answers `None` with a message under the backend's code (`J005`, `J008`) rather than an
+/// I0002, which would say the builder has a gap.  Not counted as an uncovered kind.
+func rejectExpr(env: in BuildEnv, e: in Expr, code: in String, text: in String): Option[TExpr] {
+  env.errors.add(code + ": " + text + " at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column))
+  None
+}
+
+/// Whether a builder message is a rejection of the program (`J005: ...`, `T0119: ...`), not an I0002 gap:
+/// a diagnostic code of a letter and three or four digits, then a colon.
+pub func isRejectionMessage(msg: in String): Bool {
+  var colon = -1
+  var i = 3
+  while i < 6 and i < msg.length and colon < 0 {
+    if msg.substring(i, 1) == ":" {
+      colon = i
+    }
+    i = i + 1
+  }
+  if colon < 0 or msg.length <= colon + 1 or msg.substring(colon + 1, 1) != " " {
+    return false
+  }
+  val code = msg.substring(0, colon)
+  if code == "I0002" or code == "I0003" {
+    return false
+  }
+  if not isSome("ABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(code.substring(0, 1))) {
+    return false
+  }
+  var k = 1
+  while k < code.length {
+    if not isSome("0123456789".indexOf(code.substring(k, 1))) {
+      return false
+    }
+    k = k + 1
+  }
+  true
+}
+
+/// `MathX.PIE` where `MathX` names an `extern type` of a located host class that declares no static property,
+/// constant, field or method of that name: the dotnet backend's refusal (T0119), recorded as the body's build
+/// error.  False, recording nothing, for any other shape.
+func rejectUnknownHostStatic(env: in BuildEnv, e: in Expr): Bool {
+  if env.ctx.tbl.externIterResolver.count == 0 or isJvmHostMetadata(env) {
+    return false
+  }
+  val recv = match e.kind { case EMember(r, _) -> r; case _ -> return false }
+  val name = match e.kind { case EMember(_, n) -> n; case _ -> return false }
+  val host = match hostStaticReceiver(env, recv) { case Some(h) -> h; case None -> return false }
+  val resolver = env.ctx.tbl.externIterResolver[0]
+  match resolver.resolveBases(host.name) {
+    case Some(_) -> ()
+    case None -> return false
+  }
+  for isProp in [true, false] {
+    match resolver.resolveMemberSigs(host.name, name, 0, isProp) {
+      case Some(cands) -> if cands.count > 0 { return false }
+      case None -> return false
+    }
+  }
+  val _ = rejectExpr(
+    env,
+    e,
+    "T0119",
+    "extern member access '" + host.name + "." + name + "' does not resolve to a static property getter (get_" +
+      name +
+      "), a literal constant, a static field, or a zero-argument static method in .NET reference-assembly metadata.  Check '" +
+      name +
+      "' for a typo, or declare an @externTarget wrapper"
+  )
+  true
+}
+
+/// `sb.capacityField` where `sb` is a value of a located host class that declares no such field or
+/// property: the JVM backend's J009 refusal ("has no known field or member"), recorded as the body's
+/// build error.  False, recording nothing, for any other shape.
+func rejectUnknownHostField(env: in BuildEnv, e: in Expr): Bool {
+  if not isJvmHostMetadata(env) {
+    return false
+  }
+  val parts = match e.kind {
+    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
+      case Ok(rt) -> match rt {
+        case TExtern(h) -> Some(
+          value = HostChainCall(
+            host = h,
+            name = name
+          )
+        )
+        case _ -> None
+      }
+      case Err(_) -> None
+    }
+    case _ -> None
+  }
+  val hc = match parts { case Some(x) -> x; case None -> return false }
+  val resolver = env.ctx.tbl.externIterResolver[0]
+  match resolver.resolveBases(hc.host.name) {
+    case Some(_) -> ()
+    case None -> return false
+  }
+  match resolver.resolveMemberSigs(hc.host.name, hc.name, 0, true) {
+    case Some(cands) -> {
+      for c in cands {
+        if not c.isStatic {
+          return false
+        }
+      }
+    }
+    case None -> return false
+  }
+  val cls = hc.host.name.replace(".", "/")
+  val recvOfMember = match e.kind { case EMember(r, _) -> r; case _ -> return false }
+  if isErasedFieldRead(env, recvOfMember) {
+    // The JVM backend reads a field declared at a type parameter as its erasure, the root object: it cannot
+    // tell which class the receiver is (J007), so it refuses the member whatever the class has.
+    val _ = rejectExpr(
+      env,
+      e,
+      "J007",
+      "member '" + hc.name +
+        "' cannot be resolved on an erased (statically Object) receiver — the receiver's concrete type is unknown " +
+        "at this site, so the read would silently yield the receiver itself. Bind the value with an explicit type, " +
+        "or match on the concrete constructor first."
+    )
+    return true
+  }
+  val _ = rejectExpr(env, e, "J009", "receiver of type '" + cls + "' has no known field or member '" + hc.name + "'")
+  true
+}
+
+/// Whether `recv` reads a field of a generic record whose declared type is one of the record's type parameters
+/// (`b.item` of `Box[T]`): the JVM erases its type.
+func isErasedFieldRead(env: in BuildEnv, recv: in Expr): Bool {
+  match unparen(recv).kind {
+    case EMember(r2, fname) -> match exprTy(env.ctx, r2.nodeId) {
+      case Ok(rt) -> match rt {
+        case TNamed(did, targs) -> {
+          if targs.count == 0 {
+            return false
+          }
+          for f in fieldsOfRecord(env.ctx.tbl, did) {
+            if f.name == fname {
+              return match f.ty { case TyParam(_, _) -> true; case _ -> false }
+            }
+          }
+          false
+        }
+        case _ -> false
+      }
+      case Err(_) -> false
+    }
+    case _ -> false
+  }
+}
+
+/// Whether the host metadata is the JVM's: its root object class resolves.
+func isJvmHostMetadata(env: in BuildEnv): Bool {
+  val tbl = env.ctx.tbl
+  tbl.externIterResolver.count > 0 and
+    isSome(tbl.externIterResolver[0].resolveMemberSigs("java.lang.Object", "toString", 0, false))
+}
+
+/// The JVM backend's "no matching instance or inherited method" diagnostic (J008) for `host.name(args)`.
+func noSuchHostMethod(
+  env: in BuildEnv, e: in Expr, host: in String, name: in String, argTys: in List[String]
+): Option[TExpr] {
+  var shown = ""
+  for i in 0 ..< argTys.count {
+    shown = shown + (if i > 0 { ", " } else { "" }) + argTys[i]
+  }
+  rejectExpr(
+    env,
+    e,
+    "J008",
+    "JVM auto-FFI: no matching instance or inherited method for '" + host + "." + name + "(" + shown + ")'"
+  )
+}
+
 func uncoveredArgs(env: in BuildEnv, e: in Expr, what: in String): Option[List[TArg]] {
   val _ = uncoveredExpr(env, e, what)
   None
@@ -500,7 +679,10 @@ func buildRefPath(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
           case Some(v) -> Some(value = v)
           case None -> match sharedCaseRead(env, e, ty) {
             case Some(v) -> Some(value = v)
-            case None -> uncoveredExpr(env, e, "a name that is not a local")
+            case None -> match buildBareForeignValRead(env, e, ty) {
+              case Some(v) -> Some(value = v)
+              case None -> uncoveredExpr(env, e, "a name that is not a local")
+            }
           }
         }
       }
@@ -593,7 +775,50 @@ func exprNeverCompletes(e: in Expr): Bool {
     case EBlock(bl) -> blockNeverCompletes(bl)
     // `Err(e)?` and `None?` always propagate: the operand is the failure itself, so the `?` never yields
     // (its success type is free, and nothing fixes it).
-    case EPropagate(inner) -> propagatesAlways(unparen(inner))
+    case EPropagate(inner) -> propagatesAlwaysDeep(unparen(inner))
+    case _ -> false
+  }
+}
+
+/// Whether `x` is a failure construction (`propagatesAlways`), or an `if`, `match` or block every branch of
+/// which ends in one (`(if c { Err(a) } else { Err(b) })?`): the `?` of such an operand never yields either.
+func propagatesAlwaysDeep(x: in Expr): Bool {
+  match x.kind {
+    case EParen(i) -> propagatesAlwaysDeep(i)
+    case EIf(_, thenBranch, elseBranch, _) -> match elseBranch {
+      case Some(eb) -> branchPropagatesAlways(thenBranch) and
+        branchPropagatesAlways(eb)
+      case None -> false
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      for arm in arms {
+        if not branchPropagatesAlways(arm.body) {
+          return false
+        }
+      }
+      true
+    }
+    case EBlock(b) -> blockPropagatesAlways(b)
+    case _ -> propagatesAlways(x)
+  }
+}
+
+func branchPropagatesAlways(b: in ExprOrBlock): Bool {
+  match b {
+    case EOBExpr(x) -> propagatesAlwaysDeep(x)
+    case EOBBlock(bl) -> blockPropagatesAlways(bl)
+  }
+}
+
+func blockPropagatesAlways(b: in Block): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  match b.statements[b.statements.count - 1].kind {
+    case SExpr(x) -> propagatesAlwaysDeep(x)
     case _ -> false
   }
 }
@@ -651,6 +876,17 @@ func propagateOperandTy(env: in BuildEnv, inner: in Expr, yielded: in Ty): Optio
   val sym = match fb { case TNamed(s, _) -> s; case _ -> return None }
   val args = match fb { case TNamed(_, a) -> a; case _ -> return None }
   val operand = unparen(inner)
+  // A compound operand every branch of which fails is the failure type with no success value, whatever the
+  // branches' own (open) types: the function's error type is the one the branches settle to.
+  if propagatesAlwaysDeep(operand) and not propagatesAlways(operand) {
+    if args.count == 2 {
+      return Some(value = TNamed(sym = sym, args = [yielded, args[1]]))
+    }
+    if args.count == 1 {
+      return Some(value = TNamed(sym = sym, args = [yielded]))
+    }
+    return None
+  }
   var name = ""
   var payload: Option[Expr] = None
   match operand.kind {
@@ -736,12 +972,37 @@ func openPropagateYield(env: in BuildEnv, e: in Expr): Option[Ty] {
   }
 }
 
+/// Whether `recv` is a value that never exists: the `?` of an operand that always fails, or a local bound to one.
+func neverReceiver(env: in BuildEnv, recv: in Expr): Bool {
+  val r = unparen(recv)
+  match r.kind {
+    case EPropagate(inner) -> propagatesAlwaysDeep(unparen(inner))
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return false
+      }
+      match lookupLocal(env, p.segments[0]) {
+        case Some(d) -> match d.ty { case TirT.TNever -> true; case _ -> false }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// The type of an expression the checker left untyped, when its own shape gives it: a read of a
 /// local declared at a type, or `Ok(x)?` and `Some(x)?`.
 func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   // `Err(x)?` and `None?` never yield: the failure is the operand itself.
   match e.kind {
-    case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
+    case EPropagate(inner) -> if propagatesAlwaysDeep(unparen(inner)) { return Some(value = TirT.TNever) }
+    // A member read or call on a value that never exists (`None?.length`, `s.length` where `s` was bound to
+    // `Err(e)?`) is unreachable, and so is its result.
+    case EMember(recv, _) -> if neverReceiver(env, recv) { return Some(value = TirT.TNever) }
+    case ECall(fn, _) -> match fn.kind {
+      case EMember(recv, _) -> if neverReceiver(env, recv) { return Some(value = TirT.TNever) }
+      case _ -> ()
+    }
     // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
     case ETuple(xs) -> {
       val ts: List[Ty] = newList()
@@ -766,6 +1027,13 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       case BLte -> return Some(value = tyBool())
       case BGt -> return Some(value = tyBool())
       case BGte -> return Some(value = tyBool())
+      // An arithmetic operator on operands of one primitive type is that type; the left operand's own type
+      // is what the checker could not give (`answer + 1` where `answer` is a `val` of another package).
+      case BAdd -> return arithOperandTy(env, e)
+      case BSub -> return arithOperandTy(env, e)
+      case BMul -> return arithOperandTy(env, e)
+      case BDiv -> return arithOperandTy(env, e)
+      case BMod -> return arithOperandTy(env, e)
       case _ -> ()
     }
     case _ -> ()
@@ -776,9 +1044,185 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       case Some(t) -> Some(value = t)
       case None -> match openHostChainTy(env, e) {
         case Some(t) -> Some(value = t)
-        case None -> openIfTy(env, e)
+        case None -> match openIfTy(env, e) {
+          case Some(t) -> Some(value = t)
+          case None -> match openRefValueTy(env, e) {
+            case Some(t) -> Some(value = t)
+            case None -> match openGenericFieldReadTy(env, e) {
+              case Some(t) -> Some(value = t)
+              case None -> openBareOwnCaseTy(env, e)
+            }
+          }
+        }
       }
     }
+  }
+}
+
+/// The type of `a + b` (and `-`, `*`, `/`, `%`) the checker recorded none for: the type of the left operand,
+/// when it is a numeric primitive the builder can give (a typed read, or a carried `val` of another package).
+func arithOperandTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  match e.kind {
+    case EBinop(_, lhs, _) -> match exprOrOpenTy(env, lhs) {
+      case Some(t) -> match t {
+        case TPrim(k) -> if isIntegerPrim(k) { Some(value = t) } else { None }
+        case _ -> None
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+record GenericFieldRead {
+  owner: SymbolId
+  targs: List[Ty]
+  name: String
+}
+
+/// `p.step` where `p` is a value of a generic record `Prog[M]` and the field is declared at a type that mentions
+/// the record's parameters (`step: (M, Int) -> M`): the checker records no type for the read, and it is the field's
+/// declared type at the receiver's own arguments.
+func openGenericFieldReadTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val tbl = env.ctx.tbl
+  val parts = match e.kind {
+    case EMember(recv, name) -> match exprTy(env.ctx, recv.nodeId) {
+      case Ok(rt) -> match rt {
+        case TNamed(did, targs) -> if targs.count > 0 {
+          Some(value = GenericFieldRead(owner = did, targs = targs, name = name))
+        } else {
+          None
+        }
+        case _ -> None
+      }
+      case Err(_) -> None
+    }
+    case _ -> None
+  }
+  val p = match parts { case Some(x) -> x; case None -> return None }
+  val rid = p.owner
+  val targs = p.targs
+  val rsym = match symbolOfDefId(tbl, rid) { case Some(x) -> x; case None -> return None }
+  val names = recordGenericNamesOf(tbl, rid)
+  if names.count != targs.count {
+    return None
+  }
+  val ctx = newTyConvCtx(tbl)
+  tyConvBind(ctx, rsym.name, rid, names)
+  for f in fieldsOfRecord(tbl, rid) {
+    if f.name == p.name {
+      match tyOfType(ctx, f.ty) {
+        case Ok(fty) -> return Some(value = substOwnerArgs(fty, rid, targs))
+        case Err(_) -> return None
+      }
+    }
+  }
+  None
+}
+
+/// The type of a read of a `val` of another package the checker gave no type: the type its package's
+/// interface recorded for it (an unannotated `pub val answer = helper() + 1` has none the reader's own
+/// checker can compute).
+func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val tbl = env.ctx.tbl
+  val key: String = match refSite(env.ctx, e.nodeId) {
+    case Some(r) -> match r.kind {
+      case RkValue -> match symTableDefPathKeyOf(tbl, r.sym) {
+        case Some(k) -> k
+        case None -> return None
+      }
+      case _ -> return None
+    }
+    case None -> match bareForeignValKey(env, e) { case Some(k) -> k; case None -> return None }
+  }
+  readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, tbl.interner)
+}
+
+/// The DefPath key of the `val` or `const` of another package a bare name stands for, when the checker
+/// recorded no reference for it (it could not type the value).
+func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
+  val tbl = env.ctx.tbl
+  val name = match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  match lookupLocal(env, name) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  match symTableTryFindOne(tbl, name) {
+    case Some(sym) -> {
+      val isValue = match sym.kind { case DKVal(_) -> true; case DKConst(_) -> true; case _ -> false }
+      if isValue and sym.originPackage.length > 0 {
+        Some(value = defPathKey(topDefPath(sym.originPackage, sym.name)))
+      } else {
+        None
+      }
+    }
+    case None -> None
+  }
+}
+
+/// A bare read of a `val` of another package the checker recorded no reference for: a module value named by
+/// its DefPath, as a reference the checker did record is.
+func buildBareForeignValRead(env: in BuildEnv, e: in Expr, ty: in Ty): Option[TExpr] {
+  val key = match bareForeignValKey(env, e) { case Some(k) -> k; case None -> return None }
+  val id = internDefPathKey(env.ctx.tbl.interner, key)
+  noteGlobalSym(env, id, ty)
+  Some(value = mkExpr(e, ty, XGlobal(sym = id, typeArgs = newList())))
+}
+
+/// A bare case name the checker gave no type because other packages of the program declare a case of that
+/// name: when the package being built declares exactly one such payload-free case of a non-generic type, that
+/// is the one it names (a package sees its own declarations first).
+func openBareOwnCaseTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val name = match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  match lookupLocal(env, name) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val tbl = env.ctx.tbl
+  if tbl.scopePkg.count == 0 {
+    return None
+  }
+  var found: Option[SymbolId] = None
+  var count = 0
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if cand.originPackage == tbl.scopePkg[0] {
+      val parent = match cand.kind {
+        case DKEnumCase(pid, _) -> Some(value = pid)
+        case DKUnionCase(pid, uc) -> if uc.fields.count == 0 { Some(value = pid) } else { None }
+        case _ -> None
+      }
+      match parent {
+        case Some(pid) -> {
+          count = count + 1
+          found = Some(value = pid)
+        }
+        case None -> ()
+      }
+    }
+  }
+  if count != 1 {
+    return None
+  }
+  match found {
+    case Some(pid) -> match symbolOfDefId(tbl, pid) {
+      case Some(ps) -> match ps.kind {
+        case DKUnion(_, ud) -> if ud.generics.isSome() {
+          None
+        } else {
+          Some(value = TNamed(sym = pid, args = newList()))
+        }
+        case DKEnum(_, _) -> Some(value = TNamed(sym = pid, args = newList()))
+        case _ -> None
+      }
+      case None -> None
+    }
+    case None -> None
   }
 }
 
@@ -1227,6 +1671,9 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
           if exprNeverCompletes(e) {
             TirT.TNever
           } else {
+            if rejectUnknownHostField(env, e) or rejectUnknownHostStatic(env, e) {
+              return None
+            }
             env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
             return None
           }
@@ -1278,6 +1725,15 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
           case Some(d) -> {
             if d.id.id < 0 {
               return None
+            }
+            // A local bound to a value that never exists (`val n = None?.length`) is read at whatever type
+            // its use gives it: the read is the conversion of a `Never` (D618).
+            match d.ty {
+              case TirT.TNever -> if not tyEq(d.ty, ty) {
+                val never = TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
+                return Some(value = mkExpr(e, ty, XConvert(kind = CvFromNever, inner = never)))
+              }
+              case _ -> ()
             }
             // A local bound to a host result the checker leaves unchecked (`val v = m.computeIfAbsent(..)`,
             // the host's `Object`) is read at the type its context wants (docs/01 section 2.11): the read
@@ -1657,6 +2113,20 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
         case None -> ()
       }
       if not patIsBinding(env.ctx, p.nodeId) {
+        // A case name two enums of the program share (`Green` of `Color` and of another package's
+        // `Signal`): the checker binds neither, and the scrutinee's own type says which enum it is.
+        match ty {
+          case TNamed(par, targs) -> if targs.count == 0 and inner.isNone() {
+            match nullaryCaseOf(env, par, name) {
+              case Some(cs) -> {
+                noteCaseSym(env, cs)
+                return Some(value = mkPat(p, ty, TpCtor(sym = cs, args = newList())))
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
         return uncoveredPat(env, p, "a bare name the checker did not bind")
       }
       // The name is bound before the sub-pattern, as the checker binds it, so a
@@ -2895,6 +3365,10 @@ pub func bodyCensusLines(pb: in PackageBuild): List[String] {
   }
   for f in pb.failed {
     val key = match f.path { case Some(k) -> k; case None -> "~" + f.name }
+    if f.rejected {
+      res.add("rejected\t" + key)
+      continue
+    }
     res.add("unbuilt\t" + key)
     for k in mapKeys(f.uncovered) {
       val n = match mapGet(f.uncovered, k) { case Some(v) -> v; case None -> 0 }
@@ -3170,7 +3644,57 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildCallOnUntypedHostResult(env, e, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// `x.unknownMember().name(...)` where `x` is a host value whose class the metadata cannot locate: the JVM
+/// backend types the unknown member's result as `java.lang.Object`, so a call on it names a member of
+/// `Object`, and one `Object` does not declare is its "no matching instance or inherited method" error
+/// (J008, #6565).  None, counting nothing, for any other shape.
+func buildCallOnUntypedHostResult(
+  env: in BuildEnv, e: in Expr, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if not isJvmHostMetadata(env) {
+    return None
+  }
+  val name = match fn.kind {
+    case EMember(recv, m) -> match stripExprParens(recv).kind {
+      case ECall(inner, _) -> match inner.kind {
+        case EMember(r2, _) -> match exprTy(env.ctx, r2.nodeId) {
+          case Ok(rt) -> match rt {
+            case TExtern(h) -> match env.ctx.tbl.externIterResolver[0].resolveBases(h.name) {
+              case Some(_) -> return None
+              case None -> m
+            }
+            case _ -> return None
+          }
+          case Err(_) -> return None
+        }
+        case _ -> return None
+      }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  match env.ctx.tbl.externIterResolver[0].resolveMemberSigs("java.lang.Object", name, args.count, false) {
+    case Some(c) -> if c.count > 0 { return None }
+    case None -> return None
+  }
+  val tys: List[String] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> tys.add(renderTy(t))
+        case Err(_) -> return None
+      }
+      case CANamed(_, _, _) -> return None
+    }
+  }
+  Some(value = noSuchHostMethod(env, e, "java.lang.Object", name, tys))
 }
 
 /// The FFI intrinsics the checker types by name and no table records (`nativeNullPtr()`,
@@ -3919,6 +4443,60 @@ func buildExternCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
+  match objectMemberSite(env, site, fn) {
+    case Some(root) -> buildExternCallAt(env, e, ty, root, fn, args)
+    case None -> buildExternCallAt(env, e, ty, site, fn, args)
+  }
+}
+
+/// `toString()`, `hashCode()` and `equals(x)` on a host receiver whose class the metadata cannot locate
+/// (an `extern type` of an absent Maven class): every host reference type inherits them from the root
+/// object class with a signature the host fixes, so the call is that class's member.  This is the
+/// binding the JVM backend gives them (#6565, #6718); any other member of such a receiver is not
+/// known, and the call stays an extern call the metadata cannot resolve.
+func objectMemberSite(env: in BuildEnv, site: in ExternCallSite, fn: in Expr): Option[ExternCallSite] {
+  val tbl = env.ctx.tbl
+  if tbl.externIterResolver.count == 0 or isHostObject(site.hostType) {
+    return None
+  }
+  val inherited = (site.name == "toString" and site.argCount == 0) or (site.name == "hashCode" and site.argCount == 0) or
+    (site.name == "equals" and site.argCount == 1)
+  if not inherited {
+    return None
+  }
+  val viaExtern = match fn.kind {
+    case EMember(r, _) -> match exprTy(env.ctx, r.nodeId) {
+      case Ok(rt) -> (match rt { case TExtern(_) -> true; case _ -> false })
+      case Err(_) -> false
+    }
+    case _ -> false
+  }
+  if not viaExtern {
+    return None
+  }
+  val resolver = tbl.externIterResolver[0]
+  match resolver.resolveBases(site.hostType) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  for obj in ["java.lang.Object", "System.Object"] {
+    match resolver.resolveMemberSigs(obj, site.name, site.argCount, false) {
+      case Some(_) -> return Some(value = ExternCallSite(hostType = obj, targs = newList(), name = site.name, argCount = site.argCount))
+      case None -> ()
+    }
+  }
+  None
+}
+
+/// `buildExternCall` at the host type `site` names.
+func buildExternCallAt(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  site: in ExternCallSite,
+  fn: in Expr,
+  args: in List[CallArg],
+): Option[TExpr] {
   val tbl = env.ctx.tbl
   if tbl.externIterResolver.count == 0 {
     return uncoveredExpr(env, e, "an extern call with no host metadata")
@@ -3951,6 +4529,24 @@ func buildExternCall(
   val cands = match tbl.externIterResolver[0].resolveMemberSigs(site.hostType, site.name, site.argCount, false) {
     case Some(c) -> c
     case None -> return uncoveredExpr(env, e, "an extern call the host metadata cannot resolve")
+  }
+  if site.name == "new" {
+    match tbl.externIterResolver[0].resolveIsAbstract(site.hostType) {
+      case Some(true) -> return rejectExpr(
+        env,
+        e,
+        "J005",
+        "JVM auto-FFI: cannot construct abstract class '" + site.hostType +
+          "' — declare a concrete subclass and instantiate that instead"
+      )
+      case _ -> ()
+    }
+  } else if cands.count == 0 and isJvmHostMetadata(env) {
+    val shownTys: List[String] = newList()
+    for b in built {
+      shownTys.add(renderTy(b.ty))
+    }
+    return noSuchHostMethod(env, e, site.hostType, site.name, shownTys)
   }
   var bestSig: Option[ExternMemberSig] = None
   var bestParams: List[Ty] = newList()
@@ -4051,7 +4647,7 @@ func buildExternCall(
     // A value of a type parameter's type is the host's root object for a call of one of its members.
     val recvArg = if tyEq(rt.ty, want) {
       rt
-    } else if isHostObject(site.hostType) and (match rt.ty { case TParam(_, _) -> true; case _ -> false }) {
+    } else if isHostObject(site.hostType) and (match rt.ty { case TParam(_, _) -> true; case TExtern(_) -> true; case _ -> false }) {
       convertNode(env, rt, want, CvBoxToHost(host = owner))
     } else {
       return uncoveredExpr(env, e, "an extern call on a receiver that is not the host type itself")
@@ -4932,6 +5528,17 @@ func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp,
     case _ -> ()
   }
   val place = match buildPlace(env, target) { case Some(p) -> p; case None -> return None }
+  // A value the checker left open (`item = None` into a field of a generic protected type) is the place's type.
+  match op {
+    case AssEq -> match unparen(value).kind {
+      case EPath(_) -> match exprTy(env.ctx, value.nodeId) {
+        case Err(_) -> settleHole(env, value, place.ty)
+        case Ok(_) -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
   // `s += x` on a `String` takes any value, which is appended as its `toString`.
   val appended = match op {
@@ -6586,7 +7193,12 @@ func buildDefaultArg(
     }
   }
   val simple = match d.kind { case ELiteral(_) -> true; case EPath(_) -> true; case _ -> false }
-  val ty = match exprTy(env.ctx, d.nodeId) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+  // A default the checker left open (`None` for a field of type `Option[T]` of a generic type) has the
+  // parameter's type at this call.
+  val ty = match exprTy(env.ctx, d.nodeId) {
+    case Ok(t) -> t
+    case Err(msg) -> match d.kind { case EPath(_) -> pty; case _ -> { env.errors.add(msg); return None } }
+  }
   val built = match d.kind {
     case ELiteral(_) -> buildExpr(env, d)
     case EPath(_) -> buildRefPath(env, d, ty)

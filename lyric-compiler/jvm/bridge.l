@@ -746,6 +746,13 @@ impl ExternIterResolver for JvmHostIterIndex {
     }
     mapGet(self.memberSigs, key)
   }
+
+  func resolveIsAbstract(clrName: in String): Option[Bool] {
+    match loadClass(self.ctx, externHostBase(clrName)) {
+      case Some(ci) -> Some(value = ci.isAbstract)
+      case None -> None
+    }
+  }
 }
 
 /// The resolver a check reads class files through, as the one-element list

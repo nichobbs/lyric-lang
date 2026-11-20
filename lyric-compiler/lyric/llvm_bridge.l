@@ -1974,6 +1974,10 @@ pub func compileProjectToNativeWithShape(
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
   val foreignRecords: List[ForeignValueRecord] = newList()
   val ifaceFiles: List[NativeInterfaceFile] = newList()
+  // One store of the defaults the packages carry, shared by the packages of the build, so a call that
+  // leaves out an argument a sibling package declares reads the default that package's interface
+  // carries, as a dotnet or JVM project build does (D617).
+  val projDepDefaults = pipeNewDepDefaults()
   var mei = 0
   while mei < ownFiles0.count {
     // #6824 items 1/2: same label/files attribution as the parse and
@@ -2006,7 +2010,8 @@ pub func compileProjectToNativeWithShape(
       optsIface,
       optsCallees,
       LlvmTir.viaTirRequested(),
-      optsTirOut
+      optsTirOut,
+      projDepDefaults
     )
     val siblingGenerics = siblingGenericFuncs(
       importedPkgs,
@@ -2605,6 +2610,7 @@ func nativeMiddleEndOptions(
   calleesOut: in Map[String, String] = newMap(),
   wantTir: in Bool = false,
   tirOut: in List[TirBuild.PackageBuild] = newList(),
+  depDefaults: in TirBuild.DepDefaults = pipeNewDepDefaults(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
@@ -2629,7 +2635,8 @@ func nativeMiddleEndOptions(
     nativeIntrinsics = true,
     buildInterface = buildInterface,
     interfaceTargets = nativeInterfaceTarget(),
-    interfaceOut = ifaceOut
+    interfaceOut = ifaceOut,
+    depDefaults = depDefaults
   )
 }
 

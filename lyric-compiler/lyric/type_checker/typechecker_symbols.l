@@ -319,6 +319,11 @@ pub interface ExternIterResolver {
   /// bridge cannot say: the type or a supertype is not located, or a candidate
   /// is a generic method whose signature mentions its own type parameters.
   func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
+
+  /// Whether the host class behind an `extern type` is abstract (an interface included), so that
+  /// `T.new(...)` cannot construct it and the backend rejects the call (the JVM's error[J005], D616).
+  /// None when the bridge cannot say: the class is not located, or the host has no such rule.
+  func resolveIsAbstract(clrName: in String): Option[Bool]
 }
 
 /// One overload of a host member: whether it is static, its parameter types

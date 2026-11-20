@@ -76,3 +76,21 @@ pub func readCarriedDefault(
     case None -> fieldDefaultOf(i, key, name)
   }
 }
+
+/// The type the `val` or `const` declared at the DefPath `key` was recorded at in the interface of its
+/// package, numbered with `it`: the type an unannotated `pub val` has, which the checker does not give a
+/// reader in another package of the build (#7777).  None when no interface of the build carries it.
+pub func readCarriedValueTy(
+  dep: in DepDefaults, cache: in Map[String, Iface], key: in String, it: in DefPathInterner
+): Option[Ty] {
+  val i = match readDepIface(dep, cache, keyPackage(key), it) { case Some(x) -> x; case None -> return None }
+  for d in i.decls {
+    if defPathKey(d.path) == key {
+      match d.detail {
+        case IfDValue(ty, _, _) -> return Some(value = ty)
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
