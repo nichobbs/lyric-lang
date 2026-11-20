@@ -1154,9 +1154,21 @@ func openConvMethodTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case Some(rt) -> match rt {
       case TPrim(p) -> if isNumericPrimKind(p) { Some(value = TPrim(kind = k)) } else { None }
       case TRefined(_, _, _, _) -> Some(value = TPrim(kind = k))
+      case TNamed(did, targs) -> if targs.count == 0 and isDistinctSym(env, did) {
+        Some(value = TPrim(kind = k))
+      } else {
+        None
+      }
       case _ -> None
     }
     case None -> None
+  }
+}
+
+func isDistinctSym(env: in BuildEnv, did: in SymbolId): Bool {
+  match symbolOfDefId(env.ctx.tbl, did) {
+    case Some(sym) -> match sym.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+    case None -> false
   }
 }
 

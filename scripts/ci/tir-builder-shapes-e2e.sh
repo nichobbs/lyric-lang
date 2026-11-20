@@ -2105,4 +2105,18 @@ func main(): Int {
 }
 LYRIC
 
+# A yielded `None` takes the generator's declared type, as a returned one takes the function's (D680).
+check generator_yield_none "" <<'LYRIC'
+package Shapes3
+import Std.Core
+
+async func options(): Option[Int] {
+  yield Some(value = 4)
+  yield None
+  yield Some(value = 6)
+}
+
+func main(): Int { 0 }
+LYRIC
+
 exit $fail

@@ -3288,7 +3288,3 @@ test "an assignment to a field of a generic opaque type is built at the field's 
     "pub opaque type Pair[A, B] {\n  first: A\n  var second: B\n}\npub func Pair.swapCount[A, B](self: in Pair[A, B], next: in B): Int {\n  self.second = next\n  1\n}\n"
   )
 }
-
-test "a yielded None takes the generator's declared type (D680)" {
-  openShapeCensus("async func options(): Option[Int] {\n  yield Some(value = 4)\n  yield None\n}\n")
-}
