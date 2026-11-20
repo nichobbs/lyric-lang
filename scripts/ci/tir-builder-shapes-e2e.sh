@@ -1861,4 +1861,29 @@ else
   echo "ok   logging_shared_case"
 fi
 
+# A generic record constructed in a lambda whose parameter types the checker erased (`{ k, v -> out.add(Ent(key = k,
+# value = v)) }` against a generic callee's `(K, V) -> Unit`): the checker recorded no constructor signature, so
+# the fields are the record's at the arguments the node settled at (D408).  One entry is added: exit 1.
+check settled_record_ctor 1 <<'LYRIC'
+package SettledRecordCtor
+import Std.Collections
+
+pub record Ent[K, V] {
+  key: K
+  value: V
+}
+
+func entries[K, V](m: in Map[K, V]): List[Ent[K, V]] {
+  val result: List[Ent[K, V]] = newListWithCapacity(m.count)
+  dictForEachEntry(m, { k, v -> result.add(Ent(key = k, value = v)) })
+  result
+}
+
+func main(): Int {
+  val m: Map[String, Int] = newMap()
+  m.add("a", 1)
+  entries(m).count
+}
+LYRIC
+
 exit $fail
