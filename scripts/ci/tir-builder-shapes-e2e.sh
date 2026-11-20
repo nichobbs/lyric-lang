@@ -1825,7 +1825,42 @@ func main(): Int {
 }
 LYRIC
 
-<<<<<<< HEAD
+# A read of a `config` block field (`Settings.port`) is a module value of the package, built as one
+# named `Pkg::Settings::port` (#8613).
+check config_field_read 7 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+config Settings {
+  port: Int = 7
+  host: String = "localhost"
+}
+
+func portPlusOne(): Int {
+  Settings.port + 1
+}
+
+func main(): Int {
+  val h: String = Settings.host
+  if h.length == 0 {
+    return 1
+  }
+  portPlusOne() - 1
+}
+LYRIC
+
+# `LogLevel.Info` where two packages declare an enum `LogLevel` (`Std.Log`, `Std.Logging`): the checker
+# leaves the read to the expected type, and the builder settles it as that enum's case (#8613).
+sline_log="$WORK/logging_shared_case.log"
+(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-logging/lyric.toml >"$sline_log" 2>&1)
+sline="$(grep "^TIR build census \[.*logging_tests.l\]" "$sline_log" | head -1)"
+if [[ -z "$sline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$sline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$sline")" ]] || \
+   ! grep -q "^== summary: 1 passed, 0 failed" "$sline_log"; then
+  echo "FAIL (logging_shared_case): not every body of lyric-logging's tests built, or they failed"; grep -E "first error" "$sline_log" | head -4; fail=1
+else
+  echo "ok   logging_shared_case"
+fi
+
 # `Err(e)?` and `None?` never yield: the failure is the operand itself.  As a statement, bound to a
 # local that is read, as the left operand of `==`, and as a condition, each builds and runs (#8613).
 check propagate_never 15 <<'LYRIC'
@@ -1886,42 +1921,4 @@ func main(): Int {
 }
 LYRIC
 
-=======
-# A read of a `config` block field (`Settings.port`) is a module value of the package, built as one
-# named `Pkg::Settings::port` (#8613).
-check config_field_read 7 <<'LYRIC'
-package Shapes0
-import Std.Core
-
-config Settings {
-  port: Int = 7
-  host: String = "localhost"
-}
-
-func portPlusOne(): Int {
-  Settings.port + 1
-}
-
-func main(): Int {
-  val h: String = Settings.host
-  if h.length == 0 {
-    return 1
-  }
-  portPlusOne() - 1
-}
-LYRIC
-
-# `LogLevel.Info` where two packages declare an enum `LogLevel` (`Std.Log`, `Std.Logging`): the checker
-# leaves the read to the expected type, and the builder settles it as that enum's case (#8613).
-sline_log="$WORK/logging_shared_case.log"
-(cd "$REPO_ROOT" && LYRIC_VERIFY_IR=1 timeout 900 "$LYRIC" test --manifest lyric-logging/lyric.toml >"$sline_log" 2>&1)
-sline="$(grep "^TIR build census \[.*logging_tests.l\]" "$sline_log" | head -1)"
-if [[ -z "$sline" || "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\1/' <<<"$sline")" != "$(sed -E 's/.*: ([0-9]+) of ([0-9]+) function.*/\2/' <<<"$sline")" ]] || \
-   ! grep -q "^== summary: 1 passed, 0 failed" "$sline_log"; then
-  echo "FAIL (logging_shared_case): not every body of lyric-logging's tests built, or they failed"; grep -E "first error" "$sline_log" | head -4; fail=1
-else
-  echo "ok   logging_shared_case"
-fi
-
->>>>>>> origin/main
 exit $fail
