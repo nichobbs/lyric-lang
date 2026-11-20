@@ -1946,4 +1946,41 @@ func main(): Int {
 }
 LYRIC
 
+# A bracket literal mixing a typed construction with an open one (`[Some(1), None]`, `[Ok(1), Err("e")]`), and
+# an equality whose left operand is open (`None == f()`): the open parts take the type their neighbours give,
+# each built with `--verify-ir` and run (#8613).
+check list_literal_open_elements 9 <<'LYRIC'
+package Shapes0
+import Std.Core
+
+func mixed(): slice[Option[Int]] {
+  val xs = [Some(1), None, Some(3)]
+  xs
+}
+
+func results(): slice[Result[Int, String]] {
+  val rs = [Ok(1), Err("abc"), Ok(5)]
+  rs
+}
+
+func five(): Option[Int] {
+  Some(5)
+}
+
+func main(): Int {
+  var t = 0
+  for o in [None, Some(2), None] {
+    match o {
+      case Some(v) -> {
+        t = t + v
+      }
+      case None -> {
+      }
+    }
+  }
+  val same = if None == five() { 0 } else { 1 }
+  mixed().length + results().length + t + same
+}
+LYRIC
+
 exit $fail

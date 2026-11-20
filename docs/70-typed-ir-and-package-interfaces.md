@@ -964,6 +964,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `.toArray()` of a slice is typed as the slice, as the documented identity, so a call on one builds and a misuse of its result is reported (D601).
   - A propagated `Err(e)` or `None` never yields: the `?` is `Never`, and a field read, a left operand, a condition and a tuple element of one build (the `?` of an `if`/`match` whose branches all fail stays counted) (D326).
   - A read of a `config` block field (`Settings.port`) is a module value named `Pkg::Settings::port`, and a shared enum case written `Enum.Case` (`LogLevel.Info` of two packages' enums) is the case of the enum its node settled at; builder only (D419).
+  - An open element of a bracket literal (`None` in `[Some(1), None]`) takes the literal's element type, an untyped literal of `Some`/`None` or `Ok`/`Err` is typed from its payloads, and an open left operand of `==` takes the right one's type (D377).
   - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).

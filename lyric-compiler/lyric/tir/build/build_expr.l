@@ -742,6 +742,34 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   // `Err(x)?` and `None?` never yield: the failure is the operand itself.
   match e.kind {
     case EPropagate(inner) -> if propagatesAlways(unparen(inner)) { return Some(value = TirT.TNever) }
+    // A bracket literal mixing a typed construction with open ones (`[None, Some(5)]`): every typed
+    // element has one type, the open elements take it, and the literal is a slice of it.
+    case EList(xs) -> {
+      var head: Option[Ty] = None
+      for x in xs {
+        match exprTy(env.ctx, x.nodeId) {
+          case Ok(t) -> match head {
+            case Some(h) -> if not tyEq(h, t) { return None }
+            case None -> {
+              head = Some(value = t)
+            }
+          }
+          case Err(_) -> ()
+        }
+      }
+      if head.isNone() {
+        head = ctorListJoinTy(env, xs)
+      }
+      match head {
+        case Some(h) -> {
+          for x in xs {
+            settleHole(env, x, h)
+          }
+          return Some(value = TSlice(element = h))
+        }
+        case None -> ()
+      }
+    }
     // A tuple with an element the checker left open (`(Err(e)?, 1)`) has the types of its elements.
     case ETuple(xs) -> {
       val ts: List[Ty] = newList()
@@ -813,6 +841,129 @@ func branchOpenTy(env: in BuildEnv, b: in ExprOrBlock): Option[Ty] {
         case _ -> None
       }
     }
+  }
+}
+
+/// The name a `Some(x)`, `None`, `Ok(x)` or `Err(e)` construction is written with, and its one payload.
+func ctorShape(x: in Expr): Option[String] {
+  match unparen(x).kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> Some(value = p.segments[p.segments.count - 1])
+      case _ -> None
+    }
+    case EPath(p) -> Some(value = p.segments[p.segments.count - 1])
+    case _ -> None
+  }
+}
+
+/// The payload of the construction `x`, when it has exactly one argument.
+func ctorPayload(x: in Expr): Option[Expr] {
+  match unparen(x).kind {
+    case ECall(_, cargs) -> if cargs.count == 1 {
+      match cargs[0] {
+        case CAPositional(v) -> Some(value = v)
+        case CANamed(_, v, _) -> Some(value = v)
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// The `Std.Core` union `name` (`Option`, `Result`) as a symbol.
+func stdCoreUnionSym(env: in BuildEnv, name: in String): Option[SymbolId] {
+  match symTableTryFindInPackage(env.ctx.tbl, "Std.Core", name) {
+    case Some(sym) -> match sym.kind { case DKUnion(id, _) -> Some(value = id); case _ -> None }
+    case None -> None
+  }
+}
+
+/// The type of a bracket literal whose elements are all `Some(x)` and `None` (an `Option` of the payload's
+/// type) or all `Ok(x)` and `Err(e)` (a `Result` of the two payloads' types), when the checker left it open
+/// and the payloads give one type each.  None otherwise.
+func ctorListJoinTy(env: in BuildEnv, xs: in List[Expr]): Option[Ty] {
+  var kind = 0
+  var someT: Option[Ty] = None
+  var okT: Option[Ty] = None
+  var errT: Option[Ty] = None
+  for x in xs {
+    val name = match ctorShape(x) { case Some(n) -> n; case None -> return None }
+    if name == "None" {
+      if kind == 2 {
+        return None
+      }
+      kind = 1
+    } else {
+      val payload = match ctorPayload(x) { case Some(v) -> v; case None -> return None }
+      val pt = match exprOrOpenTy(env, payload) { case Some(t) -> t; case None -> return None }
+      if name == "Some" {
+        if kind == 2 {
+          return None
+        }
+        kind = 1
+        match someT {
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
+          case None -> {
+            someT = Some(value = pt)
+          }
+        }
+      } else if name == "Ok" {
+        if kind == 1 {
+          return None
+        }
+        kind = 2
+        match okT {
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
+          case None -> {
+            okT = Some(value = pt)
+          }
+        }
+      } else if name == "Err" {
+        if kind == 1 {
+          return None
+        }
+        kind = 2
+        match errT {
+          case Some(prev) -> if not tyEq(prev, pt) { return None }
+          case None -> {
+            errT = Some(value = pt)
+          }
+        }
+      } else {
+        return None
+      }
+    }
+  }
+  if kind == 1 {
+    match someT {
+      case Some(t) -> match stdCoreUnionSym(env, "Option") {
+        case Some(sym) -> return Some(value = TNamed(sym = sym, args = [t]))
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  if kind == 2 {
+    match okT {
+      case Some(o) -> match errT {
+        case Some(er) -> match stdCoreUnionSym(env, "Result") {
+          case Some(sym) -> return Some(value = TNamed(sym = sym, args = [o, er]))
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  None
+}
+
+/// An operand `lhs` of `==` or `!=` the checker left untyped takes the type of `rhs` when that is typed.
+func settleLeftFromRight(env: in BuildEnv, lhs: in Expr, rhs: in Expr): Unit {
+  match exprTy(env.ctx, lhs.nodeId) {
+    case Ok(_) -> ()
+    case Err(_) -> match exprOrOpenTy(env, rhs) { case Some(rt) -> settleHole(env, lhs, rt); case None -> () }
   }
 }
 
@@ -1241,9 +1392,25 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case Some(ts) -> Some(value = mkExpr(e, ty, XTuple(elems = ts)))
       case None -> None
     }
-    case EList(xs) -> match buildAll(env, xs) {
-      case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
-      case None -> None
+    case EList(xs) -> {
+      // An element the checker left open (`None` in `[Some(1), None]`) takes the literal's element type.
+      match ty {
+        case TSlice(el) -> {
+          for x in xs {
+            settleHole(env, x, el)
+          }
+        }
+        case TArray(_, el) -> {
+          for x in xs {
+            settleHole(env, x, el)
+          }
+        }
+        case _ -> ()
+      }
+      match buildAll(env, xs) {
+        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
+        case None -> None
+      }
     }
     case EInterpolated(segs) -> {
       val parts: List[TExpr] = newList()
@@ -1343,6 +1510,13 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       // lowering does that, and TIR has no node for it yet, so the body stays counted.
       if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
         return buildRecordArith(env, e, ty, op, lhs, rhs)
+      }
+      // `None == x`: the checker leaves the bare left operand untyped, and equality takes its type
+      // from the right one.
+      match op {
+        case BEq -> settleLeftFromRight(env, lhs, rhs)
+        case BNeq -> settleLeftFromRight(env, lhs, rhs)
+        case _ -> ()
       }
       val l = buildExpr(env, lhs)
       // `x == None`: the checker leaves the bare right operand untyped, and equality

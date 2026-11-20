@@ -1,0 +1,3 @@
+# An open element of a bracket literal takes its neighbours' type (D377)
+
+A bracket literal mixing a typed construction with a bare one (`[Some(1), None]`) and an equality with a bare left operand (`None == f()`) were counted unbuilt by the TIR builder. An element of a typed literal now takes the literal's element type, an untyped literal is typed from its `Some`/`None` or `Ok`/`Err` payloads, and a bare operand of `==` takes the other operand's type; the checker is unchanged. `list_literal_join_self_test.l` builds 9 of 9 bodies (was 6) and `await_hoist_typed_self_test.l` 53 of 55 (was 48). Test: the `list_literal_open_elements` shape in `scripts/ci/tir-builder-shapes-e2e.sh`.
