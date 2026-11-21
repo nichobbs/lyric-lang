@@ -1571,6 +1571,7 @@ func fcmpPred(op: in IntrinsicOp): Option[FCmpPred] {
 func opName(op: in IntrinsicOp): String {
   match op {
     case IoBuiltin(n) -> "builtin " + n
+    case IoWire(w, m) -> "wire " + w + "." + m
     case _ -> "operator"
   }
 }
@@ -2495,6 +2496,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
       }
       match op {
         case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line, e.ty)
+        case IoWire(w, m) -> return unsupported(c, "a call through the wire " + w + "." + m)
         case _ -> ()
       }
       if ins.count == 2 {

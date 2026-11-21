@@ -72,6 +72,11 @@ pub union IntrinsicOp {
   /// underlying type) checked into `T`, as `Result[T, String]`; `T` is the first
   /// type argument of the node's type.
   case IoTryFrom
+  /// A call of a wire's generated factory (docs/01 wire blocks): `App.bootstrap(provided...)`, which
+  /// builds the bindings and has type `Unit`, or `App.binding()`, the accessor of an exposed binding,
+  /// which has the binding's declared type.  `owner` is the wire's `Pkg::Name` key; `member` is
+  /// `bootstrap` or the binding's name.
+  case IoWire(owner: String, member: String)
 }
 
 pub union Callee {

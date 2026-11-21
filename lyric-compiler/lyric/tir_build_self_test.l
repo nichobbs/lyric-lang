@@ -2561,6 +2561,41 @@ test "a discarded call on a generic host class settles at the host's root object
   assertTrue(tl.body.isSome(), "a Unit function's tail host call builds")
 }
 
+/// The wire factory call that is the first statement of the function body, as `wire|member|argc`.
+func wireCallShape(b: in Option[TExpr]): String {
+  match b {
+    case Some(x) -> match x.kind {
+      case XBlock(stmts, _) -> {
+        if stmts.count == 0 {
+          return "no statements"
+        }
+        match stmts[0].kind {
+          case TsExpr(ex) -> match ex.kind {
+            case XCall(Intrinsic(IoWire(w, m)), args) -> w + "|" + m + "|" + toString(args.count)
+            case _ -> "not a wire call"
+          }
+          case _ -> "not an expression statement"
+        }
+      }
+      case _ -> "not a block"
+    }
+    case None -> "no body"
+  }
+}
+
+test "a call of a wire's bootstrap and of an exposed binding's accessor build as wire intrinsics (D684)" {
+  val wire = "wire Shop {\n  @provided cfg: Cfg\n  singleton svc: Svc = Svc(n = cfg.n)\n  expose svc\n}\n"
+  val recs = "record Cfg { n: Int }\nrecord Svc { n: Int }\n"
+  val pb = buildFirstFn(
+    "package App\n" + recs + wire +
+      "func run(): Int {\n  Shop.bootstrap(Cfg(n = 3))\n  val s = Shop.svc()\n  s.n\n}\n"
+  )
+  assertEqualInt(pb.diagnostics, 0, "checks clean")
+  assertTrue(pb.env.errors.count == 0, if pb.env.errors.count > 0 { pb.env.errors[0] } else { "no I0002" })
+  assertTrue(pb.body.isSome(), "the body builds")
+  assertTrue(wireCallShape(pb.body) == "App::Shop|bootstrap|1", wireCallShape(pb.body))
+}
+
 test "a host property read is a call of its getter with the receiver first (D598)" {
   val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
   val st = buildFirstFnMsil(head + "func f(sb: in SB): Int {\n  sb.Length\n}\n")

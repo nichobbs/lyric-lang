@@ -148,6 +148,7 @@ func intrinsicText(op: in IntrinsicOp): String {
   match op {
     case IoBuiltin(name) -> "builtin " + name
     case IoTryFrom -> "tryFrom"
+    case IoWire(owner, member) -> "wire " + owner + "." + member
     case _ -> "op" + toString(intrinsicCode(op))
   }
 }
