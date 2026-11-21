@@ -233,7 +233,7 @@ func rejectExpr(env: in BuildEnv, e: in Expr, code: in String, text: in String):
 /// a diagnostic code of a letter and three or four digits, then a colon.
 pub func isRejectionMessage(msg: in String): Bool {
   var colon = -1
-  var i = 3
+  var i = 4
   while i < 6 and i < msg.length and colon < 0 {
     if msg.substring(i, 1) == ":" {
       colon = i
