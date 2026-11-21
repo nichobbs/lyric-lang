@@ -2548,11 +2548,12 @@ test "a method call whose receiver is inout passes the receiver as a place" {
 
 test "a discarded call on a generic host class settles at the host's root object (D683)" {
   val head = "package App\nextern type JDict[K, V] = \"java.util.concurrent.ConcurrentHashMap\"\n"
-  val st = buildFirstFnHost(head + "@externTarget(\"java.util.concurrent.ConcurrentHashMap.<init>\")\nfunc newJDict(): JDict[String, String] = ()\nfunc f(): Unit {\n  val d = newJDict()\n  d.put(\"a\", \"1\")\n  d.put(\"b\", \"2\")\n}\n")
+  val ctor = "@externTarget(\"java.util.concurrent.ConcurrentHashMap.<init>\")\nfunc newJDict(): JDict[String, String] = ()\n"
+  val st = buildFirstFnHost(head + "func f(): Unit {\n  val d = newJDict()\n  d.put(\"a\", \"1\")\n  d.put(\"b\", \"2\")\n}\n" + ctor)
   assertEqualInt(st.diagnostics, 0, "checks clean")
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
   assertTrue(st.body.isSome(), "the body builds")
-  val tl = buildFirstFnHost(head + "func g(d: in JDict[String, String]): Unit {\n  d.put(\"a\", \"1\")\n}\n")
+  val tl = buildFirstFnHost(head + "func g(): Unit {\n  val d = newJDict()\n  d.put(\"a\", \"1\")\n}\n" + ctor)
   assertEqualInt(tl.diagnostics, 0, "the tail form checks clean")
   assertTrue(tl.env.errors.count == 0, if tl.env.errors.count > 0 { tl.env.errors[0] } else { "no I0002" })
   assertTrue(tl.body.isSome(), "a Unit function's tail host call builds")
