@@ -2119,4 +2119,22 @@ async func options(): Option[Int] {
 func main(): Int { 0 }
 LYRIC
 
+# A bare case name of a payload-bearing case matches the case whatever its payload is, and builds as the case
+# with a wildcard per payload field (D685, #8230): `Err` here, not a binding.
+check bare_payload_case 0 <<'LYRIC'
+package Shapes4
+import Std.Core
+
+func isErr(r: in Result[Int, String]): Int {
+  match r {
+    case Err -> 1
+    case _ -> 0
+  }
+}
+
+func main(): Int {
+  isErr(Ok(value = 1)) + isErr(Err(error = "x")) - 1
+}
+LYRIC
+
 exit $fail
