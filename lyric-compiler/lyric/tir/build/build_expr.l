@@ -7663,6 +7663,35 @@ func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
   }
 }
 
+func isParamTy(t: in Ty): Bool {
+  match t {
+    case TParam(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// The interface type of a call through a type parameter's bound (`x.say(1)` with `T: Speaker`): the member's
+/// receiver is declared at the interface, not at the parameter.  None for an interface-typed receiver, whose
+/// own type is the declared one, and for a generic interface.
+func boundParamIfaceTy(env: in BuildEnv, site: in MethodCallSite): Option[Type] {
+  match unrefine(site.recvTy) {
+    case TyParam(_, _) -> ()
+    case _ -> return None
+  }
+  val iface = match site.iface { case Some(i) -> i; case None -> return None }
+  match symTableTypeSymbolOf(env.ctx.tbl, iface) {
+    case Some(ts) -> match ts.kind {
+      case DKInterface(_, decl) -> if isSome(decl.generics) {
+        None
+      } else {
+        Some(value = TyUser(id = iface, name = ts.name, args = newList()))
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 /// A method call `recv.m(args)` or a bare sibling call `m(args)` (on the enclosing `self`):
 /// the receiver first, then the arguments placed by parameter, to the method the checker
 /// resolved (`Direct`, or `Interface` for an interface-typed receiver).  A receiver passed
@@ -7691,7 +7720,11 @@ func buildMethodCall(
   }
   val ifaceTy: Option[Type] = match viaImpl {
     case Some(ii) -> Some(value = ii.iface)
-    case None -> if isSome(site.iface) { None } else { ifaceOwnerOfMethod(env, sym) }
+    case None -> if isSome(site.iface) {
+      boundParamIfaceTy(env, site)
+    } else {
+      ifaceOwnerOfMethod(env, sym)
+    }
   }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
     case Some(TyUser(id, _, _)) -> Some(value = id)
@@ -7788,6 +7821,15 @@ func buildMethodCall(
       return uncoveredExpr(env, e, "a method call with a mutating receiver of another type")
     }
     rt
+  } else if isSome(ifaceSym) and isParamTy(rt.ty) {
+    // A value of a type parameter bounded by the interface is used as that interface.
+    val bound = match ifaceSym { case Some(i) -> i; case None -> return None }
+    TExpr(
+      id = freshNodeId(env),
+      ty = declared,
+      span = rt.span,
+      kind = XConvert(kind = CvUpcast(iface = bound), inner = rt)
+    )
   } else {
     match coerceArg(env, rt, declared) {
       case Some(c) -> c
