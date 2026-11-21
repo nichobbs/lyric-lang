@@ -2396,7 +2396,8 @@ test "large single-package MSIL bundle (MethodDef row count > 8192) still reads 
   packages.add(mkPkg("ResourceWidthRepro6390", buildManyTrivialFunctionsSource(8200)))
   val dir = freshTempDir("resource-width-6390")
   val dllPath = Path.join(dir, "ResourceWidthRepro6390.dll")
-  val stdlibSources: List[String] = newList()
+  // The package imports `Std.Console`, so the stdlib it names is given to the build.
+  val stdlibSources = Emitter.findStdlibSources()
   val ok = compileProjectToMsil(packages, "ResourceWidthRepro6390", dllPath, stdlibSources)
   if not ok {
     cleanup(dir)

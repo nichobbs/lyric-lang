@@ -1931,6 +1931,56 @@ pub func compileProjectToNativeWithFlags(
   )
 }
 
+/// The order a native project's packages are checked in: each after the own packages it imports, ties in
+/// input order (a package in an import cycle, which the checker reports, keeps its input position).  A
+/// consumer reads the defaults its dependency's interface carries (D347, D617), so the dependency is checked
+/// first whatever order the manifest lists them in.
+func nativeDependencyOrder(files: in List[SourceFile]): List[Int] {
+  val names: List[String] = newList()
+  for f in files {
+    names.add(dottedPath(f.packageDecl.path))
+  }
+  val order: List[Int] = newList()
+  val placed: List[Bool] = newList()
+  for _f in files {
+    placed.add(false)
+  }
+  var progress = true
+  while order.count < files.count and progress {
+    progress = false
+    var i = 0
+    while i < files.count {
+      if not placed[i] {
+        var ready = true
+        for imp in files[i].imports {
+          val dep = dottedPath(imp.path)
+          var j = 0
+          while j < files.count {
+            if j != i and names[j] == dep and not placed[j] {
+              ready = false
+            }
+            j = j + 1
+          }
+        }
+        if ready {
+          order.add(i)
+          placed[i] = true
+          progress = true
+        }
+      }
+      i = i + 1
+    }
+  }
+  var k = 0
+  while k < files.count {
+    if not placed[k] {
+      order.add(k)
+    }
+    k = k + 1
+  }
+  order
+}
+
 /// `compileProjectToNativeWithFlags` with the output shape (see
 /// `compileToNativeWithShape`).
 pub func compileProjectToNativeWithShape(
@@ -1951,7 +2001,15 @@ pub func compileProjectToNativeWithShape(
     case Some(f) -> f
     case None -> return false
   }
-  val ownFiles0 = fe.ownFiles
+  val checkOrder = nativeDependencyOrder(fe.ownFiles)
+  val ownFiles0: List[SourceFile] = newList()
+  val pk: List[NativeSourcePackage] = newList()
+  for oi in checkOrder {
+    ownFiles0.add(fe.ownFiles[oi])
+    if oi < packages.count {
+      pk.add(packages[oi])
+    }
+  }
   val importedPkgs = fe.importedPkgs
   val stdlib = fe.stdlib
   val stdlibByPkg = stdlib.byPkg
@@ -1995,16 +2053,16 @@ pub func compileProjectToNativeWithShape(
     val optsForeignRecords: List[ForeignValueRecord] = newList()
     val optsIface: List[IfaceBuild.IfaceOutcome] = newList()
     val optsTirOut: List[TirBuild.PackageBuild] = newList()
-    val ownLibrary = mei < packages.count and not isDependencyPackage(packages[mei])
+    val ownLibrary = mei < pk.count and not isDependencyPackage(pk[mei])
     val opts = nativeMiddleEndOptions(
-      nativePkgLabelAt(packages, mei),
-      nativePkgFilesAt(packages, mei),
+      nativePkgLabelAt(pk, mei),
+      nativePkgFilesAt(pk, mei),
       optsCheckedOut,
       optsRecvOut,
       optsCallArities,
       optsGenericItems,
       optsForeignRecords,
-      if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
+      if mei < pk.count { pk[mei].ioForbiddenReason } else { "" },
       contractsEnabled,
       ownLibrary,
       optsIface,
@@ -2138,7 +2196,7 @@ pub func compileProjectToNativeWithShape(
   val prunedPkg: List[Bool] = newList()
   var ppki = 0
   while ppki < ownFiles.count {
-    prunedPkg.add(pruneDeps and ppki < packages.count and isDependencyPackage(packages[ppki]))
+    prunedPkg.add(pruneDeps and ppki < pk.count and isDependencyPackage(pk[ppki]))
     ppki = ppki + 1
   }
 
