@@ -3270,3 +3270,21 @@ test "an array indexed by a range subtype is indexed by its underlying integer (
   assertEqualInt(c.firstErrors.count, 0, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "no I0002" })
   assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }
+
+func openShapeCensus(body: in String): Unit {
+  val c = censusOf("package App\nimport Std.Core\n" + body)
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "T.default() in a generic body is the built-in default at the parameter (D680)" {
+  openShapeCensus("func zeroOf[T](x: in T): T\n  where T: Default\n{\n  T.default()\n}\n")
+}
+
+test "an assignment to a field of a generic opaque type is built at the field's type (D680)" {
+  openShapeCensus(
+    "pub opaque type Pair[A, B] {\n  first: A\n  var second: B\n}\npub func Pair.swapCount[A, B](self: in Pair[A, B], next: in B): Int {\n  self.second = next\n  1\n}\n"
+  )
+}

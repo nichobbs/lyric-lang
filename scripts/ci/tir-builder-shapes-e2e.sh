@@ -2036,4 +2036,87 @@ func main(): Int {
 }
 LYRIC
 
+# A local whose type its uses fix (`var xs = newList()` then `xs.add(Seed(...))`, a map filled by `add` and an
+# index store, an element of an open tuple), the binder of a `for` over it, `T.default()` in a generic body, a
+# bracket literal passed as a `List` parameter, a tuple assigned over an open
+# one: each takes the type its context fixes (D680).
+check open_local_shapes 240 <<'LYRIC'
+package Shapes2
+import Std.Core
+import Std.Collections
+
+record Seed {
+  n: Int
+}
+
+func zeroOf[T](x: in T): T
+  where T: Default
+{
+  T.default()
+}
+
+func storesOnly(): Int {
+  var xs = newList()
+  xs.add(Seed(n = 10))
+  xs.add(Seed(n = 11))
+  var t = 0
+  for s in xs {
+    t = t + s.n
+  }
+  t
+}
+
+func mapSet(): Int {
+  val m = newMap()
+  m.add("a", 1)
+  m["b"] = 2
+  m["a"] + m["b"]
+}
+
+func tupleStores(): Int {
+  val t = (newList(), 3)
+  val (xs, n) = t
+  xs.add(n)
+  xs.add(4)
+  xs.count * 100 + xs[0] + xs[1]
+}
+
+func countSome[T](xs: in List[Option[T]]): Int {
+  xs.count
+}
+
+func optionsOf[T](x: in T): Int {
+  countSome([Some(value = x), None])
+}
+
+func viaArm(c: in Bool): Int {
+  var t = (Err("abc"), 1)
+  if c {
+    t = (Ok(5), 2)
+  }
+  match t {
+    case (Ok(v), n) -> v + n
+    case (Err(_), n) -> n
+  }
+}
+
+func main(): Int {
+  storesOnly() + mapSet() + tupleStores() + optionsOf(1) + zeroOf(5) + viaArm(true)
+}
+LYRIC
+
+# A yielded `None` takes the generator's declared type, as a returned one takes the function's (D680).
+check generator_yield_none "" <<'LYRIC'
+package Shapes3
+import Std.Core
+
+async func options(): Option[Int] {
+  yield Some(value = 4)
+  yield None
+  yield Some(value = 6)
+}
+
+func main(): Int { 0 }
+LYRIC
+
 exit $fail

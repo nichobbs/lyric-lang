@@ -1,0 +1,3 @@
+# Open locals, targets and yields take the type their context fixes (D680)
+
+Twelve self-test bodies and one library body were counted unbuilt by the TIR builder where the checker records no type but the context fixes one: a `for` binder over an open local and the fields read through it, index reads and stores of an open local, a field of a generic opaque type assigned, a tuple assigned over an open one, a yielded `None`, a literal passed as a `List`, and `T.default()` in a generic body. The builder now settles each from its context; the checker is unchanged. Tests: `open_local_shapes` in `scripts/ci/tir-builder-shapes-e2e.sh` and three cases in `tir_build_self_test.l`.
