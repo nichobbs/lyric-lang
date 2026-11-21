@@ -3797,6 +3797,20 @@ func buildFnCore(
         case None -> ()
       }
     }
+    // A `Unit` function discards its last expression (`discardTailValue`), so a host call there needs no
+    // more than the host's own erased result.
+    if isUnitTy(ret) and not functionIsGenerator(fn) {
+      match fn.body {
+        case Some(FBBlock(b)) -> if b.statements.count > 0 {
+          match b.statements[b.statements.count - 1].kind {
+            case SExpr(tail) -> settleDiscardedHostCall(env, tail)
+            case _ -> ()
+          }
+        }
+        case Some(FBExpr(x)) -> settleDiscardedHostCall(env, x)
+        case None -> ()
+      }
+    }
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
