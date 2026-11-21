@@ -2596,6 +2596,15 @@ test "a call of a wire's bootstrap and of an exposed binding's accessor build as
   assertTrue(wireCallShape(pb.body) == "App::Shop|bootstrap|1", wireCallShape(pb.body))
 }
 
+test "a method call on a value of a bounded type parameter is a call through the bound's interface member (D686)" {
+  val src = "package App\ninterface Speaker {\n  func say(self: in Self, n: in Int): Int\n}\nfunc talk[T](x: in T): Int where T: Speaker {\n  x.say(1)\n}\n"
+  val r = buildFirstFn(src)
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "the body builds")
+  assertTrue(calleeShape(r.body) == "interface:recv", calleeShape(r.body))
+}
+
 test "a host property read is a call of its getter with the receiver first (D598)" {
   val head = "package App\nextern type SB = \"System.Text.StringBuilder\"\n"
   val st = buildFirstFnMsil(head + "func f(sb: in SB): Int {\n  sb.Length\n}\n")
