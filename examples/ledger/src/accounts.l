@@ -118,7 +118,7 @@ pub func toJsonSummary(a: in Account): String {
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 func rowToAccount(row: in DbRow): Account {
-  val kind = accountKindFromString(colText(row, "kind")).unwrapOr(AccountKind.Asset)
+  val kind = unwrapOr(accountKindFromString(colText(row, "kind")), AccountKind.Asset)
   return Account(
     id = colLong(row, "id"),
     name = colText(row, "name"),

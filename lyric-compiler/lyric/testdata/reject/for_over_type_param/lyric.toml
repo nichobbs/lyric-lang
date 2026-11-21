@@ -1,0 +1,7 @@
+[package]
+name = "reject-for-over-type-param"
+version = "0.1.0"
+[project]
+name = "RejectForOverTypeParam"
+[project.packages]
+"App" = "app"
