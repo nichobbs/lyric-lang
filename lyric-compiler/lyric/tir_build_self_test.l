@@ -689,12 +689,13 @@ test "an if whose branch needs widening builds" {
   assertTrue(r.body.isSome(), "a body")
 }
 
-test "a bare name for a case with a payload is counted, not built with no fields" {
+test "a bare name for a case with a payload is the case with a wildcard per field (D685)" {
   val r = buildFirstFn(
     "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A -> 1\n    case B -> 0\n  }\n}\n"
   )
-  assertTrue(not r.body.isSome(), "no body")
-  assertTrue(r.env.errors.count > 0, "an I0002")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "the body builds")
+  assertTrue(matchSummary(r.body) == "2:exhaustive", matchSummary(r.body))
 }
 
 test "a guarded arm never proves a match exhaustive" {

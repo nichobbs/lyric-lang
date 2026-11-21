@@ -2843,6 +2843,34 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
           }
           case _ -> ()
         }
+        // A bare name of a payload-bearing case of the scrutinee's own union (`case Err ->` over a
+        // `Result`): the checker binds nothing and the case matches whatever its payload is (#8230), so the
+        // pattern is the case with a wildcard for each payload field, at the field's type under the
+        // scrutinee's arguments.
+        match ty {
+          case TNamed(par, targs) -> if inner.isNone() {
+            match payloadCaseOf(env, par, name) {
+              case Some(cs) -> {
+                noteCaseSym(env, cs)
+                match mapGet(env.syms, cs.id) {
+                  case Some(entry) -> match entry.sig {
+                    case Some(sg) -> {
+                      val wilds: List[TPat] = newList()
+                      for prm in sg.params {
+                        wilds.add(TPat(id = freshNodeId(env), ty = substOwnerArgs(prm.ty, par, targs), span = p.span, kind = TpWild))
+                      }
+                      return Some(value = mkPat(p, ty, TpCtor(sym = cs, args = wilds)))
+                    }
+                    case None -> ()
+                  }
+                  case None -> ()
+                }
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
         return uncoveredPat(env, p, "a bare name the checker did not bind")
       }
       // The name is bound before the sub-pattern, as the checker binds it, so a
