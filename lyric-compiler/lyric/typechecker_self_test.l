@@ -16093,3 +16093,13 @@ test "a user package named Std dot something is not a stdlib importer" {
     "a name is not stdlib identity: Std.MyOwn sees pub items only"
   )
 }
+
+test "iterating a value of a type parameter is T0230 (D682)" {
+  val src = "package App\nfunc count[T](a: in T): Int {\n  var n = 0\n  for x in a {\n    n = n + 1\n  }\n  n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0230"), "for over a bare T: T0230")
+}
+
+test "iterating a slice, an array or a list of a type parameter is not T0230 (D682)" {
+  val src = "package App\nfunc countS[T](a: in slice[T]): Int {\n  var n = 0\n  for x in a {\n    n = n + 1\n  }\n  n\n}\nfunc countA[T, N: Nat](a: in array[N, T]): Int {\n  var n = 0\n  for x in a {\n    n = n + 1\n  }\n  n\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0230"), "slice[T] and array[N, T] iterate")
+}
