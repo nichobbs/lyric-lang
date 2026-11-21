@@ -6248,12 +6248,7 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
         case None -> ()
       }
     }
-    case TyParam(_, _) -> match mp.boundIface {
-      case Some(bi) -> {
-        iface = Some(value = bi)
-      }
-      case None -> return
-    }
+    case TyParam(_, _) -> match mp.boundIface { case Some(bi) -> { iface = Some(value = bi) }; case None -> return }
     case _ -> return
   }
   // A dot-named function that is generic, or whose receiver is an instance of a generic
@@ -6340,11 +6335,7 @@ func minRequiredParams(sig: in ResolvedSignature): Int {
 // the bound interface's member of that name, with `Self` the parameter, bound as an interface call.  Only the
 // methods of the bounds can be called on such a value (T0197), so no other method space applies.
 func resolveBoundMethodPick(
-  sc: in Scope,
-  tbl: in SymbolTable,
-  recvRaw: in Type,
-  name: in String,
-  args: in List[CallArg],
+  sc: in Scope, tbl: in SymbolTable, recvRaw: in Type, name: in String, args: in List[CallArg]
 ): Option[MethodCallPick] {
   val recv = unrefine(recvRaw)
   val tvName = match recv { case TyParam(n, _) -> n; case _ -> return None }
@@ -6358,10 +6349,12 @@ func resolveBoundMethodPick(
         if not (isPlainMarker(cname) or isSendMarker(cname) or isKnownDeriveMarker(cname)) {
           match constraintInterfaceSym(tbl, cname) {
             case Some(ifaceSym) -> match ifaceSym.kind {
-              case DKInterface(ifaceId, _) -> for entry in symTableMethodSigs(tbl, ifaceId, name) {
-                val sig = substituteMethodSig(entry, recv, noTargs)
-                if sigDefaultsFilled(sig, args) >= 0 {
-                  return Some(value = MethodCallPick(sig = sig, fullSig = None, boundIface = Some(value = ifaceId)))
+              case DKInterface(ifaceId, _) -> {
+                for entry in symTableMethodSigs(tbl, ifaceId, name) {
+                  val sig = substituteMethodSig(entry, recv, noTargs)
+                  if sigDefaultsFilled(sig, args) >= 0 {
+                    return Some(value = MethodCallPick(sig = sig, fullSig = None, boundIface = Some(value = ifaceId)))
+                  }
                 }
               }
               case _ -> ()
