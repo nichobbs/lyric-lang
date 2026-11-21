@@ -7635,6 +7635,13 @@ func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
   }
 }
 
+func isParamTy(t: in Ty): Bool {
+  match t {
+    case TParam(_, _) -> true
+    case _ -> false
+  }
+}
+
 /// The interface type of a call through a type parameter's bound (`x.say(1)` with `T: Speaker`): the member's
 /// receiver is declared at the interface, not at the parameter.  None for an interface-typed receiver, whose
 /// own type is the declared one, and for a generic interface.
@@ -7786,6 +7793,15 @@ func buildMethodCall(
       return uncoveredExpr(env, e, "a method call with a mutating receiver of another type")
     }
     rt
+  } else if isSome(ifaceSym) and isParamTy(rt.ty) {
+    // A value of a type parameter bounded by the interface is used as that interface.
+    val bound = match ifaceSym { case Some(i) -> i; case None -> return None }
+    TExpr(
+      id = freshNodeId(env),
+      ty = declared,
+      span = rt.span,
+      kind = XConvert(kind = CvUpcast(iface = bound), inner = rt)
+    )
   } else {
     match coerceArg(env, rt, declared) {
       case Some(c) -> c
