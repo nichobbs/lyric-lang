@@ -74,9 +74,9 @@ pub union IntrinsicOp {
   case IoTryFrom
   /// A call of a wire's generated factory (docs/01 wire blocks): `App.bootstrap(provided...)`, which
   /// builds the bindings and has type `Unit`, or `App.binding()`, the accessor of an exposed binding,
-  /// which has the binding's declared type.  `wire` is the wire's `Pkg::Name` key; `member` is
+  /// which has the binding's declared type.  `owner` is the wire's `Pkg::Name` key; `member` is
   /// `bootstrap` or the binding's name.
-  case IoWire(wire: String, member: String)
+  case IoWire(owner: String, member: String)
 }
 
 pub union Callee {

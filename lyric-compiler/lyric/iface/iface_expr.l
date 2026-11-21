@@ -314,8 +314,8 @@ pub func putExpr(w: in IfaceWriter, it: in DefPathInterner, e: in TExpr) {
           putU(w, intrinsicCode(op))
           match op {
             case IoBuiltin(name) -> putStr(w, name)
-            case IoWire(wire, member) -> {
-              putStr(w, wire)
+            case IoWire(owner, member) -> {
+              putStr(w, owner)
               putStr(w, member)
             }
             case _ -> ()
@@ -416,8 +416,8 @@ func readExprBody(r: in IfaceReader, it: in DefPathInterner): TExpr {
         if oc == 16 {
           callee = Intrinsic(op = IoBuiltin(name = readStr(r)))
         } else if oc == 18 {
-          val wireKey = readStr(r)
-          callee = Intrinsic(op = IoWire(wire = wireKey, member = readStr(r)))
+          val ownerKey = readStr(r)
+          callee = Intrinsic(op = IoWire(owner = ownerKey, member = readStr(r)))
         } else {
           match intrinsicOfCode(oc) {
             case Some(op) -> {

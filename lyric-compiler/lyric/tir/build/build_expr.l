@@ -1995,7 +1995,7 @@ func narrowByArgTys(
 /// A call of a wire's generated factory (D684): the wire's key, the member (`bootstrap` or an exposed
 /// binding) and the member's signature.
 record WireCall {
-  wire: String
+  key: String
   member: String
   params: List[Ty]
   ret: Ty
@@ -2019,48 +2019,39 @@ func wireCallOf(env: in BuildEnv, e: in Expr): Option[WireCall] {
   }
   val sym = match symTableTryFindOne(env.ctx.tbl, segs[0]) { case Some(x) -> x; case None -> return None }
   val decl = match sym.kind { case DKWire(d) -> d; case _ -> return None }
-  val key = if sym.originPackage.length == 0 {
-    sym.name
-  } else {
-    defPathKey(topDefPath(sym.originPackage, sym.name))
-  }
+  val key = if sym.originPackage.length == 0 { sym.name } else { defPathKey(topDefPath(sym.originPackage, sym.name)) }
   val params: List[Ty] = newList()
   if name == "bootstrap" {
     for m in decl.members {
       match m {
-        case WMProvided(_, te, _) -> match annotatedTy(env, te) {
-          case Some(t) -> params.add(t)
-          case None -> return None
-        }
+        case WMProvided(_, te, _) -> match annotatedTy(env, te) { case Some(t) -> params.add(t); case None -> return None }
         case _ -> ()
       }
     }
-    return Some(value = WireCall(wire = key, member = name, params = params, ret = tyUnit()))
+    return Some(value = WireCall(key = key, member = name, params = params, ret = tyUnit()))
   }
-  var exposed = false
+  var isExposed = false
   for m in decl.members {
     match m {
-      case WMExpose(en, _) -> if en == name {
-        exposed = true
-      }
+      case WMExpose(en, _) -> if en == name { isExposed = true }
       case _ -> ()
     }
   }
-  if not exposed {
+  if not isExposed {
     return None
   }
   for m in decl.members {
     match m {
       case WMSingleton(bn, te, _, _) -> if bn == name {
         return match annotatedTy(env, te) {
-          case Some(t) -> Some(value = WireCall(wire = key, member = name, params = params, ret = t))
+          case Some(t) -> Some(value = WireCall(key = key, member = name, params = params, ret = t))
           case None -> None
         }
       }
       case WMLocal(bn, ann, _, _) -> if bn == name {
         match ann {
           case Some(te) -> return match annotatedTy(env, te) {
-            case Some(t) -> Some(value = WireCall(wire = key, member = name, params = params, ret = t))
+            case Some(t) -> Some(value = WireCall(key = key, member = name, params = params, ret = t))
             case None -> None
           }
           case None -> return None
@@ -2092,7 +2083,15 @@ func buildWireCall(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallAr
     }
     i = i + 1
   }
-  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoWire(wire = w.wire, member = w.member)), args = inArgs(built)))))
+  Some(
+    value = Some(
+      value = mkExpr(
+        e,
+        ty,
+        XCall(callee = Intrinsic(op = IoWire(owner = w.key, member = w.member)), args = inArgs(built))
+      )
+    )
+  )
 }
 
 /// A call statement on a host value the checker left untyped, whose every candidate returns the host's root
