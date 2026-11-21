@@ -999,7 +999,7 @@ func fakeHost(): FakeHost {
       EMTType(elem = fhHost("java.lang.Object"))
     )
   )
-  sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap", "put", 2), dictPut)
+  sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap`2", "put", 2), dictPut)
   FakeHost(sigs = sigs)
 }
 
