@@ -2378,23 +2378,6 @@ func pipeSpanOfMessage(msg: in String, within: in Span): Span {
   makeSpan(at, at)
 }
 
-/// The length of the diagnostic code a message begins with (`J005: ...`): the index of its first `:`.
-func pipeCodeEnd(msg: in String): Int {
-  var i = 0
-  var stop = -1
-  while stop < 0 and i < msg.length {
-    if msg.substring(i, 1) == ":" {
-      stop = i
-    }
-    i = i + 1
-  }
-  if stop < 0 {
-    0
-  } else {
-    stop
-  }
-}
-
 /// `msg` without a leading `code: `.
 func pipeWithoutCode(msg: in String, code: in String): String {
   val prefix = code + ": "
@@ -2428,10 +2411,10 @@ pub func pipeTirDiagnostics(tbl: in SymbolTable, pb: in TirBuild.PackageBuild): 
     } else {
       val msg = f.messages[0]
       if f.rejected {
-        // A program the host's metadata shows can never link (D616) is the user's error under the
-        // backend's own code, not a hole in the builder.
-        val code = msg.substring(0, pipeCodeEnd(msg))
-        diags.add(errorDiagnostic(code, pipeWithoutCode(msg, code), pipeSpanOfMessage(msg, declSpan)))
+        // A program the host's metadata or the backend's own rules show can never build or link (D616, D681) is the
+        // user's error, which the backend refuses under the same code and wording through its own path (a
+        // structured diagnostic of the emit result, a coded panic); the gate does not report it a second time.
+        continue
       } else {
         diags.add(
           errorDiagnostic(
