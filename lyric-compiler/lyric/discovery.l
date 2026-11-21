@@ -178,7 +178,8 @@ pub func jvmKernelTwin(path: in String): String {
   if at < 0 {
     return path
   }
-  val twin = path.substring(0, at) + "/std/_kernel_jvm/" + path.substring(at + marker.length, path.length - at - marker.length)
+  val twin = path.substring(0, at) + "/std/_kernel_jvm/" +
+    path.substring(at + marker.length, path.length - at - marker.length)
   if File.fileExists(twin) {
     twin
   } else {

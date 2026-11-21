@@ -1123,6 +1123,7 @@ func typeCheckManifestForProve(
   val pkgs: List[Emitter.ProjectPackage] = newList()
   for c in candidates {
     if stringListContains(chosen, c.pkgEntry.name) {
+      // `lyric prove` is target-independent: it reads the manifest's listed files, never a JVM kernel twin.
       match readProjectPackageSourcesAs("prove", c.pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens, false) {
         case Some(read) -> {
           if read.sources.count > 0 {
