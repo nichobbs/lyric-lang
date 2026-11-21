@@ -113,6 +113,28 @@ func absorbEnv(
   }
 }
 
+/// Record the declared type parameters of each generic `impl` of `file`, by the DefPath key of its members'
+/// owner (`TyConvCtx.implOwners`).
+func noteImplOwners(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): Unit {
+  val pkg = modulePathJoin(file.packageDecl.path.segments)
+  for site in memberSites(ctx, tbl, file) {
+    if isSome(site.implTarget) and site.owner.names.count > 0 {
+      match memberSymOf(tbl, pkg, site) {
+        case Some(sym) -> match defPathKeyOf(tbl.interner, sym) {
+          case Some(k) -> {
+            val owner = memberOwnerKey(k)
+            if not ctx.implOwners.containsKey(owner) {
+              ctx.implOwners.add(owner, site.owner.names)
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
 /// Build every function body of `file` that has one, each with a fresh `BuildEnv`
 /// sharing one synthetic node counter, into a package named `name`.
 pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile, name: in String): PackageBuild {
@@ -125,6 +147,7 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
   val sites: Map[String, String] = newMap()
   val counter: List[Int] = newList()
   counter.add(firstSynthNodeId())
+  noteImplOwners(ctx, tbl, file)
   for it in file.items {
     match it.kind {
       case IFunc(decl) -> match decl.body {
