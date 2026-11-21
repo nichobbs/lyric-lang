@@ -991,6 +991,15 @@ func fakeHost(): FakeHost {
   sigs.add(fhKey("java.lang.Object", "equals", 1), objEquals)
   val objNone: List[ExternMemberSig] = newList()
   sigs.add(fhKey("java.lang.Object", "toLower", 0), objNone)
+  val dictPut: List[ExternMemberSig] = newList()
+  dictPut.add(
+    fhSig(
+      false,
+      fhParams2(fhHost("java.lang.Object"), fhHost("java.lang.Object")),
+      EMTType(elem = fhHost("java.lang.Object"))
+    )
+  )
+  sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap`2", "put", 2), dictPut)
   FakeHost(sigs = sigs)
 }
 
@@ -2535,6 +2544,21 @@ test "a method call whose receiver is inout passes the receiver as a place" {
     "package App\nrecord Pt {\n  x: Int\n  y: Int\n  func reset(self: inout Pt): Unit {\n    self = Pt(x = 0, y = 0)\n  }\n  func twice(self: inout Pt): Unit {\n    reset()\n    reset()\n  }\n}\nfunc f(): Int {\n  var p = Pt(x = 1, y = 2)\n  p.reset()\n  p.x\n}\n"
   )
   assertBuildsAndVerifies(pb, 3, "Pt.reset, twice and f")
+}
+
+test "a discarded call on a generic host class settles at the host's root object (D683)" {
+  val head = "package App\nextern type JDict[K, V] = \"java.util.concurrent.ConcurrentHashMap\"\n"
+  val ctor = "@externTarget(\"java.util.concurrent.ConcurrentHashMap.<init>\")\nfunc newJDict(): JDict[String, String] = ()\n"
+  val st = buildFirstFnHost(
+    head + "func f(): Unit {\n  val d = newJDict()\n  d.put(\"a\", \"1\")\n  d.put(\"b\", \"2\")\n}\n" + ctor
+  )
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  assertTrue(st.body.isSome(), "the body builds")
+  val tl = buildFirstFnHost(head + "func g(): Unit {\n  val d = newJDict()\n  d.put(\"a\", \"1\")\n}\n" + ctor)
+  assertEqualInt(tl.diagnostics, 0, "the tail form checks clean")
+  assertTrue(tl.env.errors.count == 0, if tl.env.errors.count > 0 { tl.env.errors[0] } else { "no I0002" })
+  assertTrue(tl.body.isSome(), "a Unit function's tail host call builds")
 }
 
 test "a host property read is a call of its getter with the receiver first (D598)" {
