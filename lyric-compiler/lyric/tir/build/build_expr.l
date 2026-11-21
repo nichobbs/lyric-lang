@@ -1988,6 +1988,178 @@ func narrowByArgTys(
   }
 }
 
+/// A call of a wire's generated factory (D684): the wire's key, the member (`bootstrap` or an exposed
+/// binding) and the member's signature.
+record WireCall {
+  key: String
+  member: String
+  params: List[Ty]
+  ret: Ty
+}
+
+/// `W.bootstrap(provided...)` or `W.binding()` where `W` is a wire declared in the package and no local
+/// shadows the name.  `bootstrap` takes the wire's `@provided` members in declaration order and yields `Unit`;
+/// an exposed `singleton` or annotated `val` binding is a zero-argument accessor of its declared type
+/// (the signatures the backends register).  The checker records neither a type nor a callee for these.
+func wireCallOf(env: in BuildEnv, e: in Expr): Option[WireCall] {
+  val fn = match e.kind { case ECall(f, _) -> f; case _ -> return None }
+  val recv = match fn.kind { case EMember(r, _) -> r; case _ -> return None }
+  val name = match fn.kind { case EMember(_, n) -> n; case _ -> return None }
+  val segs = match recv.kind { case EPath(p) -> p.segments; case _ -> return None }
+  if segs.count != 1 {
+    return None
+  }
+  match lookupLocal(env, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val sym = match symTableTryFindOne(env.ctx.tbl, segs[0]) { case Some(x) -> x; case None -> return None }
+  val decl = match sym.kind { case DKWire(d) -> d; case _ -> return None }
+  val key = if sym.originPackage.length == 0 { sym.name } else { defPathKey(topDefPath(sym.originPackage, sym.name)) }
+  val params: List[Ty] = newList()
+  if name == "bootstrap" {
+    for m in decl.members {
+      match m {
+        case WMProvided(_, te, _) -> match annotatedTy(env, te) { case Some(t) -> params.add(t); case None -> return None }
+        case _ -> ()
+      }
+    }
+    return Some(value = WireCall(key = key, member = name, params = params, ret = tyUnit()))
+  }
+  var isExposed = false
+  for m in decl.members {
+    match m {
+      case WMExpose(en, _) -> if en == name { isExposed = true }
+      case _ -> ()
+    }
+  }
+  if not isExposed {
+    return None
+  }
+  for m in decl.members {
+    match m {
+      case WMSingleton(bn, te, _, _) -> if bn == name {
+        return match annotatedTy(env, te) {
+          case Some(t) -> Some(value = WireCall(key = key, member = name, params = params, ret = t))
+          case None -> None
+        }
+      }
+      case WMLocal(bn, ann, _, _) -> if bn == name {
+        match ann {
+          case Some(te) -> return match annotatedTy(env, te) {
+            case Some(t) -> Some(value = WireCall(key = key, member = name, params = params, ret = t))
+            case None -> None
+          }
+          case None -> return None
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// A wire factory call as the intrinsic `IoWire`, each argument built at the parameter type it is for.
+func buildWireCall(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val w = match wireCallOf(env, e) { case Some(x) -> x; case None -> return None }
+  val xs = match positionalArgs(args) {
+    case Some(x) -> x
+    case None -> return Some(value = uncoveredExpr(env, e, "a wire call with a named argument"))
+  }
+  if xs.count != w.params.count {
+    return Some(value = uncoveredExpr(env, e, "a wire call with the wrong number of arguments"))
+  }
+  val built: List[TExpr] = newList()
+  var i = 0
+  while i < xs.count {
+    val bx = match settleArg(env, xs[i], w.params[i]) { case Some(t) -> t; case None -> return Some(value = None) }
+    match coerceArg(env, bx, w.params[i]) {
+      case Some(c) -> built.add(c)
+      case None -> return Some(value = None)
+    }
+    i = i + 1
+  }
+  Some(
+    value = Some(
+      value = mkExpr(
+        e,
+        ty,
+        XCall(callee = Intrinsic(op = IoWire(owner = w.key, member = w.member)), args = inArgs(built))
+      )
+    )
+  )
+}
+
+/// A call statement on a host value the checker left untyped, whose every candidate returns the host's root
+/// object (`d.put("a", "1")` on a `ConcurrentHashMap[String, String]`: the erased `V put(K, V)`), settles at
+/// that object.  The statement discards the value, so the host's own erased class is all it needs; a value
+/// that is used keeps `hostChainResult`'s rule, which declines a generic host applied to concrete arguments
+/// because a use would need the argument's type.
+func settleDiscardedHostCall(env: in BuildEnv, x: in Expr): Unit {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return
+  }
+  match exprTy(env.ctx, x.nodeId) {
+    case Ok(_) -> {
+      return
+    }
+    case Err(_) -> ()
+  }
+  match x.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(recv, name) -> match hostChainReceiver(env, recv) {
+        case Some(h) -> {
+          val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(h.host.name, name, args.count, false) {
+            case Some(c) -> c
+            case None -> {
+              return
+            }
+          }
+          if cands.count == 0 {
+            return
+          }
+          var root: Option[Ty] = None
+          for c in cands {
+            if c.isStatic != h.isStatic {
+              return
+            }
+            match c.ret {
+              case EMTType(el) -> match el {
+                case EIEHost(rname, _) -> {
+                  if not isHostObject(rname) {
+                    return
+                  }
+                  match hostElemTy(el, h.host.args, TirT.TNever) {
+                    case Some(t) -> {
+                      root = Some(value = t)
+                    }
+                    case None -> {
+                      return
+                    }
+                  }
+                }
+                case _ -> {
+                  return
+                }
+              }
+              case _ -> {
+                return
+              }
+            }
+          }
+          match root {
+            case Some(t) -> settleHole(env, x, t)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
 /// The host class every instance candidate of `name` on `host` with `argc` arguments returns, as a type.
 func hostChainResult(
   env: in BuildEnv,
@@ -3141,9 +3313,12 @@ func stmtOf(s: in Statement, kind: in TStmtKind): TStmt {
 
 func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
   match s.kind {
-    case SExpr(x) -> match buildExpr(env, x) {
-      case Some(t) -> Some(value = stmtOf(s, TsExpr(expr = t)))
-      case None -> None
+    case SExpr(x) -> {
+      settleDiscardedHostCall(env, x)
+      match buildExpr(env, x) {
+        case Some(t) -> Some(value = stmtOf(s, TsExpr(expr = t)))
+        case None -> None
+      }
     }
     case SReturn(v) -> match v {
       case None -> Some(value = stmtOf(s, TsReturn(value = None)))
@@ -3734,6 +3909,20 @@ func buildFnCore(
         case None -> ()
       }
     }
+    // A `Unit` function discards its last expression (`discardTailValue`), so a host call there needs no
+    // more than the host's own erased result.
+    if isUnitTy(ret) and not functionIsGenerator(fn) {
+      match fn.body {
+        case Some(FBBlock(b)) -> if b.statements.count > 0 {
+          match b.statements[b.statements.count - 1].kind {
+            case SExpr(tail) -> settleDiscardedHostCall(env, tail)
+            case _ -> ()
+          }
+        }
+        case Some(FBExpr(x)) -> settleDiscardedHostCall(env, x)
+        case None -> ()
+      }
+    }
     match fn.body {
       case Some(FBBlock(b)) -> {
         // A body that ends in a `try` takes the declared return type, so the `try` can yield its value.
@@ -4218,6 +4407,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   match ffiIntrinsicCall(env, fn) {
     case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
+    case None -> ()
+  }
+  match buildWireCall(env, e, ty, args) {
+    case Some(r) -> return r
     case None -> ()
   }
   match buildHostMethodOnString(env, e, ty, fn, args) {
