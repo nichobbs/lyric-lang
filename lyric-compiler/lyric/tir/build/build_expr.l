@@ -1407,12 +1407,38 @@ func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     found = bareForeignValKey(env, e)
   }
   val key = match found { case Some(k) -> k; case None -> return None }
-  readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, tbl.interner)
+  match readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, tbl.interner) {
+    case Some(t) -> Some(value = t)
+    case None -> foreignValAnnotatedTy(env, e)
+  }
 }
 
 /// The DefPath key of the `val` or `const` of another package a bare name (`answer`) or a package-qualified
 /// one (`Pkg.Lib.answer`) stands for, when the checker recorded no reference for it (it could not type the value).
 func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
+  match foreignValSymOf(env, e) {
+    case Some(fv) -> Some(value = defPathKey(topDefPath(fv.pkg, fv.sym.name)))
+    case None -> None
+  }
+}
+
+record ForeignVal {
+  sym: Symbol
+  pkg: String
+}
+
+func isValueSym(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKVal(_) -> true
+    case DKConst(_) -> true
+    case _ -> false
+  }
+}
+
+/// The `val` or `const` symbol an expression spells that the checker could not give a type: a bare name the
+/// import scope gives from another package, or a package-qualified one (`Pkg.Lib.answer`) whose prefix is the
+/// package of a symbol of that name (the checked package's own among them).
+func foreignValSymOf(env: in BuildEnv, e: in Expr): Option[ForeignVal] {
   val tbl = env.ctx.tbl
   val segs = match flatSegments(e) { case Some(x) -> x; case None -> return None }
   if segs.count == 0 {
@@ -1425,7 +1451,14 @@ func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
   }
   val name = segs[segs.count - 1]
   if segs.count == 1 {
-    return match symTableTryFindOne(tbl, name) { case Some(sym) -> foreignValKeyOf(sym); case None -> None }
+    return match symTableTryFindOne(tbl, name) {
+      case Some(sym) -> if isValueSym(sym) and sym.originPackage.length > 0 {
+        Some(value = ForeignVal(sym = sym, pkg = sym.originPackage))
+      } else {
+        None
+      }
+      case None -> None
+    }
   }
   var pkg = segs[0]
   var i = 1
@@ -1434,14 +1467,54 @@ func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
     i = i + 1
   }
   for sym in symTableTryFindAllNamed(tbl, name) {
-    if sym.originPackage == pkg {
-      match foreignValKeyOf(sym) {
-        case Some(k) -> return Some(value = k)
-        case None -> ()
-      }
+    if isValueSym(sym) and sym.originPackage == pkg {
+      return Some(value = ForeignVal(sym = sym, pkg = pkg))
+    }
+  }
+  // The checked package's own value named through its own package.
+  for sym in symTableTryFindAllNamed(tbl, name) {
+    if isValueSym(sym) and sym.originPackage.length == 0 {
+      return Some(value = ForeignVal(sym = sym, pkg = pkg))
     }
   }
   None
+}
+
+/// The type a `val` or `const` of another package was declared at, when it is annotated (a simple type
+/// spelled the same in any scope).
+func foreignValAnnotatedTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val sym = match foreignValSymOf(env, e) { case Some(x) -> x.sym; case None -> return None }
+  val te: TypeExpr = match sym.kind {
+    case DKVal(d) -> match d.ty { case Some(t) -> t; case None -> return None }
+    case DKConst(d) -> d.ty
+    case _ -> return None
+  }
+  val diag: List[Diagnostic] = newList()
+  val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
+  match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+    case Ok(t) -> Some(value = t)
+    case Err(_) -> None
+  }
+}
+
+/// Why a read of another package's value could not be typed, for the build error: the symbols of that
+/// name the table holds and the packages they come from.
+func foreignValNote(env: in BuildEnv, e: in Expr): String {
+  val segs = match flatSegments(e) { case Some(x) -> x; case None -> return "" }
+  if segs.count < 2 {
+    return ""
+  }
+  var note = " [`" + segs[0]
+  var i = 1
+  while i < segs.count {
+    note = note + "." + segs[i]
+    i = i + 1
+  }
+  note = note + "`: symbols of that name:"
+  for sym in symTableTryFindAllNamed(env.ctx.tbl, segs[segs.count - 1]) {
+    note = note + " " + sym.originPackage + "::" + sym.name
+  }
+  note + "]"
 }
 
 /// The dotted names an expression spells (`Pkg.Lib.answer`, as a path or as member accesses on a name).
@@ -1460,15 +1533,6 @@ func flatSegments(e: in Expr): Option[List[String]] {
       case None -> None
     }
     case _ -> None
-  }
-}
-
-func foreignValKeyOf(sym: in Symbol): Option[String] {
-  val isValue = match sym.kind { case DKVal(_) -> true; case DKConst(_) -> true; case _ -> false }
-  if isValue and sym.originPackage.length > 0 {
-    Some(value = defPathKey(topDefPath(sym.originPackage, sym.name)))
-  } else {
-    None
   }
 }
 
@@ -2106,7 +2170,10 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             if rejectUnknownHostField(env, e) or rejectUnknownHostStatic(env, e) or rejectUntypedModuleVal(env, e) {
               return None
             }
-            env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
+            env.errors.add(
+              msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")" +
+                foreignValNote(env, e)
+            )
             return None
           }
         }
