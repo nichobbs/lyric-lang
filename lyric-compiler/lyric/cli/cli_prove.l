@@ -1123,7 +1123,7 @@ func typeCheckManifestForProve(
   val pkgs: List[Emitter.ProjectPackage] = newList()
   for c in candidates {
     if stringListContains(chosen, c.pkgEntry.name) {
-      match readProjectPackageSourcesAs("prove", c.pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens) {
+      match readProjectPackageSourcesAs("prove", c.pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens, false) {
         case Some(read) -> {
           if read.sources.count > 0 {
             pkgs.add(

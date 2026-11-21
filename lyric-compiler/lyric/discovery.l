@@ -161,6 +161,31 @@ pub record EntryFiles {
   emptyDir: String
 }
 
+/// The JVM twin of a `.NET` standard-library kernel file: `lyric-stdlib/std/_kernel/<x>.l` names `System.*`
+/// host types, and the source loader reads `lyric-stdlib/std/_kernel_jvm/<x>.l` in its place for a JVM
+/// build (D041).  A project build of a manifest that lists a kernel file for the JVM reads the same twin
+/// (D695); a path with no twin is returned unchanged.
+pub func jvmKernelTwin(path: in String): String {
+  val marker = "/std/_kernel/"
+  var at = -1
+  var i = 0
+  while i + marker.length <= path.length {
+    if path.substring(i, marker.length) == marker {
+      at = i
+    }
+    i = i + 1
+  }
+  if at < 0 {
+    return path
+  }
+  val twin = path.substring(0, at) + "/std/_kernel_jvm/" + path.substring(at + marker.length, path.length - at - marker.length)
+  if File.fileExists(twin) {
+    twin
+  } else {
+    path
+  }
+}
+
 pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection): EntryFiles {
   val paths: List[String] = newList()
   val problems: List[String] = newList()
