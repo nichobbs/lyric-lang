@@ -1998,7 +1998,9 @@ func settleDiscardedHostCall(env: in BuildEnv, x: in Expr): Unit {
     return
   }
   match exprTy(env.ctx, x.nodeId) {
-    case Ok(_) -> { return }
+    case Ok(_) -> {
+      return
+    }
     case Err(_) -> ()
   }
   match x.kind {
@@ -2007,7 +2009,9 @@ func settleDiscardedHostCall(env: in BuildEnv, x: in Expr): Unit {
         case Some(h) -> {
           val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(h.host.name, name, args.count, false) {
             case Some(c) -> c
-            case None -> { return }
+            case None -> {
+              return
+            }
           }
           if cands.count == 0 {
             return
@@ -2027,12 +2031,18 @@ func settleDiscardedHostCall(env: in BuildEnv, x: in Expr): Unit {
                     case Some(t) -> {
                       root = Some(value = t)
                     }
-                    case None -> { return }
+                    case None -> {
+                      return
+                    }
                   }
                 }
-                case _ -> { return }
+                case _ -> {
+                  return
+                }
               }
-              case _ -> { return }
+              case _ -> {
+                return
+              }
             }
           }
           match root {
