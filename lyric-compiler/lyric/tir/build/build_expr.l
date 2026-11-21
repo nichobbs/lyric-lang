@@ -294,6 +294,59 @@ func rejectUnknownHostStatic(env: in BuildEnv, e: in Expr): Bool {
   true
 }
 
+/// A read of an unannotated module-level `val` whose initializer the checker could not type (a host call
+/// chain whose result the metadata does not give): the MSIL backend's F0047, "cannot determine the type of
+/// module-level val", reported at the initializer.  The read may be an operand (`big + 1`).  False, recording
+/// nothing, for any other shape.
+func rejectUntypedModuleVal(env: in BuildEnv, e: in Expr): Bool {
+  match e.kind {
+    case EBinop(_, lhs, rhs) -> return rejectUntypedModuleVal(env, lhs) or rejectUntypedModuleVal(env, rhs)
+    case EParen(inner) -> return rejectUntypedModuleVal(env, inner)
+    case ECall(_, args) -> {
+      for a in args {
+        val x = match a { case CAPositional(v) -> v; case CANamed(_, v, _) -> v }
+        if rejectUntypedModuleVal(env, x) {
+          return true
+        }
+      }
+      return false
+    }
+    case _ -> ()
+  }
+  val name = match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return false }
+    case _ -> return false
+  }
+  match lookupLocal(env, name) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  val tbl = env.ctx.tbl
+  for sym in symTableTryFindAllNamed(tbl, name) {
+    match sym.kind {
+      case DKVal(decl) -> if sym.originPackage.length == 0 and decl.ty.isNone() {
+        match exprTy(env.ctx, decl.init.nodeId) {
+          case Err(_) -> {
+            env.errors.add(
+              "F0047: cannot determine the type of module-level val '" + name +
+                "': its initializer has no type the checker can record; add an explicit type annotation (`val " +
+                name +
+                ": T = ...`) at " +
+                toString(decl.init.span.startPos.line) +
+                ":" +
+                toString(decl.init.span.startPos.column)
+            )
+            return true
+          }
+          case Ok(_) -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
 /// `sb.capacityField` where `sb` is a value of a located host class that declares no such field or
 /// property: the JVM backend's J009 refusal ("has no known field or member"), recorded as the body's
 /// build error.  False, recording nothing, for any other shape.
@@ -1104,6 +1157,10 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case Some(t) -> return Some(value = t)
     case None -> ()
   }
+  match openParamDefaultTy(env, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
   openHoistedTy(env, e)
 }
 
@@ -1172,6 +1229,39 @@ func isDistinctSym(env: in BuildEnv, did: in SymbolId): Bool {
   }
 }
 
+/// `T.default()` where `T` is a type parameter in scope: the parameter itself.
+func openParamDefaultTy(env: in BuildEnv, e: in Expr): Option[Ty] {
+  val name = match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(recv, m) -> if args.count == 0 and m == "default" {
+        match recv.kind {
+          case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+          case _ -> return None
+        }
+      } else {
+        return None
+      }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  if env.generics.count == 0 or lookupLocal(env, name).isSome() {
+    return None
+  }
+  val gc = env.generics[0]
+  var i = gc.params.count - 1
+  while i >= 0 {
+    if gc.params[i] == name and i < gc.owners.count {
+      return match tyOfType(env.ctx, TyParam(name = name, owner = gc.owners[i])) {
+        case Ok(t) -> Some(value = t)
+        case Err(_) -> None
+      }
+    }
+    i = i - 1
+  }
+  None
+}
+
 func convMethodTarget(name: in String): Option[TPrimKind] {
   if name == "toInt" {
     return Some(value = TPInt)
@@ -1219,6 +1309,8 @@ func arithOperandTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case EBinop(_, lhs, _) -> match exprOrOpenTy(env, lhs) {
       case Some(t) -> match t {
         case TPrim(k) -> if isIntegerPrim(k) { Some(value = t) } else { None }
+        // An operator bounded by `Add`, `Sub`, ... on a type parameter yields that parameter.
+        case TParam(_, _) -> Some(value = t)
         case _ -> None
       }
       case None -> None
@@ -1304,16 +1396,17 @@ func openGenericFieldReadTy(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// checker can compute).
 func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   val tbl = env.ctx.tbl
-  val key: String = match refSite(env.ctx, e.nodeId) {
-    case Some(r) -> match r.kind {
-      case RkValue -> match symTableDefPathKeyOf(tbl, r.sym) {
-        case Some(k) -> k
-        case None -> return None
-      }
-      case _ -> return None
-    }
-    case None -> match bareForeignValKey(env, e) { case Some(k) -> k; case None -> return None }
+  var found: Option[String] = None
+  match refSite(env.ctx, e.nodeId) {
+    case Some(r) -> match r.kind { case RkValue -> { found = symTableDefPathKeyOf(tbl, r.sym) }; case _ -> () }
+    case None -> ()
   }
+  // A read the checker recorded no reference for, or one it did not take for a value, is found by the
+  // name it spells (a package-qualified `Pkg.Lib.answer` among them).
+  if found.isNone() {
+    found = bareForeignValKey(env, e)
+  }
+  val key = match found { case Some(k) -> k; case None -> return None }
   readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, tbl.interner)
 }
 
@@ -1321,7 +1414,7 @@ func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// one (`Pkg.Lib.answer`) stands for, when the checker recorded no reference for it (it could not type the value).
 func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
   val tbl = env.ctx.tbl
-  val segs = match e.kind { case EPath(p) -> p.segments; case _ -> return None }
+  val segs = match flatSegments(e) { case Some(x) -> x; case None -> return None }
   if segs.count == 0 {
     return None
   }
@@ -1349,6 +1442,25 @@ func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
     }
   }
   None
+}
+
+/// The dotted names an expression spells (`Pkg.Lib.answer`, as a path or as member accesses on a name).
+func flatSegments(e: in Expr): Option[List[String]] {
+  match e.kind {
+    case EPath(p) -> Some(value = p.segments)
+    case EMember(r, name) -> match flatSegments(r) {
+      case Some(xs) -> {
+        val all: List[String] = newList()
+        for x in xs {
+          all.add(x)
+        }
+        all.add(name)
+        Some(value = all)
+      }
+      case None -> None
+    }
+    case _ -> None
+  }
 }
 
 func foreignValKeyOf(sym: in Symbol): Option[String] {
@@ -1991,7 +2103,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
           if exprNeverCompletes(e) {
             TirT.TNever
           } else {
-            if rejectUnknownHostField(env, e) or rejectUnknownHostStatic(env, e) {
+            if rejectUnknownHostField(env, e) or rejectUnknownHostStatic(env, e) or rejectUntypedModuleVal(env, e) {
               return None
             }
             env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
