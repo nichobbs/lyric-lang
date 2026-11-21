@@ -2381,14 +2381,18 @@ func pipeSpanOfMessage(msg: in String, within: in Span): Span {
 /// The length of the diagnostic code a message begins with (`J005: ...`): the index of its first `:`.
 func pipeCodeEnd(msg: in String): Int {
   var i = 0
-  var end = -1
-  while end < 0 and i < msg.length {
+  var stop = -1
+  while stop < 0 and i < msg.length {
     if msg.substring(i, 1) == ":" {
-      end = i
+      stop = i
     }
     i = i + 1
   }
-  if end < 0 { 0 } else { end }
+  if stop < 0 {
+    0
+  } else {
+    stop
+  }
 }
 
 /// `msg` without a leading `code: `.
