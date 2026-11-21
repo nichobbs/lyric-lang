@@ -2341,6 +2341,85 @@ func nativeWeakUpgradeType(tbl: in SymbolTable, recvTy: in Type): Option[Type] {
   }
 }
 
+// The type of a call of a wire's generated factory (D684): `W.bootstrap(provided...)` is `Unit` and takes the
+// wire's `@provided` members in declaration order, and `W.binding()` on an exposed `singleton` or annotated
+// `val` binding is that binding's declared type.  `W` is a wire the table holds that no local shadows.
+func wireFactoryType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+): Option[Type] {
+  val recv = match fn.kind { case EMember(r, _) -> r; case _ -> return None }
+  val name = match fn.kind { case EMember(_, n) -> n; case _ -> return None }
+  val segs = match recv.kind { case EPath(p) -> p.segments; case _ -> return None }
+  if segs.count != 1 {
+    return None
+  }
+  match scopeTryFind(sc, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val sym = match symTableTryFindOne(tbl, segs[0]) { case Some(x) -> x; case None -> return None }
+  val decl = match sym.kind { case DKWire(d) -> d; case _ -> return None }
+  val saved = enterDeclaringScope(tbl, sym)
+  val scratch: List[Diagnostic] = newList()
+  val provided: List[Type] = newList()
+  var result: Option[Type] = None
+  if name == "bootstrap" {
+    for m in decl.members {
+      match m {
+        case WMProvided(_, te, _) -> provided.add(resolveType(tbl, newGenericContext(), scratch, te))
+        case _ -> ()
+      }
+    }
+    result = Some(value = TyPrim(pt = PtUnit))
+  } else {
+    var isExposed = false
+    for m in decl.members {
+      match m {
+        case WMExpose(en, _) -> if en == name { isExposed = true }
+        case _ -> ()
+      }
+    }
+    if isExposed {
+      for m in decl.members {
+        match m {
+          case WMSingleton(bn, te, _, _) -> if bn == name {
+            result = Some(value = resolveType(tbl, newGenericContext(), scratch, te))
+          }
+          case WMLocal(bn, ann, _, _) -> if bn == name {
+            match ann {
+              case Some(te) -> {
+                result = Some(value = resolveType(tbl, newGenericContext(), scratch, te))
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  restoreScope(tbl, saved)
+  if result.isNone() {
+    return None
+  }
+  var ai = 0
+  while ai < args.count {
+    val argE = callArgExpr(args[ai])
+    if ai < provided.count {
+      val _ = inferExprExpected(sc, tbl, sigs, diag, argE, provided[ai])
+    } else {
+      val _ = inferExpr(sc, tbl, sigs, diag, argE)
+    }
+    ai = ai + 1
+  }
+  result
+}
+
 // The result type of `T.from` / `T.tryFrom` when `fn` names one on a
 // distinct type `T` that no local shadows.
 func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option[Type] {
@@ -20452,6 +20531,10 @@ func inferExprCore(
           }
           return ft
         }
+        case None -> ()
+      }
+      match wireFactoryType(sc, tbl, sigs, diag, fn, args) {
+        case Some(wt) -> return wt
         case None -> ()
       }
       match nativeIntrinsicCallType(sc, tbl, sigs, diag, fn, args, e.span) {

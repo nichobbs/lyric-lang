@@ -1128,10 +1128,6 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case Some(t) -> return Some(value = t)
     case None -> ()
   }
-  match wireCallOf(env, e) {
-    case Some(w) -> return Some(value = w.ret)
-    case None -> ()
-  }
   match openIfTy(env, e) {
     case Some(t) -> return Some(value = t)
     case None -> ()
