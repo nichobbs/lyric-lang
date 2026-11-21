@@ -510,6 +510,38 @@ test "a directory entry leaves out a sub-package entry nested in it" {
   }
 }
 
+test "a kernel file reads its JVM twin when one exists (D695)" {
+  val tmp = Environment.getVarOrDefault("TMPDIR", "/tmp")
+  val root = Path.join(tmp, "lyric-jvmtwin-" + uuidToString(newUuid()))
+  makeDir(root)
+  makeDir(Path.join(root, "std"))
+  makeDir(Path.join(root, "std/_kernel"))
+  makeDir(Path.join(root, "std/_kernel_jvm"))
+  writeFile(Path.join(root, "std/_kernel/both.l"), "package A\n")
+  writeFile(Path.join(root, "std/_kernel_jvm/both.l"), "package A\n")
+  writeFile(Path.join(root, "std/_kernel/only.l"), "package B\n")
+  writeFile(Path.join(root, "std/plain.l"), "package C\n")
+  assertEqual(
+    Disc.jvmKernelTwin(Path.join(root, "std/_kernel/both.l")),
+    Path.join(root, "std/_kernel_jvm/both.l"),
+    "a twin is read in place of the kernel"
+  )
+  assertEqual(
+    Disc.jvmKernelTwin(Path.join(root, "std/_kernel/only.l")),
+    Path.join(root, "std/_kernel/only.l"),
+    "a kernel with no twin is unchanged"
+  )
+  assertEqual(
+    Disc.jvmKernelTwin(Path.join(root, "std/plain.l")),
+    Path.join(root, "std/plain.l"),
+    "a file outside _kernel is unchanged"
+  )
+  match File.deleteDirRecursive(root) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
 test "each file of an assembled package keeps its own header, lines and offsets" {
   val a = "package P\nimport Std.String as Str\n\npub func a(): Int { 1 }\n"
   val b = "package P\nimport Std.Math\n\n\npub func b(): Int { 2 }\n"

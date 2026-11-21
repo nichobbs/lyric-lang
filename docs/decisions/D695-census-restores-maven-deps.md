@@ -1,6 +1,6 @@
 # The library census restores [maven] dependencies, and a JVM project build reads a kernel's JVM twin (docs/70 phase 3a, #8613)
 
-**Status:** shipped; CI script and manifest only, no compiler change.
+**Status:** shipped; the census script, plus `Lyric.Discovery.jvmKernelTwin` in the JVM project-build source reader.
 
 ## Context
 
