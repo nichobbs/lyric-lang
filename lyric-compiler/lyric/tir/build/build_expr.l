@@ -1128,6 +1128,10 @@ func openHoleTy(env: in BuildEnv, e: in Expr): Option[Ty] {
     case Some(t) -> return Some(value = t)
     case None -> ()
   }
+  match wireCallOf(env, e) {
+    case Some(w) -> return Some(value = w.ret)
+    case None -> ()
+  }
   match openIfTy(env, e) {
     case Some(t) -> return Some(value = t)
     case None -> ()
@@ -1986,6 +1990,109 @@ func narrowByArgTys(
   } else {
     best
   }
+}
+
+/// A call of a wire's generated factory (D684): the wire's key, the member (`bootstrap` or an exposed
+/// binding) and the member's signature.
+record WireCall {
+  wire: String
+  member: String
+  params: List[Ty]
+  ret: Ty
+}
+
+/// `W.bootstrap(provided...)` or `W.binding()` where `W` is a wire declared in the package and no local
+/// shadows the name.  `bootstrap` takes the wire's `@provided` members in declaration order and yields `Unit`;
+/// an exposed `singleton` or annotated `val` binding is a zero-argument accessor of its declared type
+/// (the signatures the backends register).  The checker records neither a type nor a callee for these.
+func wireCallOf(env: in BuildEnv, e: in Expr): Option[WireCall] {
+  val fn = match e.kind { case ECall(f, _) -> f; case _ -> return None }
+  val recv = match fn.kind { case EMember(r, _) -> r; case _ -> return None }
+  val name = match fn.kind { case EMember(_, n) -> n; case _ -> return None }
+  val segs = match recv.kind { case EPath(p) -> p.segments; case _ -> return None }
+  if segs.count != 1 {
+    return None
+  }
+  match lookupLocal(env, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val sym = match symTableTryFindOne(env.ctx.tbl, segs[0]) { case Some(x) -> x; case None -> return None }
+  val decl = match sym.kind { case DKWire(d) -> d; case _ -> return None }
+  val key = if sym.originPackage.length == 0 {
+    sym.name
+  } else {
+    defPathKey(topDefPath(sym.originPackage, sym.name))
+  }
+  val params: List[Ty] = newList()
+  if name == "bootstrap" {
+    for m in decl.members {
+      match m {
+        case WMProvided(_, te, _) -> match annotatedTy(env, te) {
+          case Some(t) -> params.add(t)
+          case None -> return None
+        }
+        case _ -> ()
+      }
+    }
+    return Some(value = WireCall(wire = key, member = name, params = params, ret = tyUnit()))
+  }
+  var exposed = false
+  for m in decl.members {
+    match m {
+      case WMExpose(en, _) -> if en == name {
+        exposed = true
+      }
+      case _ -> ()
+    }
+  }
+  if not exposed {
+    return None
+  }
+  for m in decl.members {
+    match m {
+      case WMSingleton(bn, te, _, _) -> if bn == name {
+        return match annotatedTy(env, te) {
+          case Some(t) -> Some(value = WireCall(wire = key, member = name, params = params, ret = t))
+          case None -> None
+        }
+      }
+      case WMLocal(bn, ann, _, _) -> if bn == name {
+        match ann {
+          case Some(te) -> return match annotatedTy(env, te) {
+            case Some(t) -> Some(value = WireCall(wire = key, member = name, params = params, ret = t))
+            case None -> None
+          }
+          case None -> return None
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// A wire factory call as the intrinsic `IoWire`, each argument built at the parameter type it is for.
+func buildWireCall(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[CallArg]): Option[Option[TExpr]] {
+  val w = match wireCallOf(env, e) { case Some(x) -> x; case None -> return None }
+  val xs = match positionalArgs(args) {
+    case Some(x) -> x
+    case None -> return Some(value = uncoveredExpr(env, e, "a wire call with a named argument"))
+  }
+  if xs.count != w.params.count {
+    return Some(value = uncoveredExpr(env, e, "a wire call with the wrong number of arguments"))
+  }
+  val built: List[TExpr] = newList()
+  var i = 0
+  while i < xs.count {
+    val bx = match settleArg(env, xs[i], w.params[i]) { case Some(t) -> t; case None -> return Some(value = None) }
+    match coerceArg(env, bx, w.params[i]) {
+      case Some(c) -> built.add(c)
+      case None -> return Some(value = None)
+    }
+    i = i + 1
+  }
+  Some(value = Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoWire(wire = w.wire, member = w.member)), args = inArgs(built)))))
 }
 
 /// A call statement on a host value the checker left untyped, whose every candidate returns the host's root
@@ -4305,6 +4412,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   match ffiIntrinsicCall(env, fn) {
     case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
+    case None -> ()
+  }
+  match buildWireCall(env, e, ty, args) {
+    case Some(r) -> return r
     case None -> ()
   }
   match buildHostMethodOnString(env, e, ty, fn, args) {
