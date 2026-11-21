@@ -2386,7 +2386,19 @@ func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Typ
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
     case TyError(d) -> TyError(diag = d)
-    case TyParam(_, _) -> tyErrorGeneric()
+    // A type parameter is rigid in a generic body: only the methods its bounds promise can be called on it, and
+    // no bound promises iteration (docs/01 section 2).
+    case TyParam(pn, _) -> {
+      diag.add(
+        errorDiagnostic(
+          "T0230",
+          "cannot iterate over a value of type parameter '" + pn + "': a type parameter is rigid and promises no " +
+            "iteration; take `slice[" + pn + "]` or `array[N, " + pn + "]` instead",
+          iter.span
+        )
+      )
+      tyErrorFor(diag)
+    }
     case TySelf -> tyErrorSilent()
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e

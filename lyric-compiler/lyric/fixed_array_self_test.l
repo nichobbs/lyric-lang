@@ -458,7 +458,7 @@ func sameGen[T](a: in T, b: in T): Bool {
   a == b
 }
 
-func countGen[T](a: in T): Int {
+func countGen[T, N: Nat](a: in array[N, T]): Int {
   var n = 0
   for x in a {
     n = n + 1
