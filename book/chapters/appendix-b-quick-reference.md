@@ -1089,9 +1089,10 @@ lyric build --no-restore               # build against the lock as-is (skip auto
 lyric build --package-version <ver>   # override the version string embedded in Lyric.Contract.*
                                        # metadata resources (instead of the version in lyric.toml);
                                        # used by publish pipelines to stamp the git release version
-lyric build --verify-ir <file.l>       # after the check, number the nodes and print the typed-IR census:
-                                       # I0002 per kind the builder cannot build yet, I0003 per verifier
-                                       # rule (docs/70 §6.4); LYRIC_VERIFY_IR=1 does the same
+lyric build --verify-ir <file.l>       # after the check, print the typed-IR census (counts per kind and
+                                       # verifier rule, sample sites; docs/70 §6.4); LYRIC_VERIFY_IR=1 does
+                                       # the same. The build itself always builds and verifies every body
+                                       # as typed IR and stops on I0002 or I0003 (D347)
 lyric build --target native --via-tir <file.l>  # lower the functions the typed IR covers from the typed IR
                                        # (docs/70 phase 4a) and print how many functions were lowered
                                        # that way, with each fallback to the AST path and its reason;
@@ -1574,6 +1575,8 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0229` | A constructor pattern whose sub-pattern count differs from its case's field count. Write one sub-pattern per field, `_` for a field not used (D480). |
 | `T0230` | A `for` loop over a value whose type is a type parameter. A type parameter is rigid and no bound promises iteration: take `slice[T]` or `array[N, T]` (D682). |
 | `I0001` | Internal compiler error: an expression has no type and no error was reported (D341, D359, docs/70 section 5.3). The checker gives every value a type or a diagnostic; this is a hole in it, never a mistake in the program. Report it with the source. It always stops the build; an expression the checker leaves unchecked on purpose (a host call's result, an erased generic value) is named, not reported. |
+| `I0002` | Internal compiler error: the typed-IR builder has no case for a node of a function body (D347, docs/70 section 6). Reported at the node, naming the function. It is a hole in the compiler, never a mistake in the program; it always stops the build. Report it with the source. |
+| `I0003` | Internal compiler error: the typed-IR verifier rejected a node the builder produced (D347, docs/70 section 6.4). Reported at the function, with the verifier rule. It always stops the build. Report it with the source. |
 | `T0116` | Field-style access (`x.name`, no call parens) to a name that exists only as a D037 dot-named (UFCS) function, never as a real field — e.g. `e.message` where `message` is declared as `pub func IOError.message(e: in IOError): String`. Call it instead (`e.message()`). Fires for both locally-declared and imported/cross-package receiver types, since dot-named function signatures are known globally. |
 | `T0117` | Diamond conflict: two (or more) same-file interfaces each provide a default method with the same name for the same impl target, and no impl block overrides it. Resolve by overriding the method explicitly in an impl block — the override claims the name for the whole target and no default copy is synthesized. |
 | `T0118` | A default-method body references a non-member through a `Self`-typed value (`self.<field>`, or `<param>.<field>` where the parameter is typed `Self`) — including through a chain of calls to other `Self`-returning interface members (`self.withX().field`) and through a parenthesized receiver (`(other).field`). A default method's `Self` is the interface itself, which owns no fields — the body may only reference interface members (`self.<member>()` or bare `<member>()`). A body that needs a field must be overridden in the implementing `impl` block, where `Self` narrows to the concrete target type. A local binding that shadows a `Self`-typed parameter name inside a nested block is exempt for the extent of that block (block-scoped shadowing). |
