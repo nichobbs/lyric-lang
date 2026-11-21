@@ -54,6 +54,16 @@ export NuGetAudit=false
 
 cd "$REPO_ROOT"
 
+# A JVM build resolves the calls of its `[maven]` dependencies from the jars `lyric restore`
+# downloads (docs/70 phase 3a, D695): the builder types a host call from the host's metadata, and
+# without the jars the metadata cannot name an Undertow, Jakarta Mail or gRPC class.  The census
+# judges a library as a real build does, so each JVM build restores first.
+resolver="${LYRIC_MAVEN_RESOLVER:-$REPO_ROOT/resolver/target/lyric-resolver.jar}"
+if [[ ! -f "$resolver" ]]; then
+  bash scripts/ci/build-maven-resolver.sh >&2 || echo "library-tyerr-census: the Maven resolver did not build; JVM libraries with [maven] dependencies will be unchecked" >&2
+fi
+export LYRIC_MAVEN_RESOLVER="$resolver"
+
 is_native_only() {
   local dir="$1" n
   for n in "${NATIVE_ONLY[@]}"; do [[ "$dir" == "$n" ]] && return 0; done
@@ -111,6 +121,15 @@ for phase in dotnet jvm native; do
       target="${job##*|}"
       log="$(mktemp)"
       rc=0
+      if [[ "$target" == "jvm" ]]; then
+        restore_log="$(mktemp)"
+        if ! timeout 900 "$LYRIC" restore --manifest "$manifest" --target jvm >"$restore_log" 2>&1; then
+          echo "$manifest (jvm): the Maven restore failed: $(grep -m1 -iE 'error|failed' "$restore_log" | cut -c1-140)" >>"$unchecked_file"
+          rm -f "$restore_log" "$log"
+          continue
+        fi
+        rm -f "$restore_log"
+      fi
       timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1 || rc=$?
       if grep -qE "restored dep .* failed to load|local dep '.*' not built" "$log" && [[ "$round" -lt 3 ]]; then
         retry+=("$job")
