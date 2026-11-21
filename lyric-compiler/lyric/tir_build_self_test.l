@@ -2602,7 +2602,8 @@ test "a method call on a value of a bounded type parameter is a call through the
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(r.body.isSome(), "the body builds")
-  assertTrue(calleeShape(r.body) == "interface:recv", calleeShape(r.body))
+  // The receiver is the parameter-typed value upcast to the interface, so it is not a bare local.
+  assertTrue(calleeShape(r.body) == "interface:other", calleeShape(r.body))
   val c = censusOf(src + "func twice[T](x: in T): Int where T: Speaker {\n  val a = x.say(1)\n  a + x.say(2)\n}\n")
   assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
