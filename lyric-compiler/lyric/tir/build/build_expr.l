@@ -8006,6 +8006,30 @@ func tirKindName(k: in TExprKind): String {
   }
 }
 
+/// A statement of a default argument's block under fresh node ids: a `var` and an expression statement, the
+/// kinds a default is made of.
+func refreshDefaultStmt(env: in BuildEnv, st: in TStmt, at: in Span): Option[TStmt] {
+  val kind: TStmtKind = match st.kind {
+    case TsVar(decl, init) -> match init {
+      case Some(x) -> match refreshDefaultIds(env, x, at) {
+        case Some(r) -> TsVar(decl = decl, init = Some(value = r))
+        case None -> return None
+      }
+      case None -> st.kind
+    }
+    case TsExpr(x) -> match refreshDefaultIds(env, x, at) {
+      case Some(r) -> TsExpr(expr = r)
+      case None -> return None
+    }
+    case _ -> {
+      noteUncoveredAt(env, "a default argument statement of a shape not yet built", at)
+      env.errors.add("I0002: the builder has no case for a default argument statement of a shape not yet built")
+      return None
+    }
+  }
+  Some(value = TStmt(id = freshNodeId(env), span = at, kind = kind))
+}
+
 /// Whether the local numbered `id` was declared by the default argument being built.
 func ownsDefaultLocal(env: in BuildEnv, id: in Int): Bool {
   env.defaultFloor.count > 0 and env.defaultFloor[0] >= 0 and id > env.defaultFloor[0]
@@ -8035,15 +8059,30 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
     }
     // A lambda's body is a block; one with no statement of its own is its tail.
     case XBlock(stmts, tail) -> {
-      if stmts.count > 0 {
-        return noteUncoveredAtSpan(env, at, "a default argument block with statements")
+      val fresh: List[TStmt] = newList()
+      for st in stmts {
+        match refreshDefaultStmt(env, st, at) {
+          case Some(r) -> fresh.add(r)
+          case None -> return None
+        }
       }
       match tail {
         case Some(x) -> match refreshDefaultIds(env, x, at) {
-          case Some(r) -> XBlock(stmts = stmts, tail = Some(value = r))
+          case Some(r) -> XBlock(stmts = fresh, tail = Some(value = r))
           case None -> return None
         }
-        case None -> t.kind
+        case None -> XBlock(stmts = fresh, tail = None)
+      }
+    }
+    case XIf(cond, thenBranch, elseBranch) -> {
+      val c = match refreshDefaultIds(env, cond, at) { case Some(r) -> r; case None -> return None }
+      val th = match refreshDefaultIds(env, thenBranch, at) { case Some(r) -> r; case None -> return None }
+      match elseBranch {
+        case Some(el) -> match refreshDefaultIds(env, el, at) {
+          case Some(r) -> XIf(cond = c, thenBranch = th, elseBranch = Some(value = r))
+          case None -> return None
+        }
+        case None -> XIf(cond = c, thenBranch = th, elseBranch = None)
       }
     }
     case XLambda(params, caps, body) -> {
@@ -8062,6 +8101,14 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
           case TArgIn(v) -> match refreshDefaultIds(env, v, at) {
             case Some(r) -> fresh.add(TArgIn(value = r))
             case None -> return None
+          }
+          case TArgInout(p) -> match p.kind {
+            case PlLocal(l) -> if ownsDefaultLocal(env, l.id) {
+              fresh.add(a)
+            } else {
+              return noteUncoveredAtSpan(env, at, "a default argument passing a place")
+            }
+            case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
           }
           case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
         }

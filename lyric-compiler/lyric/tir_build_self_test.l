@@ -3027,6 +3027,16 @@ test "a lambda default argument is rebuilt at each call that takes it (D696)" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a default argument with local statements and a by-reference call is rebuilt per call (D696)" {
+  val c = censusOf(
+    "package App\nfunc bumpOne(x: inout Int): Unit {\n  x = x + 1\n}\nfunc withDefault(a: in Int = if true { var w = 3; bumpOne(w); w } else { 0 }): Int = a\nfunc f(): Int {\n  withDefault() + withDefault()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an integer literal passed where a generic parameter was fixed to Byte is a Byte literal (D696)" {
   val c = censusOf(
     "package App\nfunc second[T](x: inout T, nv: in T): T {\n  x = nv\n  nv\n}\nfunc f(): Int {\n  var b: Byte = 2u8\n  second(b, 3).toInt()\n}\n"
