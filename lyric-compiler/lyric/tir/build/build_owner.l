@@ -265,7 +265,8 @@ pub func instantiateMethod(
       isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or
         isImplMemberOverOwnParams(env, sym, recvArgs.count)
     ) {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
+      val shown = match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }
+      val _ = uncoveredExprDetail(env, e, "a method call on a member of a generic impl", shown)
       return None
     }
     for ta in recvArgs {

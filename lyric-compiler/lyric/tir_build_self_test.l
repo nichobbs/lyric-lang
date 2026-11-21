@@ -3007,6 +3007,16 @@ test "a call of a member of a generic impl is built and verified, or counted, ne
   }
 }
 
+test "a call of a member of a generic impl from another function builds with the impl's parameters (D696)" {
+  val c = censusOf(
+    "package App\nrecord Box[T] {\n  value: T\n  n: Int\n}\ninterface Shows {\n  func first(): Int\n  func pick(x: in Int): Int\n}\nimpl[T] Shows for Box[T] {\n  func first(): Int { self.n * 2 }\n  func pick(x: in Int): Int { x + self.n }\n}\nfunc f(b: in Box[String]): Int {\n  b.first() + b.pick(3)\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a protected member reads and assigns a field of its receiver by the bare name" {
   val pb = packageOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\n"
