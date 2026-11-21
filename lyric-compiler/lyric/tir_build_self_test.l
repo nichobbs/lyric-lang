@@ -2603,6 +2603,10 @@ test "a method call on a value of a bounded type parameter is a call through the
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(r.body.isSome(), "the body builds")
   assertTrue(calleeShape(r.body) == "interface:recv", calleeShape(r.body))
+  val c = censusOf(src + "func twice[T](x: in T): Int where T: Speaker {\n  val a = x.say(1)\n  a + x.say(2)\n}\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "a host property read is a call of its getter with the receiver first (D598)" {
