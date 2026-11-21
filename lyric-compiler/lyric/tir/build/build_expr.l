@@ -7969,6 +7969,43 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
   buildExpr(env, x)
 }
 
+/// The name of an expression's kind, for a message that says which shape was not built.
+func tirKindName(k: in TExprKind): String {
+  match k {
+    case XLit(_) -> "XLit"
+    case XLocal(_) -> "XLocal"
+    case XGlobal(_, _) -> "XGlobal"
+    case XValueParam(_, _) -> "XValueParam"
+    case XCall(_, _) -> "XCall"
+    case XConstruct(_, _) -> "XConstruct"
+    case XField(_, _) -> "XField"
+    case XCopy(_, _) -> "XCopy"
+    case XArrayCopy(_) -> "XArrayCopy"
+    case XZeroValue(_) -> "XZeroValue"
+    case XIndex(_, _, _) -> "XIndex"
+    case XConvert(_, _) -> "XConvert"
+    case XTuple(_) -> "XTuple"
+    case XListLit(_) -> "XListLit"
+    case XInterp(_) -> "XInterp"
+    case XRange(_, _, _) -> "XRange"
+    case XShort(_, _, _) -> "XShort"
+    case XIf(_, _, _) -> "XIf"
+    case XMatch(_, _, _) -> "XMatch"
+    case XBlock(_, _) -> "XBlock"
+    case XUnsafe(_) -> "XUnsafe"
+    case XLambda(_, _, _) -> "XLambda"
+    case XAwait(_) -> "XAwait"
+    case XSpawn(_) -> "XSpawn"
+    case XYield(_) -> "XYield"
+    case XPropagate(_) -> "XPropagate"
+    case XOld(_) -> "XOld"
+    case XResult -> "XResult"
+    case XForall(_, _, _) -> "XForall"
+    case XExists(_, _, _) -> "XExists"
+    case XAssign(_, _, _) -> "XAssign"
+  }
+}
+
 /// Whether the local numbered `id` was declared by the default argument being built.
 func ownsDefaultLocal(env: in BuildEnv, id: in Int): Bool {
   env.defaultFloor.count > 0 and env.defaultFloor[0] >= 0 and id > env.defaultFloor[0]
@@ -8068,7 +8105,7 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
       }
       XTuple(elems = fresh)
     }
-    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built")
+    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built (" + tirKindName(t.kind) + ")")
   }
   Some(value = TExpr(id = freshNodeId(env), ty = t.ty, span = at, kind = kind))
 }
