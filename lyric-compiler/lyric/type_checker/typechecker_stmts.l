@@ -2284,10 +2284,7 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
 func checkForCtorArities(tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
   match pat.kind {
     case PParen(inner) -> checkForCtorArities(tbl, diag, inner, ty)
-    case PBinding(_, inner) -> match inner {
-      case Some(ip) -> checkForCtorArities(tbl, diag, ip, ty)
-      case None -> ()
-    }
+    case PBinding(_, inner) -> match inner { case Some(ip) -> checkForCtorArities(tbl, diag, ip, ty); case None -> () }
     case PTuple(ps) -> {
       val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
@@ -2393,7 +2390,11 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
         errorDiagnostic(
           "T0230",
           "cannot iterate over a value of type parameter '" + pn + "': a type parameter is rigid and promises no " +
-            "iteration; take `slice[" + pn + "]` or `array[N, " + pn + "]` instead",
+            "iteration; take `slice[" +
+            pn +
+            "]` or `array[N, " +
+            pn +
+            "]` instead",
           iter.span
         )
       )
