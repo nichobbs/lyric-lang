@@ -111,7 +111,8 @@ test "compileProjectToJarBundledWithFeatures: entry package's own types resolve 
   val pkgSrcs: List[String] = newList()
   pkgSrcs.add(cycleEntrySource())
   pkgSrcs.add(cycleKernelSource())
-  val stdlibSources: List[String] = newList()
+  // The entry package imports `Std.Console`, so the build is given the stdlib it names.
+  val stdlibSources = Emitter.findStdlibSourcesJvm()
   val noFeatures: List[String] = newList()
   val noDepTemplateSrcs: List[String] = newList()
   val noDefines: List[String] = newList()

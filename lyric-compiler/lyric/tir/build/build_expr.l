@@ -325,21 +325,16 @@ func rejectUntypedModuleVal(env: in BuildEnv, e: in Expr): Bool {
   for sym in symTableTryFindAllNamed(tbl, name) {
     match sym.kind {
       case DKVal(decl) -> if sym.originPackage.length == 0 and decl.ty.isNone() {
-        match exprTy(env.ctx, decl.init.nodeId) {
-          case Err(_) -> {
-            env.errors.add(
-              "F0047: cannot determine the type of module-level val '" + name +
-                "': its initializer has no type the checker can record; add an explicit type annotation (`val " +
-                name +
-                ": T = ...`) at " +
-                toString(decl.init.span.startPos.line) +
-                ":" +
-                toString(decl.init.span.startPos.column)
-            )
-            return true
-          }
-          case Ok(_) -> ()
-        }
+        env.errors.add(
+          "F0047: cannot determine the type of module-level val '" + name +
+            "' consistently: readers of the val have no type the checker can record for it; add an explicit type annotation (`val " +
+            name +
+            ": T = ...`) at " +
+            toString(decl.init.span.startPos.line) +
+            ":" +
+            toString(decl.init.span.startPos.column)
+        )
+        return true
       }
       case _ -> ()
     }
@@ -1417,14 +1412,24 @@ func openRefValueTy(env: in BuildEnv, e: in Expr): Option[Ty] {
 /// one (`Pkg.Lib.answer`) stands for, when the checker recorded no reference for it (it could not type the value).
 func bareForeignValKey(env: in BuildEnv, e: in Expr): Option[String] {
   match foreignValSymOf(env, e) {
-    case Some(fv) -> Some(value = defPathKey(topDefPath(fv.pkg, fv.sym.name)))
+    case Some(fv) -> {
+      val key = defPathKey(topDefPath(fv.pkg, fv.name))
+      // A name no symbol of the table stands for is a value of a restored package, which only that
+      // package's interface can confirm.
+      if fv.sym.isNone() and readCarriedValueTy(env.ctx.dep, env.ctx.depRead, key, env.ctx.tbl.interner).isNone() {
+        None
+      } else {
+        Some(value = key)
+      }
+    }
     case None -> None
   }
 }
 
 record ForeignVal {
-  sym: Symbol
+  sym: Option[Symbol]
   pkg: String
+  name: String
 }
 
 func isValueSym(sym: in Symbol): Bool {
@@ -1453,7 +1458,7 @@ func foreignValSymOf(env: in BuildEnv, e: in Expr): Option[ForeignVal] {
   if segs.count == 1 {
     return match symTableTryFindOne(tbl, name) {
       case Some(sym) -> if isValueSym(sym) and sym.originPackage.length > 0 {
-        Some(value = ForeignVal(sym = sym, pkg = sym.originPackage))
+        Some(value = ForeignVal(sym = Some(value = sym), pkg = sym.originPackage, name = sym.name))
       } else {
         None
       }
@@ -1468,22 +1473,23 @@ func foreignValSymOf(env: in BuildEnv, e: in Expr): Option[ForeignVal] {
   }
   for sym in symTableTryFindAllNamed(tbl, name) {
     if isValueSym(sym) and sym.originPackage == pkg {
-      return Some(value = ForeignVal(sym = sym, pkg = pkg))
+      return Some(value = ForeignVal(sym = Some(value = sym), pkg = pkg, name = name))
     }
   }
   // The checked package's own value named through its own package.
   for sym in symTableTryFindAllNamed(tbl, name) {
     if isValueSym(sym) and sym.originPackage.length == 0 {
-      return Some(value = ForeignVal(sym = sym, pkg = pkg))
+      return Some(value = ForeignVal(sym = Some(value = sym), pkg = pkg, name = name))
     }
   }
-  None
+  Some(value = ForeignVal(sym = None, pkg = pkg, name = name))
 }
 
 /// The type a `val` or `const` of another package was declared at, when it is annotated (a simple type
 /// spelled the same in any scope).
 func foreignValAnnotatedTy(env: in BuildEnv, e: in Expr): Option[Ty] {
-  val sym = match foreignValSymOf(env, e) { case Some(x) -> x.sym; case None -> return None }
+  val fv = match foreignValSymOf(env, e) { case Some(x) -> x; case None -> return None }
+  val sym = match fv.sym { case Some(x) -> x; case None -> return None }
   val te: TypeExpr = match sym.kind {
     case DKVal(d) -> match d.ty { case Some(t) -> t; case None -> return None }
     case DKConst(d) -> d.ty
@@ -2408,7 +2414,15 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case EMember(r, name) -> match refSite(env.ctx, e.nodeId) {
       // `Type.Case`: the checker resolved the member to a case (D477).
       case Some(_) -> buildRefPath(env, e, ty)
-      case None -> buildFieldRead(env, e, ty, r, name)
+      // `Pkg.Lib.answer`: the checker typed the read but left the package prefix untyped, and the read is the
+      // module value of that package.
+      case None -> match exprTy(env.ctx, r.nodeId) {
+        case Err(_) -> match buildBareForeignValRead(env, e, ty) {
+          case Some(v) -> Some(value = v)
+          case None -> buildFieldRead(env, e, ty, r, name)
+        }
+        case Ok(_) -> buildFieldRead(env, e, ty, r, name)
+      }
     }
     case EIndex(r, idxs) -> buildIndexRead(env, e, ty, r, idxs)
     case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
