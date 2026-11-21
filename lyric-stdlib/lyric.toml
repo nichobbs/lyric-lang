@@ -14,6 +14,10 @@ version     = "0.1.0"
 description = "Lyric standard library — bundled distribution."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"
+# The bundle is the .NET assembly `Lyric.Stdlib.dll`: its `std/_kernel/` packages declare `System.*`
+# host types.  The JVM reads the standard library through the source loader, which prefers the
+# `std/_kernel_jvm/` twin of each kernel (D695).
+targets     = ["dotnet"]
 
 [project]
 name            = "Lyric.Stdlib"
