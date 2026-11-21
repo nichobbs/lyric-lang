@@ -3017,6 +3017,26 @@ test "a call of a member of a generic impl from another function builds with the
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a lambda default argument is rebuilt at each call that takes it (D696)" {
+  val c = censusOf(
+    "package App\nfunc withDefault(h: () -> Int = { -> 4 }): Int {\n  h()\n}\nfunc twice(a: () -> Int = { -> 5 }, b: (Int) -> Int = { n -> n + 1 }): Int {\n  b(a())\n}\nfunc f(): Int {\n  withDefault() + withDefault() + twice() + twice()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an integer literal passed where a generic parameter was fixed to Byte is a Byte literal (D696)" {
+  val c = censusOf(
+    "package App\nfunc pair[T](x: in T, y: in T): List[T] {\n  val l: List[T] = newList()\n  l.add(x)\n  l.add(y)\n  l\n}\nfunc f(): Int {\n  val b: Byte = 2u8\n  val l = pair(b, 3)\n  l.count\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a protected member reads and assigns a field of its receiver by the bare name" {
   val pb = packageOf(
     "package App\nprotected type Total {\n  var n: Int = 0\n  entry add(k: in Int): Unit {\n    n = n + k\n  }\n  func get(): Int {\n    n\n  }\n}\n"
