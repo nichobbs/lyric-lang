@@ -4459,34 +4459,32 @@ pub func compileProjectToJarBundledWithRestored(
     dti = dti + 1
   }
 
-  // Under `--verify-ir` the entry package is built against the interfaces of the project packages it
-  // imports, but it is checked before them (below), so their interfaces are not in the shared store
-  // yet and a default they declare is counted (D443).  Check each of them first, dependencies first,
-  // for the interface alone: its diagnostics are reported by the real pass, not here.
-  if pipeVerifyIrEnabled() {
-    val preDiags: List[DiagUtil.LocatedDiagnostic] = newList()
-    val preSink = collectDiagnostics(preDiags)
-    for pf in jvmProjectDependencyOrder(fe) {
-      val pname = dottedPath(pf.packageDecl.path)
-      if pname != userEntryPkgName {
-        val plabel = match mapGet(pkgPathByName, pname) { case Some(pp) -> pp; case None -> pname }
-        val pfiles: List[String] = match mapGet(pkgFilesByName, pname) { case Some(o) -> o; case None -> newList() }
-        val popts = jvmMiddleEndOptions(
-          true,
-          plabel,
-          pfiles,
-          newList(),
-          newMap(),
-          newMap(),
-          unwrapOr(mapGet(ioForbiddenByPkg, pname), ""),
-          contractsEnabled,
-          true,
-          preSink,
-          externIter = jvmIterResolver(hostIterIx),
-          depDefaults = projDepDefaults
-        )
-        val _ = pipeCheckFront(arrayTypedOrSelf(arrayTypedByPkg, pf), importedPkgs, popts, preSink)
-      }
+  // The entry package is built against the interfaces of the project packages it imports (the TIR gate, D347,
+  // reads the defaults they declare), but it is checked before them (below), so their interfaces are not in
+  // the shared store yet (D443).  Check each of them first, dependencies first, for the interface alone: its
+  // diagnostics are reported by the real pass, not here.
+  val preDiags: List[DiagUtil.LocatedDiagnostic] = newList()
+  val preSink = collectDiagnostics(preDiags)
+  for pf in jvmProjectDependencyOrder(fe) {
+    val pname = dottedPath(pf.packageDecl.path)
+    if pname != userEntryPkgName {
+      val plabel = match mapGet(pkgPathByName, pname) { case Some(pp) -> pp; case None -> pname }
+      val pfiles: List[String] = match mapGet(pkgFilesByName, pname) { case Some(o) -> o; case None -> newList() }
+      val popts = jvmMiddleEndOptions(
+        true,
+        plabel,
+        pfiles,
+        newList(),
+        newMap(),
+        newMap(),
+        unwrapOr(mapGet(ioForbiddenByPkg, pname), ""),
+        contractsEnabled,
+        true,
+        preSink,
+        externIter = jvmIterResolver(hostIterIx),
+        depDefaults = projDepDefaults
+      )
+      val _ = pipeCheckFront(arrayTypedOrSelf(arrayTypedByPkg, pf), importedPkgs, popts, preSink)
     }
   }
 
