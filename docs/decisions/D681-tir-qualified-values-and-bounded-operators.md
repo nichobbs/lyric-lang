@@ -12,6 +12,8 @@ The census after D680 still counted the project fixtures that read a `pub val` o
 - `x.toInt()`, `toLong()`, `toDouble()` and `toFloat()` on a numeric, refined or distinct operand are typed as the primitive they name (`openConvMethodTy`); `T.default()` where `T` is a type parameter in scope is typed as that parameter (`openParamDefaultTy`).
 - An arithmetic operator whose left operand has a type parameter's type has that type, and is built as the intrinsic operator on it.
 - A read of an unannotated module-level `val` whose initializer the checker could not type is a rejection under the MSIL backend's own code, F0047, at the initializer, as the backend reports it (`rejectUntypedModuleVal`), not an unbuilt body.
+- A native project build checks its packages in dependency order (`nativeDependencyOrder`: each after the own packages it imports, input order otherwise), so a consumer reads the defaults its dependency's interface carries (D617); the packages' lists stay parallel by index.
+- A fixture that imports `Std.Console` (the large-bundle and package-cycle fixtures) is given the stdlib it names; it was compiled with none, which the checker did not refuse.
 
 ## Results
 

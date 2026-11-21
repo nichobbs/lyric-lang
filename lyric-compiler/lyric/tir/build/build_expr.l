@@ -324,7 +324,7 @@ func rejectUntypedModuleVal(env: in BuildEnv, e: in Expr): Bool {
   val tbl = env.ctx.tbl
   for sym in symTableTryFindAllNamed(tbl, name) {
     match sym.kind {
-      case DKVal(decl) -> if sym.originPackage.length == 0 and decl.ty.isNone() {
+      case DKVal(decl) -> if not sym.isImported and decl.ty.isNone() {
         env.errors.add(
           "F0047: cannot determine the type of module-level val '" + name +
             "' consistently: readers of the val have no type the checker can record for it; add an explicit type annotation (`val " +
@@ -1457,7 +1457,7 @@ func foreignValSymOf(env: in BuildEnv, e: in Expr): Option[ForeignVal] {
   val name = segs[segs.count - 1]
   if segs.count == 1 {
     return match symTableTryFindOne(tbl, name) {
-      case Some(sym) -> if isValueSym(sym) and sym.originPackage.length > 0 {
+      case Some(sym) -> if isValueSym(sym) and sym.isImported and sym.originPackage.length > 0 {
         Some(value = ForeignVal(sym = Some(value = sym), pkg = sym.originPackage, name = sym.name))
       } else {
         None
@@ -1478,7 +1478,7 @@ func foreignValSymOf(env: in BuildEnv, e: in Expr): Option[ForeignVal] {
   }
   // The checked package's own value named through its own package.
   for sym in symTableTryFindAllNamed(tbl, name) {
-    if isValueSym(sym) and sym.originPackage.length == 0 {
+    if isValueSym(sym) and not sym.isImported {
       return Some(value = ForeignVal(sym = Some(value = sym), pkg = pkg, name = name))
     }
   }
