@@ -3029,7 +3029,7 @@ test "a lambda default argument is rebuilt at each call that takes it (D696)" {
 
 test "an integer literal passed where a generic parameter was fixed to Byte is a Byte literal (D696)" {
   val c = censusOf(
-    "package App\nfunc pair[T](x: in T, y: in T): List[T] {\n  val l: List[T] = newList()\n  l.add(x)\n  l.add(y)\n  l\n}\nfunc f(): Int {\n  val b: Byte = 2u8\n  val l = pair(b, 3)\n  l.count\n}\n"
+    "package App\nfunc takeList[T](x: inout T, nv: in T): List[T] {\n  val l: List[T] = newList()\n  l.add(x)\n  x = nv\n  l\n}\nfunc f(): Int {\n  var b: Byte = 2u8\n  val lb = takeList(b, 3)\n  lb.count\n}\n"
   )
   assertTrue(c.total > 0, "the program has bodies")
   assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })

@@ -7996,6 +7996,19 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
     } else {
       return noteUncoveredAtSpan(env, at, "a default argument naming a local")
     }
+    // A lambda's body is a block; one with no statement of its own is its tail.
+    case XBlock(stmts, tail) -> {
+      if stmts.count > 0 {
+        return noteUncoveredAtSpan(env, at, "a default argument block with statements")
+      }
+      match tail {
+        case Some(x) -> match refreshDefaultIds(env, x, at) {
+          case Some(r) -> XBlock(stmts = stmts, tail = Some(value = r))
+          case None -> return None
+        }
+        case None -> t.kind
+      }
+    }
     case XLambda(params, caps, body) -> {
       if caps.count > 0 {
         return noteUncoveredAtSpan(env, at, "a default argument whose lambda captures")
