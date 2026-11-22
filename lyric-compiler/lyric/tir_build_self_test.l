@@ -1152,7 +1152,7 @@ test "a slice takes the array of its own element over an Object[] (D699)" {
   }
 }
 
-test "a member called on a boxed number a host call returns is the box's own (D700)" {
+test "a member called on a boxed number a host call returns is the box's own (D750)" {
   val r = buildFirstFnHost(
     "package App\nextern type JInteger = \"java.lang.Integer\"\nfunc f(): Int {\n  JInteger.valueOf(42).intValue()\n}\n"
   )
