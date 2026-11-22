@@ -1564,13 +1564,13 @@ test "a field of a generic record builds at the receiver's instantiation" {
 }
 
 test "a member that is not a record field is counted" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
 }
 
 test "an uncovered kind remembers where it was first met" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   val at = match mapGet(r.env.sites, "a member access that is not a record field") {
     case Some(a) -> a
     case None -> ""
@@ -3176,7 +3176,7 @@ test "a local that shadows a protected field's name is the local, not the field 
 }
 
 test "a failed body names its symbol's DefPath key (D570)" {
-  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertEqualInt(pb.failed.count, 1, "the member access body fails")
   assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
