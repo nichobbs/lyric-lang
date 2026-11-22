@@ -1904,6 +1904,14 @@ func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
   }
 }
 
+/// The JVM's boxed primitive classes that a chain result the checker left untyped keeps as the host class
+/// (`Integer.valueOf(n).intValue()`, `JBoolean.TRUE`): the member that follows is the box's own.
+func isJvmBoxedName(name: in String): Bool {
+  name == "java.lang.Boolean" or name == "java.lang.Integer" or name == "java.lang.Long" or name == "java.lang.Short" or
+    name == "java.lang.Byte" or
+    name == "java.lang.Character"
+}
+
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
   not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
@@ -2212,7 +2220,7 @@ func hostChainResult(
             // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
             // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
             // the host's own class too.
-            val unmappedFuture = rname == "java.util.concurrent.Future" or rname == "java.lang.Boolean"
+            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname)
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
