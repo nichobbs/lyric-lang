@@ -917,6 +917,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
   - `format1` to `format4` take their arguments of any type as `println` does, so a number or `Bool` argument is built as the checker typed it (D407).
+  - A call on a receiver with an open type argument is typed from the method's arguments (D742); a bare `T` argument after a container fixed `T` keeps the binding (D743); `f[3](a)` on a value-generic function records its callee (D744); `Pkg.Type.from(x)` types as the distinct factory (D745).
   - A `match` whose arms all diverge is typed `Never` (the join started at a silent `TyError`), so a `Unit` function ending in one builds (D348).
   - A bare `None` (or other expression the checker left open) in a `return` outside a lambda takes the function's declared return type, as a body's tail does (D409).
   - A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is recorded as the case, so it builds (D349).
