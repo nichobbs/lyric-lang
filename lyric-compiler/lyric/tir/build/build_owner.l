@@ -261,10 +261,7 @@ pub func instantiateMethod(
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) and not viaIface {
-    if not (
-      isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or
-        isImplMemberOverOwnParams(env, sym, recvArgs.count)
-    ) {
+    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or isImplMemberOverOwnParams(env, sym, recvArgs.count)) {
       val shown = match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }
       val _ = uncoveredExprDetail(env, e, "a method call on a member of a generic impl", shown)
       return None

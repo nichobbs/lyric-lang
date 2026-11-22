@@ -8054,7 +8054,10 @@ func refreshDefaultStmt(env: in BuildEnv, st: in TStmt, at: in Span): Option[TSt
   val kind: TStmtKind = match st.kind {
     case TsVar(decl, init) -> match init {
       case Some(x) -> match refreshDefaultIds(env, x, at) {
-        case Some(r) -> TsVar(decl = decl, init = Some(value = r))
+        case Some(r) -> TsVar(
+          decl = decl,
+          init = Some(value = r)
+        )
         case None -> return None
       }
       case None -> st.kind
