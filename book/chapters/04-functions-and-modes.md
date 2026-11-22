@@ -341,6 +341,10 @@ val pick: (Bool) -> Long = { c ->
 
 A `return` inside a closure always leaves the closure, not the function around it. Narrowing is never implicit, here or anywhere: `val b: () -> Byte = { -> 5 }` is rejected just as `val b: Byte = 5` is; write `5u8`.
 
+### Parameters that nothing fixes
+
+A lambda bound to a name with no annotation, `val f = { x -> false }`, has no expected function type, so the type of `x` is nothing the compiler can know. It is the error `T0231`. Annotate the parameter, `val f = { x: Int -> false }`, or the binding, `val f: (Int) -> Bool = { x -> false }`. A lambda passed to a function, returned, or stored in a typed field takes its parameter types from that function type and needs no annotation.
+
 ### Trailing lambda syntax
 
 When the last parameter of a function is a closure, you can move it outside the parentheses. This is how collection methods read naturally:
