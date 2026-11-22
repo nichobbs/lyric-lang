@@ -376,6 +376,7 @@ pub func checkStatement(
     case SLocal(binding) -> match binding {
       case LBVal(pat, tyOpt, init) -> match tyOpt {
         case None -> {
+          reportUnfixedLambdaParams(diag, init)
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
           recordLocalBranchType(tbl, init, initType)
@@ -435,6 +436,7 @@ pub func checkStatement(
           val initType = match initOpt {
             case None -> tyErrorSilent()
             case Some(e) -> {
+              reportUnfixedLambdaParams(diag, e)
               val t = inferExpr(sc, tbl, sigs, diag, e)
               noteArrayStore(tbl, e, t)
               recordLocalFuncType(tbl, e, t)
@@ -2744,5 +2746,33 @@ func forIterIsGeneratorCall(tbl: in SymbolTable, iter: in Expr): Bool {
   match iter.kind {
     case ECall(_, _) -> tbl.generatorCallSites.containsKey(recordCopySiteKey(iter.span))
     case _ -> false
+  }
+}
+
+// A lambda bound to a name with no type annotation has no expected function type, so a parameter it
+// leaves unannotated has a type nothing in the program fixes (T0231): `val f = { x -> false }`.  A lambda
+// whose parameter types come from an expected function type (an annotated binding, a parameter, a call
+// argument, a return type) is not checked here.
+func reportUnfixedLambdaParams(diag: in List[Diagnostic], init: in Expr): Unit {
+  match stripExprParens(init).kind {
+    case ELambda(ps, _) -> {
+      for p in ps {
+        match p.ty {
+          case None -> diag.add(
+            errorDiagnostic(
+              "T0231",
+              "the type of lambda parameter '" + p.name +
+                "' is not fixed: no expected function type gives it one; " +
+                "annotate it (`{ " +
+                p.name +
+                ": Int -> ... }`) or annotate the binding with a function type",
+              p.span
+            )
+          )
+          case Some(_) -> ()
+        }
+      }
+    }
+    case _ -> ()
   }
 }
