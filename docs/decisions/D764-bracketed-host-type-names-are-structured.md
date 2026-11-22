@@ -8,7 +8,7 @@
 
 ## Decision
 
-`Lyric.Tir.Build.hostRefOfClrName` converts a name that carries its arguments in brackets to the structured host type: the class without arity or brackets (`externHostBase`) and the arguments read from the brackets, split at top-level commas, a CLR primitive (`System.Int32`, `System.String`, ...) as the Lyric scalar the metadata gives it, any other as a host type whose own brackets read the same way. A name without brackets, or one the checker already gave arguments, stands as written.
+`Lyric.Tir.Build.hostRefOfClrName` converts a name that carries its arguments in brackets to the structured host type: the class without arity or brackets (`externHostBase`) and the arguments read from the brackets, split at top-level commas, a CLR primitive (`System.Int32`, `System.String`, ...) as the Lyric scalar the metadata gives it, any other as a host type whose own brackets read the same way. A name without brackets, with an empty pair (an array type, `System.Byte[]`), or one the checker already gave arguments, stands as written. Only seven CLR primitives (`Int32`, `Int64`, `String`, `Boolean`, `Double`, `Byte`, `Char`) read as Lyric scalars; any other primitive argument stays a host type until a case needs it.
 
 ## Results
 

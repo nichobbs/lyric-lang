@@ -99,7 +99,8 @@ func clrPrimTy(name: in String): Option[Ty] {
   None
 }
 
-/// The text inside the outermost `[ ... ]` of `s`, and None when there is none.
+/// The text inside the outermost `[ ... ]` of `s`, and None when there is none or it is empty (an array
+/// type, `System.Byte[]`).
 func bracketBody(s: in String): Option[String] {
   var open = -1
   var i = 0
@@ -113,7 +114,12 @@ func bracketBody(s: in String): Option[String] {
   if open < 0 or not Str.endsWith(s, "]") {
     return None
   }
-  Some(value = s.substring(open + 1, s.length - open - 2))
+  val body = s.substring(open + 1, s.length - open - 2)
+  // `System.Byte[]` is an array type, not a name with type arguments.
+  if body.length == 0 {
+    return None
+  }
+  Some(value = body)
 }
 
 /// `body` split at its top-level commas (a comma inside nested brackets belongs to the nested argument).

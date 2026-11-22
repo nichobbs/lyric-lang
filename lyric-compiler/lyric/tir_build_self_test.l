@@ -3655,6 +3655,12 @@ test "an extern type named with bracketed type arguments is the structured host 
   assertEqualInt(n.args.count, 1, "a nested argument is one argument")
 }
 
+test "an extern type name that ends in an empty bracket pair stands as written" {
+  val h = hostRefOfClrName("System.Byte[]", newList())
+  assertEqual(h.name, "System.Byte[]", "an array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
 test "an extern type name without brackets stands as written" {
   val h = hostRefOfClrName("System.Text.StringBuilder", newList())
   assertEqual(h.name, "System.Text.StringBuilder", "the name")
