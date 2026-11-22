@@ -976,6 +976,12 @@ func fhSig(isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberT
   ExternMemberSig(isStatic = isStatic, params = ps, ret = ret)
 }
 
+func fhSigOptional(
+  isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberType, optional: in Int
+): ExternMemberSig {
+  ExternMemberSig(isStatic = isStatic, params = ps, ret = ret, optionalTrailing = optional)
+}
+
 func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
   val xs: List[ExternIterElem] = newList()
   xs.add(a)
@@ -1040,6 +1046,14 @@ func fakeHost(): FakeHost {
   val intValue: List[ExternMemberSig] = newList()
   intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
+  val encode: List[ExternMemberSig] = newList()
+  encode.add(
+    fhSigOptional(true, fhParams2(fhPrim("String"), fhHost("java.lang.Object")), EMTType(elem = fhPrim("Int")), 1)
+  )
+  sigs.add(fhKey("System.Math", "Encode", 1), encode)
+  val encode2: List[ExternMemberSig] = newList()
+  encode2.add(fhSig(true, fhParams2(fhPrim("String"), fhHost("java.lang.Object")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Encode", 2), encode2)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1167,6 +1181,29 @@ test "a member called on a boxed number a host call returns is the box's own (D7
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
     case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a host call leaving out a defaulted trailing parameter records how many it omits (D770)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Encode(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 2, "the member's two parameters")
+      assertEqualInt(m.omitted, 1, "the encoder is left out")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a host call supplying every parameter omits none (D770)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type Math = \"System.Math\"\nextern type JObject = \"java.lang.Object\"\nfunc f(o: JObject): Int {\n  Math.Encode(\"hi\", o)\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertEqualInt(m.omitted, 0, "nothing is left out")
     case None -> assertTrue(false, "an extern call")
   }
 }

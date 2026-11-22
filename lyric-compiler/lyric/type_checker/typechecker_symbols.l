@@ -336,6 +336,10 @@ pub record ExternMemberSig {
   ret: ExternMemberType
   /// A property read that is a public field of the host type, not a getter method.
   isField: Bool = false
+  /// How many of the trailing `params` have a default the host declares (`Encode(String, JavaScriptEncoder = null)`):
+  /// a call may supply fewer arguments, down to `params.count - optionalTrailing`, and the omitted ones take
+  /// the host's declared defaults.  Zero for a member whose every parameter is required, and always on the JVM.
+  optionalTrailing: Int = 0
 }
 
 /// What a host member yields.

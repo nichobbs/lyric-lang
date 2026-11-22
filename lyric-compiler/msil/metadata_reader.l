@@ -4001,6 +4001,79 @@ pub func allMethodSigsOn(
   Some(value = methods)
 }
 
+// The overloads of `member` declared on `typeFqn` a call with `argc` arguments can bind: those of exactly
+// `argc` parameters and those of more whose trailing parameters all have a default `paramDefaultAt` can
+// synthesize (`Encode(String, JavaScriptEncoder = null)` for one argument, #5605).  Declaration order;
+// parameter and return types are normalised as `allMethodSigsOn` does; `paramDefaults` holds an `EPDNone`
+// per supplied argument and then the trailing defaults.  `None` when the type is absent.
+pub func methodSigsWithTrailingDefaults(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  member: in String,
+  argc: in Int,
+): Option[List[ResolvedMethod]] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 {
+    return None
+  }
+  val mr = methodRange(img, layout, th, typeRow)
+  val methods: List[ResolvedMethod] = newList()
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    if md.name == member {
+      match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+        case Err(_) -> {
+        }
+        case Ok(sig) -> {
+          val normParams: List[SigType] = newList()
+          var pj = 0
+          while pj < sig.paramTypes.count {
+            normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+            pj = pj + 1
+          }
+          var defaults: Option[List[ExternParamDefault]] = None
+          if normParams.count == argc {
+            defaults = Some(value = epdNoneList(normParams.count))
+          } else if normParams.count > argc {
+            match trailingParamDefaults(img, layout, th, mi, normParams, argc) {
+              case Some(tds) -> {
+                val full: List[ExternParamDefault] = epdNoneList(argc)
+                for d in tds {
+                  full.add(d)
+                }
+                defaults = Some(value = full)
+              }
+              case None -> {
+              }
+            }
+          }
+          match defaults {
+            case Some(ds) -> methods.add(
+              ResolvedMethod(
+                name = md.name,
+                isStatic = not sig.hasThis,
+                isVirtual = methodIsVirtual(md.flags),
+                isAbstract = methodIsAbstract(md.flags),
+                returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+                paramTypes = normParams,
+                genericArity = sig.genParamCount,
+                paramDefaults = ds
+              )
+            )
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  Some(value = methods)
+}
+
 // True iff `typeFqn` resolves to an interface in this assembly.  Returns false
 // when the type is absent — callers (e.g. the F0034 check) treat absence
 // separately because it usually means the reference pack does not carry the
@@ -4872,6 +4945,8 @@ pub record HostMemberSigInfo {
   ret: SigType
   /// A public field found by a property lookup, not a getter method.
   isField: Bool = false
+  /// The trailing parameters beyond the `argc` the lookup asked for, each with a default the call can leave out.
+  optionalTrailing: Int = 0
 }
 
 /// The overloads of `member` on `fqn` and every supertype, as
@@ -4911,24 +4986,26 @@ pub func hostMemberSigsOfExtern(
       case Some(pa) -> pa
       case None -> return None
     }
-    val methods = match allMethodSigsOn(parsed.img, parsed.layout, parsed.th, cur) {
+    val methods = match methodSigsWithTrailingDefaults(parsed.img, parsed.layout, parsed.th, cur, if isProperty { getter } else if isCtor { ".ctor" } else { member }, if isProperty { 0 } else { argc }) {
       case Some(ms) -> ms
       case None -> return None
     }
     for m in methods {
-      val wanted = if isProperty {
-        m.name == getter and m.paramTypes.count == 0
-      } else if isCtor {
-        m.name == ".ctor" and m.paramTypes.count == argc
-      } else {
-        m.name == member and m.paramTypes.count == argc
-      }
+      // A property getter takes none and is not overloaded by trailing defaults.
+      val wanted = if isProperty { m.paramTypes.count == 0 } else { true }
       if wanted {
         if m.genericArity > 0 {
           return None
         }
         val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
-        found.add(HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret))
+        found.add(
+          HostMemberSigInfo(
+            isStatic = m.isStatic or isCtor,
+            params = m.paramTypes,
+            ret = ret,
+            optionalTrailing = m.paramTypes.count - (if isProperty { 0 } else { argc })
+          )
+        )
       }
     }
     if isProperty {

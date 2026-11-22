@@ -43,6 +43,10 @@ pub record HostMemberRef {
   isStatic: Bool
   params: List[TParamTy]
   ret: Ty
+  /// How many trailing `params` the call leaves out: the host fills each with the default its metadata
+  /// declares (a null reference, a zeroed struct, an enum or integer constant).  A call's arguments are
+  /// the first `params.count - omitted` parameters; the verifier checks the count.
+  omitted: Int = 0
 }
 
 /// The operations the compiler implements itself on built-in types: the

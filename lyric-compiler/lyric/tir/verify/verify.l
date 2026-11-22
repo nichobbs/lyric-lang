@@ -464,7 +464,26 @@ func checkCallee(c: in Ctx, e: in TExpr, callee: in Callee, args: in List[TArg])
           ", which is not a function type"
       )
     }
-    case Extern(member) -> checkArgs(c, e.id, member.params, args, newList(), None, e.ty, member.ret)
+    case Extern(member) -> {
+      // The trailing parameters a call leaves out take the host's declared defaults; the arguments are the rest.
+      if member.omitted < 0 or member.omitted > member.params.count {
+        report(
+          c,
+          e.id,
+          "call-arity",
+          "a host call omits " + toString(member.omitted) + " of the member's " + toString(member.params.count) +
+            " parameter(s)"
+        )
+      } else {
+        val supplied: List[TParamTy] = newList()
+        var k = 0
+        while k < member.params.count - member.omitted {
+          supplied.add(member.params[k])
+          k = k + 1
+        }
+        checkArgs(c, e.id, supplied, args, newList(), None, e.ty, member.ret)
+      }
+    }
     case Intrinsic(_) -> {
     }
   }

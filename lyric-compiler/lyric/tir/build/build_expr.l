@@ -5226,7 +5226,10 @@ func scoreOverload(
   val ps: List[Ty] = newList()
   var score = 0
   var i = 0
-  while i < sig.params.count {
+  if argTys.count > sig.params.count {
+    return None
+  }
+  while i < argTys.count {
     val p = match hostElemTy(sig.params[i], targs, argTys[i]) { case Some(t) -> t; case None -> return None }
     if tyEq(p, argTys[i]) {
       score = score + 2
@@ -5255,6 +5258,17 @@ func scoreOverload(
     }
     ps.add(p)
     i = i + 1
+  }
+  // The trailing parameters the call leaves out take the host's defaults; their types are the host's own.  An
+  // overload that takes exactly the arguments given outranks one that leaves any out, as the host's overload
+  // resolution has it (the MSIL resolver's exact-arity bonus).
+  while i < sig.params.count {
+    val p = match hostElemTy(sig.params[i], targs, TirT.TNever) { case Some(t) -> t; case None -> return None }
+    ps.add(p)
+    i = i + 1
+  }
+  if sig.params.count == argTys.count {
+    score = score + 1000
   }
   Some(value = OverloadFit(params = ps, score = score))
 }
@@ -5498,7 +5512,7 @@ func buildExternCallAt(
   var pass = 0
   while pass < 2 and not isSome(bestSig) {
     for c in cands {
-      if c.params.count == argTys.count and not (pass == 0 and viaValue and c.isStatic) {
+      if c.params.count - c.optionalTrailing <= argTys.count and argTys.count <= c.params.count and not (pass == 0 and viaValue and c.isStatic) {
         match scoreOverload(env, c, targs, argTys) {
           case Some(fit) -> {
             val ps = fit.params
@@ -5522,7 +5536,13 @@ func buildExternCallAt(
                 case None -> ()
               }
               if not same {
-                if moreSpecificParams(ps, bestParams) {
+                if ps.count != bestParams.count {
+                  // Equal scores, so neither takes the arguments exactly: the one that leaves fewer out wins.
+                  if ps.count < bestParams.count {
+                    bestSig = Some(value = c)
+                    bestParams = ps
+                  }
+                } else if moreSpecificParams(ps, bestParams) {
                   bestSig = Some(value = c)
                   bestParams = ps
                 } else if not moreSpecificParams(bestParams, ps) {
@@ -5605,13 +5625,20 @@ func buildExternCallAt(
     targsOut.add(TArgIn(value = c))
     i = i + 1
   }
+  // The parameters the call leaves out are part of the member's signature; the host fills each with its default.
+  var k = built.count
+  while k < bestParams.count {
+    params.add(TParamTy(mode = TMIn, ty = bestParams[k]))
+    k = k + 1
+  }
   val member = HostMemberRef(
     owner = owner,
     name = site.name,
     kind = if isCtor { HMConstructor } else { HMMethod },
     isStatic = sig.isStatic,
     params = params,
-    ret = ret
+    ret = ret,
+    omitted = bestParams.count - built.count
   )
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = targsOut)))
 }

@@ -186,6 +186,37 @@ func arrFn(body: in TExpr): TFnDecl {
   fnDecl(10, 0, params1(a), arr3(), body)
 }
 
+func hostMember(params: in List[TParamTy], omitted: in Int): HostMemberRef {
+  HostMemberRef(
+    owner = HostTypeRef(name = "System.Text.Json.JsonEncodedText", args = newList()),
+    name = "Encode",
+    kind = HMMethod,
+    isStatic = true,
+    params = params,
+    ret = tyInt(),
+    omitted = omitted
+  )
+}
+
+func hostCallFn(omitted: in Int): List[VerifyDiag] {
+  val x = local(1, "x", tyInt(), false)
+  val ps: List[TParamTy] = newList()
+  ps.add(pty(tyInt()))
+  ps.add(pty(tyInt()))
+  val c = call(2, tyInt(), Extern(member = hostMember(ps, omitted)), argsOf(ex(3, tyInt(), XLocal(local = x.id))))
+  oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))
+}
+
+test "a host call omitting its trailing parameters verifies when the arguments are the rest (D770)" {
+  assertEqual(rulesOf(hostCallFn(1)), "", "one argument of two, one omitted")
+}
+
+test "a host call whose omitted count does not match its arguments is reported (D770)" {
+  assertTrue(rulesOf(hostCallFn(0)).contains("call-arity"), "two parameters, one argument, none omitted")
+  assertTrue(rulesOf(hostCallFn(2)).contains("call-arity"), "two parameters, one argument, two omitted")
+  assertTrue(rulesOf(hostCallFn(3)).contains("call-arity"), "more omitted than parameters")
+}
+
 test "an array copy of an array read verifies clean" {
   val a = local(1, "a", arr3(), false)
   val copy = ex(2, arr3(), XArrayCopy(inner = ex(3, arr3(), XLocal(local = a.id))))
