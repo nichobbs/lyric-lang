@@ -388,7 +388,75 @@ func noteDefaults(
   }
 }
 
-/// The defaults of the fields of the non-generic record `decl`, by the record's DefPath key
+/// Whether `t` mentions a generic parameter.
+func tyMentionsParam(t: in Ty): Bool {
+  match t {
+    case TParam(_, _) -> true
+    case TTuple(es) -> tysMentionParam(es)
+    case TNullable(i) -> tyMentionsParam(i)
+    case TFunc(ps, r, _) -> {
+      for p in ps {
+        if tyMentionsParam(p.ty) {
+          return true
+        }
+      }
+      tyMentionsParam(r)
+    }
+    case TArray(_, e) -> tyMentionsParam(e)
+    case TSlice(e) -> tyMentionsParam(e)
+    case TNamed(_, args) -> tysMentionParam(args)
+    case TRefined(u, _, _, _) -> tyMentionsParam(u)
+    case TExtern(h) -> tysMentionParam(h.args)
+    case _ -> false
+  }
+}
+
+func tysMentionParam(ts: in List[Ty]): Bool {
+  for t in ts {
+    if tyMentionsParam(t) {
+      return true
+    }
+  }
+  false
+}
+
+/// Whether an expression of the shapes a default is made of mentions a generic parameter in a type or a type argument.
+func exprMentionsParam(e: in TExpr): Bool {
+  if tyMentionsParam(e.ty) {
+    return true
+  }
+  match e.kind {
+    case XCall(callee, args) -> {
+      val calleeHas = match callee { case Direct(_, targs) -> tysMentionParam(targs); case _ -> false }
+      if calleeHas {
+        return true
+      }
+      for a in args {
+        match a {
+          case TArgIn(v) -> if exprMentionsParam(v) { return true }
+          case _ -> return true
+        }
+      }
+      false
+    }
+    case XConstruct(_, fs) -> exprsMentionParam(fs)
+    case XConvert(_, inner) -> exprMentionsParam(inner)
+    case XListLit(es) -> exprsMentionParam(es)
+    case XTuple(es) -> exprsMentionParam(es)
+    case _ -> false
+  }
+}
+
+func exprsMentionParam(es: in List[TExpr]): Bool {
+  for x in es {
+    if exprMentionsParam(x) {
+      return true
+    }
+  }
+  false
+}
+
+/// The defaults of the fields of the record `decl` (a generic record's only when they mention none of its parameters), by the record's DefPath key
 /// and then the field's name: a construction that leaves a field out takes its default.
 func noteFieldDefaults(
   ctx: in TyConvCtx,
@@ -398,8 +466,13 @@ func noteFieldDefaults(
   acc: in Map[String, Map[String, IfDefault]],
   decl: in RecordDecl,
 ): Unit {
-  if decl.generics.isSome() {
-    return
+  val isGenericRec = decl.generics.isSome()
+  if isGenericRec {
+    // A generic record's defaults are built under its own parameters; only a default that mentions none of
+    // them is carried (`policy: RetryPolicy = lenientRetry()`), as one that does would need each use's
+    // instantiation.
+    val rid = symTableTypeSymbolId(tbl, pkg, decl.name)
+    tyConvBind(ctx, decl.name, rid, recordGenericNamesOf(tbl, rid))
   }
   val built: List[IfDefault] = newList()
   val names: List[String] = newList()
@@ -409,7 +482,7 @@ func noteFieldDefaults(
     match m {
       case RMField(fd) -> match fd.dflt {
         case Some(dx) -> match buildExpr(env, dx) {
-          case Some(t) -> {
+          case Some(t) -> if not (isGenericRec and exprMentionsParam(t)) {
             names.add(fd.name)
             built.add(IfDefault(expr = t, entries = newList()))
           }
