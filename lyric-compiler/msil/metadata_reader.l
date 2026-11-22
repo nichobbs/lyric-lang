@@ -4878,7 +4878,7 @@ pub record HostMemberSigInfo {
 /// `hostMemberReturnsOfExtern` finds them but with each overload's parameters
 /// and static flag.  `new` is the type's own `.ctor`s (the result is then the
 /// type itself, reported as a plain `STNamed` without its type arguments).  None when the type
-/// or a supertype cannot be located, or a candidate is a generic method.
+/// or a supertype cannot be located, or every candidate is a generic method.
 pub func hostMemberSigsOfExtern(
   cachePaths: in List[String],
   cacheParsed: in List[MdrParsedAssembly],
@@ -4904,6 +4904,7 @@ pub func hostMemberSigsOfExtern(
   }
   val getter = "get_" + member
   val found: List[HostMemberSigInfo] = newList()
+  var skippedGeneric = false
   for cur in chain {
     val asmName = match assemblyForType(typeIndex, cur) { case Some(n) -> n; case None -> return None }
     val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return None }
@@ -4924,8 +4925,12 @@ pub func hostMemberSigsOfExtern(
         m.name == member and m.paramTypes.count == argc
       }
       if wanted {
+        // A generic method's signature mentions its own type parameters, which a host member signature cannot
+        // carry: it is left out of the candidates, so `String.Join(string, string[])` still resolves beside
+        // `Join<T>(string, IEnumerable<T>)`.  A member with only generic overloads stays unresolved.
         if m.genericArity > 0 {
-          return None
+          skippedGeneric = true
+          continue
         }
         val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
         found.add(HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret))
@@ -4939,6 +4944,9 @@ pub func hostMemberSigsOfExtern(
         case None -> ()
       }
     }
+  }
+  if found.count == 0 and skippedGeneric {
+    return None
   }
   Some(value = found)
 }
