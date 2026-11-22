@@ -115,8 +115,17 @@ func bracketBody(s: in String): Option[String] {
     return None
   }
   val body = s.substring(open + 1, s.length - open - 2)
-  // `System.Byte[]` is an array type, not a name with type arguments.
-  if body.length == 0 {
+  // `System.Byte[]` and `System.Byte[,]` are array types, not names with type arguments.
+  var onlyCommas = true
+  var k = 0
+  while k < body.length {
+    val ch = body.substring(k, 1)
+    if ch != "," and ch != " " {
+      onlyCommas = false
+    }
+    k = k + 1
+  }
+  if onlyCommas {
     return None
   }
   Some(value = body)

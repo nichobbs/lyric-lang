@@ -3661,6 +3661,12 @@ test "an extern type name that ends in an empty bracket pair stands as written" 
   assertEqualInt(h.args.count, 0, "no arguments")
 }
 
+test "an extern type name for a multi-dimensional array stands as written" {
+  val h = hostRefOfClrName("System.Byte[,]", newList())
+  assertEqual(h.name, "System.Byte[,]", "a rank-2 array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
 test "an extern type name without brackets stands as written" {
   val h = hostRefOfClrName("System.Text.StringBuilder", newList())
   assertEqual(h.name, "System.Text.StringBuilder", "the name")
