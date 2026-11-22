@@ -301,7 +301,8 @@ pub union TExprKind {
   /// The zero value of the array type `ty`: the value of a `var a: array[N, T]` with no
   /// initializer.  An element is zero as `zeroExprFor` defines it: `0`, `0.0`, `false`, `'\0'`, an
   /// array of zero elements, or a record of zero fields (not an all-zero bit pattern: a record
-  /// element may hold a reference).
+  /// element may hold a reference).  `ty` may also be a host value type (`TExtern`): its default value, the
+  /// call of its implicit parameterless constructor (`TimeSpan.new()`).
   case XZeroValue(ty: Ty)
   /// The index of an array, slice, string, list or buffer is `Int` or any other integer primitive
   /// (`Long`, `Byte`, `UInt`, `ULong`), which a backend range checks before narrowing.
