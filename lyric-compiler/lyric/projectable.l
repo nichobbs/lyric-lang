@@ -77,18 +77,7 @@ record NestedRef {
   importPath: List[String]
 }
 
-func joinPath(segs: in List[String]): String {
-  var joined = ""
-  var i = 0
-  while i < segs.count {
-    if i > 0 {
-      joined = joined + "."
-    }
-    joined = joined + segs[i]
-    i = i + 1
-  }
-  joined
-}
+func joinPath(segs: in List[String]): String = joinWith(segs, ".")
 
 /// Whether package `pkg` of the build declares a non-generic `@projectable` opaque type `name`.
 func packageHasProjectable(sc: in Scope, pkg: in String, name: in String): Bool {
@@ -239,10 +228,10 @@ func expansionText(it: in Item, d: in OpaqueTypeDecl, sc: in Scope): String {
   val tryArgs: List[String] = newList()
   var eligible = true
   for f in fields {
-    tryArgs.add(f.name + " = self." + f.name)
     if f.hidden {
       eligible = false
     } else {
+      tryArgs.add(f.name + " = self." + f.name)
       viewFields.add("  " + vis + f.name + ": " + f.viewType)
       if f.nested {
         toViewArgs.add(f.name + " = self." + f.name + ".toView()")
