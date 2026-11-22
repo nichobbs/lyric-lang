@@ -4735,7 +4735,9 @@ func buildParamDefault(
 /// `JCharacter.toUpperCase(c).toInt()` where the host call's result is untyped (its overloads differ in
 /// their result) and the builder types the chain itself as a primitive: the checker had no receiver type to
 /// record the numeric conversion built-in against, so the call is the primitive's own built-in, as it is
-/// where the checker typed the receiver.  None, counting nothing, for any other shape.
+/// where the checker typed the receiver.  The receiver is any expression the builder types: a host chain, an
+/// element of an untyped local (`copied[0].toInt()` where `copied` holds a host `byte[]`), a host constant.
+/// None, counting nothing, for any other shape.
 func buildConvMethodOnOpenPrim(
   env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
 ): Option[Option[TExpr]] {
@@ -4755,7 +4757,7 @@ func buildConvMethodOnOpenPrim(
     case Ok(_) -> return None
     case Err(_) -> ()
   }
-  match openHostChainTy(env, recv) {
+  match exprOrOpenTy(env, recv) {
     case Some(rt) -> match rt {
       case TPrim(p) -> if isNumericPrimKind(p) or isCharKind(p) {
         Some(value = buildBuiltinCall(env, e, ty, renderTy(rt) + "." + name, fn, args))
