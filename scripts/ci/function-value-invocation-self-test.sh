@@ -63,7 +63,7 @@ for expect in "a1=11" "u1=11" "u2=42" "uB=false"; do
 done
 echo "OK: annotated and propagated parameter-taking lambdas produce correct results."
 # An un-annotated param-using lambda NOT passed directly to a HOF (so no
-# type can be propagated) must fail loud (#1939), not read garbage.
+# type can be propagated) is the checker error T0231 (#1939, D757), not garbage.
 neg="$dir/pneg.l"
 cat > "$neg" <<'LYRIC'
 package PNeg
@@ -73,8 +73,8 @@ LYRIC
 if "$lyric_bin" build --target dotnet "$neg" > "$dir/pneg.out" 2>&1; then
   echo "::error::un-typed param-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
 fi
-if ! grep -qi "un-annotated parameter" "$dir/pneg.out"; then
-  echo "::error::un-typed param-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
+if ! grep -q "T0231" "$dir/pneg.out"; then
+  echo "::error::un-typed param-using lambda failed without the expected T0231 diagnostic"; cat "$dir/pneg.out"; exit 1
 fi
-echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
+echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) is T0231 (#1939, D757)."
 

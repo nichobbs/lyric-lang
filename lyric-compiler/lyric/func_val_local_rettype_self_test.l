@@ -349,7 +349,7 @@ test "chained call to a Unit-returning closure factory leaves the stack balanced
 
 // #6690: unlike every case above (a `val` bound to a CALL whose result is
 // function-shaped), this is a `val` bound directly to a LAMBDA LITERAL with
-// no type annotation at all (`val f = { x -> false }`). `registerFieldFuncValTypesMsil`
+// no type annotation on the binding (`val f = { x: Int -> false }`; an unannotated parameter is T0231). `registerFieldFuncValTypesMsil`
 // had no `ELambda` arm, so `f`'s return type never registered and invoking
 // `f(y)` left the boxed `Func::Invoke` result un-unboxed — a non-null boxed
 // reference reads as truthy regardless of the lambda's real body, so `f(y)`
@@ -361,7 +361,7 @@ test "chained call to a Unit-returning closure factory leaves the stack balanced
 // "formatting would change the code-token sequence"); the brace form
 // formats cleanly and exercises the identical codegen path.
 test "un-annotated lambda-literal local, boolean body (#6690 exact repro)" {
-  val f = { x -> false }
+  val f = { x: Int -> false }
   assertFalse(f(1), "f(1) must be false, not truthy-boxed-object")
   assertFalse(f(99), "f(99) must be false, not truthy-boxed-object")
 }
@@ -377,7 +377,7 @@ test "un-annotated lambda-literal local, boolean body (#6690 exact repro)" {
 // the test above.
 test "un-annotated lambda-literal local, comparison body over a captured value (#6690)" {
   val threshold = 3
-  val exceeds = { x -> threshold > 0 }
+  val exceeds = { x: Int -> threshold > 0 }
   assertTrue(exceeds(999), "threshold(3) > 0 is true regardless of the unused param x")
 }
 
@@ -477,7 +477,7 @@ test "un-annotated lambda-literal local, arithmetic over a captured String (#693
 // always-safe comparison arms.
 test "un-annotated lambda-literal local, comparison over a captured Double is unaffected by #6933's fix" {
   val threshold = 2.5
-  val exceeds = { x -> threshold > 1.0 }
+  val exceeds = { x: Int -> threshold > 1.0 }
   assertTrue(exceeds(999), "threshold(2.5) > 1.0 is true regardless of the unused param x")
 }
 

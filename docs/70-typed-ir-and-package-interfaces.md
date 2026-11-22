@@ -917,6 +917,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
   - `format1` to `format4` take their arguments of any type as `println` does, so a number or `Bool` argument is built as the checker typed it (D407).
+  - A lambda parameter whose type nothing fixes (`val f = { x -> false }` with no expected function type) is the checker error T0231 (D757, owner decision of 2026-11-22).
   - A call written through its own package's name resolves to the package's function (D749); a record sharing its name with an enum case keeps its construction (D755); `.count` on a host array local reads as its length (D756).
   - A tuple literal converts element by element and a negated `Double` literal is a `Float` literal where a `Float` is wanted (D746); a function-valued binding keeps its built type and a union case's fields convert to the node's type (D747); a package-qualified distinct factory builds (D748).
   - A `match` whose arms all diverge is typed `Never` (the join started at a silent `TyError`), so a `Unit` function ending in one builds (D348).
