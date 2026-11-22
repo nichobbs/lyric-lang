@@ -15951,7 +15951,7 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
       // (`val s: String = xs.contains(x)`) is reported (#7978).
       val boolResult = (argCount == 1) and
         (
-          (isList and name == "contains") or (isMap and name == "containsKey") or
+          (isList and name == "contains") or (isMap and (name == "containsKey" or name == "containsValue")) or
             (isSet and name == "contains") or
             ((isList or isMap or isSet) and name == "remove")
         )
@@ -16057,6 +16057,8 @@ func stdCollectionMemberParams(
           ps.add(collParam(targs[1], "value"))
         } else if argCount == 1 and (name == "containsKey" or name == "remove") {
           ps.add(collParam(targs[0], "key"))
+        } else if argCount == 1 and name == "containsValue" {
+          ps.add(collParam(targs[1], "value"))
         }
       } else if targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set") {
         if argCount == 1 and (name == "add" or name == "contains" or name == "remove") {
