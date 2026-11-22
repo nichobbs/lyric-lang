@@ -459,6 +459,26 @@ test "collection members take their parameter types from a host or a declared re
   }
 }
 
+test "Map.containsValue takes the value type (D698)" {
+  val host = TirT.TExtern(
+    host = HostTypeRef(
+      name = "System.Collections.Generic.Dictionary`2",
+      args = [TirT.TPrim(kind = TPLong), tyString()]
+    )
+  )
+  match memberArgTys(host, "Map.containsValue", 1) {
+    case Some(tys) -> {
+      assertEqualInt(tys.count, 1, "one parameter")
+      assertTrue(tyEq(tys[0], tyString()), "the value type, not the key type")
+    }
+    case None -> assertTrue(false, "containsValue has a derived parameter type")
+  }
+  match memberArgTys(host, "Map.containsValue", 2) {
+    case Some(_) -> assertTrue(false, "containsValue takes one argument")
+    case None -> ()
+  }
+}
+
 test "a refined argument to a built-in member is unrefined to the parameter the checker gave it" {
   val r = buildFirstFn("package App\nfunc m(s: in String, i: in Int range 0 ..= 9): String { s.substring(i) }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
