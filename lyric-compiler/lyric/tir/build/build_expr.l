@@ -1907,8 +1907,9 @@ func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
 /// The JVM's boxed primitive classes that a chain result the checker left untyped keeps as the host class
 /// (`Integer.valueOf(n).intValue()`, `JBoolean.TRUE`): the member that follows is the box's own.
 func isJvmBoxedName(name: in String): Bool {
-  name == "java.lang.Boolean" or name == "java.lang.Integer" or name == "java.lang.Long" or
-    name == "java.lang.Short" or name == "java.lang.Byte" or name == "java.lang.Character"
+  name == "java.lang.Boolean" or name == "java.lang.Integer" or name == "java.lang.Long" or name == "java.lang.Short" or
+    name == "java.lang.Byte" or
+    name == "java.lang.Character"
 }
 
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
