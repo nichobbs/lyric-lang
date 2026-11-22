@@ -26755,9 +26755,6 @@ func findDirectSig(
   findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguous)
 }
 
-// `findDirectSig`, adding to `ambiguous` the declarations a call that fills
-// defaults binds equally well (`pickByShape`); the signature returned is then
-// the first of them.
 // The function `member` of the package `recv` names (`App.f(x)` in package `App`, `Lib.Sub.f(x)`), when `recv` is a
 // dotted name that no local, parameter or field binds and some candidate of that name is declared by that package.
 func packageQualifiedFuncSig(
@@ -26790,6 +26787,9 @@ func packageQualifiedFuncSig(
   pickByShape(tbl, cands, args, argTypes, None, ambiguous)
 }
 
+// `findDirectSig`, adding to `ambiguous` the declarations a call that fills
+// defaults binds equally well (`pickByShape`); the signature returned is then
+// the first of them.
 func findDirectSigPick(
   sc: in Scope,
   tbl: in SymbolTable,

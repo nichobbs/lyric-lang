@@ -6099,6 +6099,14 @@ func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String):
   // A host array's size is read as `count` too: its type is the host's, not a Lyric slice's, so the checker
   // does not reject the name (T0228 is for a typed slice).
   val isCount = name == "count"
+  if isCount {
+    // Only a receiver the checker left unchecked is a host array; a typed slice's `count` is T0228.
+    match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
+      case Some(TyError(_)) -> ()
+      case Some(_) -> return None
+      case None -> ()
+    }
+  }
   match openLocalTy(env, recv) {
     case Some(t) -> match t {
       case TSlice(_) -> Some(value = "slice.length")

@@ -3469,3 +3469,15 @@ test "an assignment to a field of a generic opaque type is built at the field's 
     "pub opaque type Pair[A, B] {\n  first: A\n  var second: B\n}\npub func Pair.swapCount[A, B](self: in Pair[A, B], next: in B): Int {\n  self.second = next\n  1\n}\n"
   )
 }
+
+test "a call written through the file's own package name builds (D749)" {
+  val c = censusOf("package App\nfunc plainOne(): Int { 1 }\nfunc a(): Int { App.plainOne() }\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+}
+
+test "a record sharing its name with an enum case is still constructed (D755)" {
+  val c = censusOf(
+    "package App\nrecord Info { text: String }\nenum Level {\n  case Info\n  case Warn\n}\nfunc a(): String { Info(text = \"t\").text }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+}
