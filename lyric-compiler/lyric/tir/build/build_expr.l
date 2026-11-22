@@ -1945,15 +1945,15 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   }
 }
 
-/// The types of a call's positional arguments (the checker's, else the builder's own for an argument it left open, `97.toChar()`), or an empty list when any is named or untyped: the
+/// The checker's types of a call's positional arguments, or an empty list when any is named or untyped: the
 /// arguments an overload of an untyped host call is chosen by (`Math.round(d)`).
 func checkerArgTys(env: in BuildEnv, args: in List[CallArg]): List[Ty] {
   val tys: List[Ty] = newList()
   for a in args {
     match a {
-      case CAPositional(x) -> match exprOrOpenTy(env, x) {
-        case Some(t) -> tys.add(t)
-        case None -> return newList()
+      case CAPositional(x) -> match exprTy(env.ctx, x.nodeId) {
+        case Ok(t) -> tys.add(t)
+        case Err(_) -> return newList()
       }
       case CANamed(_, _, _) -> return newList()
     }
