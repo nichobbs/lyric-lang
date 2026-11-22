@@ -565,7 +565,7 @@ The `@projectable` annotation directs the compiler to generate a sibling `expose
 - A projection function `User.toView(self): UserView`
 - A reverse function `UserView.tryInto(self): Result[User, String]`, emitted when the type has no `@hidden` field and no nested projectable field; it rebuilds the value through the constructor, so the invariant runs as it does at any construction (D761)
 
-The view, `toView` and `tryInto` are ordinary declarations the compiler adds before the type check (D761): they are checked, documented and resolved like declarations written by hand. A generic opaque type is not projected, and a field projects to `<FieldType>View` only when its type is written as the bare name of another `@projectable` opaque type of the same package (a field typed `Option[Other]`, or a type of another package, keeps its written type in the view).
+The view, `toView` and `tryInto` are ordinary declarations the compiler adds before the type check (D761): they are checked, documented and resolved like declarations written by hand. A generic opaque type is not projected, and a field projects to `<FieldType>View` when its type names another non-generic `@projectable` opaque type of the build: declared in the same package, or in another source package of the build and imported by name (`import P.Inner`, `import P.{Inner}`) or written qualified (`P.Inner`). The other package's `<Name>View` is imported for the view. A field of a wrapped type (`Option[Other]`) or of a type from a restored (binary) dependency keeps its written type.
 
 Configurable surfaces:
 
