@@ -6762,8 +6762,10 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
 }
 
 /// Whether `name` is the host type of a `List[T]`: the .NET `List<T>` the stdlib declares it as, or the JVM's.
-func isListHostName(name: in String): Bool {
-  name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList"
+pub func isListHostName(name: in String): Bool {
+  name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList" or
+    name == "java.util.List`1" or
+    name == "java.util.ArrayList`1"
 }
 
 /// A tuple literal used where a tuple of other element types is wanted (`(two(), "a")` where an
