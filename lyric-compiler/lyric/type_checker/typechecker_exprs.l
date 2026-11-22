@@ -21532,6 +21532,9 @@ func inferExprCore(
               val restArgs = tailArgs(args)
               val restTypes = tailTypes(argTypes)
               recordBodyMethodCallRewrite(tbl, fn, args, member, withReceiverParam(bm, argTypes[0]))
+              // The call is the method call `x.m(args)`: its callee and shape under the call's node, which the
+              // typed IR builder reads as it does for a call written that way.
+              recordMethodCalleeNode(tbl, e.nodeId, Some(value = MethodCallPick(sig = bm, fullSig = None)), argTypes[0], member)
               val siteKey = recordCopySiteKey(e.span)
               if tbl.argOrderSites.containsKey(siteKey) {
                 tbl.argOrderSites.remove(siteKey)

@@ -976,6 +976,12 @@ func fhSig(isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberT
   ExternMemberSig(isStatic = isStatic, params = ps, ret = ret)
 }
 
+func fhSigOptional(
+  isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberType, optional: in Int
+): ExternMemberSig {
+  ExternMemberSig(isStatic = isStatic, params = ps, ret = ret, optionalTrailing = optional)
+}
+
 func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
   val xs: List[ExternIterElem] = newList()
   xs.add(a)
@@ -1040,6 +1046,22 @@ func fakeHost(): FakeHost {
   val intValue: List[ExternMemberSig] = newList()
   intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
+  val upper: List[ExternMemberSig] = newList()
+  upper.add(fhSig(true, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Char"))))
+  upper.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.Character", "toUpperCase", 1), upper)
+  val grow: List[ExternMemberSig] = newList()
+  grow.add(
+    fhSig(
+      true,
+      fhParams1(fhPrim("Int")),
+      EMTType(elem = EIEHost(hostName = "an array, pointer or by-reference type", args = [fhPrim("Int")]))
+    )
+  )
+  sigs.add(fhKey("System.Math", "Grow", 1), grow)
+  val parseU: List[ExternMemberSig] = newList()
+  parseU.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("System.UInt32"))))
+  sigs.add(fhKey("System.UInt32", "Parse", 1), parseU)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1047,6 +1069,25 @@ func fakeHost(): FakeHost {
   pick.add(fhSig(true, fhParams1(objectArray), EMTType(elem = fhPrim("Int"))))
   pick.add(fhSig(true, fhParams1(intArray), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Pick", 1), pick)
+  // `Encode(String value, Int options = 0)`: one argument may leave the last parameter out.
+  val encode: List[ExternMemberSig] = newList()
+  encode.add(fhSigOptional(true, fhParams2(fhPrim("String"), fhPrim("Int")), EMTType(elem = fhPrim("Int")), 1))
+  sigs.add(fhKey("System.Math", "Encode", 1), encode)
+  // `Zero(Int a = 0)`: a call with no argument may leave out the only parameter.
+  val zero: List[ExternMemberSig] = newList()
+  zero.add(fhSigOptional(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int")), 1))
+  sigs.add(fhKey("System.Math", "Zero", 0), zero)
+  // `Wide(String a, Int b = 0, Int c = 0)`: a call may leave out two parameters.
+  val wide: List[ExternMemberSig] = newList()
+  val widePs = fhParams2(fhPrim("String"), fhPrim("Int"))
+  widePs.add(fhPrim("Int"))
+  wide.add(fhSigOptional(true, widePs, EMTType(elem = fhPrim("Int")), 2))
+  sigs.add(fhKey("System.Math", "Wide", 1), wide)
+  // `Both(String)` beside `Both(String, Int = 0)`: the exact-arity overload wins.
+  val both: List[ExternMemberSig] = newList()
+  both.add(fhSigOptional(true, fhParams2(fhPrim("String"), fhPrim("Int")), EMTType(elem = fhPrim("Long")), 1))
+  both.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Both", 1), both)
   FakeHost(sigs = sigs)
 }
 
@@ -1136,6 +1177,55 @@ test "a static extern call picks the overload the argument types select" {
   }
 }
 
+test "a call that leaves out an optional trailing host parameter records it as omitted" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Encode(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 2, "the whole signature")
+      assertEqualInt(m.omitted, 1, "one parameter left out")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPInt)), "the omitted parameter's type")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a call with no argument may leave out every parameter of an all-optional overload" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Zero()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 1, "the whole signature")
+      assertEqualInt(m.omitted, 1, "the one parameter left out")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a call may leave out more than one optional trailing host parameter" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Wide(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 3, "the whole signature")
+      assertEqualInt(m.omitted, 2, "two parameters left out")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an overload that needs no omitted parameter beats one that does" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Both(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 1, "the one-parameter overload")
+      assertEqualInt(m.omitted, 0, "nothing left out")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
 test "equal-score widening overloads take the most specific one (D697)" {
   val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Abs('a')\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
@@ -1169,6 +1259,38 @@ test "a member called on a boxed number a host call returns is the box's own (D7
     case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
     case None -> assertTrue(false, "an extern call")
   }
+}
+
+test "a numeric conversion on a primitive an untyped host chain returns is the built-in (D754)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type JChar = \"java.lang.Character\"\nfunc f(): Int {\n  JChar.toUpperCase('a').toInt()\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a primitive array a host chain returns is the slice of its element (D753)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val g = Math.Grow(3)\n  g.length\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host UInt32 result the checker types as Long is read with CvFromHost (D771)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type UInt32T = \"System.UInt32\"\nfunc f(): Long {\n  UInt32T.Parse(\"4000000000\")\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(
+    hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.UInt32", args = newList())), TPrim(kind = TPLong)),
+    "UInt32 is a Long"
+  )
+  assertTrue(
+    hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.UInt64", args = newList())), TPrim(kind = TPLong)),
+    "UInt64 is a Long"
+  )
+  assertTrue(
+    not hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.Int16", args = newList())), TPrim(kind = TPLong)),
+    "Int16 is not a Long"
+  )
 }
 
 test "an extern argument is widened to the overload's parameter" {
