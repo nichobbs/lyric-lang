@@ -11576,10 +11576,29 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       case DKExposedRec(_, _) -> Some(value = sym)
       case DKOpaque(_, _) -> Some(value = sym)
       case DKProtected(_, _) -> Some(value = sym)
+      // An enum case takes no arguments, so `Info(text = "t")` in a package declaring both a case `Info` and a
+      // record `Info` constructs the record.
+      case DKEnumCase(_, _) -> ownRecordNamed(tbl, ctorName)
       case _ -> None
     }
-    case None -> None
+    case None -> ownRecordNamed(tbl, ctorName)
   }
+}
+
+// The record, opaque or protected type the package itself declares under `name`.
+func ownRecordNamed(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if not cand.isImported {
+      match cand.kind {
+        case DKRecord(_, _) -> return Some(value = cand)
+        case DKExposedRec(_, _) -> return Some(value = cand)
+        case DKOpaque(_, _) -> return Some(value = cand)
+        case DKProtected(_, _) -> return Some(value = cand)
+        case _ -> ()
+      }
+    }
+  }
+  None
 }
 
 // `Score(42)`: a distinct type built from a value of its underlying type
@@ -26736,6 +26755,38 @@ func findDirectSig(
   findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguous)
 }
 
+// The function `member` of the package `recv` names (`App.f(x)` in package `App`, `Lib.Sub.f(x)`), when `recv` is a
+// dotted name that no local, parameter or field binds and some candidate of that name is declared by that package.
+func packageQualifiedFuncSig(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recv: in Expr,
+  member: in String,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  ambiguous: in List[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val segs: List[String] = newList()
+  if not calleeSegments(recv, segs) or segs.count == 0 {
+    return None
+  }
+  if scopeHasName(sc, segs[0]) or sc.selfFields.containsKey(segs[0]) {
+    return None
+  }
+  val wantPkg = modulePathJoin(segs)
+  val cands: List[ResolvedSignature] = newList()
+  for qc in qualifiedCallCandidates(sigs, member, args) {
+    if qc.originPackage == wantPkg {
+      cands.add(qc)
+    }
+  }
+  if cands.count == 0 {
+    return None
+  }
+  pickByShape(tbl, cands, args, argTypes, None, ambiguous)
+}
+
 // `findDirectSig`, adding to `ambiguous` the declarations a call that fills
 // defaults binds equally well (`pickByShape`); the signature returned is then
 // the first of them.
@@ -26784,6 +26835,12 @@ func findDirectSigPick(
           case Some(pds) -> return Some(value = pds)
           case None -> ()
         }
+      }
+      // `Pkg.f(x)` written as a member of the package's name (the file's own package included): the
+      // function `f` that package declares, as the same call written as a path.
+      match packageQualifiedFuncSig(sc, tbl, sigs, recv, member, args, argTypes, ambiguous) {
+        case Some(qs) -> return Some(value = qs)
+        case None -> ()
       }
       val typeName = match recv.kind {
         case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {
