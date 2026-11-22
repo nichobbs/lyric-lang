@@ -17,3 +17,7 @@ D472 let a host array parameter that names its element take a slice of that elem
 ## Consequences
 
 `auto_ffi_jvm_self_test` builds `Arrays.asList`, `Objects.hash` and `String.format` over a slice. The D472 assertion "an Int slice is not a host Object[]" is replaced by its opposite, with the two exclusions above asserted.
+
+## Scoring
+
+A slice taken by the host array of its own element (`slice[Int]` for `int[]`) scores one above a slice boxed into an `Object[]`, so `Arrays.copyOf(int[], int)` is chosen over `copyOf(T[], int)` without an ambiguity: the same order the backend's resolver uses (exact match above the `Object[]` fallback).

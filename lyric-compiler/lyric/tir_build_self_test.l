@@ -1025,6 +1025,13 @@ func fakeHost(): FakeHost {
   abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Abs", 1), abs)
+  val pick: List[ExternMemberSig] = newList()
+  val arrayName = "an array, pointer or by-reference type"
+  val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
+  val objectArray = EIEHost(hostName = arrayName, args = [fhHost("java.lang.Object")])
+  pick.add(fhSig(true, fhParams1(objectArray), EMTType(elem = fhPrim("Int"))))
+  pick.add(fhSig(true, fhParams1(intArray), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Pick", 1), pick)
   FakeHost(sigs = sigs)
 }
 
@@ -1119,6 +1126,18 @@ test "equal-score widening overloads take the most specific one (D697)" {
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
     case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPInt)), "the Int overload, a Char widening to int")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a slice takes the array of its own element over an Object[] (D699)" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: in slice[Int]): Int {\n  Math.Pick(xs)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> match m.params[0].ty {
+      case TExtern(h) -> assertTrue(tyEq(h.args[0], TPrim(kind = TPInt)), "the int[] overload, not the Object[] one")
+      case _ -> assertTrue(false, "a host array parameter")
+    }
     case None -> assertTrue(false, "an extern call")
   }
 }

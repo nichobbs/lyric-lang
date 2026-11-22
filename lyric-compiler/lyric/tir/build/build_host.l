@@ -139,6 +139,16 @@ func hostArrayAccepts(h: in HostTypeRef, el: in Ty): Bool {
   }
 }
 
+/// Whether the host array `h` is the array of exactly the slice's own element (an `int[]` for a slice of
+/// `Int`), as against an `Object[]` that takes any slice: an overload on the exact array outranks the
+/// `Object[]` one, as the JVM resolver scores it.
+pub func hostArrayIsOwnElement(h: in HostTypeRef, el: in Ty): Bool {
+  if h.args.count != 1 or isJvmObjectArray(h) {
+    return false
+  }
+  hostArrayAccepts(h, el)
+}
+
 /// The JVM's `Object[]`.  A Lyric slice is an `Object[]` of boxed elements on the JVM whatever its element
 /// type, so a slice of any element is passed as the array itself (docs/70 D699).  The CLR's `object[]` is
 /// not a slice's representation, so it is not included.
