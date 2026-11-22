@@ -5270,7 +5270,7 @@ func scoreOverload(
     ps.add(p)
     i = i + 1
   }
-  Some(value = OverloadFit(params = ps, score = score * 4 - omitted, omitted = omitted))
+  Some(value = OverloadFit(params = ps, score = score * 256 - omitted, omitted = omitted))
 }
 
 /// A host call's node as the checker typed it: a host string can be null (the checker types the call
