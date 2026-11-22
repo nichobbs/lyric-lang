@@ -16110,14 +16110,16 @@ func inoutSelfSource(call: in String): String {
     "\n}\n"
 }
 
-test "an inout Self parameter called through an interface is T0232 (D751)" {
+test "an inout Self parameter through an interface with a concrete argument is T0232 (D751)" {
   val src = inoutSelfSource("val a: Absorber = Box(n = 3)\n  var o = Box(n = 7)\n  a.absorb(o)")
   assertTrue(hasDiagCode(parseCheck(src), "T0232"), "inout Self through the interface: T0232")
 }
 
-test "an inout Self parameter called on the implementing type, and an in Self parameter through the interface, are not T0232 (D751)" {
+test "an inout Self parameter on the implementing type, in Self through the interface and an interface-typed argument are not T0232 (D751)" {
   val onConcrete = inoutSelfSource("val a: Box = Box(n = 3)\n  var o = Box(n = 7)\n  a.absorb(o)")
   assertTrue(not hasDiagCode(parseCheck(onConcrete), "T0232"), "a Box receiver is allowed")
   val inThrough = inoutSelfSource("val a: Absorber = Box(n = 3)\n  a.merged(Box(n = 7))")
   assertTrue(not hasDiagCode(parseCheck(inThrough), "T0232"), "in Self through the interface is allowed")
+  val ofInterface = inoutSelfSource("val a: Absorber = Box(n = 3)\n  var o: Absorber = Box(n = 7)\n  a.absorb(o)")
+  assertTrue(not hasDiagCode(parseCheck(ofInterface), "T0232"), "an interface-typed argument is allowed")
 }

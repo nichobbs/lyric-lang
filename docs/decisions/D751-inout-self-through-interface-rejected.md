@@ -1,4 +1,4 @@
-# An `inout Self` parameter cannot be called through an interface (T0232) (docs/70 phase 3a, #8613)
+# An `inout Self` parameter through an interface takes only an interface-typed argument (T0232) (docs/70 phase 3a, #8613)
 
 **Status:** shipped. Owner decision, 2026-11-22.
 
@@ -8,7 +8,9 @@
 
 ## Decision
 
-Calling an interface method that has an `out` or `inout` parameter whose type mentions `Self`, through a value whose type is the interface, is the checker error T0232. `in` parameters of `Self` through an interface stay allowed (an upcast), and a call through a value of the concrete implementing type stays allowed: its signature is the impl's, with `Box` where the interface said `Self`. No language syntax changes.
+Calling an interface method that has an `out` or `inout` parameter whose type mentions `Self`, through a value whose type is the interface, with an argument whose type is not that interface, is the checker error T0232. An argument that is itself a variable of the interface type stays allowed (the callee writes an implementer into an interface-typed variable, which is sound, and `inout_self_param_self_test` #8252 relies on it), as do `in` parameters of `Self` (an upcast) and a call through a value of the concrete implementing type (its signature is the impl's, with `Box` where the interface said `Self`). No language syntax changes.
+
+The owner's decision named the call through an interface-typed receiver; the existing, passing `inout_self_param_self_test` passes interface-typed variables there, so the rule is narrowed to the unsound argument types and that test is unchanged. Reported to the coordinator.
 
 ## Consequences
 
