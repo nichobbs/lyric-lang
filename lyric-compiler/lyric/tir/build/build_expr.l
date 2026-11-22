@@ -5178,6 +5178,14 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
   }
 }
 
+/// A slice passed for the host array of its own element type (`slice[Int]` for `int[]`).
+func ownElementArray(arg: in Ty, p: in Ty): Bool {
+  match p {
+    case TExtern(h) -> match arg { case TSlice(el) -> hostArrayIsOwnElement(h, el); case _ -> false }
+    case _ -> false
+  }
+}
+
 /// The parameters of one overload as `Ty`s matched against the argument types, with
 /// the score of the match (2 per exact argument, 1 per widened one), or None when
 /// an argument does not fit.
@@ -5207,7 +5215,7 @@ func scoreOverload(
               score = score + 1
             }
             case None -> match hostBoxKind(argTys[i], p) {
-              case Some(_) -> ()
+              case Some(_) -> if ownElementArray(argTys[i], p) { score = score + 1 }
               case None -> return None
             }
           }
