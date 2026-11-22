@@ -6093,14 +6093,20 @@ func stdCoreProjection(env: in BuildEnv, id: in SymbolId, hd: in String, name: i
 /// `length` of a local the checker left untyped at the read (`var chunk = fis.readNBytes(n)`: a host
 /// array result), by the type the local was declared at.
 func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
-  if name != "length" {
+  if name != "length" and name != "count" {
     return None
   }
+  // A host array's size is read as `count` too: its type is the host's, not a Lyric slice's, so the checker
+  // does not reject the name (T0228 is for a typed slice).
+  val isCount = name == "count"
   match openLocalTy(env, recv) {
     case Some(t) -> match t {
       case TSlice(_) -> Some(value = "slice.length")
       case TArray(_, _) -> Some(value = "array.length")
-      case TPrim(k) -> match k { case TPString -> Some(value = "String.length"); case _ -> None }
+      case TPrim(k) -> match k {
+        case TPString -> if isCount { None } else { Some(value = "String.length") }
+        case _ -> None
+      }
       case _ -> None
     }
     case None -> None
