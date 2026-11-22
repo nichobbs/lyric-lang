@@ -67,6 +67,7 @@ import Lyric.BuildDefines as BD
 import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
+import Lyric.Projectable as Projectable
 import Lyric.TypeAliasResolve as TypeAliasResolve
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
@@ -750,7 +751,7 @@ pub record ExpandProfile {
 
 /// The rewrites a build for `targetName` (`dotnet`, `jvm`, `native`) runs
 /// before the type check: the managed targets expand wires and synthesise
-/// `@stubbable` stubs, only the JVM injects weave imports, and the native
+/// `@stubbable` stubs and `@projectable` views, only the JVM injects weave imports, and the native
 /// bridge synthesises no stubs.
 pub func pipeExpandProfile(targetName: in String): ExpandProfile {
   if targetName == "jvm" {
@@ -1365,6 +1366,14 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   var f = arRes.file
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
+    // `@projectable` views and their `toView`/`tryInto` (docs/01 2.9): the
+    // managed targets only, like the stubs; native refuses `@projectable`
+    // (N0101).
+    val projRes = Projectable.projectableRewriteFile(f)
+    f = projRes.file
+    for d in projRes.diagnostics {
+      diags.add(d)
+    }
   }
   val idRes = ImplDefaults.inheritDefaultsFile(f)
   var j = 0
