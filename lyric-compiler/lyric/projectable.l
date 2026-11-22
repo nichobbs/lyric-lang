@@ -68,6 +68,13 @@ record Scope {
   packages: Map[String, PluginExpand.PluginPackage]
   /// Each `<package>.<Name>View` a field of an imported projectable type needs imported.
   viewImports: List[List[String]]
+  /// The file (`Position.fileId`) each of `viewImports` is for: a file resolves its names through its own
+  /// header's imports, so the import goes into that header too.
+  viewImportFiles: List[Int]
+  /// The file of the opaque type being expanded, in one cell.
+  currentFile: List[Int]
+  /// The files with a projectable opaque type: their headers import `Std.Core` for `Result` and `Ok`.
+  projectableFiles: Map[Int, Bool]
 }
 
 /// How a field type names another projectable type: the view type to write, and the
@@ -182,6 +189,7 @@ func fieldsOf(d: in OpaqueTypeDecl, sc: in Scope): List[ViewField] {
                   }
                   full.add(r.viewType)
                   sc.viewImports.add(full)
+                  sc.viewImportFiles.add(sc.currentFile[0])
                 }
               }
               case None -> ()
@@ -330,6 +338,29 @@ func withViewImports(imports: in List[ImportDecl], paths: in List[List[String]],
   acc
 }
 
+/// `headers` with each file's own header importing the views its own opaque types need.
+func withHeaderViewImports(headers: in List[FileHeader], sc: in Scope): List[FileHeader] {
+  val acc: List[FileHeader] = newList()
+  var fileId = 0
+  for h in headers {
+    val paths: List[List[String]] = newList()
+    var i = 0
+    while i < sc.viewImports.count {
+      if sc.viewImportFiles[i] == fileId {
+        paths.add(sc.viewImports[i])
+      }
+      i = i + 1
+    }
+    var imps = withViewImports(h.imports, paths, h.span)
+    if sc.projectableFiles.containsKey(fileId) and not hasWholeImport(imps, "Std", "Core") {
+      imps = withStdCore(imps, h.span)
+    }
+    acc.add(h.copy(imports = imps))
+    fileId = fileId + 1
+  }
+  acc
+}
+
 /// `file` with the view record and `toView`/`tryInto` of every `@projectable`
 /// opaque type appended.  A file that declares none is returned unchanged.
 /// Source the pass generated that does not parse is I0006 at the opaque type.
@@ -362,10 +393,20 @@ pub func projectableRewriteFileIn(
   }
   val origins: Map[String, Span] = newMap()
   val base = Expand.generatedSpanBase(file)
-  val sc = Scope(file = file, local = projectable, packages = packages, viewImports = newList())
+  val sc = Scope(
+    file = file,
+    local = projectable,
+    packages = packages,
+    viewImports = newList(),
+    viewImportFiles = newList(),
+    currentFile = [0],
+    projectableFiles = newMap()
+  )
   for it in file.items {
     match it.kind {
       case IOpaque(d) -> if isProjectableOpaque(it, d) {
+        sc.currentFile[0] = it.span.startPos.fileId
+        sc.projectableFiles[it.span.startPos.fileId] = true
         val pr = parse("package " + pkg + "\n" + expansionText(it, d, sc))
         if pr.diagnostics.count > 0 {
           diags.add(
@@ -394,7 +435,7 @@ pub func projectableRewriteFileIn(
   ProjectableResult(
     file = SourceFile(
       moduleDoc = file.moduleDoc,
-      files = file.files,
+      files = withHeaderViewImports(file.files, sc),
       fileAnnotations = file.fileAnnotations,
       packageDecl = file.packageDecl,
       imports = imports,
