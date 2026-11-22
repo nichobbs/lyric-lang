@@ -1,0 +1,7 @@
+[package]
+name = "reject-lambda-param-unfixed"
+version = "0.1.0"
+[project]
+name = "RejectLambdaParamUnfixed"
+[project.packages]
+"App" = "app"
