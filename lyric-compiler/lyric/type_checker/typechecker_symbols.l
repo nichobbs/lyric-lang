@@ -316,8 +316,9 @@ pub interface ExternIterResolver {
   /// looked up on the type and its supertypes; the member `new` is the host
   /// type's own constructors.  `Lyric.Tir.Build` picks the overload from the
   /// call's argument types and records it in a `HostMemberRef`.  None when the
-  /// bridge cannot say: the type or a supertype is not located, or a candidate
-  /// is a generic method whose signature mentions its own type parameters.
+  /// bridge cannot say: the type or a supertype is not located, or every candidate
+  /// is a generic method whose signature mentions its own type parameters (a generic overload beside a
+  /// non-generic one is left out of the candidates).
   func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
 
   /// Whether the host class behind an `extern type` is abstract (an interface included), so that

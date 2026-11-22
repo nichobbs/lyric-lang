@@ -920,6 +920,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A lambda parameter whose type nothing fixes (`val f = { x -> false }` with no expected function type) is the checker error T0231 (D757, owner decision of 2026-11-22).
   - A call written through its own package's name resolves to the package's function (D749); a record sharing its name with an enum case keeps its construction (D755); `.count` on a host array local reads as its length (D756).
   - A tuple literal converts element by element and a negated `Double` literal is a `Float` literal where a `Float` is wanted (D746); a function-valued binding keeps its built type and a union case's fields convert to the node's type (D747); a package-qualified distinct factory builds (D748).
+  - Host members the checker leaves unchecked build: a bitwise method on a host enum, a property written as a call and a write (compound too) to a static host property (D758); `new()` on a host struct is its zero value, `XZeroValue` of the host type (D759); a generic host overload no longer hides a member's other overloads (D760).
   - A `match` whose arms all diverge is typed `Never` (the join started at a silent `TyError`), so a `Unit` function ending in one builds (D348).
   - A bare `None` (or other expression the checker left open) in a `return` outside a lambda takes the function's declared return type, as a body's tail does (D409).
   - A package-qualified enum case (`Std.Http.GET` with `import Std.Http`) is recorded as the case, so it builds (D349).
