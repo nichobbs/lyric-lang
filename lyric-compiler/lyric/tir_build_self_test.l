@@ -1025,6 +1025,13 @@ func fakeHost(): FakeHost {
   abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Abs", 1), abs)
+  val valueOf: List[ExternMemberSig] = newList()
+  valueOf.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhHost("java.lang.Integer"))))
+  valueOf.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("java.lang.Integer"))))
+  sigs.add(fhKey("java.lang.Integer", "valueOf", 1), valueOf)
+  val intValue: List[ExternMemberSig] = newList()
+  intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1141,6 +1148,17 @@ test "a slice takes the array of its own element over an Object[] (D699)" {
       )
       case _ -> assertTrue(false, "a host array parameter")
     }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a member called on a boxed number a host call returns is the box's own (D750)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type JInteger = \"java.lang.Integer\"\nfunc f(): Int {\n  JInteger.valueOf(42).intValue()\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
     case None -> assertTrue(false, "an extern call")
   }
 }
@@ -3468,4 +3486,16 @@ test "an assignment to a field of a generic opaque type is built at the field's 
   openShapeCensus(
     "pub opaque type Pair[A, B] {\n  first: A\n  var second: B\n}\npub func Pair.swapCount[A, B](self: in Pair[A, B], next: in B): Int {\n  self.second = next\n  1\n}\n"
   )
+}
+
+test "a call written through the file's own package name builds (D749)" {
+  val c = censusOf("package App\nfunc plainOne(): Int { 1 }\nfunc a(): Int { App.plainOne() }\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+}
+
+test "a record sharing its name with an enum case is still constructed (D755)" {
+  val c = censusOf(
+    "package App\nrecord Info { text: String }\nenum Level {\n  case Info\n  case Warn\n}\nfunc a(): String { Info(text = \"t\").text }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
 }
