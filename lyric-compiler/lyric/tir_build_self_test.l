@@ -1032,6 +1032,15 @@ func fakeHost(): FakeHost {
   val intValue: List[ExternMemberSig] = newList()
   intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
+  val grow: List[ExternMemberSig] = newList()
+  grow.add(
+    fhSig(
+      true,
+      fhParams1(fhPrim("Int")),
+      EMTType(elem = EIEHost(hostName = "an array, pointer or by-reference type", args = [fhPrim("Int")]))
+    )
+  )
+  sigs.add(fhKey("System.Math", "Grow", 1), grow)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1161,6 +1170,11 @@ test "a member called on a boxed number a host call returns is the box's own (D7
     case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
     case None -> assertTrue(false, "an extern call")
   }
+}
+
+test "a primitive array a host chain returns is the slice of its element (D753)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val g = Math.Grow(3)\n  g.length\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
 test "an extern argument is widened to the overload's parameter" {
