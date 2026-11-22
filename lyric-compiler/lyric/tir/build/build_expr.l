@@ -5265,7 +5265,11 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
 func hostElemTyM(elem: in ExternIterElem, targs: in List[Ty], margs: in List[Ty], hint: in Ty): Option[Ty] {
   match elem {
     case EIEArg(i) -> if i >= 0 and i < targs.count { Some(value = targs[i]) } else { None }
-    case EIEMArg(i) -> if i >= 0 and i < margs.count and not tyEq(margs[i], TirT.TNever) { Some(value = margs[i]) } else { None }
+    case EIEMArg(i) -> if i >= 0 and i < margs.count and not tyEq(margs[i], TirT.TNever) {
+      Some(value = margs[i])
+    } else {
+      None
+    }
     case EIEPrim(name) -> match primFromString(name) { case Some(p) -> Some(value = primOf(p)); case None -> None }
     case EIEHost(h, hargs) -> {
       if h == "System.Char" {

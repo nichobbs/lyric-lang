@@ -164,7 +164,16 @@ func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
       HMMethod
     }
   }
-  HostMemberRef(owner = owner, name = name, kind = kind, isStatic = isStatic, params = ps, ret = ret, omitted = omitted, typeArgs = typeArgs)
+  HostMemberRef(
+    owner = owner,
+    name = name,
+    kind = kind,
+    isStatic = isStatic,
+    params = ps,
+    ret = ret,
+    omitted = omitted,
+    typeArgs = typeArgs
+  )
 }
 
 func intrinsicCode(op: in IntrinsicOp): Int {
