@@ -1356,6 +1356,13 @@ func convMethodTarget(name: in String): Option[TPrimKind] {
   None
 }
 
+func isCharKind(p: in TPrimKind): Bool {
+  match p {
+    case TPChar -> true
+    case _ -> false
+  }
+}
+
 func isNumericPrimKind(p: in TPrimKind): Bool {
   match p {
     case TPBool -> false
@@ -4640,6 +4647,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildConvMethodOnOpenPrim(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match buildCallOnUntypedHostResult(env, e, fn, args) {
     case Some(r) -> return r
     case None -> ()
@@ -4684,6 +4695,42 @@ func buildParamDefault(
     case _ -> ()
   }
   None
+}
+
+/// `JCharacter.toUpperCase(c).toInt()` where the host call's result is untyped (its overloads differ in
+/// their result) and the builder types the chain itself as a primitive: the checker had no receiver type to
+/// record the numeric conversion built-in against, so the call is the primitive's own built-in, as it is
+/// where the checker typed the receiver.  None, counting nothing, for any other shape.
+func buildConvMethodOnOpenPrim(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 {
+    return None
+  }
+  val parts = match fn.kind {
+    case EMember(recv, name) -> if convMethodTarget(name).isSome() or name == "toChar" {
+      Some(value = (recv, name))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+  val (recv, name) = match parts { case Some(x) -> x; case None -> return None }
+  match exprTy(env.ctx, recv.nodeId) {
+    case Ok(_) -> return None
+    case Err(_) -> ()
+  }
+  match openHostChainTy(env, recv) {
+    case Some(rt) -> match rt {
+      case TPrim(p) -> if isNumericPrimKind(p) or isCharKind(p) {
+        Some(value = buildBuiltinCall(env, e, ty, renderTy(rt) + "." + name, fn, args))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
 }
 
 /// `x.unknownMember().name(...)` where `x` is a host value whose class the metadata cannot locate: the JVM
