@@ -11,6 +11,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Projectable
+import Lyric.PluginExpand as PluginExpand
 
 func expand(src: in String): ProjectableResult {
   val pr = parse(src)
@@ -115,4 +116,52 @@ test "a file that imports Std.Core through a selector gets the whole import once
     }
   }
   assertEqualInt(whole, 1, "one whole Std.Core import")
+}
+
+func packagesOf(srcs: in List[String]): Map[String, PluginExpand.PluginPackage] {
+  val m: Map[String, PluginExpand.PluginPackage] = newMap()
+  for src in srcs {
+    PluginExpand.collectPluginPackage(parse(src).file, m)
+  }
+  m
+}
+
+func importPaths(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  for im in file.imports {
+    var joined = ""
+    for seg in im.path.segments {
+      joined = joined + (if joined == "" { "" } else { "." }) + seg
+    }
+    acc.add(joined)
+  }
+  acc
+}
+
+val otherPkg: String = "package Other\npub opaque type Inner @projectable {\n  v: Int\n}\n"
+
+test "a field typed as another package's projectable, imported by name, projects to its view" {
+  val src = "package P\nimport Other.Inner\nopaque type Outer @projectable {\n  label: String\n  inner: Inner\n}\n"
+  val r = projectableRewriteFileIn(parse(src).file, packagesOf([otherPkg, src]))
+  assertEqualInt(r.diagnostics.count, 0, "no diagnostics")
+  assertEqualInt(viewFieldCount(r.file, "OuterView"), 2, "outer view fields")
+  assertTrue(hasFunc(r.file, "Outer.toView"), "toView")
+  assertFalse(hasFunc(r.file, "OuterView.tryInto"), "a nested projectable suppresses tryInto")
+  assertTrue(importPaths(r.file).contains("Other.InnerView"), "the other package's view is imported")
+}
+
+test "a field typed as another package's projectable, qualified, projects to the qualified view" {
+  val src = "package P\nimport Other\nopaque type Outer @projectable {\n  inner: Other.Inner\n}\n"
+  val r = projectableRewriteFileIn(parse(src).file, packagesOf([otherPkg, src]))
+  assertEqualInt(r.diagnostics.count, 0, "no diagnostics")
+  assertTrue(hasFunc(r.file, "Outer.toView"), "toView")
+  assertFalse(hasFunc(r.file, "OuterView.tryInto"), "a nested projectable suppresses tryInto")
+  assertFalse(importPaths(r.file).contains("Other.InnerView"), "a qualified use needs no extra import")
+}
+
+test "a type of another package that is not projectable keeps its written type" {
+  val plain = "package Other\npub opaque type Inner {\n  v: Int\n}\n"
+  val src = "package P\nimport Other.Inner\nopaque type Outer @projectable {\n  inner: Inner\n}\n"
+  val r = projectableRewriteFileIn(parse(src).file, packagesOf([plain, src]))
+  assertTrue(hasFunc(r.file, "OuterView.tryInto"), "no nested projection, tryInto stays")
 }

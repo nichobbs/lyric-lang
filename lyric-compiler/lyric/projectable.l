@@ -32,6 +32,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
 import Lyric.Expand as Expand
+import Lyric.PluginExpand as PluginExpand
 
 func hasAnnotation(anns: in List[Annotation], name: in String): Bool {
   for a in anns {
@@ -58,7 +59,118 @@ record ViewField {
   nested: Bool
 }
 
-func fieldsOf(d: in OpaqueTypeDecl, projectable: in Map[String, Bool]): List[ViewField] {
+/// What the pass knows while it expands one file: the projectable names of the file, the
+/// build's source packages (`PluginExpand.collectPluginPackage`, the index every bridge
+/// already fills), and the view imports the expansion needs added to the file.
+record Scope {
+  file: SourceFile
+  local: Map[String, Bool]
+  packages: Map[String, PluginExpand.PluginPackage]
+  /// Each `<package>.<Name>View` a field of an imported projectable type needs imported.
+  viewImports: List[List[String]]
+}
+
+/// How a field type names another projectable type: the view type to write, and the
+/// import the view needs (empty when the type is written qualified or is the file's own).
+record NestedRef {
+  viewType: String
+  importPath: List[String]
+}
+
+func joinPath(segs: in List[String]): String {
+  var joined = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      joined = joined + "."
+    }
+    joined = joined + segs[i]
+    i = i + 1
+  }
+  joined
+}
+
+/// Whether package `pkg` of the build declares a non-generic `@projectable` opaque type `name`.
+func packageHasProjectable(sc: in Scope, pkg: in String, name: in String): Bool {
+  match mapGet(sc.packages, pkg) {
+    case Some(p) -> {
+      for it in p.items {
+        match it.kind {
+          case IOpaque(d) -> if d.name == name and isProjectableOpaque(it, d) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
+func prefixOf(segs: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    acc.add(segs[i])
+    i = i + 1
+  }
+  acc
+}
+
+/// The projectable type a field type path names, in this file's package or one of the build's
+/// other packages: by bare name (declared here, or imported as `import P.Name` or
+/// `import P.{Name}`), or qualified by a package path or an import alias.
+func resolveNested(sc: in Scope, path: in ModulePath): Option[NestedRef] {
+  val segs = path.segments
+  val noImport: List[String] = newList()
+  if segs.count == 1 {
+    val name = segs[0]
+    val own = Fmt.pathStr(sc.file.packageDecl.path)
+    if sc.local.containsKey(name) or packageHasProjectable(sc, own, name) {
+      return Some(value = NestedRef(viewType = name + "View", importPath = noImport))
+    }
+    for im in sc.file.imports {
+      if im.isExtern {
+        continue
+      }
+      match im.selector {
+        case Some(sel) -> {
+          val items: List[ImportItem] = match sel { case ISSingle(item) -> [item]; case ISGroup(xs) -> xs }
+          for item in items {
+            val aliased = match item.asAlias { case Some(_) -> true; case None -> false }
+            if item.name == name and not aliased and packageHasProjectable(sc, joinPath(im.path.segments), name) {
+              return Some(value = NestedRef(viewType = name + "View", importPath = im.path.segments))
+            }
+          }
+        }
+        case None -> {
+          val imSegs = im.path.segments
+          val aliased = match im.asAlias { case Some(_) -> true; case None -> false }
+          if not aliased and imSegs.count >= 2 and imSegs[imSegs.count - 1] == name and packageHasProjectable(sc, joinPath(prefixOf(imSegs)), name) {
+            return Some(value = NestedRef(viewType = name + "View", importPath = prefixOf(imSegs)))
+          }
+        }
+      }
+    }
+    return None
+  }
+  val name = segs[segs.count - 1]
+  val prefix = prefixOf(segs)
+  var pkg = joinPath(prefix)
+  if not sc.packages.containsKey(pkg) {
+    for im in sc.file.imports {
+      match im.asAlias {
+        case Some(a) -> if not im.isExtern and prefix.count == 1 and a == prefix[0] { pkg = joinPath(im.path.segments) }
+        case None -> ()
+      }
+    }
+  }
+  if packageHasProjectable(sc, pkg, name) {
+    return Some(value = NestedRef(viewType = joinPath(prefix) + "." + name + "View", importPath = noImport))
+  }
+  None
+}
+
+func fieldsOf(d: in OpaqueTypeDecl, sc: in Scope): List[ViewField] {
   val acc: List[ViewField] = newList()
   for m in d.members {
     match m {
@@ -70,9 +182,20 @@ func fieldsOf(d: in OpaqueTypeDecl, projectable: in Map[String, Bool]): List[Vie
         var nested = false
         if not hidden and not boundary {
           match f.ty.kind {
-            case TRef(p) -> if p.segments.count == 1 and projectable.containsKey(p.segments[0]) {
-              viewType = p.segments[0] + "View"
-              nested = true
+            case TRef(p) -> match resolveNested(sc, p) {
+              case Some(r) -> {
+                viewType = r.viewType
+                nested = true
+                if r.importPath.count > 0 {
+                  val full: List[String] = newList()
+                  for seg in r.importPath {
+                    full.add(seg)
+                  }
+                  full.add(r.viewType)
+                  sc.viewImports.add(full)
+                }
+              }
+              case None -> ()
             }
             case _ -> ()
           }
@@ -106,8 +229,8 @@ func joinWith(parts: in List[String], sep: in String): String {
 }
 
 /// The source text of the view record and its two functions for `d`.
-func expansionText(it: in Item, d: in OpaqueTypeDecl, projectable: in Map[String, Bool]): String {
-  val fields = fieldsOf(d, projectable)
+func expansionText(it: in Item, d: in OpaqueTypeDecl, sc: in Scope): String {
+  val fields = fieldsOf(d, sc)
   val vis = visibilityPrefix(it)
   val view = d.name + "View"
   val decls: List[String] = newList()
@@ -189,10 +312,49 @@ pub record ProjectableResult {
   diagnostics: List[Diagnostic]
 }
 
+/// `imports` with each of `paths` imported as an item (`import P.NameView`), the ones already imported left out.
+func withViewImports(imports: in List[ImportDecl], paths: in List[List[String]], span: in Span): List[ImportDecl] {
+  val acc: List[ImportDecl] = newList()
+  for im in imports {
+    acc.add(im)
+  }
+  val seen: Map[String, Bool] = newMap()
+  for im in imports {
+    seen.add(joinPath(im.path.segments), true)
+  }
+  for segs in paths {
+    val key = joinPath(segs)
+    if not seen.containsKey(key) {
+      seen.add(key, true)
+      acc.add(
+        ImportDecl(
+          path = ModulePath(segments = segs, span = span),
+          selector = None,
+          asAlias = None,
+          isPubUse = false,
+          isExtern = false,
+          span = span
+        )
+      )
+    }
+  }
+  acc
+}
+
 /// `file` with the view record and `toView`/`tryInto` of every `@projectable`
 /// opaque type appended.  A file that declares none is returned unchanged.
 /// Source the pass generated that does not parse is I0006 at the opaque type.
 pub func projectableRewriteFile(file: in SourceFile): ProjectableResult {
+  val none: Map[String, PluginExpand.PluginPackage] = newMap()
+  projectableRewriteFileIn(file, none)
+}
+
+/// `projectableRewriteFile` with the build's source packages (`PluginExpand.collectPluginPackage`),
+/// so a field typed as a `@projectable` opaque type of another package of the build projects to that
+/// package's `<Name>View` as it does for one of the file's own, the view type imported from its package.
+pub func projectableRewriteFileIn(
+  file: in SourceFile, packages: in Map[String, PluginExpand.PluginPackage]
+): ProjectableResult {
   val projectable: Map[String, Bool] = newMap()
   for it in file.items {
     match it.kind {
@@ -211,10 +373,11 @@ pub func projectableRewriteFile(file: in SourceFile): ProjectableResult {
   }
   val origins: Map[String, Span] = newMap()
   val base = Expand.generatedSpanBase(file)
+  val sc = Scope(file = file, local = projectable, packages = packages, viewImports = newList())
   for it in file.items {
     match it.kind {
       case IOpaque(d) -> if isProjectableOpaque(it, d) {
-        val pr = parse("package " + pkg + "\n" + expansionText(it, d, projectable))
+        val pr = parse("package " + pkg + "\n" + expansionText(it, d, sc))
         if pr.diagnostics.count > 0 {
           diags.add(
             errorDiagnostic(
@@ -238,6 +401,7 @@ pub func projectableRewriteFile(file: in SourceFile): ProjectableResult {
   if not hasWholeImport(imports, "Std", "Core") {
     imports = withStdCore(imports, file.span)
   }
+  imports = withViewImports(imports, sc.viewImports, file.span)
   ProjectableResult(
     file = SourceFile(
       moduleDoc = file.moduleDoc,

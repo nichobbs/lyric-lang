@@ -709,7 +709,7 @@ pub func pipeExpandAndRewriteCollect(
     return CheckReadyFile(file = f, diagnostics = diags)
   }
   f = peRes.file
-  val prep = pipePrepareForCheck(f, runStubbable)
+  val prep = pipePrepareForCheckIn(f, runStubbable, plugins)
   appendDiagnostics(diags, prep.diagnostics)
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = f, diagnostics = diags)
@@ -1338,6 +1338,17 @@ pub func fixturesAsModuleVals(file: in SourceFile): SourceFile {
 /// raw parse, where `Pkg.f(...)` is still a member chain rather than a
 /// qualified call).  Stops at the first pass that reports an error.
 pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckReadyFile {
+  val noPackages: Map[String, PluginExpand.PluginPackage] = newMap()
+  pipePrepareForCheckIn(file, runStubbable, noPackages)
+}
+
+/// `pipePrepareForCheck` with the build's source packages, which a `@projectable` view reads to project
+/// a field typed as another package's `@projectable` type.
+pub func pipePrepareForCheckIn(
+  file: in SourceFile,
+  runStubbable: in Bool,
+  packages: in Map[String, PluginExpand.PluginPackage],
+): CheckReadyFile {
   // A destructuring module-level `val` becomes one `val` per bound name
   // (#7763) before any pass indexes module values, so every backend and the
   // checker see the same single-name items; a refutable pattern (T0144)
@@ -1369,7 +1380,7 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
     // `@projectable` views and their `toView`/`tryInto` (docs/01 2.9): the
     // managed targets only, like the stubs; native refuses `@projectable`
     // (N0101).
-    val projRes = Projectable.projectableRewriteFile(f)
+    val projRes = Projectable.projectableRewriteFileIn(f, packages)
     f = projRes.file
     for d in projRes.diagnostics {
       diags.add(d)

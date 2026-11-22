@@ -833,6 +833,27 @@ test "per-package isolation implicit leak rejected" {
   cleanup(tmpDir)
 }
 
+// A `@projectable` field typed as another package's `@projectable` type projects
+// to that package's view across the package boundary (D761).
+test "a projectable field of another package's projectable type projects across packages" {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "ProjNest.Alpha",
+      "package ProjNest.Alpha\n\npub opaque type Inner @projectable {\n  value: Int\n}\n\npub func makeInner(v: Int): Inner = Inner(value = v)\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "ProjNest.Beta",
+      "package ProjNest.Beta\n\nimport ProjNest.Alpha.{Inner, makeInner}\n\nopaque type Outer @projectable {\n  label: String\n  inner: Inner\n}\n\nfunc main(): Unit {\n  val o = Outer(label = \"x\", inner = makeInner(42))\n  val ov = o.toView()\n  println(ov.label + \":\" + ov.inner.value.toString())\n}\n"
+    )
+  )
+  val result = runEmitProject("projnest", pkgs, "ProjNest")
+  assertEqualInt(result.exitCode, 0, "projectable across packages: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "x:42", "projectable across packages: stdout matches expected")
+}
+
 // ─── @cfg feature erasure via emitProject ────────────────────────────────────
 // Feature INACTIVE: the gated function is erased; `main` falls back to
 // the unconditional branch.
