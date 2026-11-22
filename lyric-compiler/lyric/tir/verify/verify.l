@@ -343,6 +343,30 @@ func argMode(a: in TArg): TMode {
   }
 }
 
+/// The parameters of a host member a call supplies arguments for: all of them, less the
+/// trailing ones the call omits for the host to fill with its declared defaults.
+func keptParams(c: in Ctx, id: in NodeId, member: in HostMemberRef): List[TParamTy] {
+  if member.omitted == 0 {
+    return member.params
+  }
+  if member.omitted < 0 or member.omitted > member.params.count {
+    report(
+      c,
+      id,
+      "host-omitted",
+      "a host call omits " + toString(member.omitted) + " of " + toString(member.params.count) + " parameters"
+    )
+    return member.params
+  }
+  val kept: List[TParamTy] = newList()
+  var i = 0
+  while i < member.params.count - member.omitted {
+    kept.add(member.params[i])
+    i = i + 1
+  }
+  kept
+}
+
 func checkArgs(
   c: in Ctx,
   id: in NodeId,
@@ -464,7 +488,7 @@ func checkCallee(c: in Ctx, e: in TExpr, callee: in Callee, args: in List[TArg])
           ", which is not a function type"
       )
     }
-    case Extern(member) -> checkArgs(c, e.id, member.params, args, newList(), None, e.ty, member.ret)
+    case Extern(member) -> checkArgs(c, e.id, keptParams(c, e.id, member), args, newList(), None, e.ty, member.ret)
     case Intrinsic(_) -> {
     }
   }

@@ -3991,7 +3991,7 @@ pub func allMethodSigsOn(
             returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
             paramTypes = normParams,
             genericArity = sig.genParamCount,
-            paramDefaults = epdNoneList(normParams.count)
+            paramDefaults = declaredParamDefaults(img, layout, th, mi, normParams)
           )
         )
       }
@@ -3999,6 +3999,54 @@ pub func allMethodSigsOn(
     mi = mi + 1
   }
   Some(value = methods)
+}
+
+// The default each parameter of MethodDef `methodRow` declares (EPDNone where it
+// declares none), aligned with `params`.
+func declaredParamDefaults(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  methodRow: in Int,
+  params: in List[SigType],
+): List[ExternParamDefault] {
+  val acc: List[ExternParamDefault] = newList()
+  if params.count == 0 {
+    return acc
+  }
+  val md = readMethodDef(img, layout, methodRow)
+  val pstart = md.paramListStart
+  val totalMethods = rowCountOf(th, 0x06)
+  val pend = if methodRow < totalMethods {
+    readMethodDef(img, layout, methodRow + 1).paramListStart
+  } else {
+    rowCountOf(th, 0x08) + 1
+  }
+  var k = 0
+  while k < params.count {
+    match paramDefaultAt(img, layout, th, pstart, pend, k + 1, params[k]) {
+      case Some(d) -> acc.add(d)
+      case None -> acc.add(EPDNone)
+    }
+    k = k + 1
+  }
+  acc
+}
+
+// How many of the last parameters carry a declared default.
+func optionalTrailingCount(defaults: in List[ExternParamDefault]): Int {
+  var n = 0
+  var k = defaults.count - 1
+  while k >= 0 {
+    match defaults[k] {
+      case EPDNone -> return n
+      case _ -> {
+        n = n + 1
+      }
+    }
+    k = k - 1
+  }
+  n
 }
 
 // True iff `typeFqn` resolves to an interface in this assembly.  Returns false
@@ -4872,6 +4920,8 @@ pub record HostMemberSigInfo {
   ret: SigType
   /// A public field found by a property lookup, not a getter method.
   isField: Bool = false
+  /// The number of trailing parameters the host declares optional.
+  optionalTrailing: Int = 0
 }
 
 /// The overloads of `member` on `fqn` and every supertype, as
@@ -4916,19 +4966,23 @@ pub func hostMemberSigsOfExtern(
       case None -> return None
     }
     for m in methods {
+      val optional = optionalTrailingCount(m.paramDefaults)
+      val takesArgc = m.paramTypes.count == argc or (m.paramTypes.count > argc and m.paramTypes.count - optional <= argc)
       val wanted = if isProperty {
         m.name == getter and m.paramTypes.count == 0
       } else if isCtor {
-        m.name == ".ctor" and m.paramTypes.count == argc
+        m.name == ".ctor" and takesArgc
       } else {
-        m.name == member and m.paramTypes.count == argc
+        m.name == member and takesArgc
       }
       if wanted {
         if m.genericArity > 0 {
           return None
         }
         val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
-        found.add(HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret))
+        found.add(
+          HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret, optionalTrailing = optional)
+        )
       }
     }
     if isProperty {

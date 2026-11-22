@@ -1978,7 +1978,7 @@ func narrowByArgTys(
   var best: List[ExternMemberSig] = newList()
   var bestScore = -1
   for c in cands {
-    if c.params.count == argc {
+    if c.params.count == argc or (c.params.count > argc and c.params.count - c.optionalTrailing <= argc) {
       match scoreOverload(env, c, targs, argTys) {
         case Some(fit) -> {
           if fit.score > bestScore {
@@ -5115,8 +5115,11 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
 
 /// An overload that fits the argument types: its parameters and how well.
 record OverloadFit {
+  /// Every parameter of the overload, the omitted trailing ones included.
   params: List[Ty]
   score: Int
+  /// The trailing parameters the call leaves out for the host to default.
+  omitted: Int = 0
 }
 
 /// A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`: passing the handle
@@ -5226,7 +5229,10 @@ func scoreOverload(
   val ps: List[Ty] = newList()
   var score = 0
   var i = 0
-  while i < sig.params.count {
+  if argTys.count > sig.params.count or sig.params.count - argTys.count > sig.optionalTrailing {
+    return None
+  }
+  while i < argTys.count {
     val p = match hostElemTy(sig.params[i], targs, argTys[i]) { case Some(t) -> t; case None -> return None }
     if tyEq(p, argTys[i]) {
       score = score + 2
@@ -5256,7 +5262,15 @@ func scoreOverload(
     ps.add(p)
     i = i + 1
   }
-  Some(value = OverloadFit(params = ps, score = score))
+  // The parameters the call leaves out are typed from the host alone.  An overload that needs none of
+  // them ranks above one that does, as the host's overload resolution has it.
+  val omitted = sig.params.count - argTys.count
+  while i < sig.params.count {
+    val p = match hostElemTy(sig.params[i], targs, TirT.TNever) { case Some(t) -> t; case None -> return None }
+    ps.add(p)
+    i = i + 1
+  }
+  Some(value = OverloadFit(params = ps, score = score * 4 - omitted, omitted = omitted))
 }
 
 /// A host call's node as the checker typed it: a host string can be null (the checker types the call
@@ -5498,7 +5512,7 @@ func buildExternCallAt(
   var pass = 0
   while pass < 2 and not isSome(bestSig) {
     for c in cands {
-      if c.params.count == argTys.count and not (pass == 0 and viaValue and c.isStatic) {
+      if (c.params.count == argTys.count or (c.params.count > argTys.count and c.params.count - c.optionalTrailing <= argTys.count)) and not (pass == 0 and viaValue and c.isStatic) {
         match scoreOverload(env, c, targs, argTys) {
           case Some(fit) -> {
             val ps = fit.params
@@ -5605,13 +5619,20 @@ func buildExternCallAt(
     targsOut.add(TArgIn(value = c))
     i = i + 1
   }
+  // The parameters the call leaves out are part of the member's signature; the host fills them.
+  val omitted = bestParams.count - built.count
+  while i < bestParams.count {
+    params.add(TParamTy(mode = TMIn, ty = bestParams[i]))
+    i = i + 1
+  }
   val member = HostMemberRef(
     owner = owner,
     name = site.name,
     kind = if isCtor { HMConstructor } else { HMMethod },
     isStatic = sig.isStatic,
     params = params,
-    ret = ret
+    ret = ret,
+    omitted = omitted
   )
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = targsOut)))
 }

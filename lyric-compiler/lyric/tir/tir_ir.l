@@ -43,6 +43,9 @@ pub record HostMemberRef {
   isStatic: Bool
   params: List[TParamTy]
   ret: Ty
+  /// How many of the last `params` the call leaves out: the host fills each with the default its
+  /// metadata declares (an optional parameter).  A call has `params.count - omitted` arguments.
+  omitted: Int = 0
 }
 
 /// The operations the compiler implements itself on built-in types: the

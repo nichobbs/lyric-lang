@@ -968,6 +968,12 @@ func fhSig(isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberT
   ExternMemberSig(isStatic = isStatic, params = ps, ret = ret)
 }
 
+func fhSigOptional(
+  isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberType, optional: in Int
+): ExternMemberSig {
+  ExternMemberSig(isStatic = isStatic, params = ps, ret = ret, optionalTrailing = optional)
+}
+
 func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
   val xs: List[ExternIterElem] = newList()
   xs.add(a)
@@ -1039,6 +1045,15 @@ func fakeHost(): FakeHost {
   pick.add(fhSig(true, fhParams1(objectArray), EMTType(elem = fhPrim("Int"))))
   pick.add(fhSig(true, fhParams1(intArray), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Pick", 1), pick)
+  // `Encode(String value, Int options = 0)`: one argument may leave the last parameter out.
+  val encode: List[ExternMemberSig] = newList()
+  encode.add(fhSigOptional(true, fhParams2(fhPrim("String"), fhPrim("Int")), EMTType(elem = fhPrim("Int")), 1))
+  sigs.add(fhKey("System.Math", "Encode", 1), encode)
+  // `Both(String)` beside `Both(String, Int = 0)`: the exact-arity overload wins.
+  val both: List[ExternMemberSig] = newList()
+  both.add(fhSigOptional(true, fhParams2(fhPrim("String"), fhPrim("Int")), EMTType(elem = fhPrim("Long")), 1))
+  both.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Both", 1), both)
   FakeHost(sigs = sigs)
 }
 
@@ -1123,6 +1138,31 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
       assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a call that leaves out an optional trailing host parameter records it as omitted" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Encode(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 2, "the whole signature")
+      assertEqualInt(m.omitted, 1, "one parameter left out")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPInt)), "the omitted parameter's type")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an overload that needs no omitted parameter beats one that does" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Both(\"hi\")\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 1, "the one-parameter overload")
+      assertEqualInt(m.omitted, 0, "nothing left out")
     }
     case None -> assertTrue(false, "an extern call")
   }
