@@ -2200,6 +2200,9 @@ func main(): Int {
   val s = "abc"
   val same = s.equalsCaseInsensitive("ABC")
   if same { s.shout(2) } else { 0 }
+}
+LYRIC
+
 # A lambda whose body ends in a `try` yields the value of the `try`, a catch that panics included (D690).
 check lambda_ending_in_try 6 <<'LYRIC'
 package Shapes8
