@@ -1274,6 +1274,9 @@ func convMethodTarget(name: in String): Option[TPrimKind] {
   if name == "toFloat" {
     return Some(value = TPFloat)
   }
+  if name == "toChar" {
+    return Some(value = TPChar)
+  }
   None
 }
 
