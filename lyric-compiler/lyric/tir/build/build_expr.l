@@ -2094,7 +2094,8 @@ func narrowByArgTys(
     return cands
   }
   var best: List[ExternMemberSig] = newList()
-  var bestScore = -1
+  // Below every fit: a call that leaves out parameters scores `fit * 256 - omitted`, negative for no fit at all.
+  var bestScore = noFitScore()
   for c in cands {
     if c.params.count == argc or (c.params.count > argc and c.params.count - c.optionalTrailing <= argc) {
       match scoreOverload(env, c, targs, argTys) {
@@ -5246,6 +5247,10 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
 }
 
 /// An overload that fits the argument types: its parameters and how well.
+/// The score below every overload fit (a fit scores `matches * 256 - omitted`, which is negative for a
+/// zero-argument call to an all-optional overload).
+func noFitScore(): Int = -1000000000
+
 record OverloadFit {
   /// Every parameter of the overload, the omitted trailing ones included.
   params: List[Ty]
@@ -5652,7 +5657,8 @@ func buildExternCallAt(
   }
   var bestSig: Option[ExternMemberSig] = None
   var bestParams: List[Ty] = newList()
-  var bestScore = -1
+  // Below every fit: a call that leaves out parameters scores `fit * 256 - omitted`, negative for no fit at all.
+  var bestScore = noFitScore()
   var ambiguous = false
   // A call through a value (`recv.m(x)`) takes an instance overload: a same-named static one is
   // passed over unless no instance overload fits (D479, the rule #6765 gave the emit path).

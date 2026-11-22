@@ -1066,6 +1066,10 @@ func fakeHost(): FakeHost {
   val encode: List[ExternMemberSig] = newList()
   encode.add(fhSigOptional(true, fhParams2(fhPrim("String"), fhPrim("Int")), EMTType(elem = fhPrim("Int")), 1))
   sigs.add(fhKey("System.Math", "Encode", 1), encode)
+  // `Zero(Int a = 0)`: a call with no argument may leave out the only parameter.
+  val zero: List[ExternMemberSig] = newList()
+  zero.add(fhSigOptional(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int")), 1))
+  sigs.add(fhKey("System.Math", "Zero", 0), zero)
   // `Wide(String a, Int b = 0, Int c = 0)`: a call may leave out two parameters.
   val wide: List[ExternMemberSig] = newList()
   val widePs = fhParams2(fhPrim("String"), fhPrim("Int"))
@@ -1174,6 +1178,18 @@ test "a call that leaves out an optional trailing host parameter records it as o
       assertEqualInt(m.params.count, 2, "the whole signature")
       assertEqualInt(m.omitted, 1, "one parameter left out")
       assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPInt)), "the omitted parameter's type")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a call with no argument may leave out every parameter of an all-optional overload" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Zero()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.params.count, 1, "the whole signature")
+      assertEqualInt(m.omitted, 1, "the one parameter left out")
     }
     case None -> assertTrue(false, "an extern call")
   }

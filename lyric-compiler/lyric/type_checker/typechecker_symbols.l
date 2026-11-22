@@ -315,10 +315,11 @@ pub interface ExternIterResolver {
   /// (`isProperty` false), or the property or field read (`isProperty` true),
   /// looked up on the type and its supertypes; the member `new` is the host
   /// type's own constructors.  An overload with more parameters than `argc` is a
-  /// candidate when its last parameters beyond `argc` are all optional.  `Lyric.Tir.Build` picks the overload from the
-  /// call's argument types and records it in a `HostMemberRef`.  None when the
-  /// bridge cannot say: the type or a supertype is not located, or every candidate
-  /// is a generic method whose signature mentions its own type parameters (a generic overload beside a
+  /// candidate when its last parameters beyond `argc` are all optional.
+  /// `Lyric.Tir.Build` picks the overload from the call's argument types and
+  /// records it in a `HostMemberRef`.  None when the bridge cannot say: the type
+  /// or a supertype is not located, or every candidate is a generic method whose
+  /// signature mentions its own type parameters (a generic overload beside a
   /// non-generic one is left out of the candidates).
   func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
 
