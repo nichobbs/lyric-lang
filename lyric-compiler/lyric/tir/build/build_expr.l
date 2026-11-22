@@ -1904,6 +1904,14 @@ func hostStringReadAsString(declared: in Ty, read: in Ty): Bool {
   }
 }
 
+/// The JVM's boxed primitive classes that a chain result the checker left untyped keeps as the host class
+/// (`Integer.valueOf(n).intValue()`, `JBoolean.TRUE`): the member that follows is the box's own.
+func isJvmBoxedName(name: in String): Bool {
+  name == "java.lang.Boolean" or name == "java.lang.Integer" or name == "java.lang.Long" or name == "java.lang.Short" or
+    name == "java.lang.Byte" or
+    name == "java.lang.Character"
+}
+
 /// A host class a chain result can be typed as: not one the checker maps to a Lyric type (`hostResultIsCallType`).
 func isPlainHostResult(name: in String): Bool {
   not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
@@ -2212,7 +2220,7 @@ func hostChainResult(
             // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
             // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
             // the host's own class too.
-            val unmappedFuture = rname == "java.util.concurrent.Future" or rname == "java.lang.Boolean"
+            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname)
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
@@ -3750,9 +3758,21 @@ func buildInit(env: in BuildEnv, s: in Statement, ann0: in Option[TypeExpr], ini
       match convertValue(env, t, want) {
         case Some(c) -> Some(value = c)
         case None -> {
+          // An annotation the checker spelled from the initializer's own type (`localBindingTypeSites`) names
+          // no range, so a function value over a range subtype keeps the type it was built at.
+          if ann0.isNone() {
+            match t.ty {
+              case TFunc(_, _, _) -> return Some(value = t)
+              case _ -> ()
+            }
+          }
           noteUncovered(env, "an annotated binding conversion")
           env.errors.add(
-            "I0002: the builder has no case for an annotated binding conversion at " + toString(s.span.startPos.line) + ":" +
+            "I0002: the builder has no case for an annotated binding conversion from " + renderTyNamed(env, t.ty) + " to " +
+              renderTyNamed(env, want) +
+              " at " +
+              toString(s.span.startPos.line) +
+              ":" +
               toString(s.span.startPos.column)
           )
           None
@@ -4905,6 +4925,15 @@ func buildRecordCopy(
   Some(value = Some(value = mkExpr(e, ty, XCopy(base = base, updates = updates))))
 }
 
+/// Whether `e` is a dotted name (`Pkg.Sub.Type`): paths joined by member accesses.
+func isNameChain(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case EMember(inner, _) -> isNameChain(inner)
+    case _ -> false
+  }
+}
+
 /// `T.from(x)`, `T.tryFrom(x)` and the constructor call `T(x)` on a non-generic distinct type `T`
 /// (language reference 2.3), which the checker types without recording a callee.  The call's own type names
 /// `T` (`from`) or `Result[T, String]` (`tryFrom`).  The argument is converted to `T`'s
@@ -4918,6 +4947,8 @@ func buildDistinctFactory(
     case EMember(recv, m) -> if m == "from" or m == "tryFrom" {
       match recv.kind {
         case EPath(path) -> if path.segments.count >= 1 { m } else { return None }
+        // `Pkg.Type.from(x)`: the type through the package that declares it.
+        case EMember(_, _) -> if isNameChain(recv) { m } else { return None }
         case _ -> return None
       }
     } else {
@@ -6093,14 +6124,28 @@ func stdCoreProjection(env: in BuildEnv, id: in SymbolId, hd: in String, name: i
 /// `length` of a local the checker left untyped at the read (`var chunk = fis.readNBytes(n)`: a host
 /// array result), by the type the local was declared at.
 func openLocalBuiltinProperty(env: in BuildEnv, recv: in Expr, name: in String): Option[String] {
-  if name != "length" {
+  if name != "length" and name != "count" {
     return None
+  }
+  // A host array's size is read as `count` too: its type is the host's, not a Lyric slice's, so the checker
+  // does not reject the name (T0228 is for a typed slice).
+  val isCount = name == "count"
+  if isCount {
+    // Only a receiver the checker left unchecked is a host array; a typed slice's `count` is T0228.
+    match mapGet(env.ctx.tbl.exprTypes, recv.nodeId) {
+      case Some(TyError(_)) -> ()
+      case Some(_) -> return None
+      case None -> ()
+    }
   }
   match openLocalTy(env, recv) {
     case Some(t) -> match t {
       case TSlice(_) -> Some(value = "slice.length")
       case TArray(_, _) -> Some(value = "array.length")
-      case TPrim(k) -> match k { case TPString -> Some(value = "String.length"); case _ -> None }
+      case TPrim(k) -> match k {
+        case TPString -> if isCount { None } else { Some(value = "String.length") }
+        case _ -> None
+      }
       case _ -> None
     }
     case None -> None
@@ -6526,6 +6571,12 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     }
     case _ -> ()
   }
+  // The negation of a float literal (`-1.0`) where a `Float` is expected is a `Float` negation of a
+  // `Float` literal, as the checker accepts it.
+  match retypeNegatedFloatLiteral(t, ty) {
+    case Some(c) -> return Some(value = c)
+    case None -> ()
+  }
   // An integer literal where another integer type is expected and its value is in that type's range
   // (`takeList(b, 3)` with `b: Byte` fixing `T`) is a literal of that type, as the checker accepts it.
   match t.kind {
@@ -6553,6 +6604,10 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     return Some(value = convertNode(env, t, ty, CvUserdataSlot))
   }
   match retypeListLiteral(env, t, ty) {
+    case Some(c) -> return Some(value = c)
+    case None -> ()
+  }
+  match retypeTupleLiteral(env, t, ty) {
     case Some(c) -> return Some(value = c)
     case None -> ()
   }
@@ -6709,6 +6764,28 @@ func covariantKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] {
 /// Whether `name` is the host type of a `List[T]`: the .NET `List<T>` the stdlib declares it as, or the JVM's.
 func isListHostName(name: in String): Bool {
   name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList"
+}
+
+/// A tuple literal used where a tuple of other element types is wanted (`(two(), "a")` where an
+/// `(Int range 0 ..= 3, String)` is): the same elements, each converted to its element type, so
+/// a range check applies to the element it names.  None unless the arities agree and every
+/// element converts.
+func retypeTupleLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  val elems = match t.kind { case XTuple(es) -> es; case _ -> return None }
+  val want = match ty { case TTuple(ws) -> ws; case _ -> return None }
+  if want.count != elems.count {
+    return None
+  }
+  val converted: List[TExpr] = newList()
+  var i = 0
+  while i < elems.count {
+    match convertValue(env, elems[i], want[i]) {
+      case Some(c) -> converted.add(c)
+      case None -> return None
+    }
+    i = i + 1
+  }
+  Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XTuple(elems = converted)))
 }
 
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
@@ -7029,6 +7106,37 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
       )
       None
     }
+  }
+}
+
+/// `-1.0` (a negated `Double` literal) retyped as a negated `Float` literal when `ty` is `Float`.
+func retypeNegatedFloatLiteral(t: in TExpr, ty: in Ty): Option[TExpr] {
+  match ty {
+    case TPrim(TPFloat) -> ()
+    case _ -> return None
+  }
+  match t.ty {
+    case TPrim(TPDouble) -> ()
+    case _ -> return None
+  }
+  match t.kind {
+    case XCall(Intrinsic(IoNeg), cargs) -> {
+      if cargs.count != 1 {
+        return None
+      }
+      match cargs[0] {
+        case TArgIn(inner) -> match inner.kind {
+          case XLit(TLFloat(_)) -> {
+            val one: List[TExpr] = newList()
+            one.add(TExpr(id = inner.id, ty = ty, span = inner.span, kind = inner.kind))
+            Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = intrinsicCall(IoNeg, one)))
+          }
+          case _ -> None
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
   }
 }
 
@@ -8137,6 +8245,7 @@ func buildConstructCall(
         }
       }
       noteCaseSym(env, sym)
+      convertCaseFieldsToNodeType(env, sym, ty, fields)
       // A generic record's entry is its declaration's (`typeEntries`), under its own
       // parameters; the instantiated signature here would be the wrong fields.
       val genericRecord = match ty { case TNamed(_, targs) -> targs.count > 0; case _ -> false }
@@ -8146,6 +8255,40 @@ func buildConstructCall(
       Some(value = withPrelude(env, e, pre, mkExpr(e, ty, XConstruct(sym = sym, fields = fields))))
     }
     case None -> None
+  }
+}
+
+/// A union case built at the type the context settled (`val r: Result[Long, Int range 0 ..= 3] = Err(ten())`):
+/// each field is converted to the case's declared field type at the arguments of `ty`, as the checker's own
+/// instantiation of the case (`Err(Int)`) may name another type there.  A field that already has that type,
+/// or one that does not convert, is left as built.
+func convertCaseFieldsToNodeType(env: in BuildEnv, sym: in SymbolId, ty: in Ty, fields: in List[TExpr]): Unit {
+  match symbolOfDefId(env.ctx.tbl, sym) {
+    case Some(cs) -> match cs.kind { case DKUnionCase(_, _) -> (); case _ -> return }
+    case None -> return
+  }
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return }
+  if targs.count == 0 {
+    return
+  }
+  val en = match mapGet(env.syms, sym.id) { case Some(x) -> x; case None -> return }
+  val sig = match en.sig { case Some(x) -> x; case None -> return }
+  if sig.params.count != fields.count {
+    return
+  }
+  var i = 0
+  while i < fields.count {
+    val target = substOwnerArgs(sig.params[i].ty, parent, targs)
+    if not tyEq(fields[i].ty, target) {
+      match convertValue(env, fields[i], target) {
+        case Some(c) -> {
+          fields[i] = c
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
   }
 }
 
