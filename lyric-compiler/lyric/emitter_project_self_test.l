@@ -834,8 +834,8 @@ test "per-package isolation implicit leak rejected" {
 }
 
 // A `@projectable` field typed as another package's `@projectable` type projects
-// to that package's view across the package boundary (D761).
-test "a projectable field of another package's projectable type projects across packages" {
+// to that package's view across the package boundary (D761), on both targets.
+func projectableAcrossPackages(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
     mkProjectPkg(
@@ -849,9 +849,19 @@ test "a projectable field of another package's projectable type projects across 
       "package ProjNest.Beta\n\nimport ProjNest.Alpha.{Inner, makeInner}\n\nopaque type Outer @projectable {\n  label: String\n  inner: Inner\n}\n\nfunc main(): Unit {\n  val o = Outer(label = \"x\", inner = makeInner(42))\n  val ov = o.toView()\n  println(ov.label + \":\" + ov.inner.value.toString())\n}\n"
     )
   )
-  val result = runEmitProject("projnest", pkgs, "ProjNest")
+  pkgs
+}
+
+test "a projectable field of another package's projectable type projects across packages" {
+  val result = runEmitProject("projnest", projectableAcrossPackages(), "ProjNest")
   assertEqualInt(result.exitCode, 0, "projectable across packages: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "x:42", "projectable across packages: stdout matches expected")
+}
+
+test "a projectable field of another package's projectable type projects across packages on the JVM" {
+  val result = runEmitProjectJvmOpts("projnest-jvm", projectableAcrossPackages(), "ProjNestJvm")
+  assertEqualInt(result.exitCode, 0, "projectable across packages (jvm): exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "x:42", "projectable across packages (jvm): stdout matches expected")
 }
 
 // ─── @cfg feature erasure via emitProject ────────────────────────────────────
