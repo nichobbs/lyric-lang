@@ -2524,8 +2524,20 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     "a slice of host values is a host Object[] (D472)"
   )
   assertTrue(
-    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
-    "an Int slice is not a host Object[] (D472)"
+    isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
+    "an Int slice is a JVM Object[]: a slice's runtime form is an Object[] of boxed elements (D699)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TArray(len = ALKnown(n = 3), element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
+    "an array[3, Int] is not an Object[] (D699)"
+  )
+  val clrObjectArray = HostTypeRef(
+    name = "an array, pointer or by-reference type",
+    args = [TExtern(host = HostTypeRef(name = "System.Object", args = []))]
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = clrObjectArray))),
+    "an Int slice is not a CLR object[] (D699)"
   )
   val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
   assertTrue(
