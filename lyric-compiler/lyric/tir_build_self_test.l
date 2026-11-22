@@ -1058,6 +1058,11 @@ func fakeHost(): FakeHost {
   val parseU: List[ExternMemberSig] = newList()
   parseU.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("System.UInt32"))))
   sigs.add(fhKey("System.UInt32", "Parse", 1), parseU)
+  val maxByte: List[ExternMemberSig] = newList()
+  maxByte.add(
+    ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = fhPrim("Byte")), isField = true)
+  )
+  sigs.add(fhKey("System.Byte", "MaxValue", 0), maxByte)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1280,6 +1285,13 @@ test "a host UInt32 result the checker types as Long is read with CvFromHost (D7
     not hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.Int16", args = newList())), TPrim(kind = TPLong)),
     "Int16 is not a Long"
   )
+}
+
+test "a static field read through the extern type name of a host class with a Lyric type is the host's (D772)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Int {\n  val b = ByteT.MaxValue\n  b.toInt()\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
 test "an extern argument is widened to the overload's parameter" {

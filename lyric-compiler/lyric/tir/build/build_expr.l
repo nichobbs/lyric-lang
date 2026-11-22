@@ -1965,7 +1965,13 @@ func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
       // A language `String` is the host's string, so a member the checker has no case for
       // (`encoded.getBytes("US-ASCII")`) is the host string class's own.
       case TPrim(TPString) -> hostStringReceiver(env)
-      case _ -> None
+      // The checker gives the name of an `extern type` for a host class it has a Lyric type for
+      // (`extern type ByteT = "System.Byte"`) that Lyric type: a static member read through the name
+      // (`ByteT.MaxValue`) is the host class's own.
+      case _ -> match hostStaticReceiver(env, recv) {
+        case Some(h) -> Some(value = HostRecv(host = h, isStatic = true))
+        case None -> None
+      }
     }
     case Err(_) -> match openHostChainTy(env, recv) {
       case Some(t) -> match t {
