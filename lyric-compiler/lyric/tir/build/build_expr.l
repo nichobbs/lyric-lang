@@ -2312,7 +2312,21 @@ func hostChainResult(
     case Some(c) -> c
     case None -> return None
   }
-  val cands = narrowByArgTys(env, allCands, host.args, argTys, argc)
+  val narrowed = narrowByArgTys(env, allCands, host.args, argTys, argc)
+  // A member the host class inherits from a generic-math interface (`IMinMaxValue<T>.MaxValue`, a static abstract
+  // getter) has a result that is the interface's type variable, which the class (`System.Byte`) has no argument
+  // for: the class's own member (`public const byte MaxValue`) is the one the read binds.
+  val own: List[ExternMemberSig] = newList()
+  for n in narrowed {
+    val unboundVar = match n.ret {
+      case EMTType(el) -> match el { case EIEArg(i) -> i >= host.args.count; case _ -> false }
+      case EMTVoid -> false
+    }
+    if not unboundVar {
+      own.add(n)
+    }
+  }
+  val cands = if own.count > 0 { own } else { narrowed }
   var result: Option[Ty] = None
   for c in cands {
     if c.isStatic != wantStatic {
