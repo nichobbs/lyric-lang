@@ -5222,7 +5222,10 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
         case TPrim(TPString) -> n == "java.lang.Object" or n == "System.Object"
-        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object"
+        // The host's `UInt32` (zero-extended) and `UInt64` (its bit pattern) are `Long`s: the checker types a call
+        // that returns one as `Long` (#7890, #8482).
+        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object" or n == "System.UInt32" or
+          n == "System.UInt64"
         case TPrim(TPBool) -> n == "java.lang.Object" or n == "System.Object"
         case TPrim(TPFloat) -> isHostSingleName(n) or isHostObject(n)
         case TPrim(TPDouble) -> isHostDoubleName(n) or isHostObject(n)

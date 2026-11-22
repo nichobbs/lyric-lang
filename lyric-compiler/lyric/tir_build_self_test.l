@@ -1049,6 +1049,9 @@ func fakeHost(): FakeHost {
     )
   )
   sigs.add(fhKey("System.Math", "Grow", 1), grow)
+  val parseU: List[ExternMemberSig] = newList()
+  parseU.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("System.UInt32"))))
+  sigs.add(fhKey("System.UInt32", "Parse", 1), parseU)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1183,6 +1186,26 @@ test "a member called on a boxed number a host call returns is the box's own (D7
 test "a primitive array a host chain returns is the slice of its element (D753)" {
   val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val g = Math.Grow(3)\n  g.length\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host UInt32 result the checker types as Long is read with CvFromHost (D771)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type UInt32T = \"System.UInt32\"\nfunc f(): Long {\n  UInt32T.Parse(\"4000000000\")\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(
+    hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.UInt32", args = newList())), TPrim(kind = TPLong)),
+    "UInt32 is a Long"
+  )
+  assertTrue(
+    hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.UInt64", args = newList())), TPrim(kind = TPLong)),
+    "UInt64 is a Long"
+  )
+  assertTrue(
+    not hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.Int16", args = newList())), TPrim(kind = TPLong)),
+    "Int16 is not a Long"
+  )
 }
 
 test "an extern argument is widened to the overload's parameter" {
