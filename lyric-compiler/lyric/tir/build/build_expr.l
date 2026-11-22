@@ -4543,6 +4543,36 @@ func buildSettledRecordCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in Li
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
 /// arguments, conversions other than widening) are counted and reported by what
 /// they need.
+/// A call written `T.m(x, args)` through the type that binds a method in the type's body (D181), built as
+/// the method call `x.m(args)` the checker recorded under the call's node: the receiver is the first
+/// argument and the method takes the rest.  None, counting nothing, for any other call.
+func typeQualifiedMethodCall(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if args.count == 0 {
+    return None
+  }
+  val bd = match mapGet(tbl.byRefDotCallSites, recordCopySiteKey(fn.span)) {
+    case Some(b) -> b
+    case None -> return None
+  }
+  if not bd.asMethod {
+    return None
+  }
+  val site = match mapGet(tbl.methodCallByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val sym = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val recvExpr = match args[0] { case CAPositional(x) -> x; case CANamed(_, x, _) -> x }
+  val rest: List[CallArg] = newList()
+  var i = 1
+  while i < args.count {
+    rest.add(args[i])
+    i = i + 1
+  }
+  val asMember = Expr(kind = EMember(receiver = recvExpr, memberName = bd.name), span = fn.span, nodeId = fn.nodeId)
+  Some(value = buildMethodCall(env, e, ty, sym, site, asMember, rest))
+}
+
 func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
   val tbl = env.ctx.tbl
   match hostPropertyCallForm(env, fn, args) {
@@ -4558,6 +4588,11 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   if tbl.indirectByNode.containsKey(e.nodeId) {
     return buildIndirectCall(env, e, ty, fn, args)
+  }
+  // `T.m(x, args)` through the type of a method in the type's body is the method call `x.m(args)` (D181).
+  match typeQualifiedMethodCall(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
   }
   match mapGet(tbl.callSigByNode, e.nodeId) {
     case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
@@ -4700,7 +4735,9 @@ func buildParamDefault(
 /// `JCharacter.toUpperCase(c).toInt()` where the host call's result is untyped (its overloads differ in
 /// their result) and the builder types the chain itself as a primitive: the checker had no receiver type to
 /// record the numeric conversion built-in against, so the call is the primitive's own built-in, as it is
-/// where the checker typed the receiver.  None, counting nothing, for any other shape.
+/// where the checker typed the receiver.  The receiver is any expression the builder types: a host chain, an
+/// element of an untyped local (`copied[0].toInt()` where `copied` holds a host `byte[]`), a host constant.
+/// None, counting nothing, for any other shape.
 func buildConvMethodOnOpenPrim(
   env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
 ): Option[Option[TExpr]] {
@@ -4720,7 +4757,7 @@ func buildConvMethodOnOpenPrim(
     case Ok(_) -> return None
     case Err(_) -> ()
   }
-  match openHostChainTy(env, recv) {
+  match exprOrOpenTy(env, recv) {
     case Some(rt) -> match rt {
       case TPrim(p) -> if isNumericPrimKind(p) or isCharKind(p) {
         Some(value = buildBuiltinCall(env, e, ty, renderTy(rt) + "." + name, fn, args))

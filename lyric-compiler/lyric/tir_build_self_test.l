@@ -1293,6 +1293,11 @@ test "a host UInt32 result the checker types as Long is read with CvFromHost (D7
   )
 }
 
+test "a numeric conversion on an element of an untyped host array local is the built-in (D773)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Long {\n  val g = Math.Grow(3)\n  g[0].toLong()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
 test "an extern argument is widened to the overload's parameter" {
   val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Int {\n  Math.Max(a, b)\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
