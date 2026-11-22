@@ -913,6 +913,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
+  - `@projectable` views are a declaration-expansion pass before the check (`Lyric.Projectable`, D761): `<Name>View`, `Name.toView` and `<Name>View.tryInto` are ordinary AST and both backends dropped their projection twin.
   - A host call may leave out the optional trailing parameters the metadata declares: `HostMemberRef.omitted` counts them, the verifier checks the arguments against the signature less that tail, and the package interface format is 6 (D762).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
@@ -1056,6 +1057,7 @@ clause on MSIL, JVM and native.
 | I0004 | internal: a backend panicked on verified TIR |
 | T0223 | a library's package interface cannot record a declaration (a type the checker did not resolve, `Self` outside an interface) |
 | I0005 | internal: an interface did not round-trip |
+| I0006 | internal: source a declaration-expansion pass generated does not parse (`Lyric.Projectable`) |
 
 Existing name codes (T0010, T0020, T0097, T0123, T0148) keep their meaning
 and move to the resolver. `B0012` is retired with #8690 (§4.1).
