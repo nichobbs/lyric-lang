@@ -915,6 +915,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
   - `@projectable` views are a declaration-expansion pass before the check (`Lyric.Projectable`, D761): `<Name>View`, `Name.toView` and `<Name>View.tryInto` are ordinary AST and both backends dropped their projection twin.
   - A host call may leave out the optional trailing parameters the metadata declares: `HostMemberRef.omitted` counts them, the verifier checks the arguments against the signature less that tail, and the package interface format is 6 (D762).
+  - An `extern type` named with its type arguments in brackets (`List`1[X]`) converts to the structured host type the metadata gives (`List` with the argument `X`), so a value of it and a member's result of the class are one type (D764).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
