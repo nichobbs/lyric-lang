@@ -8,8 +8,8 @@
 
 ## Decision
 
-A lambda that initialises a `val` or `var` binding with no type annotation and has a parameter with no annotation is the checker error **T0231** at the parameter. A lambda whose parameter types come from an expected function type (an annotated binding, a call argument, a returned value, a field) is unchanged. `func_val_local_rettype_self_test.l` annotates its three lambdas (`{ x: Int -> false }`); `typechecker_self_test.l`'s lenient case is now the T0231 case plus its annotated-binding counterpart; the reject corpus has `lambda_param_unfixed`.
+A lambda that initialises a local `val` or `var` binding with no type annotation and has a parameter with no annotation is the checker error **T0231** at the parameter. A lambda whose parameter types come from an expected function type (an annotated binding, a call argument, a returned value, a field) is unchanged. `func_val_local_rettype_self_test.l` annotates its three lambdas (`{ x: Int -> false }`); `typechecker_self_test.l`'s lenient case is now the T0231 case plus its annotated-binding counterpart; the reject corpus has `lambda_param_unfixed`.
 
 ## Results
 
-The checker and reject corpus cases below; docs/01 5.4, the book (chapter 4 and appendix B) and docs/70 updated.
+`typechecker_self_test.l` (the T0231 case and its annotated-binding counterpart), `func_val_local_rettype_self_test.l` and the reject corpus case `lambda_param_unfixed`; docs/01 5.4, the book (chapter 4 and appendix B) and docs/70 are updated. Module-level bindings are not checked.
