@@ -124,6 +124,7 @@ func putMember(w: in IfaceWriter, it: in DefPathInterner, m: in HostMemberRef) {
     putTy(w, it, p.ty)
   }
   putTy(w, it, m.ret)
+  putU(w, m.omitted)
 }
 
 func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
@@ -144,6 +145,7 @@ func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
     k = k + 1
   }
   val ret = readTy(r, it)
+  val omitted = readU(r)
   val kind = match hostKindOfCode(kc) {
     case Some(x) -> x
     case None -> {
@@ -151,7 +153,7 @@ func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
       HMMethod
     }
   }
-  HostMemberRef(owner = owner, name = name, kind = kind, isStatic = isStatic, params = ps, ret = ret)
+  HostMemberRef(owner = owner, name = name, kind = kind, isStatic = isStatic, params = ps, ret = ret, omitted = omitted)
 }
 
 func intrinsicCode(op: in IntrinsicOp): Int {
