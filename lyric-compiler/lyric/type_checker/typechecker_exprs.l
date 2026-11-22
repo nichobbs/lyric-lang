@@ -5169,6 +5169,74 @@ func isBuiltinDefaultCall(sigs: in Map[String, ResolvedSignature], e: in Expr): 
   }
 }
 
+// True when `t` mentions `Self` anywhere inside it.
+func tyMentionsSelf(t: in Type): Bool {
+  match t {
+    case TySelf -> true
+    case TyUser(_, _, args) -> anyTyMentionsSelf(args)
+    case TySlice(e) -> tyMentionsSelf(e)
+    case TyArray(_, e, _) -> tyMentionsSelf(e)
+    case TyNullable(inner) -> tyMentionsSelf(inner)
+    case TyTuple(elems) -> anyTyMentionsSelf(elems)
+    case TyFunction(ps, ret, _) -> anyTyMentionsSelf(ps) or tyMentionsSelf(ret)
+    case TyRefined(u, _, _, _, _) -> tyMentionsSelf(u)
+    case _ -> false
+  }
+}
+
+func anyTyMentionsSelf(ts: in List[Type]): Bool {
+  for t in ts {
+    if tyMentionsSelf(t) {
+      return true
+    }
+  }
+  false
+}
+
+// T0232: an interface method with an `out` or `inout` parameter whose type mentions `Self`, called through
+// a value typed as the interface.  The argument is written back by the callee, which can store only its own
+// implementing type, and a variable of the interface type can hold any implementer, so no argument type is
+// sound.  A call through a concrete implementing type, and `in` parameters of `Self`, are allowed.
+func reportInoutSelfThroughInterface(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recv: in Type,
+  name: in String,
+  span: in Span,
+): Unit {
+  match unrefine(recv) {
+    case TyUser(tid, tname, _) -> match symbolOfDefId(tbl, tid) {
+      case Some(s) -> match s.kind {
+        case DKInterface(_, _) -> {
+          for entry in symTableMethodSigs(tbl, tid, name) {
+            for p in entry.sig.params {
+              val byRef = match p.mode { case PMIn -> false; case _ -> true }
+              if byRef and tyMentionsSelf(p.ty) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0232",
+                    "'" + name + "' takes '" + p.name +
+                      "' by reference as `Self`, so it cannot be called through a value of the interface type '" +
+                      tname +
+                      "': the callee writes back its own implementing type, which a '" +
+                      tname +
+                      "' variable need not hold; call it on the concrete type",
+                    span
+                  )
+                )
+                return
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
@@ -21052,6 +21120,9 @@ func inferExprCore(
                   methodPick = resolveBoundMethodPick(sc, tbl, rt3, memberName, args)
                 }
                 recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
+                if methodPick.isSome() {
+                  reportInoutSelfThroughInterface(tbl, diag, rt3, memberName, e.span)
+                }
               }
               case None -> {
               }
