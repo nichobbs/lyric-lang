@@ -914,6 +914,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
   - A host call may leave out the optional trailing parameters the metadata declares: `HostMemberRef.omitted` counts them, the verifier checks the arguments against the signature less that tail, and the package interface format is 6 (D762).
+  - A call through a type to a method in the type's body (`Bag.one(b)`, D181) builds as the method call `b.one()`: the checker records its callee and shape under the call's node and the builder takes the first argument as the receiver (D763).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
