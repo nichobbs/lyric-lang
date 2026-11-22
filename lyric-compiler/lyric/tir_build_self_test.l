@@ -1032,6 +1032,10 @@ func fakeHost(): FakeHost {
   val intValue: List[ExternMemberSig] = newList()
   intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
+  val upper: List[ExternMemberSig] = newList()
+  upper.add(fhSig(true, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Char"))))
+  upper.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.Character", "toUpperCase", 1), upper)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1152,7 +1156,7 @@ test "a slice takes the array of its own element over an Object[] (D699)" {
   }
 }
 
-test "a member called on a boxed number a host call returns is the box's own (D700)" {
+test "a member called on a boxed number a host call returns is the box's own (D750)" {
   val r = buildFirstFnHost(
     "package App\nextern type JInteger = \"java.lang.Integer\"\nfunc f(): Int {\n  JInteger.valueOf(42).intValue()\n}\n"
   )
@@ -1161,6 +1165,13 @@ test "a member called on a boxed number a host call returns is the box's own (D7
     case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
     case None -> assertTrue(false, "an extern call")
   }
+}
+
+test "an overload of an untyped host call is chosen by an argument the checker left open (D750)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type JChar = \"java.lang.Character\"\nfunc f(): Int {\n  JChar.toUpperCase(97.toChar()).toInt()\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
 test "an extern argument is widened to the overload's parameter" {
