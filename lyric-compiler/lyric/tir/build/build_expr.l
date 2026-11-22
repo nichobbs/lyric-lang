@@ -7296,6 +7296,10 @@ func collMemberArgTys(targs: in List[Ty], name: in String, argc: in Int): Option
       res.add(targs[0])
       return Some(value = res)
     }
+    if argc == 1 and op == "containsValue" {
+      res.add(targs[1])
+      return Some(value = res)
+    }
   }
   if name.startsWith("Set.") and targs.count == 1 {
     val op = name.substring(4, name.length - 4)

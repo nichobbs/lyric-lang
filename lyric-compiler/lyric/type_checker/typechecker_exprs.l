@@ -15951,7 +15951,7 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
       // (`val s: String = xs.contains(x)`) is reported (#7978).
       val boolResult = (argCount == 1) and
         (
-          (isList and name == "contains") or (isMap and name == "containsKey") or
+          (isList and name == "contains") or (isMap and (name == "containsKey" or name == "containsValue")) or
             (isSet and name == "contains") or
             ((isList or isMap or isSet) and name == "remove")
         )
@@ -16057,6 +16057,8 @@ func stdCollectionMemberParams(
           ps.add(collParam(targs[1], "value"))
         } else if argCount == 1 and (name == "containsKey" or name == "remove") {
           ps.add(collParam(targs[0], "key"))
+        } else if argCount == 1 and name == "containsValue" {
+          ps.add(collParam(targs[1], "value"))
         }
       } else if targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set") {
         if argCount == 1 and (name == "add" or name == "contains" or name == "remove") {
@@ -26109,6 +26111,19 @@ func packageDottedSig(
   dotSigInPackage(tbl, sigs, dotted, modulePathJoin(pkgSegs), arity, argTypes)
 }
 
+// Whether the package a qualifier names declares a function of package `declPkg`: the qualifier is the package
+// itself, an import alias of it (`import Pu as L`), or a package that re-exports it (`pub use`, transitively).
+func qualifierDeclares(tbl: in SymbolTable, qual: in String, declPkg: in String): Bool {
+  if declPkg == qual {
+    return true
+  }
+  val base = match symTablePackageOfAlias(tbl, qual) { case Some(p) -> p; case None -> qual }
+  if declPkg == base {
+    return true
+  }
+  symTableReexportClosure(tbl, base).contains(declPkg)
+}
+
 // Whether some declaration of `dotted` in `pkg` takes `arity` arguments of
 // the types `argTypes` (#8880).
 func anyTypedDotCandidate(
@@ -26124,7 +26139,7 @@ func anyTypedDotCandidate(
   }
   val noArgs: List[CallArg] = newList()
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
-    if sigPackage(tbl, c) == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
+    if qualifierDeclares(tbl, pkg, sigPackage(tbl, c)) and arity <= c.params.count and arity >= minRequiredParams(c) {
       if suppliedArgsMatch(tbl, c, argTypesInSigOrder(c, 0, noArgs, argTypes)) {
         return true
       }
@@ -26147,7 +26162,7 @@ func dotSigInPackage(
   var fewest: Option[ResolvedSignature] = None
   val noArgs: List[CallArg] = newList()
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
-    if sigPackage(tbl, c) == pkg {
+    if qualifierDeclares(tbl, pkg, sigPackage(tbl, c)) {
       // Of the declarations that take this many arguments, one whose
       // parameters accept the argument types answers, the one leaving the
       // fewest parameters to their defaults first (#8880); when none does the
