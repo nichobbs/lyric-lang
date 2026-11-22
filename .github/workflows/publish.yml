@@ -245,7 +245,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 22 (for the Maven resolver jar)
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880  # v6.3.0
         with:
           distribution: temurin
           java-version: '22'
@@ -488,7 +488,7 @@ jobs:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 22 (for the Maven resolver jar)
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880  # v6.3.0
         with:
           distribution: temurin
           java-version: '22'
@@ -679,7 +679,7 @@ jobs:
       # failed lyric-grpc/-web/-mq/-session on every release until the
       # per-library logs were fixed (#5615) and the error became visible.
       - name: Set up Java 22 (for the Maven resolver jar)
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78  # v6.2.0
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880  # v6.3.0
         with:
           distribution: temurin
           java-version: '22'
