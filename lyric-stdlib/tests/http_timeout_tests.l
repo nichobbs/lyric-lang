@@ -139,9 +139,10 @@ test "headers followed by a stalled body end at the deadline as HttpError.Timeou
   val l = listenLoopback()
   val sc = Task.makeScope()
   Task.scopeSpawn(sc, { -> acceptSendAndStall(l, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial") })
+  // The clock starts before the deadline timer does, so the elapsed time can never read below the deadline.
+  val started = Time.monotonicNanos()
   val src = Task.makeCancelSourceTimeout(400)
   val tok = Task.sourceToken(src)
-  val started = Time.monotonicNanos()
   val r = await plainClient().sendWithCancel(request(GET, urlOf(l, "/stalled-body")), tok)
   val elapsedMs = (Time.monotonicNanos() - started) / 1000000i64
   match r {

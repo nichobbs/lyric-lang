@@ -809,7 +809,14 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       expectTy(c, e.id, e.ty, zt, "zero-value", "zero value")
       match zt {
         case TArray(_, _) -> ()
-        case _ -> report(c, e.id, "zero-value", "a zero value of " + renderTy(zt) + ", which is not an array type")
+        // A host value type's default value (`TimeSpan.new()`).
+        case TExtern(_) -> ()
+        case _ -> report(
+          c,
+          e.id,
+          "zero-value",
+          "a zero value of " + renderTy(zt) + ", which is neither an array nor a host type"
+        )
       }
     }
     case XIndex(recv, idx, how) -> {

@@ -1044,6 +1044,15 @@ func fakeHost(): FakeHost {
   upper.add(fhSig(true, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Char"))))
   upper.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("java.lang.Character", "toUpperCase", 1), upper)
+  val grow: List[ExternMemberSig] = newList()
+  grow.add(
+    fhSig(
+      true,
+      fhParams1(fhPrim("Int")),
+      EMTType(elem = EIEHost(hostName = "an array, pointer or by-reference type", args = [fhPrim("Int")]))
+    )
+  )
+  sigs.add(fhKey("System.Math", "Grow", 1), grow)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1179,6 +1188,11 @@ test "a numeric conversion on a primitive an untyped host chain returns is the b
   val r = buildFirstFnHost(
     "package App\nextern type JChar = \"java.lang.Character\"\nfunc f(): Int {\n  JChar.toUpperCase('a').toInt()\n}\n"
   )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a primitive array a host chain returns is the slice of its element (D753)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val g = Math.Grow(3)\n  g.length\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
@@ -1575,13 +1589,13 @@ test "a field of a generic record builds at the receiver's instantiation" {
 }
 
 test "a member that is not a record field is counted" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
 }
 
 test "an uncovered kind remembers where it was first met" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   val at = match mapGet(r.env.sites, "a member access that is not a record field") {
     case Some(a) -> a
     case None -> ""
@@ -3187,7 +3201,7 @@ test "a local that shadows a protected field's name is the local, not the field 
 }
 
 test "a failed body names its symbol's DefPath key (D570)" {
-  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertEqualInt(pb.failed.count, 1, "the member access body fails")
   assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
