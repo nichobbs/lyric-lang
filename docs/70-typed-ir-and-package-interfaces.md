@@ -970,6 +970,10 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A call statement on a generic host class applied to concrete arguments, and the last call of a `Unit` function body, settle at the host's root object when the checker left them untyped (`d.put("a", "1")`): a discarded value needs no more (D683).
   - A call of a wire's generated factory (`W.bootstrap(provided...)`, an exposed binding's accessor `W.binding()`) is the intrinsic `IoWire(wire, member)`, typed from the wire's declaration; the interface codec carries it and the native lowering reports it unsupported until phase 5 (D684).
   - A method call on a value of a bounded type parameter is typed by the checker and recorded as a call through the bound interface's member, built as an interface call (D686).
+  - An interface method with type parameters of its own, called on an interface-typed value, records a call site and builds as an interface call carrying the call's type arguments (D687).
+  - A package-qualified callee under explicit type arguments (`Core.unwrapOr[Int](o, 5)`) and an alias-qualified call (`Buf.fromSlice(xs)` through `import Std.Buffer as Buf`) record the function declared at the signature's span (D688).
+  - `toInt` and `toLong` of a `Nat` are the built-ins `Nat.toInt` and `Nat.toLong` (D689).
+  - A plain function called by method syntax on a primitive receiver (`s.equalsCaseInsensitive(t)`, docs/01 12.1) is typed from its signature and records its callee and call site (D691).
   - A lambda whose body ends in `try` yields the value of the `try` (D690).
   - A call through a function value settles a bare `None`, a bracket literal, a tuple or a construction argument to the parameter's type, and a tuple argument settles its elements (D692).
   - The loop variable of a `for` over a host collection the checker did not type is the element type the host's iteration protocol declares (D693).

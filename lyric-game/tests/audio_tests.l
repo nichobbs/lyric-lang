@@ -74,7 +74,7 @@ test "wav rejects damage" {
     case Ok(s) -> assertEqualInt(frameCount(s), 0, "empty data is an empty sound")
     case Err(e) -> assertTrue(false, e)
   }
-  match decodeWav(Buf.fromSlice([1u8, 2u8, 3u8]).toSlice()) {
+  match decodeWav(Buf.toSlice(Buf.fromSlice([1u8, 2u8, 3u8]))) {
     case Ok(_) -> assertTrue(false, "should not decode")
     case Err(_) -> ()
   }

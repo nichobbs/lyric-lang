@@ -4411,6 +4411,7 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
       case Some(sym) -> match fn.kind {
         case EPath(_) -> return buildDirectCall(env, e, ty, sym, sig, args)
         case EIndex(_, _) -> return buildDirectCall(env, e, ty, sym, sig, args)
+        case ETypeApp(_, _) -> return buildDirectCall(env, e, ty, sym, sig, args)
         // `Pkg.f(x)` and `Type.f(x)`: a function the checker resolved by its qualified name.
         // A method call has its own table and is built below.
         case EMember(_, _) -> if not tbl.methodCallByNode.containsKey(e.nodeId) {
@@ -7270,7 +7271,7 @@ func collMemberArgTys(targs: in List[Ty], name: in String, argc: in Int): Option
   val res: List[Ty] = newList()
   if name.startsWith("List.") and targs.count == 1 {
     val op = name.substring(5, name.length - 5)
-    if op == "add" and argc == 2 {
+    if (op == "add" or op == "set") and argc == 2 {
       res.add(tyInt())
       res.add(targs[0])
       return Some(value = res)
@@ -7286,7 +7287,7 @@ func collMemberArgTys(targs: in List[Ty], name: in String, argc: in Int): Option
   }
   if name.startsWith("Map.") and targs.count == 2 {
     val op = name.substring(4, name.length - 4)
-    if op == "add" and argc == 2 {
+    if (op == "add" or op == "set") and argc == 2 {
       res.add(targs[0])
       res.add(targs[1])
       return Some(value = res)
@@ -8040,7 +8041,7 @@ func buildMethodCall(
     all.add(a)
   }
   val callee = match ifaceSym {
-    case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
+    case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = inst.tyArgs)
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
   noteFuncSymN(
