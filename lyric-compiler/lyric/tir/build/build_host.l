@@ -139,6 +139,29 @@ func hostArrayAccepts(h: in HostTypeRef, el: in Ty): Bool {
   }
 }
 
+/// Whether the host array `h` is the array of exactly the slice's own element (an `int[]` for a slice of
+/// `Int`), as against an `Object[]` that takes any slice: an overload on the exact array outranks the
+/// `Object[]` one, as the JVM resolver scores it.
+pub func hostArrayIsOwnElement(h: in HostTypeRef, el: in Ty): Bool {
+  if h.args.count != 1 or isJvmObjectArray(h) {
+    return false
+  }
+  hostArrayAccepts(h, el)
+}
+
+/// The JVM's `Object[]`.  A Lyric slice is an `Object[]` of boxed elements on the JVM whatever its element
+/// type, so a slice of any element is passed as the array itself (docs/70 D699).  The CLR's `object[]` is
+/// not a slice's representation, so it is not included.
+func isJvmObjectArray(h: in HostTypeRef): Bool {
+  if h.args.count != 1 {
+    return false
+  }
+  match h.args[0] {
+    case TExtern(w) -> w.name == "java.lang.Object"
+    case _ -> false
+  }
+}
+
 /// An element type whose array is the host's own array: bytes and host (extern) values.
 func isHostArrayElement(el: in Ty): Bool {
   match el {
@@ -168,7 +191,11 @@ pub func hostBoxKind(from: in Ty, to: in Ty): Option[ConvKind] {
       // element known, bytes and host values are accepted.
       if h.name == hostArrayName() {
         return match from {
-          case TSlice(el) -> if hostArrayAccepts(h, el) { Some(value = CvBoxToHost(host = h)) } else { None }
+          case TSlice(el) -> if hostArrayAccepts(h, el) or isJvmObjectArray(h) {
+            Some(value = CvBoxToHost(host = h))
+          } else {
+            None
+          }
           case TArray(_, el) -> if hostArrayAccepts(h, el) { Some(value = CvBoxToHost(host = h)) } else { None }
           case _ -> None
         }

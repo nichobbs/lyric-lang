@@ -459,6 +459,14 @@ test "collection members take their parameter types from a host or a declared re
   }
 }
 
+test "the JVM list host names, with and without the arity suffix, are lists (D752)" {
+  assertTrue(isListHostName("java.util.ArrayList`1"), "the JVM stdlib List's host name is ArrayList`1")
+  assertTrue(isListHostName("java.util.ArrayList"), "ArrayList")
+  assertTrue(isListHostName("java.util.List`1"), "List`1")
+  assertTrue(isListHostName("System.Collections.Generic.List`1"), "the CLR List")
+  assertTrue(not isListHostName("java.util.LinkedList`1"), "another host collection is not")
+}
+
 test "Map.containsValue takes the value type (D698)" {
   val host = TirT.TExtern(
     host = HostTypeRef(
@@ -1025,6 +1033,20 @@ func fakeHost(): FakeHost {
   abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Abs", 1), abs)
+  val valueOf: List[ExternMemberSig] = newList()
+  valueOf.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhHost("java.lang.Integer"))))
+  valueOf.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("java.lang.Integer"))))
+  sigs.add(fhKey("java.lang.Integer", "valueOf", 1), valueOf)
+  val intValue: List[ExternMemberSig] = newList()
+  intValue.add(fhSig(false, newList(), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("java.lang.Integer", "intValue", 0), intValue)
+  val pick: List[ExternMemberSig] = newList()
+  val arrayName = "an array, pointer or by-reference type"
+  val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
+  val objectArray = EIEHost(hostName = arrayName, args = [fhHost("java.lang.Object")])
+  pick.add(fhSig(true, fhParams1(objectArray), EMTType(elem = fhPrim("Int"))))
+  pick.add(fhSig(true, fhParams1(intArray), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Pick", 1), pick)
   FakeHost(sigs = sigs)
 }
 
@@ -1119,6 +1141,32 @@ test "equal-score widening overloads take the most specific one (D697)" {
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
     case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPInt)), "the Int overload, a Char widening to int")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a slice takes the array of its own element over an Object[] (D699)" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: in slice[Int]): Int {\n  Math.Pick(xs)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> match m.params[0].ty {
+      case TExtern(h) -> assertTrue(
+        tyEq(h.args[0], TPrim(kind = TPInt)),
+        "the int[] overload, not the Object[] one"
+      )
+      case _ -> assertTrue(false, "a host array parameter")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a member called on a boxed number a host call returns is the box's own (D750)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type JInteger = \"java.lang.Integer\"\nfunc f(): Int {\n  JInteger.valueOf(42).intValue()\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(m.name == "intValue" and not m.isStatic, "the instance intValue on the Integer")
     case None -> assertTrue(false, "an extern call")
   }
 }
@@ -1516,13 +1564,13 @@ test "a field of a generic record builds at the receiver's instantiation" {
 }
 
 test "a member that is not a record field is counted" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
 }
 
 test "an uncovered kind remembers where it was first met" {
-  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   val at = match mapGet(r.env.sites, "a member access that is not a record field") {
     case Some(a) -> a
     case None -> ""
@@ -2524,8 +2572,20 @@ test "host boxing and narrowing pick a conversion by the operand and the host ty
     "a slice of host values is a host Object[] (D472)"
   )
   assertTrue(
-    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
-    "an Int slice is not a host Object[] (D472)"
+    isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
+    "an Int slice is a JVM Object[]: a slice's runtime form is an Object[] of boxed elements (D699)"
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TArray(len = ALKnown(n = 3), element = TPrim(kind = TPInt)), TExtern(host = objectArray))),
+    "an array[3, Int] is not an Object[] (D699)"
+  )
+  val clrObjectArray = HostTypeRef(
+    name = "an array, pointer or by-reference type",
+    args = [TExtern(host = HostTypeRef(name = "System.Object", args = []))]
+  )
+  assertTrue(
+    not isSome(hostBoxKind(TSlice(element = TPrim(kind = TPInt)), TExtern(host = clrObjectArray))),
+    "an Int slice is not a CLR object[] (D699)"
   )
   val thunk = TFunc(params = newList(), ret = TPrim(kind = TPUnit), isAsync = false)
   assertTrue(
@@ -3116,7 +3176,7 @@ test "a local that shadows a protected field's name is the local, not the field 
 }
 
 test "a failed body names its symbol's DefPath key (D570)" {
-  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  val pb = packageOf("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.nope\n}\n")
   assertEqualInt(pb.failed.count, 1, "the member access body fails")
   assertTrue(pb.failed[0].sym.isSome(), "it has a symbol")
   assertTrue(pb.failed[0].path.isSome(), "and names its DefPath key")
@@ -3434,4 +3494,16 @@ test "an assignment to a field of a generic opaque type is built at the field's 
   openShapeCensus(
     "pub opaque type Pair[A, B] {\n  first: A\n  var second: B\n}\npub func Pair.swapCount[A, B](self: in Pair[A, B], next: in B): Int {\n  self.second = next\n  1\n}\n"
   )
+}
+
+test "a call written through the file's own package name builds (D749)" {
+  val c = censusOf("package App\nfunc plainOne(): Int { 1 }\nfunc a(): Int { App.plainOne() }\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+}
+
+test "a record sharing its name with an enum case is still constructed (D755)" {
+  val c = censusOf(
+    "package App\nrecord Info { text: String }\nenum Level {\n  case Info\n  case Warn\n}\nfunc a(): String { Info(text = \"t\").text }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
 }

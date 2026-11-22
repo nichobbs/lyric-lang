@@ -2428,18 +2428,22 @@ func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option
       if mname != "from" and mname != "tryFrom" {
         return None
       }
-      val tname = match recv.kind {
-        case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
-        case _ -> ""
-      }
-      if tname == "" {
+      val rsegs: List[String] = newList()
+      if not flattenCalleePathSegs(recv, rsegs) or rsegs.count == 0 {
         return None
       }
-      match scopeTryFind(sc, tname) {
+      val tname = rsegs[rsegs.count - 1]
+      match scopeTryFind(sc, rsegs[0]) {
         case Some(_) -> return None
         case None -> ()
       }
-      match symTableTryFindOne(tbl, tname) {
+      // `Pkg.Type.from(x)`: the type through the package that declares it (the file's own package too).
+      val found: Option[Symbol] = if rsegs.count == 1 {
+        symTableTryFindOne(tbl, tname)
+      } else {
+        symTableTryFindInPackage(tbl, qualifierOfSegs(rsegs), tname)
+      }
+      match found {
         case Some(sym) -> match sym.kind {
           case DKDistinctType(did, _) -> {
             val noArgs: List[Type] = newList()
@@ -11576,10 +11580,29 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       case DKExposedRec(_, _) -> Some(value = sym)
       case DKOpaque(_, _) -> Some(value = sym)
       case DKProtected(_, _) -> Some(value = sym)
+      // An enum case takes no arguments, so `Info(text = "t")` in a package declaring both a case `Info` and a
+      // record `Info` constructs the record.
+      case DKEnumCase(_, _) -> ownRecordNamed(tbl, ctorName)
       case _ -> None
     }
-    case None -> None
+    case None -> ownRecordNamed(tbl, ctorName)
   }
+}
+
+// The record, opaque or protected type the package itself declares under `name`.
+func ownRecordNamed(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if not cand.isImported {
+      match cand.kind {
+        case DKRecord(_, _) -> return Some(value = cand)
+        case DKExposedRec(_, _) -> return Some(value = cand)
+        case DKOpaque(_, _) -> return Some(value = cand)
+        case DKProtected(_, _) -> return Some(value = cand)
+        case _ -> ()
+      }
+    }
+  }
+  None
 }
 
 // `Score(42)`: a distinct type built from a value of its underlying type
@@ -12970,7 +12993,10 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
             } else {
               return tyErrorSilent()
             }
-            case None -> return tyErrorSilent()
+            // A binding a container fixes (`Result[T, E]`'s `T`) stands when a bare `T` argument differs: that
+            // argument must convert to it (`unwrapOr(r, Square(..))` with `r: Result[Shape, String]`), which the
+            // argument check against the instantiated parameter verifies.
+            case None -> if bare and not boundBare { () } else { return tyErrorSilent() }
           }
         } else if typeIsUnsolved(bound) {
           // An argument that left the parameter open (`None` for an
@@ -17296,6 +17322,59 @@ func reportOpenHoistedReceiver(
   )
 }
 
+// The method `pick` resolved against a receiver whose type arguments are open (`emptyCell().orDefault(5)`) is
+// instantiated at holes, so its result is a hole too.  The receiver's type arguments the method's parameters bind
+// from the arguments (`recvTy` closed) give the pick the call is resolved at: its signature has the closed result.
+func pickAtClosedReceiver(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  pick: in Option[MethodCallPick],
+  recvTy: in Type,
+  memberName: in String,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  ambiguous: in List[ResolvedSignature],
+  callSpan: in Span,
+): Option[MethodCallPick] {
+  if pick.isNone() or not openCallReceiver(sc, fn, Some(value = recvTy)) {
+    return pick
+  }
+  val resultExpected = match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(callSpan)) {
+    case Some(rx) -> rx
+    case None -> tyErrorSilent()
+  }
+  val noColl: Option[List[CollMemberParam]] = None
+  val closed = joinOpenTypes(
+    recvTy,
+    unrefine(hoistedRecvType(tbl, pick, noColl, recvTy, memberName, args, argTypes, resultExpected))
+  )
+  if not typeMentionsGenericInst(closed) or not typeIsClosedOver(closed, sc.genericNames) {
+    return pick
+  }
+  val again = resolveMethodCallPick(tbl, sigs, closed, memberName, args, argTypes, ambiguous)
+  if again.isSome() {
+    again
+  } else {
+    pick
+  }
+}
+
+// A receiver call that leaves a type argument open (`emptyCell()` of `emptyCell().orDefault(5)`) has the type the
+// method's parameters give it: the checker's type of that node becomes the closed instantiation, so the typed IR
+// builds the receiver call at it instead of at an open type.
+func recordClosedReceiverType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, own: in Type, expected: in Type): Unit {
+  val closed = joinOpenTypes(own, unrefine(expected))
+  if not typeMentionsGenericInst(closed) or not typeIsClosedOver(closed, sc.genericNames) {
+    return
+  }
+  if renderType(closed) == renderType(own) {
+    return
+  }
+  recordExprType(tbl, recv, closed)
+}
+
 // Whether the callee `fn` is a member call whose receiver is itself a call
 // that leaves a type argument of its result open.
 func openCallReceiver(sc: in Scope, fn: in Expr, memberRecvTy: in Option[Type]): Bool {
@@ -19137,13 +19216,19 @@ func checkExplicitTypeArgCall(
   if explicitGenericArgs(fn).count == 0 {
     return
   }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> { return } }
   match valueGenericCallee(tbl, fn, args.count) {
     case Some(_) -> {
+      // `total[3](a)`: the callee is the declared function, recorded under the call's node as
+      // `f[A](x)` records its own.
+      match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
+        case Some(vsig) -> recordTypeAppliedCallee(tbl, inner, vsig, callNode)
+        case None -> ()
+      }
       return
     }
     case None -> ()
   }
-  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> { return } }
   var iname = ""
   match inner.kind {
     case EPath(path) -> {
@@ -21051,6 +21136,19 @@ func inferExprCore(
                 if methodPick.isNone() {
                   methodPick = resolveBoundMethodPick(sc, tbl, rt3, memberName, args)
                 }
+                methodPick = pickAtClosedReceiver(
+                  sc,
+                  tbl,
+                  sigs,
+                  fn,
+                  methodPick,
+                  rt3,
+                  memberName,
+                  args,
+                  argTypes,
+                  ambiguousPick,
+                  e.span
+                )
                 recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
               }
               case None -> {
@@ -21302,6 +21400,7 @@ func inferExprCore(
                 resultExpected
               )
               recordHoistOperandType(sc, tbl, hoistRecv, hoistRecvTy, recvExpected)
+              recordClosedReceiverType(sc, tbl, hoistRecv, hoistRecvTy, recvExpected)
               reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName, hoistHazard)
             }
             case None -> ()
@@ -21624,7 +21723,7 @@ func inferExprCore(
                       }
                       case None -> recordGenericArgWidenings(tbl, mp.sig, None, args, argTypes)
                     }
-                    match mp.fullSig {
+                    val methodCallResult = match mp.fullSig {
                       case Some(fullS) -> {
                         match fn.kind {
                           case EMember(byRecv, _) -> {
@@ -21682,6 +21781,7 @@ func inferExprCore(
                       }
                       case None -> instantiateReturnType(mp.sig, 0, args, argTypes)
                     }
+                    methodCallResult
                   }
                   case None -> {
                     // No declared signature to pair against, but a name given
@@ -26736,6 +26836,38 @@ func findDirectSig(
   findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguous)
 }
 
+// The function `member` of the package `recv` names (`App.f(x)` in package `App`, `Lib.Sub.f(x)`), when `recv` is a
+// dotted name that no local, parameter or field binds and some candidate of that name is declared by that package.
+func packageQualifiedFuncSig(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recv: in Expr,
+  member: in String,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  ambiguous: in List[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val segs: List[String] = newList()
+  if not calleeSegments(recv, segs) or segs.count == 0 {
+    return None
+  }
+  if scopeHasName(sc, segs[0]) or sc.selfFields.containsKey(segs[0]) {
+    return None
+  }
+  val wantPkg = modulePathJoin(segs)
+  val cands: List[ResolvedSignature] = newList()
+  for qc in qualifiedCallCandidates(sigs, member, args) {
+    if qc.originPackage == wantPkg {
+      cands.add(qc)
+    }
+  }
+  if cands.count == 0 {
+    return None
+  }
+  pickByShape(tbl, cands, args, argTypes, None, ambiguous)
+}
+
 // `findDirectSig`, adding to `ambiguous` the declarations a call that fills
 // defaults binds equally well (`pickByShape`); the signature returned is then
 // the first of them.
@@ -26784,6 +26916,12 @@ func findDirectSigPick(
           case Some(pds) -> return Some(value = pds)
           case None -> ()
         }
+      }
+      // `Pkg.f(x)` written as a member of the package's name (the file's own package included): the
+      // function `f` that package declares, as the same call written as a path.
+      match packageQualifiedFuncSig(sc, tbl, sigs, recv, member, args, argTypes, ambiguous) {
+        case Some(qs) -> return Some(value = qs)
+        case None -> ()
       }
       val typeName = match recv.kind {
         case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {
