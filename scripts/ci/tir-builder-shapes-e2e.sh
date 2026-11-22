@@ -2137,4 +2137,70 @@ func main(): Int {
 }
 LYRIC
 
+# An interface method with type parameters of its own, called on an interface-typed value, is an interface call
+# carrying the call's type arguments (D687).
+check interface_generic_method 12 <<'LYRIC'
+package Shapes5
+import Std.Core
+
+interface Echo {
+  func id[U](self: in Self, x: in U): U
+}
+
+record R {
+  n: Int
+}
+
+impl Echo for R {
+  func id[V](self: in R, x: in V): V = x
+}
+
+func main(): Int {
+  val e: Echo = R(n = 1)
+  e.id(5) + e.id(7)
+}
+LYRIC
+
+# A package-qualified callee under explicit type arguments, and an alias-qualified call through
+# `import P as A`, record their callee (D688).
+check qualified_generic_and_alias_calls 8 <<'LYRIC'
+package Shapes6
+import Std.Core
+import Std.Buffer as Buf
+
+func main(): Int {
+  val o: Option[Int] = None
+  val b = Buf.fromSlice([1u8, 2u8, 3u8])
+  Core.unwrapOr[Int](o, 5) + Buf.toSlice(b).length
+}
+LYRIC
+
+# `Nat` conversions: `toNat` of an `Int` and `Double`, then `toInt`/`toLong` of the `Nat` (D689).
+check nat_conversions 9 <<'LYRIC'
+package Shapes7
+import Std.Core
+
+func main(): Int {
+  val i: Int = 5
+  val d: Double = 3.7
+  val l: Long = i.toNat().toLong()
+  i.toNat().toInt() + d.toNat().toInt() + l.toInt() - 4
+}
+LYRIC
+
+# A plain function called by method syntax on a primitive receiver binds to its first parameter (D691).
+check primitive_method_syntax 5 <<'LYRIC'
+package Shapes9
+import Std.Core
+import Std.String
+
+func shout(s: in String, n: in Int): Int = s.length + n
+
+func main(): Int {
+  val s = "abc"
+  val same = s.equalsCaseInsensitive("ABC")
+  if same { s.shout(2) } else { 0 }
+}
+LYRIC
+
 exit $fail
