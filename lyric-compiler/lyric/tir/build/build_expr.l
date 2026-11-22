@@ -1966,19 +1966,20 @@ func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
 /// The host receiver of `recv`: its recorded type when that is a host class, else the type its own chain
 /// gives, else the host class it names as an `extern type`.
 func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
+  // The bare name of an `extern type` is the host class itself whatever type the checker gave the name (it gives a
+  // host class it has a Lyric type for, `extern type ByteT = "System.Byte"`, that Lyric type or the host type): a
+  // member read through it is a static one.
+  match hostStaticReceiver(env, recv) {
+    case Some(h) -> return Some(value = HostRecv(host = h, isStatic = true))
+    case None -> ()
+  }
   match exprTy(env.ctx, recv.nodeId) {
     case Ok(t) -> match t {
       case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
       // A language `String` is the host's string, so a member the checker has no case for
       // (`encoded.getBytes("US-ASCII")`) is the host string class's own.
       case TPrim(TPString) -> hostStringReceiver(env)
-      // The checker gives the name of an `extern type` for a host class it has a Lyric type for
-      // (`extern type ByteT = "System.Byte"`) that Lyric type: a static member read through the name
-      // (`ByteT.MaxValue`) is the host class's own.
-      case _ -> match hostStaticReceiver(env, recv) {
-        case Some(h) -> Some(value = HostRecv(host = h, isStatic = true))
-        case None -> None
-      }
+      case _ -> None
     }
     case Err(_) -> match openHostChainTy(env, recv) {
       case Some(t) -> match t {
