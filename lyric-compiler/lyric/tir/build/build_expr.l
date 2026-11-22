@@ -5369,6 +5369,22 @@ func objectMemberSite(env: in BuildEnv, site: in ExternCallSite, fn: in Expr): O
   None
 }
 
+/// Whether every parameter of `a` is the same type as `b`'s or widens to it: the overload `a` is more specific
+/// than `b`, as the host picks `abs(int)` over `abs(long)` for a `Byte`.
+func moreSpecificParams(a: in List[Ty], b: in List[Ty]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if not tyEq(a[i], b[i]) and not isSome(widenKind(a[i], b[i])) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 /// `buildExternCall` at the host type `site` names.
 func buildExternCallAt(
   env: in BuildEnv,
@@ -5466,7 +5482,12 @@ func buildExternCallAt(
                 case None -> ()
               }
               if not same {
-                ambiguous = true
+                if moreSpecificParams(ps, bestParams) {
+                  bestSig = Some(value = c)
+                  bestParams = ps
+                } else if not moreSpecificParams(bestParams, ps) {
+                  ambiguous = true
+                }
               }
             }
           }

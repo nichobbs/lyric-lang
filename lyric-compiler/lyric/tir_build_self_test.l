@@ -1021,6 +1021,10 @@ func fakeHost(): FakeHost {
     )
   )
   sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap`2", "put", 2), dictPut)
+  val abs: List[ExternMemberSig] = newList()
+  abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Abs", 1), abs)
   FakeHost(sigs = sigs)
 }
 
@@ -1106,6 +1110,15 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
     }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "equal-score widening overloads take the most specific one (D697)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Abs('a')\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPInt)), "the Int overload, a Char widening to int")
     case None -> assertTrue(false, "an extern call")
   }
 }
