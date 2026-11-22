@@ -8,8 +8,12 @@
 
 ## Decision
 
-`hostChainResult` leaves out a candidate whose result is a type variable the host class has no argument for (`EIEArg i` with `i >= host.args.count`): the class's own member is the one the read binds. When every candidate is such a variable they are all kept, as before.
+Two separate causes stopped `Byte` and `Char`, and both are fixed here.
+
+First, the checker gives the name of an `extern type` for a host class it has a Lyric type for (`extern type ByteT = "System.Byte"`) that Lyric type, so `hostChainReceiver` saw a receiver typed as a primitive and never took the host class the name stands for; it now falls back to `hostStaticReceiver` (a bare name of a non-generic `extern type` that no local shadows), so a static member read through the name is the host class's own. A value of a primitive type is unaffected: `hostStaticReceiver` names only a type.
+
+Second, `hostChainResult` leaves out a candidate whose result is a type variable the host class has no argument for (`EIEArg i` with `i >= host.args.count`): the class's own member is the one the read binds. When every candidate is such a variable they are all kept, as before.
 
 ## Consequences
 
-`auto_ffi_self_test` 406 and 437 build; no other host read changes, since only a candidate whose result could never be typed is left out. Test: `tir_build_self_test.l`. An earlier attempt (D772, `hostChainReceiver` falling back to the extern type name) did not fix it and was not merged.
+`auto_ffi_self_test` 406 and 437 build; no other host read changes, since only a candidate whose result could never be typed is left out. Test: `tir_build_self_test.l`. The receiver fallback alone (the abandoned D772) and the candidate filter alone each left the body stopped; both are needed.
