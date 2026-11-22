@@ -1001,6 +1001,10 @@ func fakeHost(): FakeHost {
     )
   )
   sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap`2", "put", 2), dictPut)
+  val abs: List[ExternMemberSig] = newList()
+  abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Abs", 1), abs)
   FakeHost(sigs = sigs)
 }
 
@@ -1086,6 +1090,15 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
     }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "equal-score widening overloads take the most specific one (D697)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Abs('a')\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPInt)), "the Int overload, a Char widening to int")
     case None -> assertTrue(false, "an extern call")
   }
 }
@@ -1800,7 +1813,7 @@ test "two calls leaving out the same default get distinct node ids" {
 
 test "a default of a shape the builder cannot copy is counted, not guessed" {
   val c = censusOf(
-    "package App\nfunc g(a: Int, b: Int = if true { 1 } else { 2 }): Int { a + b }\nfunc f(): Int { g(1) }\n"
+    "package App\nfunc g(a: Int, b: Int = match a { case 1 -> 5\n case _ -> 2 }): Int { a + b }\nfunc f(): Int { g(1) }\n"
   )
   assertEqualInt(c.built, 1, "only g builds")
   assertTrue(c.firstErrors.count > 0, "f reports an I0002")
@@ -2256,10 +2269,10 @@ test "a conversion method on a range-subtype or distinct value unwraps it" {
 
 test "a use of a name whose binding failed is not counted as an unbuildable name of its own" {
   val c = censusOf(
-    "package App\nfunc g(a: Int = if true { 1 } else { 2 }): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
+    "package App\nfunc g(a: Int = match 1 { case 1 -> 5\n case _ -> 2 }): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
   )
   assertTrue(
-    c.uncovered.containsKey("a default argument of a shape not yet built"),
+    c.uncovered.containsKey("a default argument of a shape not yet built (XMatch)"),
     "the failed initializer is counted"
   )
   assertFalse(c.uncovered.containsKey("a name that is not a local"), "its later uses are not")
@@ -2595,6 +2608,20 @@ test "a call of a wire's bootstrap and of an exposed binding's accessor build as
   assertTrue(pb.env.errors.count == 0, if pb.env.errors.count > 0 { pb.env.errors[0] } else { "no I0002" })
   assertTrue(pb.body.isSome(), "the body builds")
   assertTrue(wireCallShape(pb.body) == "App::Shop|bootstrap|1", wireCallShape(pb.body))
+}
+
+test "a method call on a value of a bounded type parameter is a call through the bound's interface member (D686)" {
+  val src = "package App\ninterface Speaker {\n  func say(self: in Self, n: in Int): Int\n}\nfunc talk[T](x: in T): Int where T: Speaker {\n  x.say(1)\n}\n"
+  val r = buildFirstFn(src)
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "the body builds")
+  // The receiver is the parameter-typed value upcast to the interface, so it is not a bare local.
+  assertTrue(calleeShape(r.body) == "interface:other", calleeShape(r.body))
+  val c = censusOf(src + "func twice[T](x: in T): Int where T: Speaker {\n  val a = x.say(1)\n  a + x.say(2)\n}\n")
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "a host property read is a call of its getter with the receiver first (D598)" {
@@ -3005,6 +3032,46 @@ test "a call of a member of a generic impl is built and verified, or counted, ne
   } else {
     assertTrue(c.firstErrors.count > 0, "a body that does not build says why")
   }
+}
+
+test "a call of a member of a generic impl from another function builds with the impl's parameters (D696)" {
+  val c = censusOf(
+    "package App\nrecord Box[T] {\n  value: T\n  n: Int\n}\ninterface Shows {\n  func first(): Int\n  func pick(x: in Int): Int\n}\nimpl[T] Shows for Box[T] {\n  func first(): Int { self.n * 2 }\n  func pick(x: in Int): Int { x + self.n }\n}\nfunc f(b: in Box[String]): Int {\n  b.first() + b.pick(3)\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a lambda default argument is rebuilt at each call that takes it (D696)" {
+  val c = censusOf(
+    "package App\nfunc withDefault(h: () -> Int = { -> 4 }): Int {\n  h()\n}\nfunc twice(a: () -> Int = { -> 5 }, b: (Int) -> Int = { n -> n + 1 }): Int {\n  b(a())\n}\nfunc f(): Int {\n  withDefault() + withDefault() + twice() + twice()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a default argument with local statements and a by-reference call is rebuilt per call (D696)" {
+  val c = censusOf(
+    "package App\nfunc bumpOne(x: inout Int): Unit {\n  x = x + 1\n}\nfunc withDefault(a: in Int = if true { var w = 3; bumpOne(w); w } else { 0 }): Int = a\nfunc f(): Int {\n  withDefault() + withDefault()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an integer literal passed where a generic parameter was fixed to Byte is a Byte literal (D696)" {
+  val c = censusOf(
+    "package App\nfunc second[T](x: inout T, nv: in T): T {\n  x = nv\n  nv\n}\nfunc f(): Int {\n  var b: Byte = 2u8\n  second(b, 3).toInt()\n}\n"
+  )
+  assertTrue(c.total > 0, "the program has bodies")
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "a protected member reads and assigns a field of its receiver by the bare name" {

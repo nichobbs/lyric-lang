@@ -2244,6 +2244,16 @@ pub func symTableFuncDefPathKey(
   None
 }
 
+/// The DefPath key of the top-level function named `member` that is declared at the signature's span, or
+/// "" when none is: the callee of a package-qualified call (`Pkg.f(x)`, `Alias.f(x)`), found by its
+/// declaration rather than by the path that names it.
+pub func symTableQualifiedFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, member: in String): String {
+  match symTableFuncDefPathKey(tbl, sig, member, false) {
+    case Some(k) -> k
+    case None -> ""
+  }
+}
+
 /// The resolver's id of the top-level function `fn` declares: the symbol of its
 /// name whose declaration is at `fn`'s span (D395).  None for a function the table
 /// does not hold (a method, a local function or one that never registered).

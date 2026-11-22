@@ -574,6 +574,7 @@ func collectImportedOwnPackages(
   source: in String,
   ownPkgName: in String,
   extraSources: in List[String],
+  forJvm: in Bool,
 ): Option[List[Emitter.ProjectPackage]] {
   val needed = importedPackageNames(source)
   // The other files of the package the source is merged into (`mergeOwnPackage`
@@ -604,7 +605,7 @@ func collectImportedOwnPackages(
     while pi < proj.packages.count {
       val pkgEntry = proj.packages[pi]
       if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
-        match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, genMf, gens) {
+        match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, genMf, gens, forJvm) {
           case Some(pkgRead) -> {
             val pkgSources = pkgRead.sources
             included.add(pkgEntry.name)
@@ -765,7 +766,7 @@ func emitSingleFileOrProject(
       val absSource = Disc.normalizePath(sourcePath)
       for entry in proj.packages {
         if entry.name == pkgName and not mergesIntoOwn {
-          match readProjectPackageSources(entry, proj, Path.dirname(lm.mfPath), lm.mfPath, mergeGenMf, mergeGens) {
+          match readProjectPackageSources(entry, proj, Path.dirname(lm.mfPath), lm.mfPath, mergeGenMf, mergeGens, isJvmTarget(req.target)) {
             case Some(read) -> {
               mergesIntoOwn = true
               var ri = 0
@@ -789,7 +790,7 @@ func emitSingleFileOrProject(
     case None -> ()
   }
   val ownPkgs = match lm.manifest.project {
-    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName, mergeSrcs) {
+    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName, mergeSrcs, isJvmTarget(req.target)) {
       case Some(ps) -> ps
       case None -> return failedEmitOutcome(
         sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath +
@@ -2678,6 +2679,13 @@ pub record PkgSourceRead {
   paths: List[String]
 }
 
+func isJvmTarget(t: in Emitter.CompileTarget): Bool {
+  match t {
+    case Emitter.Jvm -> true
+    case _ -> false
+  }
+}
+
 // Read one [project.packages] entry's source texts (single .l file, explicit
 // TOML-array file list, or a directory of .l files collected recursively in
 // sorted order), running the custom-generator pre-processor on each file.
@@ -2695,8 +2703,9 @@ func readProjectPackageSources(
   mfPath: in String,
   genMf: in Option[Mf.Manifest],
   gens: in Generator.GeneratorSet,
+  forJvm: in Bool,
 ): Option[PkgSourceRead] {
-  readProjectPackageSourcesAs("build", pkgEntry, proj, mfDir, mfPath, genMf, gens)
+  readProjectPackageSourcesAs("build", pkgEntry, proj, mfDir, mfPath, genMf, gens, forJvm)
 }
 
 // `readProjectPackageSources` for the command `cmd`, which prefixes the
@@ -2709,6 +2718,7 @@ func readProjectPackageSourcesAs(
   mfPath: in String,
   genMf: in Option[Mf.Manifest],
   gens: in Generator.GeneratorSet,
+  forJvm: in Bool,
 ): Option[PkgSourceRead] {
   val pkgSources: List[String] = newList()
   val pkgPaths: List[String] = newList()
@@ -2723,7 +2733,8 @@ func readProjectPackageSourcesAs(
     printErr(cmd + ": package '" + pkgEntry.name + "': no .l files found in " + entryFiles.emptyDir)
     hadFatal = true
   }
-  for f in entryFiles.paths.toArray() {
+  for listed in entryFiles.paths.toArray() {
+    val f = if forJvm { Disc.jvmKernelTwin(listed) } else { listed }
     match File.readText(f) {
       case Ok(raw) -> {
         match runSourceGenerators(raw, f, genMf, gens) {
@@ -3018,7 +3029,7 @@ pub func buildProjectFromManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     if not pkgEntry.testOnly {
-      match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens) {
+      match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens, isJvmTarget(target)) {
         case Some(pkgRead) -> {
           if pkgRead.sources.count > 0 {
             pkgs.add(

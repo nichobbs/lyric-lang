@@ -27,6 +27,15 @@ func hostWidenKind(from: in Ty, to: in Ty): Option[ConvKind] {
     case None -> ()
   }
   match from {
+    // A `Char` is the host's `char`, which widens to `int` and `long` (the code point).
+    case TPrim(TPChar) -> match to {
+      case TPrim(TPInt) -> return Some(value = CvWiden(to = TPInt))
+      case TPrim(TPLong) -> return Some(value = CvWiden(to = TPLong))
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+  match from {
     case TPrim(f) -> match to {
       case TPrim(t) -> {
         val intToFloat = isIntegerPrim(f) and (match t { case TPFloat -> true; case TPDouble -> true; case _ -> false })

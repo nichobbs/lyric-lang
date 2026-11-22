@@ -2137,4 +2137,129 @@ func main(): Int {
 }
 LYRIC
 
+# An interface method with type parameters of its own, called on an interface-typed value, is an interface call
+# carrying the call's type arguments (D687).
+check interface_generic_method 12 <<'LYRIC'
+package Shapes5
+import Std.Core
+
+interface Echo {
+  func id[U](self: in Self, x: in U): U
+}
+
+record R {
+  n: Int
+}
+
+impl Echo for R {
+  func id[V](self: in R, x: in V): V = x
+}
+
+func main(): Int {
+  val e: Echo = R(n = 1)
+  e.id(5) + e.id(7)
+}
+LYRIC
+
+# A package-qualified callee under explicit type arguments, and an alias-qualified call through
+# `import P as A`, record their callee (D688).
+check qualified_generic_and_alias_calls 8 <<'LYRIC'
+package Shapes6
+import Std.Core
+import Std.Buffer as Buf
+
+func main(): Int {
+  val o: Option[Int] = None
+  val b = Buf.fromSlice([1u8, 2u8, 3u8])
+  Core.unwrapOr[Int](o, 5) + Buf.toSlice(b).length
+}
+LYRIC
+
+# `Nat` conversions: `toNat` of an `Int` and `Double`, then `toInt`/`toLong` of the `Nat` (D689).
+check nat_conversions 9 <<'LYRIC'
+package Shapes7
+import Std.Core
+
+func main(): Int {
+  val i: Int = 5
+  val d: Double = 3.7
+  val l: Long = i.toNat().toLong()
+  i.toNat().toInt() + d.toNat().toInt() + l.toInt() - 4
+}
+LYRIC
+
+# A plain function called by method syntax on a primitive receiver binds to its first parameter (D691).
+check primitive_method_syntax 5 <<'LYRIC'
+package Shapes9
+import Std.Core
+import Std.String
+
+func shout(s: in String, n: in Int): Int = s.length + n
+
+func main(): Int {
+  val s = "abc"
+  val same = s.equalsCaseInsensitive("ABC")
+  if same { s.shout(2) } else { 0 }
+}
+LYRIC
+
+# A lambda whose body ends in a `try` yields the value of the `try`, a catch that panics included (D690).
+check lambda_ending_in_try 6 <<'LYRIC'
+package Shapes8
+import Std.Core
+
+func three(): Int = 3
+
+func main(): Int {
+  val f: () -> Int = { -> try { three() } catch Bug as b { panic(b.message) } }
+  f() + f()
+}
+LYRIC
+
+# Arguments the checker left open take their parameter's type: a bare `None` and a construction through a function
+# value, and a tuple holding `None` as a union case's payload (D692).
+check open_arguments 7 <<'LYRIC'
+package Shapes10
+import Std.Core
+
+union Wrapped {
+  case Held(p: (Option[Int], Int))
+  case Empty
+}
+
+func pairSum(p: in (Option[Int], Int)): Int {
+  match p {
+    case (Some(x), n) -> x + n
+    case (None, n) -> n
+  }
+}
+
+func main(): Int {
+  val f = { o: Option[Int] -> match o { case Some(v) -> v; case None -> 0 } }
+  val g = { r: Result[Int, String] -> match r { case Ok(v) -> v; case Err(e) -> e.length } }
+  val w = Held((None, 6))
+  val a = match w {
+    case Held(p) -> pairSum(p)
+    case Empty -> 0
+  }
+  a + f(None) + g(Err(error = "x"))
+}
+LYRIC
+
+# A `for` over the result of an instance method of an `import extern` type iterates through the host's protocol (D693).
+check host_iteration_element 3 <<'LYRIC'
+package Shapes11
+import Std.Core
+import extern System.Text.RegularExpressions.{Regex}
+
+func main(): Int {
+  val re = Regex.new("a+")
+  var count = 0
+  for m in re.Matches("a aa aaa") {
+    count = count + 1
+  }
+  count
+}
+LYRIC
+
 exit $fail

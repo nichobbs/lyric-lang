@@ -5613,6 +5613,10 @@ func isPrimitiveIntrinsicMethod(recv: in Type, name: in String, argc: in Int): B
 record MethodCallPick {
   sig: ResolvedSignature
   fullSig: Option[ResolvedSignature]
+  /// The interface whose member the call binds, when the receiver is a value of a type parameter bounded by it.
+  boundIface: Option[SymbolId] = None
+  /// Set when the call binds a plain (not dot-named) function by method syntax (docs/01 12.1).
+  plain: Bool = false
 }
 
 // The `SymbolId` of the union or enum case `caseName` of the type `parentId`, the
@@ -6212,6 +6216,19 @@ func recordMethodCalleeNode(
           }
         }
       }
+      // A plain function called by method syntax on a primitive (`s.f(x)` for `func f(s: in String, ...)`):
+      // the declaration at the signature's span, named without the receiver's type.
+      match target {
+        case Some(_) -> ()
+        case None -> if receiverBindsPlainFunctions(unrefine(recvTy)) {
+          match symTableFuncDefPathKey(tbl, sig, memberName, false) {
+            case Some(dp) -> {
+              target = Some(value = internDefPathKey(tbl.interner, dp))
+            }
+            case None -> ()
+          }
+        }
+      }
       match target {
         case Some(id) -> {
           if tbl.calleeByNode.containsKey(callNode) {
@@ -6246,6 +6263,10 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
         case None -> ()
       }
     }
+    case TyParam(_, _) -> match mp.boundIface { case Some(bi) -> { iface = Some(value = bi) }; case None -> return }
+    // A function called by method syntax on a primitive (`s.f(x)`): the call is that function called with
+    // the receiver first.
+    case TyPrim(_) -> ()
     case _ -> return
   }
   // A dot-named function that is generic, or whose receiver is an instance of a generic
@@ -6260,8 +6281,9 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
   if mp.fullSig.isSome() {
     iface = None
   }
-  // An interface call carries no type arguments yet.
-  if iface.isSome() and (mp.sig.generics.count > 0 or recvArgs > 0) {
+  // A generic interface's call carries the interface's arguments, which the site does not record yet; a
+  // method with type parameters of its own on a non-generic interface is built from the call's instantiation.
+  if iface.isSome() and recvArgs > 0 {
     return
   }
   val declared = match mp.fullSig {
@@ -6328,10 +6350,56 @@ func minRequiredParams(sig: in ResolvedSignature): Int {
   minRequired
 }
 
+// `recv.name(<args>)` where `recv` is a value of a type parameter bounded by interfaces (`where T: Speaker`):
+// the bound interface's member of that name, with `Self` the parameter, bound as an interface call.  Only the
+// methods of the bounds can be called on such a value (T0197), so no other method space applies.
+func resolveBoundMethodPick(
+  sc: in Scope, tbl: in SymbolTable, recvRaw: in Type, name: in String, args: in List[CallArg]
+): Option[MethodCallPick] {
+  val recv = unrefine(recvRaw)
+  val tvName = match recv { case TyParam(n, _) -> n; case _ -> return None }
+  if not sc.genericNames.contains(tvName) {
+    return None
+  }
+  val noTargs: List[Type] = newList()
+  for b in sc.bounds {
+    if b.name == tvName {
+      for cname in b.constraints {
+        if not (isPlainMarker(cname) or isSendMarker(cname) or isKnownDeriveMarker(cname)) {
+          match constraintInterfaceSym(tbl, cname) {
+            case Some(ifaceSym) -> match ifaceSym.kind {
+              case DKInterface(ifaceId, _) -> {
+                for entry in symTableMethodSigs(tbl, ifaceId, name) {
+                  val sig = substituteMethodSig(entry, recv, noTargs)
+                  if sigDefaultsFilled(sig, args) >= 0 {
+                    return Some(value = MethodCallPick(sig = sig, fullSig = None, boundIface = Some(value = ifaceId)))
+                  }
+                }
+              }
+              case _ -> ()
+            }
+            case None -> ()
+          }
+        }
+      }
+    }
+  }
+  None
+}
+
 // Resolve `recv.name(<args>)` against the method-signature space
 // (docs/59 A4): the type's own/interface methods first, then dot-named
 // type-associated functions.  The call binds the declaration `pickByShape`
 // would choose for a free call (#7828, #8355).
+// Whether a method call on a receiver of this type binds a plain function by method syntax (docs/01
+// 12.1): a primitive.  A `buffer[T]` has no members but `.length` (docs/01 2.7).
+func receiverBindsPlainFunctions(recv: in Type): Bool {
+  match recv {
+    case TyPrim(_) -> true
+    case _ -> false
+  }
+}
+
 func resolveMethodCallPick(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -6358,6 +6426,16 @@ func resolveMethodCallPick(
   while d < dotted.count {
     picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
     d = d + 1
+  }
+  // A plain function of that name the file can call bare binds by method syntax to its first argument
+  // on a primitive receiver (`s.equalsCaseInsensitive(t)`, docs/01 12.1), when the receiver's type has
+  // no method or dot-named function of the name.
+  if picks.count == 0 and receiverBindsPlainFunctions(recv) {
+    for c in visibleBareFuncSigs(tbl, sigs, name, -1) {
+      if takesArgCount(c, argc + 1) and receiverFitsSig(tbl, c, recv) {
+        picks.add(MethodCallPick(sig = dropReceiverParam(c), fullSig = Some(value = c), plain = true))
+      }
+    }
   }
   // Which pick the call binds (#8355, D210), by the rule free calls follow
   // (`pickByShape`): the declarations the call fits whose parameter types the
@@ -15866,6 +15944,7 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
         (isList and name == "removeAt" and argCount == 1) or
         (isMap and name == "add" and argCount == 2) or
         (isSet and name == "add" and argCount == 1) or
+        ((isList or isMap) and name == "set" and argCount == 2) or
         ((isList or isMap or isSet) and name == "clear" and argCount == 0)
       // Membership tests and `remove` (true iff something was removed) are
       // `Bool` and positions `Int` on every backend, so a mistyped use
@@ -15902,11 +15981,13 @@ func stdCollectionMemberArities(tbl: in SymbolTable, recvTy: in Type, name: in S
         if name == "add" {
           ns.add(1)
           ns.add(2)
+        } else if name == "set" {
+          ns.add(2)
         } else if name == "contains" or name == "indexOf" or name == "lastIndexOf" or name == "remove" or name == "removeAt" {
           ns.add(1)
         }
       } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") {
-        if name == "add" {
+        if name == "add" or name == "set" {
           ns.add(2)
         } else if name == "containsKey" or name == "remove" {
           ns.add(1)
@@ -15960,7 +16041,7 @@ func stdCollectionMemberParams(
     case TyUser(id, _, targs) -> {
       if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
         val elem = targs[0]
-        if name == "add" and argCount == 2 {
+        if (name == "add" or name == "set") and argCount == 2 {
           ps.add(collParam(TyPrim(pt = PtInt), "index"))
           ps.add(collParam(elem, "element"))
         } else if argCount == 1 {
@@ -15971,7 +16052,7 @@ func stdCollectionMemberParams(
           }
         }
       } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") {
-        if name == "add" and argCount == 2 {
+        if (name == "add" or name == "set") and argCount == 2 {
           ps.add(collParam(targs[0], "key"))
           ps.add(collParam(targs[1], "value"))
         } else if argCount == 1 and (name == "containsKey" or name == "remove") {
@@ -20626,7 +20707,10 @@ func inferExprCore(
         case EMember(recvE, mname) -> match numericConvTarget(mname) {
           case Some(target) -> if args.count == 0 {
             val rt = inferExpr(sc, tbl, sigs, diag, recvE)
-            if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) {
+            // A `Nat` is a non-negative `Long` (docs/01 2.1): `toInt` and `toLong` of it are the `Long`
+            // conversions, so the call is a built-in of `Nat` as `n.toInt()` is of `Int`.
+            val natToIntegral = isPrimOf(rt, PtNat) and (mname == "toInt" or mname == "toLong")
+            if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) or natToIntegral {
               if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname, e.span) {
                 return tyErrorSilent()
               }
@@ -20944,6 +21028,7 @@ func inferExprCore(
         case None -> ()
       }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
+      recordQualifiedTypeAppCallee(sc, tbl, sigs, fn, args, argTypes, e.nodeId)
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
       match directSig {
         case Some(_) -> ()
@@ -20961,6 +21046,9 @@ func inferExprCore(
             case TyError(_) -> match memberRecvTy {
               case Some(rt3) -> {
                 methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes, ambiguousPick)
+                if methodPick.isNone() {
+                  methodPick = resolveBoundMethodPick(sc, tbl, rt3, memberName, args)
+                }
                 recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
               }
               case None -> {
@@ -21452,7 +21540,11 @@ func inferExprCore(
                 case None -> match methodPick {
                   case Some(mp) -> {
                     val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
-                    recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
+                    // A plain function called by method syntax is rewritten into a call of it with the receiver first
+                    // (`recordDotCallRewrite`), whose argument count is the call's own: no target code to record.
+                    if not mp.plain {
+                      recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
+                    }
                     recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                     recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                     recordEffectCallSite(tbl, e.span, mp.sig, fn)
@@ -21537,7 +21629,10 @@ func inferExprCore(
                             match memberRecvTy {
                               case Some(byRt) -> {
                                 val byTname = dotNamedOwnerName(byRt)
-                                if byTname.length > 0 {
+                                if mp.plain {
+                                  // A plain function of the name, rewritten into a call of it with the receiver first.
+                                  recordDotCallRewrite(tbl, fn.span, memberName, fullS, true)
+                                } else if byTname.length > 0 {
                                   if receiverNeedsPlainDotCall(tbl, memberRecvTy) or isDotNamedExtension(tbl, byRt, fullS) {
                                     recordDotCallRewrite(tbl, fn.span, byTname + "." + memberName, fullS, true)
                                   } else {
@@ -26465,6 +26560,11 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
       }
       if modulePathJoin(segs) == sig.originPackage {
         name = member
+      } else if symTableIsImportAlias(tbl, segs[0]) and symTableQualifiedFuncDefPathKey(tbl, sig, member) != "" {
+        // `Alias.f(x)` through `import P as Alias`, or `Alias.Sub.f(x)`: the declaration at the
+        // signature's span is the callee, whatever package path names it (a `pub use` facade too).
+        recordCalleeSiteAs(tbl, calleeKey(fn), symTableQualifiedFuncDefPathKey(tbl, sig, member), sig, callNode)
+        return
       } else if segs.count == 1 and startsUppercase(segs[0]) {
         // `Type.f(x)` or the constructor shorthand `Type.new(...)`: a
         // dot-named function of the type, registered as `Type.f` in its
@@ -26486,15 +26586,11 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     // `f[A, B](x)`: the callee is an index of the name.  Backends look a call up by
     // the callee's site, which this callee never had, so only the node is recorded.
     case EIndex(inner, _) -> {
-      match inner.kind {
-        case EPath(path) -> if path.segments.count == 1 {
-          match symTableFuncDefPathKey(tbl, sig, path.segments[0], true) {
-            case Some(dp) -> recordCalleeNode(tbl, dp, sig, callNode)
-            case None -> ()
-          }
-        }
-        case _ -> ()
-      }
+      recordTypeAppliedCallee(tbl, inner, sig, callNode)
+      return
+    }
+    case ETypeApp(inner, _) -> {
+      recordTypeAppliedCallee(tbl, inner, sig, callNode)
       return
     }
     case _ -> return
@@ -26502,6 +26598,60 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> recordCalleeSiteAs(tbl, calleeKey(fn), dp, sig, callNode)
     case None -> ()
+  }
+}
+
+// `Pkg.f[A](x)` and `Alias.f[A](x)`: the callee is the function the qualified name resolves to under the
+// type arguments; the call records it, as `f[A](x)` does (`recordCalleeSite`).
+func recordQualifiedTypeAppCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callNode: in Int,
+): Unit {
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return }
+  match inner.kind {
+    case EMember(_, _) -> ()
+    case EPath(path) -> if path.segments.count < 2 { return }
+    case _ -> return
+  }
+  if isNoSourceSpan(fn.span) {
+    return
+  }
+  match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
+    case Some(sig) -> recordTypeAppliedCallee(tbl, inner, sig, callNode)
+    case None -> ()
+  }
+}
+
+// The callee of `f[A](x)`, `Pkg.f[A](x)` or `Alias.f[A](x)` (`inner` is the callee without its type
+// arguments): the function declared at the signature's span, recorded under the call's node only.
+func recordTypeAppliedCallee(tbl: in SymbolTable, inner: in Expr, sig: in ResolvedSignature, callNode: in Int): Unit {
+  match inner.kind {
+    case EPath(path) -> if path.segments.count == 1 {
+      match symTableFuncDefPathKey(tbl, sig, path.segments[0], true) {
+        case Some(dp) -> recordCalleeNode(tbl, dp, sig, callNode)
+        case None -> ()
+      }
+    } else if path.segments.count > 1 {
+      val dp = symTableQualifiedFuncDefPathKey(tbl, sig, path.segments[path.segments.count - 1])
+      if dp != "" {
+        recordCalleeNode(tbl, dp, sig, callNode)
+      }
+    }
+    case EMember(recv, member) -> {
+      val segs: List[String] = newList()
+      if calleeSegments(recv, segs) and segs.count >= 1 {
+        val dp = symTableQualifiedFuncDefPathKey(tbl, sig, member)
+        if dp != "" {
+          recordCalleeNode(tbl, dp, sig, callNode)
+        }
+      }
+    }
+    case _ -> ()
   }
 }
 

@@ -42,6 +42,10 @@ pub record TyConvCtx {
   dep: DepDefaults = newDepDefaults()
   /// The interfaces of `dep` read so far, by package, in this table's numbering.
   depRead: Map[String, Iface] = newMap()
+  /// The declared type parameters of each generic in-package `impl`, by the DefPath key of its members' owner
+  /// (`Pkg::Pair[T]::$impl(Shows)`), recorded before any body is built so a call of an impl member from
+  /// another function can read them.
+  implOwners: Map[String, List[String]] = newMap()
 }
 
 pub func newTyConvCtx(tbl: in SymbolTable): TyConvCtx {
