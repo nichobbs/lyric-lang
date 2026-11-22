@@ -1001,6 +1001,21 @@ func fakeHost(): FakeHost {
     )
   )
   sigs.add(fhKey("java.util.concurrent.ConcurrentHashMap`2", "put", 2), dictPut)
+  val abs: List[ExternMemberSig] = newList()
+  abs.add(fhSig(true, fhParams1(fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  abs.add(fhSig(true, fhParams1(fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Abs", 1), abs)
+  val asList: List[ExternMemberSig] = newList()
+  val objArray: List[ExternIterElem] = newList()
+  objArray.add(fhHost("java.lang.Object"))
+  asList.add(
+    fhSig(
+      true,
+      fhParams1(EIEHost(hostName = hostArrayName(), args = objArray)),
+      EMTType(elem = fhPrim("Int"))
+    )
+  )
+  sigs.add(fhKey("java.util.Arrays", "asList", 1), asList)
   FakeHost(sigs = sigs)
 }
 
@@ -1088,6 +1103,23 @@ test "a static extern call picks the overload the argument types select" {
     }
     case None -> assertTrue(false, "an extern call")
   }
+}
+
+test "equal-score widening overloads take the most specific one (D697)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Abs('a')\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPInt)), "the Int overload, a Char widening to int")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a slice of Lyric values passes where the host takes an Object array (D697)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type JArrays = \"java.util.Arrays\"\nfunc f(xs: slice[Int]): Int {\n  JArrays.asList(xs)\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(externCallOf(r.body).isSome(), "an extern call")
 }
 
 test "an extern argument is widened to the overload's parameter" {

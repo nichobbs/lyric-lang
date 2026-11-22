@@ -27,6 +27,15 @@ func hostWidenKind(from: in Ty, to: in Ty): Option[ConvKind] {
     case None -> ()
   }
   match from {
+    // A `Char` is the host's `char`, which widens to `int` and `long` (the code point).
+    case TPrim(TPChar) -> match to {
+      case TPrim(TPInt) -> return Some(value = CvWiden(to = TPInt))
+      case TPrim(TPLong) -> return Some(value = CvWiden(to = TPLong))
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+  match from {
     case TPrim(f) -> match to {
       case TPrim(t) -> {
         val intToFloat = isIntegerPrim(f) and (match t { case TPFloat -> true; case TPDouble -> true; case _ -> false })
@@ -124,8 +133,18 @@ func hostArrayAccepts(h: in HostTypeRef, el: in Ty): Bool {
     case TExtern(w) -> {
       val stringElem = (w.name == "System.String" or w.name == "java.lang.String") and
         (match el { case TPrim(TPString) -> true; case _ -> false })
-      stringElem or (isHostObject(w.name) and (match el { case TExtern(_) -> true; case _ -> false }))
+      stringElem or (isHostObject(w.name) and isObjectArrayElement(el))
     }
+    case _ -> false
+  }
+}
+
+/// An element a slice may have where the host takes an `Object[]`: a host value, or a Lyric value the backend
+/// boxes per element (`Arrays.asList(values)`, `String.format("%d", values)`, the varargs of a host method).
+func isObjectArrayElement(el: in Ty): Bool {
+  match el {
+    case TExtern(_) -> true
+    case TPrim(k) -> match k { case TPUnit -> false; case _ -> true }
     case _ -> false
   }
 }
