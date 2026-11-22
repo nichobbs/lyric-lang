@@ -133,7 +133,15 @@ func importPaths(file: in SourceFile): List[String] {
     for seg in im.path.segments {
       joined = joined + (if joined == "" { "" } else { "." }) + seg
     }
-    acc.add(joined)
+    match im.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel { case ISSingle(item) -> [item]; case ISGroup(xs) -> xs }
+        for item in items {
+          acc.add(joined + "." + item.name)
+        }
+      }
+      case None -> acc.add(joined)
+    }
   }
   acc
 }

@@ -309,15 +309,22 @@ pub record ProjectableResult {
   diagnostics: List[Diagnostic]
 }
 
-/// `imports` with each of `paths` imported as an item (`import P.NameView`), the ones already imported left out.
+/// `imports` with each of `paths` (a package path then a name) imported by selector
+/// (`import P.{NameView}`), the ones already imported left out.
 func withViewImports(imports: in List[ImportDecl], paths: in List[List[String]], span: in Span): List[ImportDecl] {
   val acc: List[ImportDecl] = newList()
-  for im in imports {
-    acc.add(im)
-  }
   val seen: Map[String, Bool] = newMap()
   for im in imports {
-    seen.add(joinPath(im.path.segments), true)
+    acc.add(im)
+    match im.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel { case ISSingle(item) -> [item]; case ISGroup(xs) -> xs }
+        for item in items {
+          seen.add(joinPath(im.path.segments) + "." + item.name, true)
+        }
+      }
+      case None -> seen.add(joinPath(im.path.segments), true)
+    }
   }
   for segs in paths {
     val key = joinPath(segs)
@@ -325,8 +332,8 @@ func withViewImports(imports: in List[ImportDecl], paths: in List[List[String]],
       seen.add(key, true)
       acc.add(
         ImportDecl(
-          path = ModulePath(segments = segs, span = span),
-          selector = None,
+          path = ModulePath(segments = prefixOf(segs), span = span),
+          selector = Some(value = ISSingle(item = ImportItem(name = segs[segs.count - 1], asAlias = None, span = span))),
           asAlias = None,
           isPubUse = false,
           isExtern = false,
