@@ -150,9 +150,13 @@ func expansionText(it: in Item, d: in OpaqueTypeDecl, projectable: in Map[String
   joinWith(decls, "\n")
 }
 
+/// Whether `imports` has `import first.second` as a whole, unaliased import (a selector or an alias does not
+/// bring every name into scope).
 func hasWholeImport(imports: in List[ImportDecl], first: in String, second: in String): Bool {
   for im in imports {
-    if im.path.segments.count == 2 and im.path.segments[0] == first and im.path.segments[1] == second {
+    val whole = match im.selector { case Some(_) -> false; case None -> true }
+    val bare = match im.asAlias { case Some(_) -> false; case None -> true }
+    if whole and bare and not im.isExtern and im.path.segments.count == 2 and im.path.segments[0] == first and im.path.segments[1] == second {
       return true
     }
   }

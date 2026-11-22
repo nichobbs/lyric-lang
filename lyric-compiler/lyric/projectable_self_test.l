@@ -91,3 +91,28 @@ test "a generic projectable is not projected" {
   val r = expand("package P\nopaque type Box[T] @projectable {\n  v: T\n}\n")
   assertEqualInt(viewFieldCount(r.file, "BoxView"), -1, "no view")
 }
+
+test "a field of a generic or qualified type keeps its written type in the view" {
+  val r = expand(
+    "package P\nimport Std.Core\nopaque type Bag @projectable {\n  names: List[String]\n  tag: Option[Int]\n}\n"
+  )
+  assertEqualInt(r.diagnostics.count, 0, "the generated source parses")
+  assertEqualInt(viewFieldCount(r.file, "BagView"), 2, "both fields")
+  assertTrue(hasFunc(r.file, "BagView.tryInto"), "tryInto")
+}
+
+test "a file that imports Std.Core through a selector gets the whole import once" {
+  val r = expand("package P\nimport Std.Core.{Option}\nopaque type U @projectable {\n  id: Int\n}\n")
+  var whole = 0
+  for im in r.file.imports {
+    if im.path.segments.count == 2 and im.path.segments[1] == "Core" {
+      match im.selector {
+        case Some(_) -> ()
+        case None -> {
+          whole = whole + 1
+        }
+      }
+    }
+  }
+  assertEqualInt(whole, 1, "one whole Std.Core import")
+}
