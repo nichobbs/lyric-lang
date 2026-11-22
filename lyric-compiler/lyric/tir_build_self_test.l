@@ -459,6 +459,14 @@ test "collection members take their parameter types from a host or a declared re
   }
 }
 
+test "the JVM list host names, with and without the arity suffix, are lists (D752)" {
+  assertTrue(isListHostName("java.util.ArrayList`1"), "the JVM stdlib List's host name is ArrayList`1")
+  assertTrue(isListHostName("java.util.ArrayList"), "ArrayList")
+  assertTrue(isListHostName("java.util.List`1"), "List`1")
+  assertTrue(isListHostName("System.Collections.Generic.List`1"), "the CLR List")
+  assertTrue(not isListHostName("java.util.LinkedList`1"), "another host collection is not")
+}
+
 test "Map.containsValue takes the value type (D698)" {
   val host = TirT.TExtern(
     host = HostTypeRef(
