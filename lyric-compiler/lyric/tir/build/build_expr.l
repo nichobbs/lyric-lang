@@ -5313,7 +5313,7 @@ func bindMethodArgs(elem: in ExternIterElem, arg: in Ty, margs: in List[Ty]): Bo
       if h == hostArrayName() and hargs.count == 1 {
         return match arg {
           case TSlice(el) -> bindMethodArgs(hargs[0], el, margs)
-          case TArray(el, _) -> bindMethodArgs(hargs[0], el, margs)
+          case TArray(_, el) -> bindMethodArgs(hargs[0], el, margs)
           case _ -> true
         }
       }
