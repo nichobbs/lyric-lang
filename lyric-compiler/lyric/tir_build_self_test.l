@@ -1800,7 +1800,7 @@ test "two calls leaving out the same default get distinct node ids" {
 
 test "a default of a shape the builder cannot copy is counted, not guessed" {
   val c = censusOf(
-    "package App\nfunc g(a: Int, b: Int = if true { 1 } else { 2 }): Int { a + b }\nfunc f(): Int { g(1) }\n"
+    "package App\nfunc g(a: Int, b: Int = match a { case 1 -> 5\n case _ -> 2 }): Int { a + b }\nfunc f(): Int { g(1) }\n"
   )
   assertEqualInt(c.built, 1, "only g builds")
   assertTrue(c.firstErrors.count > 0, "f reports an I0002")
@@ -2256,10 +2256,10 @@ test "a conversion method on a range-subtype or distinct value unwraps it" {
 
 test "a use of a name whose binding failed is not counted as an unbuildable name of its own" {
   val c = censusOf(
-    "package App\nfunc g(a: Int = if true { 1 } else { 2 }): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
+    "package App\nfunc g(a: Int = match 1 { case 1 -> 5\n case _ -> 2 }): Int { a }\nfunc f(): Int {\n  val x = g()\n  val y = x\n  y\n}\n"
   )
   assertTrue(
-    c.uncovered.containsKey("a default argument of a shape not yet built"),
+    c.uncovered.containsKey("a default argument of a shape not yet built (XMatch)"),
     "the failed initializer is counted"
   )
   assertFalse(c.uncovered.containsKey("a name that is not a local"), "its later uses are not")
