@@ -2029,12 +2029,18 @@ func isPlainHostResult(name: in String): Bool {
   not hostNameHasLyricType(name) and not isHostValueClass(name) and not Str.startsWith(name, "System.Threading.Tasks.")
 }
 
+/// The primitive elements whose host array the checker types as the slice of that primitive.
+func isHostPrimArrayElem(name: in String): Bool {
+  name == "Byte" or name == "Int" or name == "Long" or name == "Double" or name == "Bool" or name == "Char"
+}
+
 /// A host array result as the slice of its element: `byte[]` and arrays of host classes that are no Lyric value.
 /// This applies only to a result the checker left untyped (`openHostChainTy`): where the checker types the call it
 /// types a host array as a slice itself and the chain is not consulted (D444).  `Object[]` is safe to expose here
 /// because the slice of host objects keeps the array's own representation (`hostArrayAccepts` takes a host
-/// `Object` element for any host value), while an array of a Lyric value (`String[]`, `int[]`) would need an
-/// element conversion the builder does not make.
+/// `Object` element for any host value).  A primitive array (`int[]`) is the slice of that primitive as the
+/// checker types it where it types the call; the node's `CvFromHost` is where a backend converts the host array
+/// to the slice, so the builder makes no element conversion.  An array of `String` stays counted.
 func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
   match el {
     case EIEHost(_, aargs) -> {
@@ -2042,7 +2048,7 @@ func hostArrayAsSlice(el: in ExternIterElem, targs: in List[Ty]): Option[Ty] {
         return None
       }
       val elemOk = match aargs[0] {
-        case EIEPrim(n) -> n == "Byte"
+        case EIEPrim(n) -> isHostPrimArrayElem(n)
         case EIEHost(n, _) -> isPlainHostResult(n) or isHostObject(n)
         case _ -> false
       }
