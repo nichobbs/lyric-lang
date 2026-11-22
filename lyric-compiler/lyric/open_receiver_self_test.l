@@ -40,6 +40,13 @@ test "an open receiver is fixed by the method's argument" {
   assertEqual(emptyCell().orDefault("d"), "d", "String")
 }
 
+test "an open receiver bound to a local with no expected type is typed by the argument" {
+  val n = emptyCell().orDefault(5)
+  val s = emptyCell().orDefault("d")
+  assertEqual(toString(n + 1), "6", "Int")
+  assertEqual(s + "!", "d!", "String")
+}
+
 test "a closed receiver is unchanged" {
   assertEqual(toString(fullCell(3).orDefault(5)), "3", "Int")
   assertTrue(fullCell("x").present(), "present")
