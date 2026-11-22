@@ -268,7 +268,7 @@ test "a different declaration changes the hash" {
 }
 
 test "the dump is canonical text" {
-  val expected = "interface Shapes (format 5)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
+  val expected = "interface Shapes (format 6)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
     "annotations: pure\n" +
     "reexports: Std.Collections, Std.Json\n" +
     "built against (2):\n" +
