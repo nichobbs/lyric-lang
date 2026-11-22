@@ -256,6 +256,7 @@ pub func instantiateMethod(
   site: in MethodCallSite,
   args: in List[CallArg],
   viaIface: in Bool,
+  recvOwned: in Option[List[Ty]],
 ): Option[MethodInst] {
   val sig = site.sig
   val recvArgs = receiverTypeArgs(site.recvTy)
@@ -266,12 +267,21 @@ pub func instantiateMethod(
       val _ = uncoveredExprDetail(env, e, "a method call on a member of a generic impl", shown)
       return None
     }
-    for ta in recvArgs {
-      match tyOfType(env.ctx, ta) {
-        case Ok(t) -> owned.add(t)
-        case Err(msg) -> {
-          env.errors.add(msg)
-          return None
+    match recvOwned {
+      case Some(given) -> {
+        for t in given {
+          owned.add(t)
+        }
+      }
+      case None -> {
+        for ta in recvArgs {
+          match tyOfType(env.ctx, ta) {
+            case Ok(t) -> owned.add(t)
+            case Err(msg) -> {
+              env.errors.add(msg)
+              return None
+            }
+          }
         }
       }
     }

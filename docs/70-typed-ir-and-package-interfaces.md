@@ -970,6 +970,10 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A call statement on a generic host class applied to concrete arguments, and the last call of a `Unit` function body, settle at the host's root object when the checker left them untyped (`d.put("a", "1")`): a discarded value needs no more (D683).
   - A call of a wire's generated factory (`W.bootstrap(provided...)`, an exposed binding's accessor `W.binding()`) is the intrinsic `IoWire(wire, member)`, typed from the wire's declaration; the interface codec carries it and the native lowering reports it unsupported until phase 5 (D684).
   - A method call on a value of a bounded type parameter is typed by the checker and recorded as a call through the bound interface's member, built as an interface call (D686).
+  - A lambda whose body ends in `try` yields the value of the `try` (D690).
+  - A call through a function value settles a bare `None`, a bracket literal, a tuple or a construction argument to the parameter's type, and a tuple argument settles its elements (D692).
+  - The loop variable of a `for` over a host collection the checker did not type is the element type the host's iteration protocol declares (D693).
+  - A method receiver the hoist recorded a closed type for (`emptyCell().tagged(await five())`) takes it (D379); a receiver typed by an argument alone stays counted.
   - A bare name of a payload-bearing case of the scrutinee's union (`case Err ->`) is the case with a wildcard per payload field (D685).
   - A `for` over a value whose type is a type parameter is the checker error T0230 (D682), so the typed IR has no loop over an unknown element type.
   - A read of a `config` block field (`Settings.port`) is a module value named `Pkg::Settings::port`, and a shared enum case written `Enum.Case` (`LogLevel.Info` of two packages' enums) is the case of the enum its node settled at; builder only (D419).
