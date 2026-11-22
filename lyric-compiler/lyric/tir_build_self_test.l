@@ -1005,6 +1005,16 @@ func fakeHost(): FakeHost {
   max.add(fhSig(true, fhParams2(fhPrim("Int"), fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Max", 2), max)
+  val pick: List[ExternMemberSig] = newList()
+  pick.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(EIEMArg(index = 0), EIEMArg(index = 0)),
+      ret = EMTType(elem = EIEMArg(index = 0)),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Pick", 2), pick)
   val append: List[ExternMemberSig] = newList()
   append.add(fhSig(false, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Int"))))
   append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
@@ -1172,6 +1182,21 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
       assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic host method is instantiated at the types of its arguments" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.typeArgs.count, 1, "one method type argument")
+      assertTrue(tyEq(m.typeArgs[0], TPrim(kind = TPLong)), "T is Long")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPLong)), "the parameter is substituted")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPLong)), "the result is substituted")
     }
     case None -> assertTrue(false, "an extern call")
   }

@@ -275,6 +275,9 @@ pub union StringMethodSurface {
 pub union ExternIterElem {
   /// The extern type's own type argument at this position (`Dict[K, V]`'s `K`).
   case EIEArg(index: Int)
+  /// The member's own type parameter at this position (`Array.IndexOf<T>`'s `T`, D766); only in the
+  /// signature of a generic method, which the builder instantiates from the call's argument types.
+  case EIEMArg(index: Int)
   /// A Lyric primitive the host element type maps to (`Int`, `String`, ...).
   case EIEPrim(name: String)
   /// A host class or interface, by its host name without the arity suffix
@@ -318,9 +321,8 @@ pub interface ExternIterResolver {
   /// candidate when its last parameters beyond `argc` are all optional.
   /// `Lyric.Tir.Build` picks the overload from the call's argument types and
   /// records it in a `HostMemberRef`.  None when the bridge cannot say: the type
-  /// or a supertype is not located, or every candidate is a generic method whose
-  /// signature mentions its own type parameters (a generic overload beside a
-  /// non-generic one is left out of the candidates).
+  /// or a supertype is not located, or a candidate's signature cannot be read.  A
+  /// generic method is a candidate with its own type parameters as `EIEMArg` (D766).
   func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
 
   /// Whether the host class behind an `extern type` is abstract (an interface included), so that
@@ -343,6 +345,9 @@ pub record ExternMemberSig {
   /// them out; the host fills each with its declared default (D762, docs/70 5.3).  0 for a
   /// member with no optional parameters, and on a host with none (the JVM).
   optionalTrailing: Int = 0
+  /// How many type parameters the method declares itself (`Array.IndexOf<T>` has 1); its signature
+  /// names them `EIEMArg`.  0 for a method that is not generic, and on the JVM, whose descriptors erase them.
+  genericArity: Int = 0
 }
 
 /// What a host member yields.
@@ -388,6 +393,7 @@ func externMemberKey(m: in ExternMemberType): String {
 pub func externIterElemKey(e: in ExternIterElem): String {
   match e {
     case EIEArg(i) -> "#" + toString(i)
+    case EIEMArg(i) -> "##" + toString(i)
     case EIEPrim(n) -> n
     case EIEHost(h, args) -> {
       var acc = h + "["
