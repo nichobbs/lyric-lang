@@ -974,6 +974,10 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A package-qualified callee under explicit type arguments (`Core.unwrapOr[Int](o, 5)`) and an alias-qualified call (`Buf.fromSlice(xs)` through `import Std.Buffer as Buf`) record the function declared at the signature's span (D688).
   - `toInt` and `toLong` of a `Nat` are the built-ins `Nat.toInt` and `Nat.toLong` (D689).
   - A plain function called by method syntax on a primitive receiver (`s.equalsCaseInsensitive(t)`, docs/01 12.1) is typed from its signature and records its callee and call site (D691).
+  - A lambda whose body ends in `try` yields the value of the `try` (D690).
+  - A call through a function value settles a bare `None`, a bracket literal, a tuple or a construction argument to the parameter's type, and a tuple argument settles its elements (D692).
+  - The loop variable of a `for` over a host collection the checker did not type is the element type the host's iteration protocol declares (D693).
+  - A method receiver the hoist recorded a closed type for (`emptyCell().tagged(await five())`) takes it (D379); a receiver typed by an argument alone stays counted.
   - A bare name of a payload-bearing case of the scrutinee's union (`case Err ->`) is the case with a wildcard per payload field (D685).
   - A `for` over a value whose type is a type parameter is the checker error T0230 (D682), so the typed IR has no loop over an unknown element type.
   - A read of a `config` block field (`Settings.port`) is a module value named `Pkg::Settings::port`, and a shared enum case written `Enum.Case` (`LogLevel.Info` of two packages' enums) is the case of the enum its node settled at; builder only (D419).

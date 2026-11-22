@@ -2200,6 +2200,62 @@ func main(): Int {
   val s = "abc"
   val same = s.equalsCaseInsensitive("ABC")
   if same { s.shout(2) } else { 0 }
+# A lambda whose body ends in a `try` yields the value of the `try`, a catch that panics included (D690).
+check lambda_ending_in_try 6 <<'LYRIC'
+package Shapes8
+import Std.Core
+
+func three(): Int = 3
+
+func main(): Int {
+  val f: () -> Int = { -> try { three() } catch Bug as b { panic(b.message) } }
+  f() + f()
+}
+LYRIC
+
+# Arguments the checker left open take their parameter's type: a bare `None` and a construction through a function
+# value, and a tuple holding `None` as a union case's payload (D692).
+check open_arguments 7 <<'LYRIC'
+package Shapes10
+import Std.Core
+
+union Wrapped {
+  case Held(p: (Option[Int], Int))
+  case Empty
+}
+
+func pairSum(p: in (Option[Int], Int)): Int {
+  match p {
+    case (Some(x), n) -> x + n
+    case (None, n) -> n
+  }
+}
+
+func main(): Int {
+  val f = { o: Option[Int] -> match o { case Some(v) -> v; case None -> 0 } }
+  val g = { r: Result[Int, String] -> match r { case Ok(v) -> v; case Err(e) -> e.length } }
+  val w = Held((None, 6))
+  val a = match w {
+    case Held(p) -> pairSum(p)
+    case Empty -> 0
+  }
+  a + f(None) + g(Err(error = "x"))
+}
+LYRIC
+
+# A `for` over the result of an instance method of an `import extern` type iterates through the host's protocol (D693).
+check host_iteration_element 3 <<'LYRIC'
+package Shapes11
+import Std.Core
+import extern System.Text.RegularExpressions.{Regex}
+
+func main(): Int {
+  val re = Regex.new("a+")
+  var count = 0
+  for m in re.Matches("a aa aaa") {
+    count = count + 1
+  }
+  count
 }
 LYRIC
 

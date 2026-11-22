@@ -3389,7 +3389,13 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       // A binder the checker left open (the elements of a local whose own type its uses fixed) takes the
       // element type of the iterable it ranges over.
       match patTy(env.ctx, pat.nodeId) {
-        case Err(_) -> match iterElemTy(it.ty) { case Some(el) -> settlePat(env, pat, el); case None -> () }
+        case Err(_) -> match iterElemTy(it.ty) {
+          case Some(el) -> settlePat(env, pat, el)
+          case None -> match hostIterElemTy(env, it.ty) {
+            case Some(el) -> settlePat(env, pat, el)
+            case None -> ()
+          }
+        }
         case Ok(_) -> ()
       }
       pushScope(env)
@@ -3488,6 +3494,33 @@ func iterElemTy(t: in Ty): Option[Ty] {
     case TSlice(el) -> Some(value = el)
     case TArray(_, el) -> Some(value = el)
     case TExtern(h) -> if h.args.count == 1 { Some(value = h.args[0]) } else { None }
+    case _ -> None
+  }
+}
+
+/// The element type of a host collection the checker did not type (the result of an instance method of an
+/// `import extern` type, `re.Matches(s)`): what the host's own iteration protocol declares, as the checker
+/// reads it for a typed `for` (`ExternIterResolver`): `IEnumerable<T>`'s `T`, or the host's root object for a
+/// collection that is only the untyped `IEnumerable`.  None when the host type is not found or not iterable.
+func hostIterElemTy(env: in BuildEnv, t: in Ty): Option[Ty] {
+  val h = match t { case TExtern(x) -> x; case _ -> return None }
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match env.ctx.tbl.externIterResolver[0].resolveIter(h.name, h.args.count) {
+    case Some(EIIElem(el)) -> hostElemTy(el, h.args, TirT.TNever)
+    case Some(EIIObject) -> Some(
+      value = TExtern(
+        host = HostTypeRef(
+          name = if isJvmHostMetadata(env) {
+            "java.lang.Object"
+          } else {
+            "System.Object"
+          },
+          args = newList()
+        )
+      )
+    )
     case _ -> None
   }
 }
@@ -6251,7 +6284,10 @@ func buildLambda(
   // The checker leaves a bare `None` or `[]` at a lambda's tail untyped; it takes the
   // lambda's return type, as an argument hole takes its parameter's.
   settleBlockTail(env, body, ls.ret)
-  val built = buildBlock(env, body, None, freshNodeId(env))
+  // A body that ends in a `try` takes the lambda's result type, so the `try` yields its value (as a
+  // function's does); a catch that panics then has nothing to convert.
+  val known: Option[Ty] = if not isUnitTy(ls.ret) and blockEndsInTry(body) { Some(value = ls.ret) } else { None }
+  val built = buildBlock(env, body, known, freshNodeId(env))
   env.lambdas.removeAt(env.lambdas.count - 1)
   popScope(env)
   val b = match built { case Some(x) -> x; case None -> return None }
@@ -7352,6 +7388,20 @@ func buildBuiltinCall(
   }
 }
 
+/// An expression whose type its position fixes: a bare name (`None`), a bracket literal, a tuple, a construction
+/// (`Ok(value = 3)`), either in parentheses.
+func isHoleShapedArg(x: in Expr): Bool {
+  match x.kind {
+    case EPath(_) -> true
+    case EList(_) -> true
+    case ETuple(_) -> true
+    case EParen(inner) -> isHoleShapedArg(inner)
+    // `Ok(value = 3)`, `Some(value = x)`: a construction, named by a path, not a host call (a member callee).
+    case ECall(callee, _) -> match callee.kind { case EPath(_) -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
 /// A call through a function value: the arguments are checked against the function
 /// type's parameters.
 func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
@@ -7359,6 +7409,25 @@ func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, arg
     case None -> uncoveredExpr(env, e, "an indirect call with a named argument")
     case Some(xs) -> {
       val fv = buildExpr(env, fn)
+      // An argument the checker left open (a bare `None`, an empty list) takes the function type's parameter.
+      match fv {
+        case Some(f) -> match f.ty {
+          case TFunc(params, _, _) -> if params.count == xs.count {
+            var si = 0
+            while si < xs.count {
+              // Only an argument the checker left open and that has no value of its own to convert: a bare
+              // `None`, an empty list, a tuple of them.  A host call keeps the type of its host result.
+              match exprTy(env.ctx, xs[si].nodeId) {
+                case Err(_) -> if isHoleShapedArg(xs[si]) { settleHole(env, xs[si], params[si].ty) }
+                case Ok(_) -> ()
+              }
+              si = si + 1
+            }
+          }
+          case _ -> ()
+        }
+        case None -> ()
+      }
       match buildAll(env, xs) {
         case None -> None
         case Some(ts) -> match fv {
@@ -7722,6 +7791,14 @@ func boundParamIfaceTy(env: in BuildEnv, site: in MethodCallSite): Option[Type] 
   }
 }
 
+/// The type arguments of a closed receiver type the builder derived, as the owner's arguments of the call.
+func recvOwnedOf(t: in Option[Ty]): Option[List[Ty]] {
+  match t {
+    case Some(TNamed(_, targs)) -> Some(value = targs)
+    case _ -> None
+  }
+}
+
 /// A method call `recv.m(args)` or a bare sibling call `m(args)` (on the enclosing `self`):
 /// the receiver first, then the arguments placed by parameter, to the method the checker
 /// resolved (`Direct`, or `Interface` for an interface-typed receiver).  A receiver passed
@@ -7805,13 +7882,31 @@ func buildMethodCall(
     }
     case None -> ()
   }
+  // A receiver whose own type the checker left open (`emptyCell().tagged(await five())`) takes the closed type
+  // the checker recorded for it (`hoistOperandTypeSites`).
+  var openRecv: Option[Ty] = None
+  if not bareSelf and not isSome(dotted) {
+    match tyOfType(env.ctx, recvTyDecl) {
+      case Err(_) -> {
+        openRecv = exprOrOpenTy(env, recvExpr)
+        match openRecv {
+          case Some(t) -> settleHole(env, recvExpr, t)
+          case None -> ()
+        }
+      }
+      case Ok(_) -> ()
+    }
+  }
   val declared = match dotted {
     case Some(di) -> match di.recvTy { case Some(t) -> t; case None -> return None }
-    case None -> match tyOfType(env.ctx, recvTyDecl) {
-      case Ok(t) -> t
-      case Err(msg) -> {
-        env.errors.add(msg)
-        return None
+    case None -> match openRecv {
+      case Some(t) -> t
+      case None -> match tyOfType(env.ctx, recvTyDecl) {
+        case Ok(t) -> t
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return None
+        }
       }
     }
   }
@@ -7868,13 +7963,32 @@ func buildMethodCall(
   }
   val inst = match dotted {
     case Some(i) -> i
-    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym)) {
+    case None -> match instantiateMethod(env, e, sym, site, args, isSome(ifaceSym), recvOwnedOf(openRecv)) {
       case Some(i) -> i
       case None -> return None
     }
   }
   val pre: List[TStmt] = newList()
-  val rest = match buildCallArgs(env, e, sym, inst.sig, newList(), args, pre) {
+  // The parameters of a member of a generic type whose receiver was open, at the arguments it was closed at.
+  val openPtys: List[Ty] = newList()
+  match openRecv {
+    case Some(TNamed(rid, targs)) -> {
+      val pctx = newTyConvCtx(env.ctx.tbl)
+      val tname = match site.recvTy { case TyUser(_, n, _) -> n; case _ -> "" }
+      tyConvBind(pctx, tname, rid, recordGenericNamesOf(env.ctx.tbl, rid))
+      for p in inst.sig.params {
+        match tyOfType(pctx, p.ty) {
+          case Ok(pt) -> openPtys.add(substOwnerArgs(pt, rid, targs))
+          case Err(msg) -> {
+            env.errors.add(msg)
+            return None
+          }
+        }
+      }
+    }
+    case _ -> ()
+  }
+  val rest = match buildCallArgs(env, e, sym, inst.sig, openPtys, args, pre) {
     case Some(a) -> a
     case None -> return None
   }
@@ -8006,9 +8120,7 @@ func buildConstructCall(
 /// with a hole (`None`, `[]`) takes the parameter's type, which the call's other
 /// arguments have fixed.
 func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
-  if not env.settled.containsKey(x.nodeId) {
-    env.settled.add(x.nodeId, pty)
-  }
+  settleHole(env, x, pty)
   buildExpr(env, x)
 }
 
