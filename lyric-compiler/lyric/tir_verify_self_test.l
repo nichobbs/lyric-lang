@@ -772,3 +772,33 @@ test "a Never function used as a function of another result keeps its parameters
     "a result that is not Never"
   )
 }
+
+func hostCallFn(omitted: in Int): TFnDecl {
+  val x = local(1, "x", tyInt(), false)
+  val host = HostTypeRef(name = "System.Math", args = newList())
+  val ps: List[TParamTy] = newList()
+  ps.add(TParamTy(mode = TMIn, ty = tyInt()))
+  ps.add(TParamTy(mode = TMIn, ty = tyInt()))
+  ps.add(TParamTy(mode = TMIn, ty = tyInt()))
+  val member = HostMemberRef(
+    owner = host,
+    name = "Pad",
+    kind = HMMethod,
+    isStatic = true,
+    params = ps,
+    ret = tyInt(),
+    omitted = omitted
+  )
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = ex(3, tyInt(), XLocal(local = x.id))))
+  if omitted < 2 {
+    args.add(TArgIn(value = lit(4, 0)))
+  }
+  fnDecl(10, 0, params1(x), tyInt(), call(2, tyInt(), Extern(member = member), args))
+}
+
+test "a host call may omit trailing parameters; a count outside the signature is reported" {
+  assertEqualInt(oneFn(entries(), hostCallFn(2)).count, 0, "two of three parameters omitted")
+  assertTrue(rulesOf(oneFn(entries(), hostCallFn(5))).contains("host-omitted"), "more omitted than parameters")
+  assertTrue(rulesOf(oneFn(entries(), hostCallFn(-1))).contains("host-omitted"), "a negative count")
+}

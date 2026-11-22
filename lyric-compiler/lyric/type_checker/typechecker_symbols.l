@@ -338,7 +338,7 @@ pub record ExternMemberSig {
   /// A property read that is a public field of the host type, not a getter method.
   isField: Bool = false
   /// How many of the last `params` the host declares optional (a default value), so a call may leave
-  /// them out; the host fills each with its declared default (D761's neighbour, docs/70 5.3).  0 for a
+  /// them out; the host fills each with its declared default (D762, docs/70 5.3).  0 for a
   /// member with no optional parameters, and on a host with none (the JVM).
   optionalTrailing: Int = 0
 }
