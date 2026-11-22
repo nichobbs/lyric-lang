@@ -21540,7 +21540,11 @@ func inferExprCore(
                 case None -> match methodPick {
                   case Some(mp) -> {
                     val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
-                    recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
+                    // A plain function called by method syntax is rewritten into a call of it with the receiver first
+                    // (`recordDotCallRewrite`), whose argument count is the call's own: no target code to record.
+                    if not mp.plain {
+                      recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
+                    }
                     recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                     recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                     recordEffectCallSite(tbl, e.span, mp.sig, fn)
