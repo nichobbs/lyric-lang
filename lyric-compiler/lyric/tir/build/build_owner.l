@@ -154,6 +154,29 @@ func isSiblingImplMember(env: in BuildEnv, sym: in SymbolId): Bool {
   }
 }
 
+/// Whether the callee `sym` is a member of an in-package `impl` whose target is written over exactly the
+/// impl's own parameters in the order it declares them (`impl[T] Shows for Pair[T]`), called from anywhere:
+/// the receiver's type arguments are then the impl's, position by position (the sibling rule
+/// `isSiblingImplMember` needs the caller to be in the same impl).  The impl's declared parameters are the
+/// ones `buildPackage` recorded for it in `TyConvCtx.implOwners`.
+func isImplMemberOverOwnParams(env: in BuildEnv, sym: in SymbolId, recvArgs: in Int): Bool {
+  val key = match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> return false }
+  val owner = memberOwnerKey(key)
+  val declared = match mapGet(env.ctx.implOwners, owner) { case Some(d) -> d; case None -> return false }
+  val names = match implTargetNames(owner) { case Some(n) -> n; case None -> return false }
+  if names.count != declared.count or names.count != recvArgs {
+    return false
+  }
+  var i = 0
+  while i < names.count {
+    if names[i] != declared[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 /// The non-generic interface a restored `impl` member implements, and the interface's own member of
 /// that name: a restored package may carry a generic `impl[T] Iface for Box[T]` member with no
 /// generics in its signature, so a call of it is a dispatch on the interface, as when the checker
@@ -238,8 +261,9 @@ pub func instantiateMethod(
   val recvArgs = receiverTypeArgs(site.recvTy)
   val owned: List[Ty] = newList()
   if recvArgs.count > 0 and not isSome(site.iface) and not viaIface {
-    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym)) {
-      val _ = uncoveredExpr(env, e, "a method call on a member of a generic impl")
+    if not (isBodyMemberOf(env, sym, site.recvTy) or isSiblingImplMember(env, sym) or isImplMemberOverOwnParams(env, sym, recvArgs.count)) {
+      val shown = match defPathKeyOf(env.ctx.tbl.interner, sym) { case Some(k) -> k; case None -> "?" }
+      val _ = uncoveredExprDetail(env, e, "a method call on a member of a generic impl", shown)
       return None
     }
     for ta in recvArgs {

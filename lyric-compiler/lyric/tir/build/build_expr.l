@@ -70,6 +70,10 @@ pub record BuildEnv {
   retTy: List[Ty] = newList()
   /// The type a generator yields (its declared result type), empty outside a generator.
   yieldTy: List[Ty] = newList()
+  /// While a default argument is being built and refreshed (empty or one entry): the highest local
+  /// number declared before it began.  A local numbered above it was declared by the default itself (a
+  /// lambda's parameter), so the refresh keeps a read of it; a read of any other local is the caller's.
+  defaultFloor: List[Int] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -6427,6 +6431,17 @@ func convertNode(env: in BuildEnv, t: in TExpr, to: in Ty, k: in ConvKind): TExp
   TExpr(id = freshNodeId(env), ty = to, span = t.span, kind = XConvert(kind = k, inner = t))
 }
 
+/// Whether the integer literal value `v` is in the range of the integer type `k`, for a type no `Int` widens to
+/// (a `Long` takes a widening node).
+func intLiteralFits(k: in TPrimKind, v: in Long): Bool {
+  match k {
+    case TPByte -> v >= 0 and v <= 255
+    case TPUInt -> v >= 0 and v <= 4294967295
+    case TPULong -> v >= 0
+    case _ -> false
+  }
+}
+
 /// `t` as a value of type `ty`: as is, converted by a node of its own, or not at all
 /// (None, uncounted), never converted by guessing.
 func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
@@ -6439,6 +6454,20 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case XLit(TLFloat(_)) -> match t.ty {
       case TPrim(TPDouble) -> match ty {
         case TPrim(TPFloat) -> return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+  // An integer literal where another integer type is expected and its value is in that type's range
+  // (`takeList(b, 3)` with `b: Byte` fixing `T`) is a literal of that type, as the checker accepts it.
+  match t.kind {
+    case XLit(TLInt(v)) -> match t.ty {
+      case TPrim(TPInt) -> match ty {
+        case TPrim(k) -> if intLiteralFits(k, v) {
+          return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+        }
         case _ -> ()
       }
       case _ -> ()
@@ -7982,6 +8011,83 @@ func settleArg(env: in BuildEnv, x: in Expr, pty: in Ty): Option[TExpr] {
   buildExpr(env, x)
 }
 
+/// The name of an expression's kind, for a message that says which shape was not built.
+func tirKindName(k: in TExprKind): String {
+  match k {
+    case XLit(_) -> "XLit"
+    case XLocal(_) -> "XLocal"
+    case XGlobal(_, _) -> "XGlobal"
+    case XValueParam(_, _) -> "XValueParam"
+    case XCall(_, _) -> "XCall"
+    case XConstruct(_, _) -> "XConstruct"
+    case XField(_, _) -> "XField"
+    case XCopy(_, _) -> "XCopy"
+    case XArrayCopy(_) -> "XArrayCopy"
+    case XZeroValue(_) -> "XZeroValue"
+    case XIndex(_, _, _) -> "XIndex"
+    case XConvert(_, _) -> "XConvert"
+    case XTuple(_) -> "XTuple"
+    case XListLit(_) -> "XListLit"
+    case XInterp(_) -> "XInterp"
+    case XRange(_, _, _) -> "XRange"
+    case XShort(_, _, _) -> "XShort"
+    case XIf(_, _, _) -> "XIf"
+    case XMatch(_, _, _) -> "XMatch"
+    case XBlock(_, _) -> "XBlock"
+    case XUnsafe(_) -> "XUnsafe"
+    case XLambda(_, _, _) -> "XLambda"
+    case XAwait(_) -> "XAwait"
+    case XSpawn(_) -> "XSpawn"
+    case XYield(_) -> "XYield"
+    case XPropagate(_) -> "XPropagate"
+    case XOld(_) -> "XOld"
+    case XResult -> "XResult"
+    case XForall(_, _, _) -> "XForall"
+    case XExists(_, _, _) -> "XExists"
+    case XAssign(_, _, _) -> "XAssign"
+  }
+}
+
+/// A statement of a default argument's block under fresh node ids: a `var` and an expression statement, the
+/// kinds a default is made of.
+func refreshDefaultStmt(env: in BuildEnv, st: in TStmt, at: in Span): Option[TStmt] {
+  val kind: TStmtKind = match st.kind {
+    case TsVar(decl, init) -> match init {
+      case Some(x) -> match refreshDefaultIds(env, x, at) {
+        case Some(r) -> TsVar(
+          decl = decl,
+          init = Some(value = r)
+        )
+        case None -> return None
+      }
+      case None -> st.kind
+    }
+    case TsExpr(x) -> match refreshDefaultIds(env, x, at) {
+      case Some(r) -> TsExpr(expr = r)
+      case None -> return None
+    }
+    case _ -> {
+      noteUncoveredAt(env, "a default argument statement of a shape not yet built", at)
+      env.errors.add("I0002: the builder has no case for a default argument statement of a shape not yet built")
+      return None
+    }
+  }
+  Some(value = TStmt(id = freshNodeId(env), span = at, kind = kind))
+}
+
+/// Whether the local numbered `id` was declared by the default argument being built.
+func ownsDefaultLocal(env: in BuildEnv, id: in Int): Bool {
+  env.defaultFloor.count > 0 and env.defaultFloor[0] >= 0 and id > env.defaultFloor[0]
+}
+
+func setDefaultFloor(env: in BuildEnv, n: in Int): Unit {
+  if env.defaultFloor.count == 0 {
+    env.defaultFloor.add(n)
+  } else {
+    env.defaultFloor[0] = n
+  }
+}
+
 /// `t` with every node numbered afresh and its spans set to `at`, so that a default
 /// argument built from the declaration's nodes can stand at several calls of one body
 /// (the verifier requires node ids unique within a body).  None after counting why not:
@@ -7991,7 +8097,48 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
   val kind: TExprKind = match t.kind {
     case XLit(_) -> t.kind
     case XGlobal(_, _) -> t.kind
-    case XLocal(_) -> return noteUncoveredAtSpan(env, at, "a default argument naming a local")
+    case XLocal(l) -> if ownsDefaultLocal(env, l.id) {
+      t.kind
+    } else {
+      return noteUncoveredAtSpan(env, at, "a default argument naming a local")
+    }
+    // A lambda's body is a block; one with no statement of its own is its tail.
+    case XBlock(stmts, tail) -> {
+      val fresh: List[TStmt] = newList()
+      for st in stmts {
+        match refreshDefaultStmt(env, st, at) {
+          case Some(r) -> fresh.add(r)
+          case None -> return None
+        }
+      }
+      match tail {
+        case Some(x) -> match refreshDefaultIds(env, x, at) {
+          case Some(r) -> XBlock(stmts = fresh, tail = Some(value = r))
+          case None -> return None
+        }
+        case None -> XBlock(stmts = fresh, tail = None)
+      }
+    }
+    case XIf(cond, thenBranch, elseBranch) -> {
+      val c = match refreshDefaultIds(env, cond, at) { case Some(r) -> r; case None -> return None }
+      val th = match refreshDefaultIds(env, thenBranch, at) { case Some(r) -> r; case None -> return None }
+      match elseBranch {
+        case Some(el) -> match refreshDefaultIds(env, el, at) {
+          case Some(r) -> XIf(cond = c, thenBranch = th, elseBranch = Some(value = r))
+          case None -> return None
+        }
+        case None -> XIf(cond = c, thenBranch = th, elseBranch = None)
+      }
+    }
+    case XLambda(params, caps, body) -> {
+      if caps.count > 0 {
+        return noteUncoveredAtSpan(env, at, "a default argument whose lambda captures")
+      }
+      match refreshDefaultIds(env, body, at) {
+        case Some(b) -> XLambda(params = params, captures = caps, body = b)
+        case None -> return None
+      }
+    }
     case XCall(callee, args) -> {
       val fresh: List[TArg] = newList()
       for a in args {
@@ -7999,6 +8146,14 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
           case TArgIn(v) -> match refreshDefaultIds(env, v, at) {
             case Some(r) -> fresh.add(TArgIn(value = r))
             case None -> return None
+          }
+          case TArgInout(p) -> match p.kind {
+            case PlLocal(l) -> if ownsDefaultLocal(env, l.id) {
+              fresh.add(a)
+            } else {
+              return noteUncoveredAtSpan(env, at, "a default argument passing a place")
+            }
+            case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
           }
           case _ -> return noteUncoveredAtSpan(env, at, "a default argument passing a place")
         }
@@ -8042,7 +8197,7 @@ func refreshDefaultIds(env: in BuildEnv, t: in TExpr, at: in Span): Option[TExpr
       }
       XTuple(elems = fresh)
     }
-    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built")
+    case _ -> return noteUncoveredAtSpan(env, at, "a default argument of a shape not yet built (" + tirKindName(t.kind) + ")")
   }
   Some(value = TExpr(id = freshNodeId(env), ty = t.ty, span = at, kind = kind))
 }
@@ -8092,6 +8247,7 @@ func buildDefaultArg(
     case ELiteral(_) -> buildExpr(env, d)
     case EPath(_) -> buildRefPath(env, d, ty)
     case _ -> {
+      setDefaultFloor(env, env.nextLocal[0])
       // The declaration's node is shared by every call that takes the default, each at
       // its own instantiation: the parameter's type settles it for this call only.
       env.settled.remove(d.nodeId)
@@ -8108,6 +8264,7 @@ func buildDefaultArg(
       } else {
         refreshDefaultIds(env, t0, call.span)
       }
+      setDefaultFloor(env, -1)
       match t {
         case Some(t1) -> match coerceArg(env, t1, pty) {
           case Some(c) -> Some(value = c)
@@ -8116,7 +8273,10 @@ func buildDefaultArg(
         case None -> None
       }
     }
-    case None -> None
+    case None -> {
+      setDefaultFloor(env, -1)
+      None
+    }
   }
 }
 
