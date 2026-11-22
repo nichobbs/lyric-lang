@@ -5181,10 +5181,7 @@ func hostUpcastKind(env: in BuildEnv, from: in Ty, to: in Ty): Option[ConvKind] 
 /// A slice passed for the host array of its own element type (`slice[Int]` for `int[]`).
 func ownElementArray(arg: in Ty, p: in Ty): Bool {
   match p {
-    case TExtern(h) -> match arg {
-      case TSlice(el) -> hostArrayIsOwnElement(h, el)
-      case _ -> false
-    }
+    case TExtern(h) -> match arg { case TSlice(el) -> hostArrayIsOwnElement(h, el); case _ -> false }
     case _ -> false
   }
 }
@@ -5218,9 +5215,7 @@ func scoreOverload(
               score = score + 1
             }
             case None -> match hostBoxKind(argTys[i], p) {
-              case Some(_) -> if ownElementArray(argTys[i], p) {
-                score = score + 1
-              }
+              case Some(_) -> if ownElementArray(argTys[i], p) { score = score + 1 }
               case None -> return None
             }
           }

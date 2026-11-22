@@ -1135,7 +1135,10 @@ test "a slice takes the array of its own element over an Object[] (D699)" {
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
     case Some(m) -> match m.params[0].ty {
-      case TExtern(h) -> assertTrue(tyEq(h.args[0], TPrim(kind = TPInt)), "the int[] overload, not the Object[] one")
+      case TExtern(h) -> assertTrue(
+        tyEq(h.args[0], TPrim(kind = TPInt)),
+        "the int[] overload, not the Object[] one"
+      )
       case _ -> assertTrue(false, "a host array parameter")
     }
     case None -> assertTrue(false, "an extern call")
