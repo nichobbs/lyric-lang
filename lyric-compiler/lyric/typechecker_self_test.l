@@ -3260,10 +3260,16 @@ test "lambda annotated params inferred" {
   assertEqualInt(diagCount(cr), 0, "lambda with annotated Int param: no errors")
 }
 
-test "lambda unannotated params lenient" {
+test "a lambda bound with no annotation and an unannotated parameter is T0231" {
   val src = "package P\nfunc f(): Unit {\n  val fn = { x -> x }\n}\n"
   val cr = parseCheck(src)
-  assertEqualInt(diagCount(cr), 0, "lambda with unannotated param: no errors (lenient)")
+  assertTrue(hasDiagCode(cr, "T0231"), "no expected function type fixes the parameter's type")
+}
+
+test "a lambda whose parameter types an expected function type gives is not T0231" {
+  val src = "package P\nfunc f(): Unit {\n  val fn: (Int) -> Int = { x -> x }\n}\n"
+  val cr = parseCheck(src)
+  assertFalse(hasDiagCode(cr, "T0231"), "the annotated binding's function type fixes x")
 }
 
 test "lambda body type error reported" {
