@@ -1930,13 +1930,25 @@ func hostPropertyCallForm(env: in BuildEnv, fn: in Expr, args: in List[CallArg])
 
 func dbgProbe(env: in BuildEnv, recv: in Expr, name: in String): Option[HostRecv] {
   val r = hostChainReceiver(env, recv)
-  val ety = match exprTy(env.ctx, recv.nodeId) { case Ok(t) -> renderTy(t); case Err(m) -> "ERR " + m }
-  val rr = match r { case Some(h) -> "Some " + h.host.name + " static=" + (if h.isStatic then "y" else "n"); case None -> "None" }
-  val sigs = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs("System.Byte", name, 0, true) {
-    case Some(c) -> "sigs=" + toString(c.count)
-    case None -> "sigs=None"
+  val ety = match exprTy(env.ctx, recv.nodeId) { case Ok(t) -> renderTy(t); case Err(m) -> "ERR" }
+  var detail = ""
+  match r {
+    case Some(h) -> {
+      detail = "Some " + h.host.name + " static=" + (if h.isStatic then "y" else "n")
+      match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(h.host.name, name, 0, true) {
+        case Some(cs) -> {
+          detail = detail + " sigs=" + toString(cs.count)
+          for c in cs {
+            detail = detail + " [static=" + (if c.isStatic then "y" else "n") + " field=" + (if c.isField then "y" else "n") + " params=" + toString(c.params.count) + " ret=" + (match c.ret { case EMTVoid -> "void"; case EMTType(ke) -> externIterElemKey(ke) }) + "]"
+          }
+          detail = detail + " result=" + (match hostChainResult(env, h.host, name, 0, true, h.isStatic, newList()) { case Some(t) -> renderTy(t); case None -> "None" })
+        }
+        case None -> detail = detail + " sigs=None"
+      }
+    }
+    case None -> detail = "None"
   }
-  env.errors.add("DBG recv=" + ety + " chainRecv=" + rr + " " + sigs + " name=" + name)
+  env.errors.add("DBG recv=" + ety + " chainRecv=" + detail + " name=" + name)
   r
 }
 
@@ -2520,7 +2532,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
               return None
             }
             env.errors.add(
-              msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")" +
+              "DBG2 kind=" + (match e.kind { case EMember(_, _) -> "member"; case EPath(_) -> "path"; case ECall(_, _) -> "call"; case EParen(_) -> "paren"; case _ -> "other" }) + " " + msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")" +
                 foreignValNote(env, e)
             )
             return None
