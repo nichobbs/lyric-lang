@@ -6951,6 +6951,17 @@ pub func pipeAddCrossPackageItemsProject(file: in SourceFile, dest: in List[Item
   }
 }
 
+/// What a sibling project package shows the packages that import it: the items of its file after its
+/// derives are expanded, since the checker of an importing package calls what the derive generates
+/// (`Xp.Api.Person.fromJson(body)`, `a.toJson()`), and the checker reads a dependency's declarations,
+/// not its expansion (docs/70 section 6.3).  `deriveImports` is the items of every package the build
+/// registers, as the package's own derive sees them when it is compiled.
+pub func pipeDerivedItemView(file: in SourceFile, deriveImports: in List[Item]): List[Item] {
+  val items: List[Item] = newList()
+  pipeAddCrossPackageItemsProject(deriveFileWithImports(file, deriveImports), items)
+  items
+}
+
 /// True iff the annotation list carries a marker that makes a generic
 /// unsuitable for monomorphization-by-copy.  `@externTarget` is a kernel
 /// boundary whose body codegen synthesises from the BCL target (and
