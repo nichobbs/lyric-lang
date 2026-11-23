@@ -2317,6 +2317,32 @@ pub func symTableSetImportRule(tbl: in SymbolTable, pkg: in String): Unit {
   tbl.importRulePkg.add(pkg)
 }
 
+/// The package whose names the import rule judges, saved (empty when none).  With
+/// `symTableLiftImportRule` and `symTableRestoreImportRule`, a pass after the check resolves a type
+/// the checker spelled itself (a `TypeExpr` in `localBindingTypeSites`, `hoistOperandTypeSites`: a
+/// type of a package the file does not import is spelled by its package, `Ui.Core.Prop`) by name
+/// alone: that spelling is a reference to a known declaration, not source the import rule judges
+/// (D769).
+pub func symTableLiftImportRule(tbl: in SymbolTable): List[String] {
+  val saved: List[String] = newList()
+  for p in tbl.importRulePkg {
+    saved.add(p)
+  }
+  while tbl.importRulePkg.count > 0 {
+    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+  }
+  saved
+}
+
+pub func symTableRestoreImportRule(tbl: in SymbolTable, saved: in List[String]): Unit {
+  while tbl.importRulePkg.count > 0 {
+    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+  }
+  for p in saved {
+    tbl.importRulePkg.add(p)
+  }
+}
+
 func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {
   tbl.importRulePkg.count > 0 and tbl.importRulePkg[0] == pkg
 }
