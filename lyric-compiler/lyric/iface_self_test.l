@@ -268,7 +268,7 @@ test "a different declaration changes the hash" {
 }
 
 test "the dump is canonical text" {
-  val expected = "interface Shapes (format 6)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
+  val expected = "interface Shapes (format 7)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
     "annotations: pure\n" +
     "reexports: Std.Collections, Std.Json\n" +
     "built against (2):\n" +
@@ -640,6 +640,12 @@ func defaultsFn(it: in DefPathInterner, dflts: in List[Option[TExpr]]): IfDetail
   )
 }
 
+func intTypeArgs(): List[Ty] {
+  val xs: List[Ty] = newList()
+  xs.add(TPrim(kind = TPInt))
+  xs
+}
+
 test "parameter defaults of every carried kind round trip through another interner" {
   val it = newDefPathInterner()
   val listTy = TNamed(sym = owner(it, "Std.Collections", "List"), args = newList())
@@ -659,7 +665,8 @@ test "parameter defaults of every carried kind round trip through another intern
     kind = HMMethod,
     isStatic = true,
     params = newList(),
-    ret = TPrim(kind = TPInt)
+    ret = TPrim(kind = TPInt),
+    typeArgs = intTypeArgs()
   )
   val dflts: List[Option[TExpr]] = newList()
   dflts.add(Some(value = intLit(3i64)))

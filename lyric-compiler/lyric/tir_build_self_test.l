@@ -982,6 +982,12 @@ func fhSigOptional(
   ExternMemberSig(isStatic = isStatic, params = ps, ret = ret, optionalTrailing = optional)
 }
 
+func oneElem(a: in ExternIterElem): List[ExternIterElem] {
+  val xs: List[ExternIterElem] = newList()
+  xs.add(a)
+  xs
+}
+
 func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
   val xs: List[ExternIterElem] = newList()
   xs.add(a)
@@ -1005,6 +1011,52 @@ func fakeHost(): FakeHost {
   max.add(fhSig(true, fhParams2(fhPrim("Int"), fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Max", 2), max)
+  val pick: List[ExternMemberSig] = newList()
+  pick.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(EIEMArg(index = 0), EIEMArg(index = 0)),
+      ret = EMTType(elem = EIEMArg(index = 0)),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Pick", 2), pick)
+  val find: List[ExternMemberSig] = newList()
+  find.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(EIEMArg(index = 0))),
+        EIEMArg(index = 0)
+      ),
+      ret = EMTType(elem = fhPrim("Int")),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Find", 2), find)
+  val join: List[ExternMemberSig] = newList()
+  join.add(
+    fhSig(
+      true,
+      fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(fhPrim("String")))
+      ),
+      EMTType(elem = fhPrim("String"))
+    )
+  )
+  join.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "System.Collections.Generic.IEnumerable", args = oneElem(EIEMArg(index = 0)))
+      ),
+      ret = EMTType(elem = fhPrim("String")),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Join", 2), join)
   val append: List[ExternMemberSig] = newList()
   append.add(fhSig(false, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Int"))))
   append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
@@ -1177,6 +1229,48 @@ test "a static extern call picks the overload the argument types select" {
   }
 }
 
+test "a generic host method is instantiated at the types of its arguments" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.typeArgs.count, 1, "one method type argument")
+      assertTrue(tyEq(m.typeArgs[0], TPrim(kind = TPLong)), "T is Long")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPLong)), "the parameter is substituted")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPLong)), "the result is substituted")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic host method whose type argument two arguments bind differently has no fit" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertTrue(r.env.errors.count > 0, "the call is reported, not built at either type")
+  assertTrue(not isSome(externCallOf(r.body)), "no extern call is recorded")
+}
+
+test "a generic host method binds its type argument from the element of an array argument" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: slice[Long], v: Long): Int {\n  Math.Find(xs, v)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.typeArgs.count, 1, "one method type argument")
+      assertTrue(tyEq(m.typeArgs[0], TPrim(kind = TPLong)), "T is the slice's element")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic overload beside a non-generic one does not change the overload a call picks" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: slice[String]): String {\n  Math.Join(\",\", xs)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertEqualInt(m.typeArgs.count, 0, "the non-generic overload")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
 test "a call that leaves out an optional trailing host parameter records it as omitted" {
   val r = buildFirstFnHost(externHead() + "func f(): Int {\n  Math.Encode(\"hi\")\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
@@ -1291,6 +1385,11 @@ test "a host UInt32 result the checker types as Long is read with CvFromHost (D7
     not hostResultIsCallType(TExtern(host = HostTypeRef(name = "System.Int16", args = newList())), TPrim(kind = TPLong)),
     "Int16 is not a Long"
   )
+}
+
+test "a numeric conversion on an element of an untyped host array local is the built-in (D773)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Long {\n  val g = Math.Grow(3)\n  g[0].toLong()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
 test "an extern argument is widened to the overload's parameter" {
@@ -3628,4 +3727,42 @@ test "a record sharing its name with an enum case is still constructed (D755)" {
     "package App\nrecord Info { text: String }\nenum Level {\n  case Info\n  case Warn\n}\nfunc a(): String { Info(text = \"t\").text }\n"
   )
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+}
+
+test "an extern type named with bracketed type arguments is the structured host type" {
+  val h = hostRefOfClrName("System.Collections.Generic.List`1[System.Net.Security.SslApplicationProtocol]", newList())
+  assertEqual(h.name, "System.Collections.Generic.List", "the class without arity or brackets")
+  assertEqualInt(h.args.count, 1, "one type argument")
+  match h.args[0] {
+    case TExtern(a) -> assertEqual(a.name, "System.Net.Security.SslApplicationProtocol", "a host type argument")
+    case _ -> assertTrue(false, "a host type")
+  }
+  val d = hostRefOfClrName("System.Collections.Generic.Dictionary`2[System.String,System.Int32]", newList())
+  assertEqual(d.name, "System.Collections.Generic.Dictionary", "the class")
+  assertEqualInt(d.args.count, 2, "two type arguments")
+  assertTrue(tyEq(d.args[0], TPrim(kind = TPString)), "a CLR string is String")
+  assertTrue(tyEq(d.args[1], TPrim(kind = TPInt)), "a CLR Int32 is Int")
+  val n = hostRefOfClrName(
+    "System.Collections.Generic.List`1[System.Collections.Generic.List`1[System.Int64]]",
+    newList()
+  )
+  assertEqualInt(n.args.count, 1, "a nested argument is one argument")
+}
+
+test "an extern type name that ends in an empty bracket pair stands as written" {
+  val h = hostRefOfClrName("System.Byte[]", newList())
+  assertEqual(h.name, "System.Byte[]", "an array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
+test "an extern type name for a multi-dimensional array stands as written" {
+  val h = hostRefOfClrName("System.Byte[,]", newList())
+  assertEqual(h.name, "System.Byte[,]", "a rank-2 array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
+test "an extern type name without brackets stands as written" {
+  val h = hostRefOfClrName("System.Text.StringBuilder", newList())
+  assertEqual(h.name, "System.Text.StringBuilder", "the name")
+  assertEqualInt(h.args.count, 0, "no arguments")
 }
