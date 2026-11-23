@@ -3392,6 +3392,11 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
         if name == "length" {
           return Some(value = TyPrim(pt = PtInt))
         }
+        // `b.toSlice()` copies the elements into a slice, as an array's does.
+        if name == "toSlice" {
+          val noParams: List[Type] = newList()
+          return Some(value = TyFunction(params = noParams, ret = TySlice(element = targs[0]), isAsync = false))
+        }
         // `Std.Buffer`'s own bridge to its `List` representation (D185): the
         // identity on a target that represents a buffer as a list.
         if name == bufferAsListMember() and symTableScopePkg(tbl) == "Std.Buffer" {
