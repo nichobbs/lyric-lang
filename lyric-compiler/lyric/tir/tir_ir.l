@@ -46,6 +46,10 @@ pub record HostMemberRef {
   /// How many of the last `params` the call leaves out: the host fills each with the default its
   /// metadata declares (an optional parameter).  A call has `params.count - omitted` arguments.
   omitted: Int = 0
+  /// The type arguments of a generic host method, inferred from the call's arguments (`Array.IndexOf<T>`
+  /// called with an `Int` array has `[Int]`, D766).  `params` and `ret` already have them substituted; a
+  /// backend that instantiates the method reads them here.  Empty for a method that is not generic.
+  typeArgs: List[Ty] = newList()
 }
 
 /// The operations the compiler implements itself on built-in types: the

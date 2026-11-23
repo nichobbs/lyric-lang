@@ -2570,6 +2570,7 @@ func externIterElemToType(
 ): Option[Type] {
   match elem {
     case EIEArg(index) -> if index >= 0 and index < iterArgs.count { Some(value = iterArgs[index]) } else { None }
+    case EIEMArg(_) -> None
     case EIEPrim(name) -> match primFromString(name) {
       case Some(pt) -> Some(value = TyPrim(pt = pt))
       case None -> None

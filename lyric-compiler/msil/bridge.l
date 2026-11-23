@@ -1402,6 +1402,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 func iterElemOfSig(sig: in Mdr.SigType): ExternIterElem {
   match sig {
     case Mdr.STVar(i) -> EIEArg(index = i)
+    case Mdr.STMVar(i) -> EIEMArg(index = i)
     case Mdr.STPrim(b) -> {
       if b == 0x02 {
         EIEPrim(name = "Bool")
@@ -1613,7 +1614,8 @@ impl ExternIterResolver for MsilHostIterIndex {
                 params = ps,
                 ret = ret,
                 isField = inf.isField,
-                optionalTrailing = inf.optionalTrailing
+                optionalTrailing = inf.optionalTrailing,
+                genericArity = inf.genericArity
               )
             )
           }

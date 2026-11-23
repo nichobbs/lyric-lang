@@ -4922,6 +4922,8 @@ pub record HostMemberSigInfo {
   isField: Bool = false
   /// The number of trailing parameters the host declares optional.
   optionalTrailing: Int = 0
+  /// The method's own type parameters, named `STMVar` in `params` and `ret` (D766).
+  genericArity: Int = 0
 }
 
 /// The overloads of `member` on `fqn` and every supertype, as
@@ -4954,7 +4956,6 @@ pub func hostMemberSigsOfExtern(
   }
   val getter = "get_" + member
   val found: List[HostMemberSigInfo] = newList()
-  var skippedGeneric = false
   for cur in chain {
     val asmName = match assemblyForType(typeIndex, cur) { case Some(n) -> n; case None -> return None }
     val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return None }
@@ -4977,16 +4978,15 @@ pub func hostMemberSigsOfExtern(
         m.name == member and takesArgc
       }
       if wanted {
-        // A generic method's signature mentions its own type parameters, which a host member signature cannot
-        // carry: it is left out of the candidates, so `String.Join(string, string[])` still resolves beside
-        // `Join<T>(string, IEnumerable<T>)`.  A member with only generic overloads stays unresolved.
-        if m.genericArity > 0 {
-          skippedGeneric = true
-          continue
-        }
         val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
         found.add(
-          HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret, optionalTrailing = optional)
+          HostMemberSigInfo(
+            isStatic = m.isStatic or isCtor,
+            params = m.paramTypes,
+            ret = ret,
+            optionalTrailing = optional,
+            genericArity = m.genericArity
+          )
         )
       }
     }
@@ -4998,9 +4998,6 @@ pub func hostMemberSigsOfExtern(
         case None -> ()
       }
     }
-  }
-  if found.count == 0 and skippedGeneric {
-    return None
   }
   Some(value = found)
 }
