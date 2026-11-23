@@ -923,6 +923,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - `x.toString()` on a record, union, tuple or collection builds as the built-in `toString` of the value, as D282 renders it; the checker records no callee for the call (D776).
   - Every field of a `foreign record` is writable in place in the TIR symbol table, as the language reference has it (T0180 judges the write), so a bindgen record filled by assignment verifies (D778).
   - The items a project package shows the packages that import it are those of its file after its derives are expanded, so a dependency's generated `toJson`/`fromJson` are typed by the checker of an importer, on dotnet and the JVM (D777).
+  - The symbol entry of a method of a generic type declared in another package numbers the method's own type parameters after the owner's, as the call's type arguments are laid out (`bx.pick(Pt(...))` where `Bx[T]` declares `pick[U]`), so the call verifies (D767, extends D579).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
