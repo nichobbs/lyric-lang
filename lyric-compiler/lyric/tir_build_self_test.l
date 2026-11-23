@@ -1304,7 +1304,7 @@ test "a numeric conversion on an element of an untyped host array local is the b
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
-test "a static constant of a host class is its own member, not a generic interface's type variable (D774)" {
+test "a static constant of a host class is its own member, not a generic interface's type variable (D775)" {
   val r = buildFirstFnHost("package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Byte {\n  ByteT.MaxValue\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
