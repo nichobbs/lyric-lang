@@ -5300,7 +5300,9 @@ func hostElemTyM(elem: in ExternIterElem, targs: in List[Ty], margs: in List[Ty]
 /// Binds the method type arguments a parameter `elem` names from the type `arg` of the argument passed
 /// for it, as the MSIL backend picks the instantiation: a bare `T` takes the argument's type, `T[]` the
 /// element of a slice or array, a generic host type its arguments pairwise.  False when `T` is already
-/// bound to another type.
+/// bound to another type.  An argument that does not have the parameter's shape binds nothing and is not an
+/// error here: `scoreOverload` rejects it when it matches the substituted parameter against the argument, and
+/// rejects a method type argument no argument bound.
 func bindMethodArgs(elem: in ExternIterElem, arg: in Ty, margs: in List[Ty]): Bool {
   match elem {
     case EIEMArg(i) -> {
