@@ -1452,6 +1452,15 @@ test "toString called as a method on a record is the built-in toString of the va
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
+test "a write to a field of a foreign record verifies (D778)" {
+  val c = censusOf(
+    "package App\nforeign record R {\n  x: Int\n}\nfunc f(): Int {\n  var r = R(x = 1)\n  r.x = 2\n  r.x\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "an extern argument is widened to the overload's parameter" {
   val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Int {\n  Math.Max(a, b)\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
