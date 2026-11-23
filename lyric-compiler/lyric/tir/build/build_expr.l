@@ -3987,11 +3987,11 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
     GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   }
   // The annotation may be one the checker spelled itself (`localBindingTypeSites`): a type of a package
-  // the file does not import is named by its package there, which the import rule would reject, so it
-  // resolves by name alone (D769).
-  val importRule = symTableLiftImportRule(env.ctx.tbl)
+  // the file does not import is named by its package there, which the qualified-package rule would
+  // reject, so that rule is lifted for it; bare names keep the file's import scopes (D769, D779).
+  symTableLiftQualifiedRule(env.ctx.tbl)
   val resolved = resolveType(env.ctx.tbl, gc, diag, te)
-  symTableRestoreImportRule(env.ctx.tbl, importRule)
+  symTableRestoreQualifiedRule(env.ctx.tbl)
   match tyOfType(env.ctx, resolved) {
     case Ok(w) -> Some(value = w)
     case Err(msg) -> {
