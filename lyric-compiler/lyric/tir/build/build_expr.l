@@ -1896,7 +1896,7 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       }
       case _ -> None
     }
-    case EMember(recv, name) -> match hostChainReceiver(env, recv) {
+    case EMember(recv, name) -> match dbgProbe(env, recv, name) {
       case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
       case None -> match openLocalBuiltinProperty(env, recv, name) {
         case Some(_) -> Some(value = tyInt())
@@ -1926,6 +1926,18 @@ func hostPropertyCallForm(env: in BuildEnv, fn: in Expr, args: in List[CallArg])
     case Some(ps) -> if ps.count > 0 { Some(value = (recv, name)) } else { None }
     case None -> None
   }
+}
+
+func dbgProbe(env: in BuildEnv, recv: in Expr, name: in String): Option[HostRecv] {
+  val r = hostChainReceiver(env, recv)
+  val ety = match exprTy(env.ctx, recv.nodeId) { case Ok(t) -> renderTy(t); case Err(m) -> "ERR " + m }
+  val rr = match r { case Some(h) -> "Some " + h.host.name + " static=" + (if h.isStatic then "y" else "n"); case None -> "None" }
+  val sigs = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs("System.Byte", name, 0, true) {
+    case Some(c) -> "sigs=" + toString(c.count)
+    case None -> "sigs=None"
+  }
+  env.errors.add("DBG recv=" + ety + " chainRecv=" + rr + " " + sigs + " name=" + name)
+  r
 }
 
 /// A host receiver of a chain: a value of a host class, or (`isStatic`) the host class named by an
