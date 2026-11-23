@@ -3783,3 +3783,41 @@ test "a record sharing its name with an enum case is still constructed (D755)" {
   )
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
 }
+
+test "an extern type named with bracketed type arguments is the structured host type" {
+  val h = hostRefOfClrName("System.Collections.Generic.List`1[System.Net.Security.SslApplicationProtocol]", newList())
+  assertEqual(h.name, "System.Collections.Generic.List", "the class without arity or brackets")
+  assertEqualInt(h.args.count, 1, "one type argument")
+  match h.args[0] {
+    case TExtern(a) -> assertEqual(a.name, "System.Net.Security.SslApplicationProtocol", "a host type argument")
+    case _ -> assertTrue(false, "a host type")
+  }
+  val d = hostRefOfClrName("System.Collections.Generic.Dictionary`2[System.String,System.Int32]", newList())
+  assertEqual(d.name, "System.Collections.Generic.Dictionary", "the class")
+  assertEqualInt(d.args.count, 2, "two type arguments")
+  assertTrue(tyEq(d.args[0], TPrim(kind = TPString)), "a CLR string is String")
+  assertTrue(tyEq(d.args[1], TPrim(kind = TPInt)), "a CLR Int32 is Int")
+  val n = hostRefOfClrName(
+    "System.Collections.Generic.List`1[System.Collections.Generic.List`1[System.Int64]]",
+    newList()
+  )
+  assertEqualInt(n.args.count, 1, "a nested argument is one argument")
+}
+
+test "an extern type name that ends in an empty bracket pair stands as written" {
+  val h = hostRefOfClrName("System.Byte[]", newList())
+  assertEqual(h.name, "System.Byte[]", "an array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
+test "an extern type name for a multi-dimensional array stands as written" {
+  val h = hostRefOfClrName("System.Byte[,]", newList())
+  assertEqual(h.name, "System.Byte[,]", "a rank-2 array type name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
+
+test "an extern type name without brackets stands as written" {
+  val h = hostRefOfClrName("System.Text.StringBuilder", newList())
+  assertEqual(h.name, "System.Text.StringBuilder", "the name")
+  assertEqualInt(h.args.count, 0, "no arguments")
+}
