@@ -1943,10 +1943,14 @@ func dbgProbe(env: in BuildEnv, recv: in Expr, name: in String): Option[HostRecv
           }
           detail = detail + " result=" + (match hostChainResult(env, h.host, name, 0, true, h.isStatic, newList()) { case Some(t) -> renderTy(t); case None -> "None" })
         }
-        case None -> detail = detail + " sigs=None"
+        case None -> {
+          detail = detail + " sigs=None"
+        }
       }
     }
-    case None -> detail = "None"
+    case None -> {
+      detail = "None"
+    }
   }
   env.errors.add("DBG recv=" + ety + " chainRecv=" + detail + " name=" + name)
   r
