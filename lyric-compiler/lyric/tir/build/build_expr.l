@@ -8741,16 +8741,6 @@ func buildMethodCall(
     case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = inst.tyArgs)
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
-  val dbgEntry = match mapGet(env.syms, sym.id) {
-    case Some(en) -> "have tpc=" + toString(en.typeParamCount) + " params=" + (match en.sig { case Some(sg) -> toString(sg.params.count) + ":" + (if sg.params.count > 1 then renderTy(sg.params[1].ty) else "-"); case None -> "nosig" })
-    case None -> "none"
-  }
-  var dbgTa = ""
-  for ta in inst.tyArgs {
-    dbgTa = dbgTa + renderTy(ta) + ","
-  }
-  env.errors.add("DBG pick sym=" + toString(sym.id) + " tyArgs=[" + dbgTa + "] siteGenerics=" + toString(site.sig.generics.count) + " entry=" + dbgEntry)
-  return None
   noteFuncSymN(
     env,
     sym,
@@ -8764,6 +8754,12 @@ func buildMethodCall(
     if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
     inst.tyArgs.count
   )
+  val dbgEntry = match mapGet(env.syms, sym.id) {
+    case Some(en) -> "tpc=" + toString(en.typeParamCount) + " params=" + (match en.sig { case Some(sg) -> toString(sg.params.count) + ":" + renderTy(sg.params[0].ty) + "|" + renderTy(sg.params[1].ty); case None -> "nosig" })
+    case None -> "none"
+  }
+  env.errors.add("DBG entry " + dbgEntry + " siteGenerics=" + toString(site.sig.generics.count))
+  return None
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }
 
