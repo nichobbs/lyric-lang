@@ -1068,6 +1068,12 @@ func fakeHost(): FakeHost {
   )
   maxByte.add(ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = EIEArg(index = 0))))
   sigs.add(fhKey("System.Byte", "MaxValue", 0), maxByte)
+  val maxChar: List[ExternMemberSig] = newList()
+  maxChar.add(
+    ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = fhHost("System.Char")), isField = true)
+  )
+  maxChar.add(ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = EIEArg(index = 0))))
+  sigs.add(fhKey("System.Char", "MaxValue", 0), maxChar)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1306,6 +1312,20 @@ test "a numeric conversion on an element of an untyped host array local is the b
 
 test "a static constant of a host class is its own member, not a generic interface's type variable (D775)" {
   val r = buildFirstFnHost("package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Byte {\n  ByteT.MaxValue\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host constant read through its extern type name is built where it is an argument (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type ByteT = \"System.Byte\"\nfunc take(x: Int): Int {\n  x\n}\nfunc f(): Int {\n  take(ByteT.MaxValue)\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host Char constant has the Lyric Char type (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type NetCharT = \"System.Char\"\nfunc f(): Int {\n  NetCharT.MaxValue.toInt()\n}\n"
+  )
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 

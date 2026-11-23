@@ -1896,7 +1896,14 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       }
       case _ -> None
     }
-    case EMember(recv, name) -> match dbgProbe(env, recv, name) {
+    case EPath(_) -> match hostStaticPath(env, e) {
+      case Some(hp) -> {
+        val (host, member) = hp
+        hostChainResult(env, host, member, 0, true, true, newList())
+      }
+      case None -> None
+    }
+    case EMember(recv, name) -> match hostChainReceiver(env, recv) {
       case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
       case None -> match openLocalBuiltinProperty(env, recv, name) {
         case Some(_) -> Some(value = tyInt())
@@ -1928,34 +1935,6 @@ func hostPropertyCallForm(env: in BuildEnv, fn: in Expr, args: in List[CallArg])
   }
 }
 
-func dbgProbe(env: in BuildEnv, recv: in Expr, name: in String): Option[HostRecv] {
-  val r = hostChainReceiver(env, recv)
-  val ety = match exprTy(env.ctx, recv.nodeId) { case Ok(t) -> renderTy(t); case Err(m) -> "ERR" }
-  var detail = ""
-  match r {
-    case Some(h) -> {
-      detail = "Some " + h.host.name + " static=" + (if h.isStatic then "y" else "n")
-      match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(h.host.name, name, 0, true) {
-        case Some(cs) -> {
-          detail = detail + " sigs=" + toString(cs.count)
-          for c in cs {
-            detail = detail + " [static=" + (if c.isStatic then "y" else "n") + " field=" + (if c.isField then "y" else "n") + " params=" + toString(c.params.count) + " ret=" + (match c.ret { case EMTVoid -> "void"; case EMTType(ke) -> externIterElemKey(ke) }) + "]"
-          }
-          detail = detail + " result=" + (match hostChainResult(env, h.host, name, 0, true, h.isStatic, newList()) { case Some(t) -> renderTy(t); case None -> "None" })
-        }
-        case None -> {
-          detail = detail + " sigs=None"
-        }
-      }
-    }
-    case None -> {
-      detail = "None"
-    }
-  }
-  env.errors.add("DBG recv=" + ety + " chainRecv=" + detail + " name=" + name)
-  r
-}
-
 /// A host receiver of a chain: a value of a host class, or (`isStatic`) the host class named by an
 /// `extern type` (`JCharacter.TYPE`, `JKeyManagerFactory.getInstance(..)`).
 record HostRecv {
@@ -1967,23 +1946,44 @@ record HostRecv {
 /// the type takes no type arguments.
 func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
   match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 { hostStaticOfName(env, p.segments[0]) } else { None }
+    case _ -> None
+  }
+}
+
+/// The host class the `extern type` `name` stands for, when no local shadows it and the type takes no type
+/// arguments.
+func hostStaticOfName(env: in BuildEnv, name: in String): Option[HostTypeRef] {
+  match lookupLocal(env, name) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  match symTableTryFindOne(env.ctx.tbl, name) {
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, d) -> if isSome(d.generics) {
+        None
+      } else {
+        Some(value = HostTypeRef(name = d.clrName, args = newList()))
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+/// `ByteT.MaxValue` written as a two-segment path: the host class `ByteT` names and the member read from it.
+/// The checker leaves such a path untyped where it has no expected type to settle it.
+func hostStaticPath(env: in BuildEnv, e: in Expr): Option[(HostTypeRef, String)] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match e.kind {
     case EPath(p) -> {
-      if p.segments.count != 1 {
+      if p.segments.count != 2 {
         return None
       }
-      match lookupLocal(env, p.segments[0]) {
-        case Some(_) -> return None
-        case None -> ()
-      }
-      match symTableTryFindOne(env.ctx.tbl, p.segments[0]) {
-        case Some(sym) -> match sym.kind {
-          case DKExternType(_, d) -> if isSome(d.generics) {
-            None
-          } else {
-            Some(value = HostTypeRef(name = d.clrName, args = newList()))
-          }
-          case _ -> None
-        }
+      match hostStaticOfName(env, p.segments[0]) {
+        case Some(h) -> Some(value = (h, p.segments[1]))
         case None -> None
       }
     }
@@ -2395,7 +2395,7 @@ func hostChainResult(
             // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
             // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
             // the host's own class too.
-            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname)
+            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname) or rname == "System.Char"
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
@@ -2536,7 +2536,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
               return None
             }
             env.errors.add(
-              "DBG2 kind=" + (match e.kind { case EMember(_, _) -> "member"; case EPath(_) -> "path"; case ECall(_, _) -> "call"; case EParen(_) -> "paren"; case _ -> "other" }) + " " + msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")" +
+              msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")" +
                 foreignValNote(env, e)
             )
             return None
@@ -2630,6 +2630,16 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
           }
           case None -> ()
         }
+      }
+      match hostStaticPath(env, e) {
+        case Some(hp) -> {
+          val (host, member) = hp
+          match buildHostStaticReadOf(env, e, ty, host, member) {
+            case Some(x) -> return Some(value = x)
+            case None -> ()
+          }
+        }
+        case None -> ()
       }
       buildRefPath(env, e, ty)
     }
@@ -6004,6 +6014,11 @@ func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr,
     case Err(_) -> ()
   }
   val host = match hostStaticReceiver(env, recv) { case Some(h) -> h; case None -> return None }
+  buildHostStaticReadOf(env, e, ty, host, name)
+}
+
+/// The static read of the member `name` of the host class `host`: a call of the getter or a read of the constant.
+func buildHostStaticReadOf(env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String): Option[TExpr] {
   val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, 0, true) {
     case Some(c) -> c
     case None -> return None
