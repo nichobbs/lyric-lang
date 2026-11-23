@@ -62,6 +62,38 @@ func tsigOf(
   }
 }
 
+/// The signature of a method of a generic type with the owner's type parameters in front of the method's own, as
+/// the call's type arguments are laid out (the owner's, then the method's): the owner's parameters are the
+/// arguments of the receiver type `recv` (`Bx[T]`), each named with the key of the type that declares it.  A
+/// signature that already counts them, or a method of a type with none, is unchanged (D767).
+func withOwnerGenerics(sig: in ResolvedSignature, recv: in Option[Type], typeParamCount: in Int): ResolvedSignature {
+  if typeParamCount <= sig.generics.count {
+    return sig
+  }
+  val rargs: List[Type] = match recv { case Some(TyUser(_, _, a)) -> a; case _ -> newList() }
+  val names: List[String] = newList()
+  val owners: List[String] = newList()
+  for a in rargs {
+    match a {
+      case TyParam(n, o) -> {
+        names.add(n)
+        owners.add(o)
+      }
+      case _ -> ()
+    }
+  }
+  if names.count + sig.generics.count != typeParamCount {
+    return sig
+  }
+  for g in sig.generics {
+    names.add(g)
+  }
+  for o in sig.genericOwners {
+    owners.add(o)
+  }
+  sig.copy(generics = names, genericOwners = owners)
+}
+
 /// Record the function `sym` the body being built calls.  A signature that
 /// cannot be converted leaves no entry, so the verifier reports the callee
 /// undefined rather than the builder failing the body.
@@ -90,7 +122,7 @@ func noteFuncSymN(
   if env.syms.containsKey(sym.id) {
     return
   }
-  match tsigOf(env.ctx.tbl, sym, sig, recv, recvMode) {
+  match tsigOf(env.ctx.tbl, sym, withOwnerGenerics(sig, recv, typeParamCount), recv, recvMode) {
     case Ok(ts) -> env.syms.add(
       sym.id,
       TSymEntry(
