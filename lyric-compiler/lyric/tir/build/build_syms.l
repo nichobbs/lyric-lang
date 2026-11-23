@@ -63,27 +63,30 @@ func tsigOf(
 }
 
 /// The signature of a method of a generic type with the owner's type parameters in front of the method's own, as
-/// the call's type arguments are laid out (the owner's, then the method's): the owner's parameters are the
-/// arguments of the receiver type `recv` (`Bx[T]`), each named with the key of the type that declares it.  A
-/// signature that already counts them, or a method of a type with none, is unchanged (D767).
-func withOwnerGenerics(sig: in ResolvedSignature, recv: in Option[Type], typeParamCount: in Int): ResolvedSignature {
+/// the call's type arguments are laid out (the owner's, then the method's).  The owner is the type of the receiver
+/// `recv` (`Bx[Int]` for a call on a `Bx[T]`'s method): its parameters are the generics its declaration names, each
+/// keyed by the type that declares it.  A signature that already counts them, or a method of a type with none, is
+/// unchanged (D767).
+func withOwnerGenerics(
+  tbl: in SymbolTable, sig: in ResolvedSignature, recv: in Option[Type], typeParamCount: in Int
+): ResolvedSignature {
   if typeParamCount <= sig.generics.count {
     return sig
   }
-  val rargs: List[Type] = match recv { case Some(TyUser(_, _, a)) -> a; case _ -> newList() }
+  val owner: Option[(SymbolId, String)] = match recv {
+    case Some(TyUser(id, nm, _)) -> Some(value = (id, nm))
+    case _ -> None
+  }
+  val (oid, oname) = match owner { case Some(o) -> o; case None -> return sig }
+  val ownerNames = recordGenericNamesOf(tbl, oid)
+  if ownerNames.count + sig.generics.count != typeParamCount {
+    return sig
+  }
   val names: List[String] = newList()
   val owners: List[String] = newList()
-  for a in rargs {
-    match a {
-      case TyParam(n, o) -> {
-        names.add(n)
-        owners.add(o)
-      }
-      case _ -> ()
-    }
-  }
-  if names.count + sig.generics.count != typeParamCount {
-    return sig
+  for n in ownerNames {
+    names.add(n)
+    owners.add(oname)
   }
   for g in sig.generics {
     names.add(g)
@@ -122,7 +125,7 @@ func noteFuncSymN(
   if env.syms.containsKey(sym.id) {
     return
   }
-  match tsigOf(env.ctx.tbl, sym, withOwnerGenerics(sig, recv, typeParamCount), recv, recvMode) {
+  match tsigOf(env.ctx.tbl, sym, withOwnerGenerics(env.ctx.tbl, sig, recv, typeParamCount), recv, recvMode) {
     case Ok(ts) -> env.syms.add(
       sym.id,
       TSymEntry(

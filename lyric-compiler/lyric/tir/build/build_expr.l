@@ -8754,12 +8754,6 @@ func buildMethodCall(
     if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
     inst.tyArgs.count
   )
-  val dbgEntry = match mapGet(env.syms, sym.id) {
-    case Some(en) -> "tpc=" + toString(en.typeParamCount) + " params=" + (match en.sig { case Some(sg) -> toString(sg.params.count) + ":" + renderTy(sg.params[0].ty) + "|" + renderTy(sg.params[1].ty); case None -> "nosig" })
-    case None -> "none"
-  }
-  env.errors.add("DBG entry " + dbgEntry + " siteGenerics=" + toString(site.sig.generics.count))
-  return None
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }
 
