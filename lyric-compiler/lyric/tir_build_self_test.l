@@ -1322,6 +1322,13 @@ test "a host constant read through its extern type name is built where it is an 
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
+test "a host constant read where the context settled a wider type is converted (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Int {\n  val i: Int = ByteT.MaxValue\n  i\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
 test "a host Char constant has the Lyric Char type (D775)" {
   val r = buildFirstFnHost(
     "package App\nextern type NetCharT = \"System.Char\"\nfunc f(): Int {\n  NetCharT.MaxValue.toInt()\n}\n"
