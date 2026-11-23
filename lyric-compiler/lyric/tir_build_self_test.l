@@ -2051,6 +2051,15 @@ test "a function builds as a TFnDecl with modes, contracts and its own entry" {
   assertTrue(own, "an entry for the declared function")
 }
 
+test "a return in a lambda takes the lambda's result type where the checker left it open (D768)" {
+  val c = censusOf(
+    "package App\nrecord R[S] {\n  last: S\n  n: Int\n}\nfunc make(n: Int): Result[Int, String] {\n  if n > 0 { Ok(value = n) } else { Err(error = \"bad\") }\n}\nfunc run[S](x: S): Result[R[S], String] {\n  val body: (Int) -> Result[R[S], String] = { d: Int ->\n    val a = match make(d) { case Ok(t) -> t; case Err(m) -> return Err(error = m) }\n    Ok(value = R(last = x, n = a))\n  }\n  body(3)\n}\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "a call and a construction add the declarations they reach" {
   val c = censusOf(
     "package App\nrecord P { x: Int, y: Int }\nfunc add(a: Int, b: Int): Int { a + b }\nfunc g(): P { P(x = add(1, 2), y = 3) }\n"
