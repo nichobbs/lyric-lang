@@ -5121,9 +5121,9 @@ func buildUnderlyingConversion(
   Some(value = convertValueAs(env, e, unwrapped, ty))
 }
 
-/// `x.toString()` on a range-subtype or distinct value: the checker types the call `String` and records
-/// no callee, as for the numeric conversion methods.  It is the built-in `toString` of the value, which
-/// renders a range subtype or a distinct value as its underlying value, as `toString(x)` does.  None when
+/// `x.toString()` on a range-subtype, distinct, record, union, tuple or collection value: the checker types
+/// the call `String` and records no callee, as for the numeric conversion methods.  It is the built-in
+/// `toString` of the value, which renders it as `toString(x)` does (D282).  None when
 /// the call is not such a method; Some(None) after the receiver could not be built.
 func buildToStringMethod(
   env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
@@ -5138,13 +5138,18 @@ func buildToStringMethod(
   val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
   val refinedOrDistinct = match rt {
     case TyRefined(_, _, _, _, _) -> true
+    // A declared type (a record, a union, an enum, a distinct type, a standard collection) renders structurally
+    // (D282); a host class named by an `extern type` is the host's own `toString` and is not built here.
     case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
       case Some(sym) -> match sym.kind {
-        case DKDistinctType(_, _) -> true
-        case _ -> false
+        case DKExternType(_, _) -> false
+        case _ -> true
       }
       case None -> false
     }
+    case TyTuple(_) -> true
+    case TySlice(_) -> true
+    case TyArray(_, _, _) -> true
     case _ -> false
   }
   if not refinedOrDistinct {

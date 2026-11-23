@@ -1447,6 +1447,11 @@ test "a host Char constant has the Lyric Char type (D775)" {
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
+test "toString called as a method on a record is the built-in toString of the value (D776)" {
+  val r = buildFirstFnHost("package App\nrecord P {\n  x: Int\n}\nfunc f(p: P): String {\n  p.toString()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
 test "an extern argument is widened to the overload's parameter" {
   val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Int {\n  Math.Max(a, b)\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
