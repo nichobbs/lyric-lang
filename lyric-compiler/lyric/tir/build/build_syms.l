@@ -122,6 +122,16 @@ func noteFuncSymN(
   if env.syms.containsKey(sym.id) {
     return
   }
+  val dbgRecv = match recv { case Some(TyUser(_, nm, a)) -> nm + "/" + toString(a.count); case Some(_) -> "other"; case None -> "none" }
+  var dbgG = ""
+  for g in sig.generics {
+    dbgG = dbgG + g + ","
+  }
+  var dbgO = ""
+  for o in sig.genericOwners {
+    dbgO = dbgO + o + ","
+  }
+  env.errors.add("DBG noteFuncSymN sym=" + toString(sym.id) + " generics=[" + dbgG + "] owners=[" + dbgO + "] tpc=" + toString(typeParamCount) + " recv=" + dbgRecv)
   match tsigOf(env.ctx.tbl, sym, withOwnerGenerics(sig, recv, typeParamCount), recv, recvMode) {
     case Ok(ts) -> env.syms.add(
       sym.id,
