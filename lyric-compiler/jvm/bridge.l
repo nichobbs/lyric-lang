@@ -3270,6 +3270,12 @@ func jvmProjectFrontEnd(
     }
     uei = uei + 1
   }
+  // The project packages' entries in `importedPkgs` and their files: an importer sees what a package's
+  // derives generate, so these entries' items are rebuilt from the derive-expanded files below.
+  val projectEntryIdx: List[Int] = newList()
+  val projectEntryFiles: List[SourceFile] = newList()
+  projectEntryIdx.add(importedPkgs.count)
+  projectEntryFiles.add(userEntryArrayTyped)
   importedPkgs.add(
     ImportedPackage(
       name = userEntryPkgName,
@@ -3428,6 +3434,8 @@ func jvmProjectFrontEnd(
         }
         sii = sii + 1
       }
+      projectEntryIdx.add(importedPkgs.count)
+      projectEntryFiles.add(sfArrayTyped)
       importedPkgs.add(
         ImportedPackage(
           name = spn,
@@ -3473,6 +3481,14 @@ func jvmProjectFrontEnd(
         reexports = pipeRestoredReexportNames(rf, synArt.contract.reexports)
       )
     )
+  }
+  // The derive inputs of a package's own compile: every registered package's items.
+  val deriveImportsAll = flattenImportedItems(importedPkgs)
+  var pdi = 0
+  while pdi < projectEntryIdx.count {
+    val ix = projectEntryIdx[pdi]
+    importedPkgs[ix] = importedPkgs[ix].copy(items = pipeDerivedItemView(projectEntryFiles[pdi], deriveImportsAll))
+    pdi = pdi + 1
   }
   Some(
     value = JvmProjectFrontEnd(
