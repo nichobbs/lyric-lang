@@ -8750,6 +8750,7 @@ func buildMethodCall(
     dbgTa = dbgTa + renderTy(ta) + ","
   }
   env.errors.add("DBG pick sym=" + toString(sym.id) + " tyArgs=[" + dbgTa + "] siteGenerics=" + toString(site.sig.generics.count) + " entry=" + dbgEntry)
+  return None
   noteFuncSymN(
     env,
     sym,
