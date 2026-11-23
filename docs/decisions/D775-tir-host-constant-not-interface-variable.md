@@ -8,11 +8,15 @@
 
 ## Decision
 
-Two separate causes stopped `Byte` and `Char`, and both are fixed here.
+Four separate causes stopped `Byte` and `Char`, and all are fixed here.
 
 First, the bare name of an `extern type` is the host class itself whatever type the checker gave the name: for a host class it has a Lyric type for (`extern type ByteT = "System.Byte"`) it gives the Lyric primitive or the host type as a value, and `hostChainReceiver` took either as a receiver that is not static, so a static constant read through the name was rejected. `hostChainReceiver` now asks `hostStaticReceiver` first (a bare name of a non-generic `extern type` that no local shadows), so a member read through the name is a static one. A value of any type is unaffected: `hostStaticReceiver` names only a type.
 
 Second, `hostChainResult` leaves out a candidate whose result is a type variable the host class has no argument for (`EIEArg i` with `i >= host.args.count`): the class's own member is the one the read binds. When every candidate is such a variable they are all kept, as before.
+
+Third, a constant the checker leaves untyped may be a two-segment path (`ByteT.MaxValue` where the parser did not form a member access): `openHostChainTy` and the expression builder read it as the static member of the host class the first segment names (`hostStaticPath`). Where the context has settled a wider type than the constant's own (`val i: Int = ByteT.MaxValue`, an `Int` argument), `buildHostStaticReadOf` builds the read at the member's type and converts it.
+
+Fourth, a host `System.Char` result is the Lyric `Char` (`hostElemTy` maps it), not a class the checker would have typed, so `hostChainResult` accepts it.
 
 ## Consequences
 

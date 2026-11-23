@@ -6101,7 +6101,9 @@ func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr,
 /// The static read of the member `name` of the host class `host`: a call of the getter or a read of the constant.
 /// Where the context has settled a wider type than the member's own (`val i: Int = ByteT.MaxValue`), the read is
 /// built at the member's type and converted.
-func buildHostStaticReadOf(env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String): Option[TExpr] {
+func buildHostStaticReadOf(
+  env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String
+): Option[TExpr] {
   match buildHostStaticReadAt(env, e, ty, host, name) {
     case Some(x) -> return Some(value = x)
     case None -> ()
@@ -6120,7 +6122,9 @@ func buildHostStaticReadOf(env: in BuildEnv, e: in Expr, ty: in Ty, host: in Hos
   None
 }
 
-func buildHostStaticReadAt(env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String): Option[TExpr] {
+func buildHostStaticReadAt(
+  env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String
+): Option[TExpr] {
   val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, 0, true) {
     case Some(c) -> c
     case None -> return None
