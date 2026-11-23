@@ -1990,12 +1990,23 @@ func projectFrontEnd(
     }
     bn = bn + 1
   }
+  // A package's importers see what its derives generate (`Xp.Api.Person.fromJson(body)`), so the items
+  // they read are those of the derive-expanded package, built with the same derive inputs the package's own
+  // compile uses (every registered package's items).
+  val rawImported = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
+  val deriveImports = flattenImportedItems(rawImported)
+  val derivedItems: Map[String, List[Item]] = newMap()
+  var dvi = 0
+  while dvi < parsedPkgs.count {
+    derivedItems.add(parsedPkgs[dvi].name, pipeDerivedItemView(parsedPkgs[dvi].file, deriveImports))
+    dvi = dvi + 1
+  }
   Some(
     value = ProjectFrontEnd(
       stdlibPkgs = stdlibPkgs,
       baseImportedPkgs = baseImportedPkgs,
       parsedPkgs = parsedPkgs,
-      inBundleItems = inBundleItems,
+      inBundleItems = derivedItems,
       inBundleImports = inBundleImports,
       baseNames = baseNames
     )
