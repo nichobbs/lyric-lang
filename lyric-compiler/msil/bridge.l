@@ -100,8 +100,7 @@ pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: 
 
 // Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
 // the ffiTypeRefs map that registerStdlibArtifactTokens just populated.  Called
-// from both compile entry points so lowerMOpaque can emit tryInto() and the
-// range-subtype tryFrom factory (#1501) can wrap Err values (#3115).
+// from both compile entry points so the range-subtype tryFrom factory (#1501) can wrap Err values (#3115).
 func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
   if cctx.lctx.stdCoreResultOk2Row.count == 0 {
     match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
@@ -1214,12 +1213,6 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     prtpi = prtpi + 1
   }
 
-  // Pre-seed lctx.allProjFqns with all @projectable FQNs from every bundle
-  // package before per-package addPackageTokens calls.  This lets each
-  // per-package addPackageTokens correctly identify cross-package nested
-  // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
-  prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
-
   // Pre-seed cctx.funcRetTypes with a Task/Task<T> placeholder for every
   // async SM function in the WHOLE bundle, before any package's own
   // addPackageTokens pass runs.  Without this, an `async func` that
@@ -1409,6 +1402,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 func iterElemOfSig(sig: in Mdr.SigType): ExternIterElem {
   match sig {
     case Mdr.STVar(i) -> EIEArg(index = i)
+    case Mdr.STMVar(i) -> EIEMArg(index = i)
     case Mdr.STPrim(b) -> {
       if b == 0x02 {
         EIEPrim(name = "Bool")
@@ -1614,7 +1608,16 @@ impl ExternIterResolver for MsilHostIterIndex {
               case Mdr.STPrim(b) -> if b == 0x01 { EMTVoid } else { EMTType(elem = iterElemOfSig(inf.ret)) }
               case _ -> EMTType(elem = iterElemOfSig(inf.ret))
             }
-            sigs.add(ExternMemberSig(isStatic = inf.isStatic, params = ps, ret = ret, isField = inf.isField))
+            sigs.add(
+              ExternMemberSig(
+                isStatic = inf.isStatic,
+                params = ps,
+                ret = ret,
+                isField = inf.isField,
+                optionalTrailing = inf.optionalTrailing,
+                genericArity = inf.genericArity
+              )
+            )
           }
           self.memberSigs.add(key, sigs)
         }
@@ -1987,12 +1990,23 @@ func projectFrontEnd(
     }
     bn = bn + 1
   }
+  // A package's importers see what its derives generate (`Xp.Api.Person.fromJson(body)`), so the items
+  // they read are those of the derive-expanded package, built with the same derive inputs the package's own
+  // compile uses (every registered package's items).
+  val rawImported = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
+  val deriveImports = flattenImportedItems(rawImported)
+  val derivedItems: Map[String, List[Item]] = newMap()
+  var dvi = 0
+  while dvi < parsedPkgs.count {
+    derivedItems.add(parsedPkgs[dvi].name, pipeDerivedItemView(parsedPkgs[dvi].file, deriveImports))
+    dvi = dvi + 1
+  }
   Some(
     value = ProjectFrontEnd(
       stdlibPkgs = stdlibPkgs,
       baseImportedPkgs = baseImportedPkgs,
       parsedPkgs = parsedPkgs,
-      inBundleItems = inBundleItems,
+      inBundleItems = derivedItems,
       inBundleImports = inBundleImports,
       baseNames = baseNames
     )

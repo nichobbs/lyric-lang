@@ -10,6 +10,7 @@ package Lyric.Tir.Build
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
@@ -70,6 +71,115 @@ pub func tyConvBind(ctx: in TyConvCtx, key: in String, sym: in SymbolId, names: 
 /// The I0002 message for a type that cannot be converted.
 func i0002Type(what: in String, t: in Type): String {
   "I0002: the checker gave no usable type for " + what + ": " + renderType(t)
+}
+
+/// The CLR primitive a host type argument names, as the Lyric type the host metadata gives it.
+func clrPrimTy(name: in String): Option[Ty] {
+  if name == "System.Int32" {
+    return Some(value = TPrim(kind = TPInt))
+  }
+  if name == "System.Int64" {
+    return Some(value = TPrim(kind = TPLong))
+  }
+  if name == "System.String" {
+    return Some(value = TPrim(kind = TPString))
+  }
+  if name == "System.Boolean" {
+    return Some(value = TPrim(kind = TPBool))
+  }
+  if name == "System.Double" {
+    return Some(value = TPrim(kind = TPDouble))
+  }
+  if name == "System.Byte" {
+    return Some(value = TPrim(kind = TPByte))
+  }
+  if name == "System.Char" {
+    return Some(value = TPrim(kind = TPChar))
+  }
+  None
+}
+
+/// The text inside the outermost `[ ... ]` of `s`, and None when there is none or it is empty (an array
+/// type, `System.Byte[]`).
+func bracketBody(s: in String): Option[String] {
+  var open = -1
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "[" {
+      open = i
+      break
+    }
+    i = i + 1
+  }
+  if open < 0 or not Str.endsWith(s, "]") {
+    return None
+  }
+  val body = s.substring(open + 1, s.length - open - 2)
+  // `System.Byte[]` and `System.Byte[,]` are array types, not names with type arguments.
+  var onlyCommas = true
+  var k = 0
+  while k < body.length {
+    val ch = body.substring(k, 1)
+    if ch != "," and ch != " " {
+      onlyCommas = false
+    }
+    k = k + 1
+  }
+  if onlyCommas {
+    return None
+  }
+  Some(value = body)
+}
+
+/// `body` split at its top-level commas (a comma inside nested brackets belongs to the nested argument).
+func splitTopLevel(body: in String): List[String] {
+  val parts: List[String] = newList()
+  var depth = 0
+  var start = 0
+  var i = 0
+  while i < body.length {
+    val c = body.substring(i, 1)
+    if c == "[" {
+      depth = depth + 1
+    } else if c == "]" {
+      depth = depth - 1
+    } else if c == "," and depth == 0 {
+      parts.add(Str.trim(body.substring(start, i - start)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  parts.add(Str.trim(body.substring(start, body.length - start)))
+  parts
+}
+
+/// One type argument written in a host name's brackets, as the host metadata would give it: a CLR primitive as
+/// the Lyric scalar, any other as a host type (its own brackets read the same way).
+func hostArgOfClrName(arg: in String): Ty {
+  match clrPrimTy(arg) {
+    case Some(t) -> t
+    case None -> TExtern(host = hostRefOfClrName(arg, newList()))
+  }
+}
+
+/// The host type an `extern type` names.  A name that carries its type arguments in brackets
+/// (`System.Collections.Generic.List`1[System.Net.Security.SslApplicationProtocol]`) is the structured
+/// host type the metadata gives (`List` with that argument), so a value of it and a member's result of the
+/// same class are one type.  Any other name stands as written, with the arguments the checker gave.
+pub func hostRefOfClrName(clr: in String, args: in List[Ty]): HostTypeRef {
+  match bracketBody(clr) {
+    case Some(body) -> {
+      if args.count > 0 {
+        return HostTypeRef(name = clr, args = args)
+      }
+      val conv: List[Ty] = newList()
+      for part in splitTopLevel(body) {
+        conv.add(hostArgOfClrName(part))
+      }
+      HostTypeRef(name = externHostBase(clr), args = conv)
+    }
+    case None -> HostTypeRef(name = clr, args = args)
+  }
 }
 
 func primOf(p: in PrimType): Ty {
@@ -206,9 +316,9 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
       case Ok(xs) -> match symTableExternDeclOf(ctx.tbl, id) {
         case Some(decl) -> Ok(
           value = TExtern(
-            host = HostTypeRef(
-              name = decl.clrName,
-              args = xs
+            host = hostRefOfClrName(
+              decl.clrName,
+              xs
             )
           )
         )

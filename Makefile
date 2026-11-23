@@ -398,6 +398,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/plugin_expand_self_test.l \
 	lyric-compiler/lyric/plugin_manifest_self_test.l \
 	lyric-compiler/lyric/plugin_sdk_self_test.l \
+	lyric-compiler/lyric/projectable_self_test.l \
 	lyric-compiler/lyric/propagate_self_test.l \
 	lyric-compiler/lyric/qualified_union_case_self_test.l \
 	lyric-compiler/lyric/quantifier_ident_self_test.l \

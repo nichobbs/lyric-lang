@@ -2262,4 +2262,69 @@ func main(): Int {
 }
 LYRIC
 
+# A match arm of a type from a package the file does not import joined with an open `newList()` (D769): the
+# checker spells the join's type by its package (`Rep.A.Prop`), which the builder resolves without the
+# file's import rule, as a spelling the checker made and no source of the file's.
+mkdir -p "$WORK/unimp/src"
+cat > "$WORK/unimp/lyric.toml" <<'TOML'
+[package]
+name = "Unimp"
+version = "0.1.0"
+
+[project]
+name = "Unimp"
+output = "single"
+output_assembly = "Unimp.dll"
+
+[project.packages]
+"Rep.A" = "src/a.l"
+"Rep.B" = "src/b.l"
+"Rep.Main" = "src/main.l"
+TOML
+cat > "$WORK/unimp/src/a.l" <<'LYRIC'
+package Rep.A
+
+pub record Prop {
+  name: String
+  value: String
+}
+LYRIC
+cat > "$WORK/unimp/src/b.l" <<'LYRIC'
+package Rep.B
+import Std.Core
+import Std.Collections
+import Rep.A.{Prop}
+
+pub union Wire {
+  case WEl(tag: String, props: List[Prop])
+  case WEmpty
+}
+
+pub func getWire(i: Int): Option[Wire] {
+  if i > 0 { Some(value = WEl(tag = "a", props = newList())) } else { None }
+}
+LYRIC
+cat > "$WORK/unimp/src/main.l" <<'LYRIC'
+package Rep.Main
+import Std.Core
+import Std.Collections
+import Rep.B.{Wire, WEl, WEmpty, getWire}
+
+func pick(i: Int): Int {
+  val g = match getWire(i) { case Some(WEl(_, props)) -> props; case _ -> newList() }
+  g.count
+}
+
+func main(): Int {
+  pick(1) + pick(0)
+}
+LYRIC
+(cd "$WORK/unimp" && "$LYRIC" build --verify-ir --manifest lyric.toml --target dotnet >"$WORK/unimp.log" 2>&1)
+if grep -q "TIR build census \[.*src/main.l\]: 2 of 2 function bodies built" "$WORK/unimp.log" && \
+   grep -q "I0003 census \[.*src/main.l\]: 0 diagnostic" "$WORK/unimp.log"; then
+  echo "ok   unimported_type_in_open_join"
+else
+  echo "FAIL (unimported_type_in_open_join)"; grep -E "first error" "$WORK/unimp.log" | head -3; fail=1
+fi
+
 exit $fail

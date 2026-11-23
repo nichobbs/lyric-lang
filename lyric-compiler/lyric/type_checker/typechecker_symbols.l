@@ -275,6 +275,9 @@ pub union StringMethodSurface {
 pub union ExternIterElem {
   /// The extern type's own type argument at this position (`Dict[K, V]`'s `K`).
   case EIEArg(index: Int)
+  /// The member's own type parameter at this position (`Array.IndexOf<T>`'s `T`, D766); only in the
+  /// signature of a generic method, which the builder instantiates from the call's argument types.
+  case EIEMArg(index: Int)
   /// A Lyric primitive the host element type maps to (`Int`, `String`, ...).
   case EIEPrim(name: String)
   /// A host class or interface, by its host name without the arity suffix
@@ -314,11 +317,12 @@ pub interface ExternIterResolver {
   /// (docs/70 6.3, D387): the methods named `member` taking `argc` arguments
   /// (`isProperty` false), or the property or field read (`isProperty` true),
   /// looked up on the type and its supertypes; the member `new` is the host
-  /// type's own constructors.  `Lyric.Tir.Build` picks the overload from the
-  /// call's argument types and records it in a `HostMemberRef`.  None when the
-  /// bridge cannot say: the type or a supertype is not located, or every candidate
-  /// is a generic method whose signature mentions its own type parameters (a generic overload beside a
-  /// non-generic one is left out of the candidates).
+  /// type's own constructors.  An overload with more parameters than `argc` is a
+  /// candidate when its last parameters beyond `argc` are all optional.
+  /// `Lyric.Tir.Build` picks the overload from the call's argument types and
+  /// records it in a `HostMemberRef`.  None when the bridge cannot say: the type
+  /// or a supertype is not located, or a candidate's signature cannot be read.  A
+  /// generic method is a candidate with its own type parameters as `EIEMArg` (D766).
   func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
 
   /// Whether the host class behind an `extern type` is abstract (an interface included), so that
@@ -337,6 +341,13 @@ pub record ExternMemberSig {
   ret: ExternMemberType
   /// A property read that is a public field of the host type, not a getter method.
   isField: Bool = false
+  /// How many of the last `params` the host declares optional (a default value), so a call may leave
+  /// them out; the host fills each with its declared default (D762, docs/70 5.3).  0 for a
+  /// member with no optional parameters, and on a host with none (the JVM).
+  optionalTrailing: Int = 0
+  /// How many type parameters the method declares itself (`Array.IndexOf<T>` has 1); its signature
+  /// names them `EIEMArg`.  0 for a method that is not generic, and on the JVM, whose descriptors erase them.
+  genericArity: Int = 0
 }
 
 /// What a host member yields.
@@ -382,6 +393,7 @@ func externMemberKey(m: in ExternMemberType): String {
 pub func externIterElemKey(e: in ExternIterElem): String {
   match e {
     case EIEArg(i) -> "#" + toString(i)
+    case EIEMArg(i) -> "##" + toString(i)
     case EIEPrim(n) -> n
     case EIEHost(h, args) -> {
       var acc = h + "["
@@ -2303,6 +2315,32 @@ pub func symTableSetImportRule(tbl: in SymbolTable, pkg: in String): Unit {
     tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
   }
   tbl.importRulePkg.add(pkg)
+}
+
+/// The package whose names the import rule judges, saved (empty when none).  With
+/// `symTableLiftImportRule` and `symTableRestoreImportRule`, a pass after the check resolves a type
+/// the checker spelled itself (a `TypeExpr` in `localBindingTypeSites`, `hoistOperandTypeSites`: a
+/// type of a package the file does not import is spelled by its package, `Ui.Core.Prop`) by name
+/// alone: that spelling is a reference to a known declaration, not source the import rule judges
+/// (D769).
+pub func symTableLiftImportRule(tbl: in SymbolTable): List[String] {
+  val saved: List[String] = newList()
+  for p in tbl.importRulePkg {
+    saved.add(p)
+  }
+  while tbl.importRulePkg.count > 0 {
+    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+  }
+  saved
+}
+
+pub func symTableRestoreImportRule(tbl: in SymbolTable, saved: in List[String]): Unit {
+  while tbl.importRulePkg.count > 0 {
+    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+  }
+  for p in saved {
+    tbl.importRulePkg.add(p)
+  }
 }
 
 func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {

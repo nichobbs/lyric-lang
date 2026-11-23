@@ -163,7 +163,9 @@ func memberText(it: in DefPathInterner, m: in HostMemberRef): String {
     "(" +
     joinList(ps, ", ") +
     "): " +
-    tyText(it, m.ret)
+    tyText(it, m.ret) +
+    (if m.omitted > 0 then " omitting " + toString(m.omitted) else "") +
+    (if m.typeArgs.count > 0 then " at [" + tysText(it, m.typeArgs) + "]" else "")
 }
 
 /// A default expression as text: every field the codec records, with its type.

@@ -67,6 +67,7 @@ import Lyric.BuildDefines as BD
 import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
+import Lyric.Projectable as Projectable
 import Lyric.TypeAliasResolve as TypeAliasResolve
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
@@ -708,7 +709,7 @@ pub func pipeExpandAndRewriteCollect(
     return CheckReadyFile(file = f, diagnostics = diags)
   }
   f = peRes.file
-  val prep = pipePrepareForCheck(f, runStubbable)
+  val prep = pipePrepareForCheckIn(f, runStubbable, plugins)
   appendDiagnostics(diags, prep.diagnostics)
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = f, diagnostics = diags)
@@ -750,7 +751,7 @@ pub record ExpandProfile {
 
 /// The rewrites a build for `targetName` (`dotnet`, `jvm`, `native`) runs
 /// before the type check: the managed targets expand wires and synthesise
-/// `@stubbable` stubs, only the JVM injects weave imports, and the native
+/// `@stubbable` stubs and `@projectable` views, only the JVM injects weave imports, and the native
 /// bridge synthesises no stubs.
 pub func pipeExpandProfile(targetName: in String): ExpandProfile {
   if targetName == "jvm" {
@@ -1337,6 +1338,17 @@ pub func fixturesAsModuleVals(file: in SourceFile): SourceFile {
 /// raw parse, where `Pkg.f(...)` is still a member chain rather than a
 /// qualified call).  Stops at the first pass that reports an error.
 pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckReadyFile {
+  val noPackages: Map[String, PluginExpand.PluginPackage] = newMap()
+  pipePrepareForCheckIn(file, runStubbable, noPackages)
+}
+
+/// `pipePrepareForCheck` with the build's source packages, which a `@projectable` view reads to project
+/// a field typed as another package's `@projectable` type.
+pub func pipePrepareForCheckIn(
+  file: in SourceFile,
+  runStubbable: in Bool,
+  packages: in Map[String, PluginExpand.PluginPackage],
+): CheckReadyFile {
   // A destructuring module-level `val` becomes one `val` per bound name
   // (#7763) before any pass indexes module values, so every backend and the
   // checker see the same single-name items; a refutable pattern (T0144)
@@ -1365,6 +1377,14 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   var f = arRes.file
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
+    // `@projectable` views and their `toView`/`tryInto` (docs/01 2.9): the
+    // managed targets only, like the stubs; native refuses `@projectable`
+    // (N0101).
+    val projRes = Projectable.projectableRewriteFileIn(f, packages)
+    f = projRes.file
+    for d in projRes.diagnostics {
+      diags.add(d)
+    }
   }
   val idRes = ImplDefaults.inheritDefaultsFile(f)
   var j = 0
@@ -6813,6 +6833,17 @@ pub func pipeAddCrossPackageItemsProject(file: in SourceFile, dest: in List[Item
     }
     i = i + 1
   }
+}
+
+/// What a sibling project package shows the packages that import it: the items of its file after its
+/// derives are expanded, since the checker of an importing package calls what the derive generates
+/// (`Xp.Api.Person.fromJson(body)`, `a.toJson()`), and the checker reads a dependency's declarations,
+/// not its expansion (docs/70 section 6.3).  `deriveImports` is the items of every package the build
+/// registers, as the package's own derive sees them when it is compiled.
+pub func pipeDerivedItemView(file: in SourceFile, deriveImports: in List[Item]): List[Item] {
+  val items: List[Item] = newList()
+  pipeAddCrossPackageItemsProject(deriveFileWithImports(file, deriveImports), items)
+  items
 }
 
 /// True iff the annotation list carries a marker that makes a generic

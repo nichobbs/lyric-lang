@@ -913,6 +913,19 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A `Long` argument of a `Nat`-backed distinct or range type's `from` is a checked `CvLongToNat` conversion (D498).
   - A function value returning `Never` used as one with the same parameters and another result is a `CvNeverFn` conversion (D499).
   - A function body's tail the checker left open (a nullary case of a union over a value parameter, `Shape.Empty` at `Shape[N]`) takes the declared return type, so it builds (D401).
+  - `@projectable` views are a declaration-expansion pass before the check (`Lyric.Projectable`, D761): `<Name>View`, `Name.toView` and `<Name>View.tryInto` are ordinary AST and both backends dropped their projection twin.
+  - A host call may leave out the optional trailing parameters the metadata declares: `HostMemberRef.omitted` counts them, the verifier checks the arguments against the signature less that tail, and the package interface format is 6 (D762).
+  - An `extern type` named with its type arguments in brackets (`List`1[X]`) converts to the structured host type the metadata gives (`List` with the argument `X`), so a value of it and a member's result of the class are one type (D764).
+  - `b.toSlice()` on a `buffer[T]` is typed as the slice it returns, as an array's is, so the call builds (D765).
+  - A call through a type to a method in the type's body (`Bag.one(b)`, D181) builds as the method call `b.one()`: the checker records its callee and shape under the call's node and the builder takes the first argument as the receiver (D763).
+  - A generic host method (`Array.IndexOf<T>`, `ValueTuple.Create<T1, T2>`) keeps its candidate in the metadata resolver with its own type parameters (`EIEMArg`); the builder infers the type arguments from the call's argument types and records them in `HostMemberRef.typeArgs`, which the interface format carries (format version 7). The JVM's erased descriptors give it none (D766).
+  - A static constant of a host class (`ByteT.MaxValue`, `NetCharT.MaxValue`) builds from the host metadata: a candidate whose result is an interface's unbound type variable (`IMinMaxValue<T>`) no longer hides the class's own constant, a bare `extern type` name is a static receiver, a constant written as a two-segment path or read at a wider settled type builds (at its own type, converted), and a host `Char` result is `Char` (D775).
+  - `x.toString()` on a record, union, tuple or collection builds as the built-in `toString` of the value, as D282 renders it; the checker records no callee for the call (D776).
+  - Every field of a `foreign record` is writable in place in the TIR symbol table, as the language reference has it (T0180 judges the write), so a bindgen record filled by assignment verifies (D778).
+  - The items a project package shows the packages that import it are those of its file after its derives are expanded, so a dependency's generated `toJson`/`fromJson` are typed by the checker of an importer, on dotnet and the JVM (D777).
+  - The symbol entry of a method of a generic type declared in another package numbers the method's own type parameters after the owner's, as the call's type arguments are laid out (`bx.pick(Pt(...))` where `Bx[T]` declares `pick[U]`), so the call verifies (D767, extends D579).
+  - A `return` inside a lambda settles its operand from the lambda's own result type (a lambda frame records it), so `return Err(error = m)` in a lambda of a generic function builds where the checker left the operand open (D768).
+  - The builder's errors name a source position (the innermost expression being built, when the message has none), and an annotation the checker spelled by package for a type the file does not import resolves without the import rule, so `match ... { case Some(WElement(_, _, props, _, _)) -> props; case _ -> newList() }` over a type of an unimported package builds (D769).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
@@ -1055,6 +1068,7 @@ clause on MSIL, JVM and native.
 | I0004 | internal: a backend panicked on verified TIR |
 | T0223 | a library's package interface cannot record a declaration (a type the checker did not resolve, `Self` outside an interface) |
 | I0005 | internal: an interface did not round-trip |
+| I0006 | internal: source a declaration-expansion pass generated does not parse (`Lyric.Projectable`) |
 
 Existing name codes (T0010, T0020, T0097, T0123, T0148) keep their meaning
 and move to the resolver. `B0012` is retired with #8690 (§4.1).

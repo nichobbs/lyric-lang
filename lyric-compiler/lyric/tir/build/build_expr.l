@@ -99,6 +99,8 @@ pub record MemberOwner {
 pub record LambdaFrame {
   start: Int
   caps: List[Capture]
+  /// The lambda's result type: what a `return` inside it yields.
+  ret: Ty
 }
 
 /// The first `NodeId` of a made-up node: above any id `renumberNodeIds` hands out.
@@ -1356,6 +1358,13 @@ func convMethodTarget(name: in String): Option[TPrimKind] {
   None
 }
 
+func isCharKind(p: in TPrimKind): Bool {
+  match p {
+    case TPChar -> true
+    case _ -> false
+  }
+}
+
 func isNumericPrimKind(p: in TPrimKind): Bool {
   match p {
     case TPBool -> false
@@ -1889,6 +1898,13 @@ func openHostChainTy(env: in BuildEnv, e: in Expr): Option[Ty] {
       }
       case _ -> None
     }
+    case EPath(_) -> match hostStaticPath(env, e) {
+      case Some(hp) -> {
+        val (host, member) = hp
+        hostChainResult(env, host, member, 0, true, true, newList())
+      }
+      case None -> None
+    }
     case EMember(recv, name) -> match hostChainReceiver(env, recv) {
       case Some(h) -> hostChainResult(env, h.host, name, 0, true, h.isStatic, newList())
       case None -> match openLocalBuiltinProperty(env, recv, name) {
@@ -1932,23 +1948,44 @@ record HostRecv {
 /// the type takes no type arguments.
 func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
   match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 { hostStaticOfName(env, p.segments[0]) } else { None }
+    case _ -> None
+  }
+}
+
+/// The host class the `extern type` `name` stands for, when no local shadows it and the type takes no type
+/// arguments.
+func hostStaticOfName(env: in BuildEnv, name: in String): Option[HostTypeRef] {
+  match lookupLocal(env, name) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  match symTableTryFindOne(env.ctx.tbl, name) {
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, d) -> if isSome(d.generics) {
+        None
+      } else {
+        Some(value = HostTypeRef(name = d.clrName, args = newList()))
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+/// `ByteT.MaxValue` written as a two-segment path: the host class `ByteT` names and the member read from it.
+/// The checker leaves such a path untyped where it has no expected type to settle it.
+func hostStaticPath(env: in BuildEnv, e: in Expr): Option[(HostTypeRef, String)] {
+  if env.ctx.tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match e.kind {
     case EPath(p) -> {
-      if p.segments.count != 1 {
+      if p.segments.count != 2 {
         return None
       }
-      match lookupLocal(env, p.segments[0]) {
-        case Some(_) -> return None
-        case None -> ()
-      }
-      match symTableTryFindOne(env.ctx.tbl, p.segments[0]) {
-        case Some(sym) -> match sym.kind {
-          case DKExternType(_, d) -> if isSome(d.generics) {
-            None
-          } else {
-            Some(value = HostTypeRef(name = d.clrName, args = newList()))
-          }
-          case _ -> None
-        }
+      match hostStaticOfName(env, p.segments[0]) {
+        case Some(h) -> Some(value = (h, p.segments[1]))
         case None -> None
       }
     }
@@ -1959,6 +1996,13 @@ func hostStaticReceiver(env: in BuildEnv, recv: in Expr): Option[HostTypeRef] {
 /// The host receiver of `recv`: its recorded type when that is a host class, else the type its own chain
 /// gives, else the host class it names as an `extern type`.
 func hostChainReceiver(env: in BuildEnv, recv: in Expr): Option[HostRecv] {
+  // The bare name of an `extern type` is the host class itself whatever type the checker gave the name (it gives a
+  // host class it has a Lyric type for, `extern type ByteT = "System.Byte"`, that Lyric type or the host type): a
+  // member read through it is a static one.
+  match hostStaticReceiver(env, recv) {
+    case Some(h) -> return Some(value = HostRecv(host = h, isStatic = true))
+    case None -> ()
+  }
   match exprTy(env.ctx, recv.nodeId) {
     case Ok(t) -> match t {
       case TExtern(h) -> Some(value = HostRecv(host = h, isStatic = false))
@@ -2094,9 +2138,10 @@ func narrowByArgTys(
     return cands
   }
   var best: List[ExternMemberSig] = newList()
-  var bestScore = -1
+  // Below every fit: a call that leaves out parameters scores `fit * 256 - omitted`, negative for no fit at all.
+  var bestScore = noFitScore()
   for c in cands {
-    if c.params.count == argc {
+    if c.params.count == argc or (c.params.count > argc and c.params.count - c.optionalTrailing <= argc) {
       match scoreOverload(env, c, targs, argTys) {
         case Some(fit) -> {
           if fit.score > bestScore {
@@ -2304,11 +2349,47 @@ func hostChainResult(
     case Some(c) -> c
     case None -> return None
   }
-  val cands = narrowByArgTys(env, allCands, host.args, argTys, argc)
+  val narrowed = narrowByArgTys(env, allCands, host.args, argTys, argc)
+  // A member the host class inherits from a generic-math interface (`IMinMaxValue<T>.MaxValue`, a static abstract
+  // getter) has a result that is the interface's type variable, which the class (`System.Byte`) has no argument
+  // for: the class's own member (`public const byte MaxValue`) is the one the read binds.
+  val own: List[ExternMemberSig] = newList()
+  for n in narrowed {
+    val unboundVar = match n.ret {
+      case EMTType(el) -> match el { case EIEArg(i) -> i >= host.args.count; case _ -> false }
+      case EMTVoid -> false
+    }
+    if not unboundVar {
+      own.add(n)
+    }
+  }
+  val cands = if own.count > 0 { own } else { narrowed }
   var result: Option[Ty] = None
   for c in cands {
     if c.isStatic != wantStatic {
       return None
+    }
+    // A generic method is instantiated at the types of the arguments, as the call builder does (D766).
+    val margs: List[Ty] = newList()
+    while margs.count < c.genericArity {
+      margs.add(TirT.TNever)
+    }
+    if c.genericArity > 0 {
+      if argTys.count != c.params.count {
+        return None
+      }
+      var bi = 0
+      while bi < argTys.count {
+        if not bindMethodArgs(c.params[bi], argTys[bi], margs) {
+          return None
+        }
+        bi = bi + 1
+      }
+      for m in margs {
+        if tyEq(m, TirT.TNever) {
+          return None
+        }
+      }
     }
     val t = match c.ret {
       case EMTVoid -> tyUnit()
@@ -2338,17 +2419,17 @@ func hostChainResult(
             // (`ExecutorService.submit`, overloaded on `Runnable` and `Callable`) is the host's own class.
             // A boxed `Boolean` the checker left untyped (`JBoolean.TRUE` as the `T` of a generic host method) is
             // the host's own class too.
-            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname)
+            val unmappedFuture = rname == "java.util.concurrent.Future" or isJvmBoxedName(rname) or rname == "System.Char"
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
-            match hostElemTy(el, host.args, TirT.TNever) {
+            match hostElemTyM(el, host.args, margs, TirT.TNever) {
               case Some(x) -> x
               case None -> return None
             }
           }
         }
-        case EIEPrim(_) -> match hostElemTy(el, host.args, TirT.TNever) {
+        case EIEPrim(_) -> match hostElemTyM(el, host.args, margs, TirT.TNever) {
           case Some(x) -> x
           case None -> return None
         }
@@ -2425,11 +2506,65 @@ func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   }
 }
 
+/// Whether `msg` already names a source position: it ends in `line:column`, or `line:column)`.
+func messageNamesPosition(msg: in String): Bool {
+  var last = msg.length
+  if last > 0 and msg.substring(last - 1, 1) == ")" {
+    last = last - 1
+  }
+  var i = last
+  var columnDigits = 0
+  while i > 0 and isSome("0123456789".indexOf(msg.substring(i - 1, 1))) {
+    columnDigits = columnDigits + 1
+    i = i - 1
+  }
+  if columnDigits == 0 or i == 0 or msg.substring(i - 1, 1) != ":" {
+    return false
+  }
+  i = i - 1
+  var lineDigits = 0
+  while i > 0 and isSome("0123456789".indexOf(msg.substring(i - 1, 1))) {
+    lineDigits = lineDigits + 1
+    i = i - 1
+  }
+  lineDigits > 0
+}
+
+/// Gives every message the build of one expression added to `env.errors` (from index `from`) a source
+/// position when it has none: a failure reported from deep inside a helper (a type the checker could
+/// not record, a missing symbol) names the innermost expression being built, so the diagnostic points at
+/// code (D769).  A message that already names a position is left as it is.
+func stampErrorPositions(env: in BuildEnv, from: in Int, sp: in Span): Unit {
+  if env.errors.count <= from {
+    return ()
+  }
+  val added: List[String] = newList()
+  var i = from
+  while i < env.errors.count {
+    added.add(env.errors[i])
+    i = i + 1
+  }
+  while env.errors.count > from {
+    env.errors.removeAt(env.errors.count - 1)
+  }
+  val suffix = " at " + toString(sp.startPos.line) + ":" + toString(sp.startPos.column)
+  for msg in added {
+    if messageNamesPosition(msg) {
+      env.errors.add(msg)
+    } else {
+      env.errors.add(msg + suffix)
+    }
+  }
+}
+
 /// Build the expression `e`, or `None` after recording why in `env.errors`.  An array the checker
 /// recorded as a copy site (`arrayCopySites`, D167: an array read out of a place and stored) is
 /// wrapped in an `XArrayCopy`; the sites a consumer only inspects were removed from the table.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
-  match buildExprBody(env, e) {
+  val errorsBefore = env.errors.count
+  val built = buildExprBody(env, e)
+  stampErrorPositions(env, errorsBefore, e.span)
+  match built {
     case Some(t) -> {
       if env.ctx.tbl.arrayCopySites.containsKey(recordCopySiteKey(e.span)) {
         match t.ty {
@@ -2573,6 +2708,16 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
           }
           case None -> ()
         }
+      }
+      match hostStaticPath(env, e) {
+        case Some(hp) -> {
+          val (host, member) = hp
+          match buildHostStaticReadOf(env, e, ty, host, member) {
+            case Some(x) -> return Some(value = x)
+            case None -> ()
+          }
+        }
+        case None -> ()
       }
       buildRefPath(env, e, ty)
     }
@@ -3481,7 +3626,10 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SReturn(v) -> match v {
       case None -> Some(value = stmtOf(s, TsReturn(value = None)))
       case Some(x) -> {
-        if env.lambdas.count == 0 and env.retTy.count > 0 {
+        // A `return` in a lambda returns from the lambda, so its operand takes the lambda's result type.
+        if env.lambdas.count > 0 {
+          settleHole(env, x, env.lambdas[env.lambdas.count - 1].ret)
+        } else if env.retTy.count > 0 {
           settleHole(env, x, env.retTy[0])
         }
         match buildExpr(env, x) {
@@ -3838,7 +3986,13 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
   } else {
     GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   }
-  match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+  // The annotation may be one the checker spelled itself (`localBindingTypeSites`): a type of a package
+  // the file does not import is named by its package there, which the import rule would reject, so it
+  // resolves by name alone (D769).
+  val importRule = symTableLiftImportRule(env.ctx.tbl)
+  val resolved = resolveType(env.ctx.tbl, gc, diag, te)
+  symTableRestoreImportRule(env.ctx.tbl, importRule)
+  match tyOfType(env.ctx, resolved) {
     case Ok(w) -> Some(value = w)
     case Err(msg) -> {
       env.errors.add(msg)
@@ -4535,6 +4689,36 @@ func buildSettledRecordCtor(env: in BuildEnv, e: in Expr, ty: in Ty, args: in Li
 /// calls (methods, constructors, generics, defaults, `out` and `inout`
 /// arguments, conversions other than widening) are counted and reported by what
 /// they need.
+/// A call written `T.m(x, args)` through the type that binds a method in the type's body (D181), built as
+/// the method call `x.m(args)` the checker recorded under the call's node: the receiver is the first
+/// argument and the method takes the rest.  None, counting nothing, for any other call.
+func typeQualifiedMethodCall(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  val tbl = env.ctx.tbl
+  if args.count == 0 {
+    return None
+  }
+  val bd = match mapGet(tbl.byRefDotCallSites, recordCopySiteKey(fn.span)) {
+    case Some(b) -> b
+    case None -> return None
+  }
+  if not bd.asMethod {
+    return None
+  }
+  val site = match mapGet(tbl.methodCallByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val sym = match mapGet(tbl.calleeByNode, e.nodeId) { case Some(x) -> x; case None -> return None }
+  val recvExpr = match args[0] { case CAPositional(x) -> x; case CANamed(_, x, _) -> x }
+  val rest: List[CallArg] = newList()
+  var i = 1
+  while i < args.count {
+    rest.add(args[i])
+    i = i + 1
+  }
+  val asMember = Expr(kind = EMember(receiver = recvExpr, memberName = bd.name), span = fn.span, nodeId = fn.nodeId)
+  Some(value = buildMethodCall(env, e, ty, sym, site, asMember, rest))
+}
+
 func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
   val tbl = env.ctx.tbl
   match hostPropertyCallForm(env, fn, args) {
@@ -4550,6 +4734,11 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   }
   if tbl.indirectByNode.containsKey(e.nodeId) {
     return buildIndirectCall(env, e, ty, fn, args)
+  }
+  // `T.m(x, args)` through the type of a method in the type's body is the method call `x.m(args)` (D181).
+  match typeQualifiedMethodCall(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
   }
   match mapGet(tbl.callSigByNode, e.nodeId) {
     case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
@@ -4639,6 +4828,10 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     case Some(r) -> return r
     case None -> ()
   }
+  match buildConvMethodOnOpenPrim(env, e, ty, fn, args) {
+    case Some(r) -> return r
+    case None -> ()
+  }
   match buildCallOnUntypedHostResult(env, e, fn, args) {
     case Some(r) -> return r
     case None -> ()
@@ -4683,6 +4876,44 @@ func buildParamDefault(
     case _ -> ()
   }
   None
+}
+
+/// `JCharacter.toUpperCase(c).toInt()` where the host call's result is untyped (its overloads differ in
+/// their result) and the builder types the chain itself as a primitive: the checker had no receiver type to
+/// record the numeric conversion built-in against, so the call is the primitive's own built-in, as it is
+/// where the checker typed the receiver.  The receiver is any expression the builder types: a host chain, an
+/// element of an untyped local (`copied[0].toInt()` where `copied` holds a host `byte[]`), a host constant.
+/// None, counting nothing, for any other shape.
+func buildConvMethodOnOpenPrim(
+  env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
+): Option[Option[TExpr]] {
+  if args.count != 0 {
+    return None
+  }
+  val parts = match fn.kind {
+    case EMember(recv, name) -> if convMethodTarget(name).isSome() or name == "toChar" {
+      Some(value = (recv, name))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+  val (recv, name) = match parts { case Some(x) -> x; case None -> return None }
+  match exprTy(env.ctx, recv.nodeId) {
+    case Ok(_) -> return None
+    case Err(_) -> ()
+  }
+  match exprOrOpenTy(env, recv) {
+    case Some(rt) -> match rt {
+      case TPrim(p) -> if isNumericPrimKind(p) or isCharKind(p) {
+        Some(value = buildBuiltinCall(env, e, ty, renderTy(rt) + "." + name, fn, args))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
 }
 
 /// `x.unknownMember().name(...)` where `x` is a host value whose class the metadata cannot locate: the JVM
@@ -4955,9 +5186,9 @@ func buildUnderlyingConversion(
   Some(value = convertValueAs(env, e, unwrapped, ty))
 }
 
-/// `x.toString()` on a range-subtype or distinct value: the checker types the call `String` and records
-/// no callee, as for the numeric conversion methods.  It is the built-in `toString` of the value, which
-/// renders a range subtype or a distinct value as its underlying value, as `toString(x)` does.  None when
+/// `x.toString()` on a range-subtype, distinct, record, union, tuple or collection value: the checker types
+/// the call `String` and records no callee, as for the numeric conversion methods.  It is the built-in
+/// `toString` of the value, which renders it as `toString(x)` does (D282).  None when
 /// the call is not such a method; Some(None) after the receiver could not be built.
 func buildToStringMethod(
   env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]
@@ -4972,13 +5203,18 @@ func buildToStringMethod(
   val rt = match mapGet(env.ctx.tbl.exprTypes, recvE.nodeId) { case Some(t) -> t; case None -> return None }
   val refinedOrDistinct = match rt {
     case TyRefined(_, _, _, _, _) -> true
+    // A declared type (a record, a union, an enum, a distinct type, a standard collection) renders structurally
+    // (D282); a host class named by an `extern type` is the host's own `toString` and is not built here.
     case TyUser(id, _, _) -> match symbolOfDefId(env.ctx.tbl, id) {
       case Some(sym) -> match sym.kind {
-        case DKDistinctType(_, _) -> true
-        case _ -> false
+        case DKExternType(_, _) -> false
+        case _ -> true
       }
       case None -> false
     }
+    case TyTuple(_) -> true
+    case TySlice(_) -> true
+    case TyArray(_, _, _) -> true
     case _ -> false
   }
   if not refinedOrDistinct {
@@ -5172,8 +5408,19 @@ func buildDistinctFactory(
 /// with: a host class the hint already names keeps the hint's own name, and a host
 /// string takes Lyric's `String` when the hint is one.
 func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Option[Ty] {
+  hostElemTyM(elem, targs, newList(), hint)
+}
+
+/// `hostElemTy` for a generic method's signature: `margs` are the method's own type arguments
+/// (`EIEMArg`), `TNever` for one not yet inferred (D766).
+func hostElemTyM(elem: in ExternIterElem, targs: in List[Ty], margs: in List[Ty], hint: in Ty): Option[Ty] {
   match elem {
     case EIEArg(i) -> if i >= 0 and i < targs.count { Some(value = targs[i]) } else { None }
+    case EIEMArg(i) -> if i >= 0 and i < margs.count and not tyEq(margs[i], TirT.TNever) {
+      Some(value = margs[i])
+    } else {
+      None
+    }
     case EIEPrim(name) -> match primFromString(name) { case Some(p) -> Some(value = primOf(p)); case None -> None }
     case EIEHost(h, hargs) -> {
       if h == "System.Char" {
@@ -5191,13 +5438,59 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
       }
       val conv: List[Ty] = newList()
       for a in hargs {
-        match hostElemTy(a, targs, TirT.TNever) {
+        match hostElemTyM(a, targs, margs, TirT.TNever) {
           case Some(t) -> conv.add(t)
           case None -> return None
         }
       }
       Some(value = TExtern(host = HostTypeRef(name = h, args = conv)))
     }
+  }
+}
+
+/// Binds the method type arguments a parameter `elem` names from the type `arg` of the argument passed
+/// for it, as the MSIL backend picks the instantiation: a bare `T` takes the argument's type, `T[]` the
+/// element of a slice or array, a generic host type its arguments pairwise.  False when `T` is already
+/// bound to another type.  An argument that does not have the parameter's shape binds nothing and is not an
+/// error here: `scoreOverload` rejects it when it matches the substituted parameter against the argument, and
+/// rejects a method type argument no argument bound.
+func bindMethodArgs(elem: in ExternIterElem, arg: in Ty, margs: in List[Ty]): Bool {
+  match elem {
+    case EIEMArg(i) -> {
+      if i < 0 or i >= margs.count {
+        return false
+      }
+      if tyEq(margs[i], TirT.TNever) {
+        margs[i] = arg
+        return true
+      }
+      tyEq(margs[i], arg)
+    }
+    case EIEHost(h, hargs) -> {
+      if h == hostArrayName() and hargs.count == 1 {
+        return match arg {
+          case TSlice(el) -> bindMethodArgs(hargs[0], el, margs)
+          case TArray(_, el) -> bindMethodArgs(hargs[0], el, margs)
+          case _ -> true
+        }
+      }
+      match arg {
+        case TExtern(r) -> {
+          if externHostBase(r.name) == h and r.args.count == hargs.count {
+            var k = 0
+            while k < hargs.count {
+              if not bindMethodArgs(hargs[k], r.args[k], margs) {
+                return false
+              }
+              k = k + 1
+            }
+          }
+          true
+        }
+        case _ -> true
+      }
+    }
+    case _ -> true
   }
 }
 
@@ -5222,7 +5515,10 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
         // is the host class the checker instantiated it at.
         case TExtern(c) -> (n == "java.lang.Object" or n == "System.Object") and c.name != n
         case TPrim(TPString) -> n == "java.lang.Object" or n == "System.Object"
-        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object"
+        // The host's `UInt32` (zero-extended) and `UInt64` (its bit pattern) are `Long`s: the checker types a call
+        // that returns one as `Long` (#7890, #8482).
+        case TPrim(TPLong) -> n == "java.lang.Object" or n == "System.Object" or n == "System.UInt32" or
+          n == "System.UInt64"
         case TPrim(TPBool) -> n == "java.lang.Object" or n == "System.Object"
         case TPrim(TPFloat) -> isHostSingleName(n) or isHostObject(n)
         case TPrim(TPDouble) -> isHostDoubleName(n) or isHostObject(n)
@@ -5246,9 +5542,18 @@ pub func hostResultIsCallType(host: in Ty, callTy: in Ty): Bool {
 }
 
 /// An overload that fits the argument types: its parameters and how well.
+/// The score below every overload fit (a fit scores `matches * 256 - omitted`, which is negative for a
+/// zero-argument call to an all-optional overload).
+func noFitScore(): Int = -1000000000
+
 record OverloadFit {
+  /// Every parameter of the overload, the omitted trailing ones included.
   params: List[Ty]
   score: Int
+  /// The trailing parameters the call leaves out for the host to default.
+  omitted: Int = 0
+  /// The method's own type arguments inferred from the call's arguments; empty for a method that is not generic.
+  margs: List[Ty] = newList()
 }
 
 /// A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`: passing the handle
@@ -5358,8 +5663,29 @@ func scoreOverload(
   val ps: List[Ty] = newList()
   var score = 0
   var i = 0
-  while i < sig.params.count {
-    val p = match hostElemTy(sig.params[i], targs, argTys[i]) { case Some(t) -> t; case None -> return None }
+  if argTys.count > sig.params.count or sig.params.count - argTys.count > sig.optionalTrailing {
+    return None
+  }
+  val margs: List[Ty] = newList()
+  while margs.count < sig.genericArity {
+    margs.add(TirT.TNever)
+  }
+  if sig.genericArity > 0 {
+    var b = 0
+    while b < argTys.count {
+      if not bindMethodArgs(sig.params[b], argTys[b], margs) {
+        return None
+      }
+      b = b + 1
+    }
+    for m in margs {
+      if tyEq(m, TirT.TNever) {
+        return None
+      }
+    }
+  }
+  while i < argTys.count {
+    val p = match hostElemTyM(sig.params[i], targs, margs, argTys[i]) { case Some(t) -> t; case None -> return None }
     if tyEq(p, argTys[i]) {
       score = score + 2
     } else {
@@ -5388,7 +5714,15 @@ func scoreOverload(
     ps.add(p)
     i = i + 1
   }
-  Some(value = OverloadFit(params = ps, score = score))
+  // The parameters the call leaves out are typed from the host alone.  An overload that needs none of
+  // them ranks above one that does, as the host's overload resolution has it.
+  val omitted = sig.params.count - argTys.count
+  while i < sig.params.count {
+    val p = match hostElemTyM(sig.params[i], targs, margs, TirT.TNever) { case Some(t) -> t; case None -> return None }
+    ps.add(p)
+    i = i + 1
+  }
+  Some(value = OverloadFit(params = ps, score = score * 256 - omitted, omitted = omitted, margs = margs))
 }
 
 /// A host call's node as the checker typed it: a host string can be null (the checker types the call
@@ -5638,7 +5972,9 @@ func buildExternCallAt(
   }
   var bestSig: Option[ExternMemberSig] = None
   var bestParams: List[Ty] = newList()
-  var bestScore = -1
+  var bestMargs: List[Ty] = newList()
+  // Below every fit: a call that leaves out parameters scores `fit * 256 - omitted`, negative for no fit at all.
+  var bestScore = noFitScore()
   var ambiguous = false
   // A call through a value (`recv.m(x)`) takes an instance overload: a same-named static one is
   // passed over unless no instance overload fits (D479, the rule #6765 gave the emit path).
@@ -5649,7 +5985,7 @@ func buildExternCallAt(
   var pass = 0
   while pass < 2 and not isSome(bestSig) {
     for c in cands {
-      if c.params.count == argTys.count and not (pass == 0 and viaValue and c.isStatic) {
+      if (c.params.count == argTys.count or (c.params.count > argTys.count and c.params.count - c.optionalTrailing <= argTys.count)) and not (pass == 0 and viaValue and c.isStatic) {
         match scoreOverload(env, c, targs, argTys) {
           case Some(fit) -> {
             val ps = fit.params
@@ -5658,6 +5994,7 @@ func buildExternCallAt(
               bestScore = sc
               bestSig = Some(value = c)
               bestParams = ps
+              bestMargs = fit.margs
               ambiguous = false
             } else if sc == bestScore {
               var same = bestParams.count == ps.count
@@ -5676,6 +6013,7 @@ func buildExternCallAt(
                 if moreSpecificParams(ps, bestParams) {
                   bestSig = Some(value = c)
                   bestParams = ps
+                  bestMargs = fit.margs
                 } else if not moreSpecificParams(bestParams, ps) {
                   ambiguous = true
                 }
@@ -5716,7 +6054,7 @@ func buildExternCallAt(
   } else {
     match sig.ret {
       case EMTVoid -> tyUnit()
-      case EMTType(el) -> match hostElemTy(el, targs, ty) {
+      case EMTType(el) -> match hostElemTyM(el, targs, bestMargs, ty) {
         case Some(t) -> t
         case None -> return uncoveredExpr(env, e, "an extern call with a host result the builder cannot type")
       }
@@ -5756,13 +6094,21 @@ func buildExternCallAt(
     targsOut.add(TArgIn(value = c))
     i = i + 1
   }
+  // The parameters the call leaves out are part of the member's signature; the host fills them.
+  val omitted = bestParams.count - built.count
+  while i < bestParams.count {
+    params.add(TParamTy(mode = TMIn, ty = bestParams[i]))
+    i = i + 1
+  }
   val member = HostMemberRef(
     owner = owner,
     name = site.name,
     kind = if isCtor { HMConstructor } else { HMMethod },
     isStatic = sig.isStatic,
     params = params,
-    ret = ret
+    ret = ret,
+    omitted = omitted,
+    typeArgs = bestMargs
   )
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = targsOut)))
 }
@@ -5841,6 +6187,36 @@ func buildHostStaticRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr,
     case Err(_) -> ()
   }
   val host = match hostStaticReceiver(env, recv) { case Some(h) -> h; case None -> return None }
+  buildHostStaticReadOf(env, e, ty, host, name)
+}
+
+/// The static read of the member `name` of the host class `host`: a call of the getter or a read of the constant.
+/// Where the context has settled a wider type than the member's own (`val i: Int = ByteT.MaxValue`), the read is
+/// built at the member's type and converted.
+func buildHostStaticReadOf(
+  env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String
+): Option[TExpr] {
+  match buildHostStaticReadAt(env, e, ty, host, name) {
+    case Some(x) -> return Some(value = x)
+    case None -> ()
+  }
+  match hostChainResult(env, host, name, 0, true, true, newList()) {
+    case Some(own) -> {
+      if not tyEq(own, ty) {
+        match buildHostStaticReadAt(env, e, own, host, name) {
+          case Some(x) -> return convertValue(env, x, ty)
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  None
+}
+
+func buildHostStaticReadAt(
+  env: in BuildEnv, e: in Expr, ty: in Ty, host: in HostTypeRef, name: in String
+): Option[TExpr] {
   val cands = match env.ctx.tbl.externIterResolver[0].resolveMemberSigs(host.name, name, 0, true) {
     case Some(c) -> c
     case None -> return None
@@ -6599,7 +6975,7 @@ func buildLambda(
     case None -> return uncoveredExpr(env, e, "a lambda whose type has other parameters")
   }
   pushScope(env)
-  val frame = LambdaFrame(start = env.nextLocal[0], caps = newList())
+  val frame = LambdaFrame(start = env.nextLocal[0], caps = newList(), ret = ls.ret)
   env.lambdas.add(frame)
   val decls: List[LocalDecl] = newList()
   var i = 0

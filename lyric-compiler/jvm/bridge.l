@@ -1847,7 +1847,6 @@ func codegenPackageInto(
   caseReg: in Map[String, List[JvmCaseField]],
   ctorReg: in Map[String, String],
   autoFfi: in AutoFfiCtx,
-  allProjFqns: in Map[String, Bool],
   acc: in List[BuiltClass],
   externSeed: in Map[String, String],
   fileName: in String,
@@ -1864,7 +1863,6 @@ func codegenPackageInto(
     caseReg,
     ctorReg,
     autoFfi,
-    allProjFqns,
     externSeed,
     unsafeFieldLockNames
   )
@@ -3272,6 +3270,12 @@ func jvmProjectFrontEnd(
     }
     uei = uei + 1
   }
+  // The project packages' entries in `importedPkgs` and their files: an importer sees what a package's
+  // derives generate, so these entries' items are rebuilt from the derive-expanded files below.
+  val projectEntryIdx: List[Int] = newList()
+  val projectEntryFiles: List[SourceFile] = newList()
+  projectEntryIdx.add(importedPkgs.count)
+  projectEntryFiles.add(userEntryArrayTyped)
   importedPkgs.add(
     ImportedPackage(
       name = userEntryPkgName,
@@ -3430,6 +3434,8 @@ func jvmProjectFrontEnd(
         }
         sii = sii + 1
       }
+      projectEntryIdx.add(importedPkgs.count)
+      projectEntryFiles.add(sfArrayTyped)
       importedPkgs.add(
         ImportedPackage(
           name = spn,
@@ -3475,6 +3481,14 @@ func jvmProjectFrontEnd(
         reexports = pipeRestoredReexportNames(rf, synArt.contract.reexports)
       )
     )
+  }
+  // The derive inputs of a package's own compile: every registered package's items.
+  val deriveImportsAll = flattenImportedItems(importedPkgs)
+  var pdi = 0
+  while pdi < projectEntryIdx.count {
+    val ix = projectEntryIdx[pdi]
+    importedPkgs[ix] = importedPkgs[ix].copy(items = pipeDerivedItemView(projectEntryFiles[pdi], deriveImportsAll))
+    pdi = pdi + 1
   }
   Some(
     value = JvmProjectFrontEnd(
@@ -3794,7 +3808,7 @@ func visitProjectDependencies(
 /// (`Lyric.RestoredPackages.synthesiseArtifact`; its record/union/function
 /// declarations are reconstructed, verbatim, from the producer's embedded
 /// contract JSON) is fed through the SAME `collectFileSigsSeeded` /
-/// `collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables`
+/// `collectFileCasesExtern` / `collectFileCtors`
 /// registration calls a stdlib or sibling project file gets — a generic
 /// record/union's fields already erase to `Object` uniformly (JVM has no
 /// reified generics to preserve), so no separate arity-suffixed class-name
@@ -3802,7 +3816,7 @@ func visitProjectDependencies(
 /// `genericCtorParams` / `fieldSigBytes` / `fieldVarIndices` maps require.
 ///
 /// Critically, a restored artifact's file is registered into `registry` /
-/// `caseReg` / `ctorReg` / `allProjFqns` but is deliberately NEVER added to
+/// `caseReg` / `ctorReg` but is deliberately NEVER added to
 /// `stdlibFiles` / `stdlibByPkg` / `toBundle`: its bytecode already exists in
 /// the producer JAR, so codegen must never re-emit (and thus duplicate) it —
 /// only its call-site SIGNATURES need to be known here.  The producer JAR's
@@ -4011,12 +4025,6 @@ pub func compileProjectToJarBundledWithRestored(
       externSeedForFileCached(userFile, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
     )
   )
-  // #3044: complete @projectable pre-scan across the whole compilation, so
-  // nested-view substitution / tryInto() eligibility see every projectable
-  // regardless of declaration or package order (JVM counterpart of the MSIL
-  // `prescanProjectableFqns`).
-  val allProjFqns: Map[String, Bool] = newMap()
-  collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
     collectFileSigsSeeded(
@@ -4033,7 +4041,6 @@ pub func compileProjectToJarBundledWithRestored(
         externSeedForFileCached(stdlibFiles[ri], extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
       )
     )
-    collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
   }
 
@@ -4074,7 +4081,6 @@ pub func compileProjectToJarBundledWithRestored(
       caseReg,
       ownAwareExternTypes(rf, externSeedForFileCached(rf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache))
     )
-    collectFileProjectables(rf, allProjFqns)
     if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
       restoredJarPathsSeen.add(synArt.dllPath, true)
       restoredJarPaths.add(synArt.dllPath)
@@ -4090,15 +4096,6 @@ pub func compileProjectToJarBundledWithRestored(
       registry,
       externSeedForFileCached(synArt.source, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
     )
-  }
-
-  // View-twin registration must run after the pre-scan is complete (the
-  // substituted view field types depend on the full projectable set).
-  registerProjectableViews(userFile, allProjFqns, caseReg, registry)
-  var rvi = 0
-  while rvi < stdlibFiles.count {
-    registerProjectableViews(stdlibFiles[rvi], allProjFqns, caseReg, registry)
-    rvi = rvi + 1
   }
 
   // Transitive import closure: the stdlib packages whose bytecode must be
@@ -4626,7 +4623,6 @@ pub func compileProjectToJarBundledWithRestored(
         caseReg,
         ctorReg,
         autoFfi,
-        allProjFqns,
         allClasses,
         withRecvClasses(
           externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
@@ -4783,7 +4779,6 @@ pub func compileProjectToJarBundledWithRestored(
             caseReg,
             ctorReg,
             autoFfi,
-            allProjFqns,
             allClasses,
             withRecvClasses(
               externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),

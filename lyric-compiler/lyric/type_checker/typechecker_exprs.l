@@ -3392,6 +3392,11 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
         if name == "length" {
           return Some(value = TyPrim(pt = PtInt))
         }
+        // `b.toSlice()` copies the elements into a slice, as an array's does.
+        if name == "toSlice" {
+          val noParams: List[Type] = newList()
+          return Some(value = TyFunction(params = noParams, ret = TySlice(element = targs[0]), isAsync = false))
+        }
         // `Std.Buffer`'s own bridge to its `List` representation (D185): the
         // identity on a target that represents a buffer as a list.
         if name == bufferAsListMember() and symTableScopePkg(tbl) == "Std.Buffer" {
@@ -21618,6 +21623,9 @@ func inferExprCore(
               val restArgs = tailArgs(args)
               val restTypes = tailTypes(argTypes)
               recordBodyMethodCallRewrite(tbl, fn, args, member, withReceiverParam(bm, argTypes[0]))
+              // The call is the method call `x.m(args)`: its callee and shape under the call's node, which the
+              // typed IR builder reads as it does for a call written that way.
+              recordMethodCalleeNode(tbl, e.nodeId, Some(value = MethodCallPick(sig = bm, fullSig = None)), argTypes[0], member)
               val siteKey = recordCopySiteKey(e.span)
               if tbl.argOrderSites.containsKey(siteKey) {
                 tbl.argOrderSites.remove(siteKey)

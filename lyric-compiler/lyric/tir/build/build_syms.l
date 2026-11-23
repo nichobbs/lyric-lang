@@ -62,6 +62,41 @@ func tsigOf(
   }
 }
 
+/// The signature of a method of a generic type with the owner's type parameters in front of the method's own, as
+/// the call's type arguments are laid out (the owner's, then the method's).  The owner is the type of the receiver
+/// `recv` (`Bx[Int]` for a call on a `Bx[T]`'s method): its parameters are the generics its declaration names, each
+/// keyed by the type that declares it.  A signature that already counts them, or a method of a type with none, is
+/// unchanged (D767).
+func withOwnerGenerics(
+  tbl: in SymbolTable, sig: in ResolvedSignature, recv: in Option[Type], typeParamCount: in Int
+): ResolvedSignature {
+  if typeParamCount <= sig.generics.count {
+    return sig
+  }
+  val owner: Option[(SymbolId, String)] = match recv {
+    case Some(TyUser(id, nm, _)) -> Some(value = (id, nm))
+    case _ -> None
+  }
+  val (oid, oname) = match owner { case Some(o) -> o; case None -> return sig }
+  val ownerNames = recordGenericNamesOf(tbl, oid)
+  if ownerNames.count + sig.generics.count != typeParamCount {
+    return sig
+  }
+  val names: List[String] = newList()
+  val owners: List[String] = newList()
+  for n in ownerNames {
+    names.add(n)
+    owners.add(oname)
+  }
+  for g in sig.generics {
+    names.add(g)
+  }
+  for o in sig.genericOwners {
+    owners.add(o)
+  }
+  sig.copy(generics = names, genericOwners = owners)
+}
+
 /// Record the function `sym` the body being built calls.  A signature that
 /// cannot be converted leaves no entry, so the verifier reports the callee
 /// undefined rather than the builder failing the body.
@@ -90,7 +125,7 @@ func noteFuncSymN(
   if env.syms.containsKey(sym.id) {
     return
   }
-  match tsigOf(env.ctx.tbl, sym, sig, recv, recvMode) {
+  match tsigOf(env.ctx.tbl, sym, withOwnerGenerics(env.ctx.tbl, sig, recv, typeParamCount), recv, recvMode) {
     case Ok(ts) -> env.syms.add(
       sym.id,
       TSymEntry(
@@ -108,7 +143,8 @@ func noteFuncSymN(
 }
 
 /// The names of the `var` fields of the record or non-generic protected type `sid` (a plain field is
-/// immutable, language reference §3.4), read from its declaration.  Any other symbol has none.
+/// immutable, language reference §3.4), read from its declaration.  Every field of a `foreign record` is
+/// writable in place (T0180 judges the write, language reference §3.4).  Any other symbol has none.
 func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
   val names: Map[String, Bool] = newMap()
   for s in tbl.symbols {
@@ -121,7 +157,9 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
       case Some(rd) -> {
         for m in rd.members {
           match m {
-            case RMField(fd) -> if fd.isMutable and not names.containsKey(fd.name) { names.add(fd.name, true) }
+            case RMField(fd) -> if (fd.isMutable or rd.isForeign) and not names.containsKey(fd.name) {
+              names.add(fd.name, true)
+            }
             case _ -> ()
           }
         }
