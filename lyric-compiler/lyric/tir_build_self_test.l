@@ -1120,6 +1120,18 @@ func fakeHost(): FakeHost {
   )
   maxByte.add(ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = EIEArg(index = 0))))
   sigs.add(fhKey("System.Byte", "MaxValue", 0), maxByte)
+  val pair: List[ExternMemberSig] = newList()
+  pair.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(EIEMArg(index = 0), EIEMArg(index = 1)),
+      ret = EMTType(
+        elem = EIEHost(hostName = "System.ValueTuple", args = fhParams2(EIEMArg(index = 0), EIEMArg(index = 1)))
+      ),
+      genericArity = 2
+    )
+  )
+  sigs.add(fhKey("System.Math", "Pair", 2), pair)
   val maxChar: List[ExternMemberSig] = newList()
   maxChar.add(
     ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = fhHost("System.Char")), isField = true)
@@ -1420,6 +1432,11 @@ test "a host constant read where the context settled a wider type is converted (
   val r = buildFirstFnHost(
     "package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Int {\n  val i: Int = ByteT.MaxValue\n  i\n}\n"
   )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "an untyped generic host call is typed at the instantiation its arguments give (D775)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val t = Math.Pair(1, 2)\n  0\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 

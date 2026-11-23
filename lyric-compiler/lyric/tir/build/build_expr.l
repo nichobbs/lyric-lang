@@ -2367,6 +2367,28 @@ func hostChainResult(
     if c.isStatic != wantStatic {
       return None
     }
+    // A generic method is instantiated at the types of the arguments, as the call builder does (D766).
+    val margs: List[Ty] = newList()
+    while margs.count < c.genericArity {
+      margs.add(TirT.TNever)
+    }
+    if c.genericArity > 0 {
+      if argTys.count != c.params.count {
+        return None
+      }
+      var bi = 0
+      while bi < argTys.count {
+        if not bindMethodArgs(c.params[bi], argTys[bi], margs) {
+          return None
+        }
+        bi = bi + 1
+      }
+      for m in margs {
+        if tyEq(m, TirT.TNever) {
+          return None
+        }
+      }
+    }
     val t = match c.ret {
       case EMTVoid -> tyUnit()
       case EMTType(el) -> match el {
@@ -2399,13 +2421,13 @@ func hostChainResult(
             if not unmappedFuture and not isPlainHostResult(rname) and not (isHostObject(rname) and (host.args.count == 0 or allTypeParams(host.args))) {
               return None
             }
-            match hostElemTy(el, host.args, TirT.TNever) {
+            match hostElemTyM(el, host.args, margs, TirT.TNever) {
               case Some(x) -> x
               case None -> return None
             }
           }
         }
-        case EIEPrim(_) -> match hostElemTy(el, host.args, TirT.TNever) {
+        case EIEPrim(_) -> match hostElemTyM(el, host.args, margs, TirT.TNever) {
           case Some(x) -> x
           case None -> return None
         }
