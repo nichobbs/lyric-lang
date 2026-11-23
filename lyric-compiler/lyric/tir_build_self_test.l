@@ -982,6 +982,12 @@ func fhSigOptional(
   ExternMemberSig(isStatic = isStatic, params = ps, ret = ret, optionalTrailing = optional)
 }
 
+func oneElem(a: in ExternIterElem): List[ExternIterElem] {
+  val xs: List[ExternIterElem] = newList()
+  xs.add(a)
+  xs
+}
+
 func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
   val xs: List[ExternIterElem] = newList()
   xs.add(a)
@@ -1005,6 +1011,52 @@ func fakeHost(): FakeHost {
   max.add(fhSig(true, fhParams2(fhPrim("Int"), fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
   max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Max", 2), max)
+  val pick: List[ExternMemberSig] = newList()
+  pick.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(EIEMArg(index = 0), EIEMArg(index = 0)),
+      ret = EMTType(elem = EIEMArg(index = 0)),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Pick", 2), pick)
+  val find: List[ExternMemberSig] = newList()
+  find.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(EIEMArg(index = 0))),
+        EIEMArg(index = 0)
+      ),
+      ret = EMTType(elem = fhPrim("Int")),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Find", 2), find)
+  val join: List[ExternMemberSig] = newList()
+  join.add(
+    fhSig(
+      true,
+      fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(fhPrim("String")))
+      ),
+      EMTType(elem = fhPrim("String"))
+    )
+  )
+  join.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "System.Collections.Generic.IEnumerable", args = oneElem(EIEMArg(index = 0)))
+      ),
+      ret = EMTType(elem = fhPrim("String")),
+      genericArity = 1
+    )
+  )
+  sigs.add(fhKey("System.Math", "Join", 2), join)
   val append: List[ExternMemberSig] = newList()
   append.add(fhSig(false, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Int"))))
   append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
@@ -1185,6 +1237,48 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
     }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic host method is instantiated at the types of its arguments" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.typeArgs.count, 1, "one method type argument")
+      assertTrue(tyEq(m.typeArgs[0], TPrim(kind = TPLong)), "T is Long")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPLong)), "the parameter is substituted")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPLong)), "the result is substituted")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic host method whose type argument two arguments bind differently has no fit" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertTrue(r.env.errors.count > 0, "the call is reported, not built at either type")
+  assertTrue(not isSome(externCallOf(r.body)), "no extern call is recorded")
+}
+
+test "a generic host method binds its type argument from the element of an array argument" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: slice[Long], v: Long): Int {\n  Math.Find(xs, v)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertEqualInt(m.typeArgs.count, 1, "one method type argument")
+      assertTrue(tyEq(m.typeArgs[0], TPrim(kind = TPLong)), "T is the slice's element")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "a generic overload beside a non-generic one does not change the overload a call picks" {
+  val r = buildFirstFnHost(externHead() + "func f(xs: slice[String]): String {\n  Math.Join(\",\", xs)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertEqualInt(m.typeArgs.count, 0, "the non-generic overload")
     case None -> assertTrue(false, "an extern call")
   }
 }

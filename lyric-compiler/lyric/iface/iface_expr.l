@@ -125,6 +125,10 @@ func putMember(w: in IfaceWriter, it: in DefPathInterner, m: in HostMemberRef) {
   }
   putTy(w, it, m.ret)
   putU(w, m.omitted)
+  putU(w, m.typeArgs.count)
+  for t in m.typeArgs {
+    putTy(w, it, t)
+  }
 }
 
 func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
@@ -146,6 +150,13 @@ func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
   }
   val ret = readTy(r, it)
   val omitted = readU(r)
+  val nta = readCount(r)
+  val typeArgs: List[Ty] = newList()
+  var ta = 0
+  while ta < nta and not r.failed {
+    typeArgs.add(readTy(r, it))
+    ta = ta + 1
+  }
   val kind = match hostKindOfCode(kc) {
     case Some(x) -> x
     case None -> {
@@ -153,7 +164,16 @@ func readMember(r: in IfaceReader, it: in DefPathInterner): HostMemberRef {
       HMMethod
     }
   }
-  HostMemberRef(owner = owner, name = name, kind = kind, isStatic = isStatic, params = ps, ret = ret, omitted = omitted)
+  HostMemberRef(
+    owner = owner,
+    name = name,
+    kind = kind,
+    isStatic = isStatic,
+    params = ps,
+    ret = ret,
+    omitted = omitted,
+    typeArgs = typeArgs
+  )
 }
 
 func intrinsicCode(op: in IntrinsicOp): Int {

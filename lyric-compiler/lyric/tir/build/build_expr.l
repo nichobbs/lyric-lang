@@ -5316,8 +5316,19 @@ func buildDistinctFactory(
 /// with: a host class the hint already names keeps the hint's own name, and a host
 /// string takes Lyric's `String` when the hint is one.
 func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Option[Ty] {
+  hostElemTyM(elem, targs, newList(), hint)
+}
+
+/// `hostElemTy` for a generic method's signature: `margs` are the method's own type arguments
+/// (`EIEMArg`), `TNever` for one not yet inferred (D766).
+func hostElemTyM(elem: in ExternIterElem, targs: in List[Ty], margs: in List[Ty], hint: in Ty): Option[Ty] {
   match elem {
     case EIEArg(i) -> if i >= 0 and i < targs.count { Some(value = targs[i]) } else { None }
+    case EIEMArg(i) -> if i >= 0 and i < margs.count and not tyEq(margs[i], TirT.TNever) {
+      Some(value = margs[i])
+    } else {
+      None
+    }
     case EIEPrim(name) -> match primFromString(name) { case Some(p) -> Some(value = primOf(p)); case None -> None }
     case EIEHost(h, hargs) -> {
       if h == "System.Char" {
@@ -5335,13 +5346,59 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
       }
       val conv: List[Ty] = newList()
       for a in hargs {
-        match hostElemTy(a, targs, TirT.TNever) {
+        match hostElemTyM(a, targs, margs, TirT.TNever) {
           case Some(t) -> conv.add(t)
           case None -> return None
         }
       }
       Some(value = TExtern(host = HostTypeRef(name = h, args = conv)))
     }
+  }
+}
+
+/// Binds the method type arguments a parameter `elem` names from the type `arg` of the argument passed
+/// for it, as the MSIL backend picks the instantiation: a bare `T` takes the argument's type, `T[]` the
+/// element of a slice or array, a generic host type its arguments pairwise.  False when `T` is already
+/// bound to another type.  An argument that does not have the parameter's shape binds nothing and is not an
+/// error here: `scoreOverload` rejects it when it matches the substituted parameter against the argument, and
+/// rejects a method type argument no argument bound.
+func bindMethodArgs(elem: in ExternIterElem, arg: in Ty, margs: in List[Ty]): Bool {
+  match elem {
+    case EIEMArg(i) -> {
+      if i < 0 or i >= margs.count {
+        return false
+      }
+      if tyEq(margs[i], TirT.TNever) {
+        margs[i] = arg
+        return true
+      }
+      tyEq(margs[i], arg)
+    }
+    case EIEHost(h, hargs) -> {
+      if h == hostArrayName() and hargs.count == 1 {
+        return match arg {
+          case TSlice(el) -> bindMethodArgs(hargs[0], el, margs)
+          case TArray(_, el) -> bindMethodArgs(hargs[0], el, margs)
+          case _ -> true
+        }
+      }
+      match arg {
+        case TExtern(r) -> {
+          if externHostBase(r.name) == h and r.args.count == hargs.count {
+            var k = 0
+            while k < hargs.count {
+              if not bindMethodArgs(hargs[k], r.args[k], margs) {
+                return false
+              }
+              k = k + 1
+            }
+          }
+          true
+        }
+        case _ -> true
+      }
+    }
+    case _ -> true
   }
 }
 
@@ -5403,6 +5460,8 @@ record OverloadFit {
   score: Int
   /// The trailing parameters the call leaves out for the host to default.
   omitted: Int = 0
+  /// The method's own type arguments inferred from the call's arguments; empty for a method that is not generic.
+  margs: List[Ty] = newList()
 }
 
 /// A `Task[T]` handle is the host's `Task<T>`, which is a host `Task`: passing the handle
@@ -5515,8 +5574,26 @@ func scoreOverload(
   if argTys.count > sig.params.count or sig.params.count - argTys.count > sig.optionalTrailing {
     return None
   }
+  val margs: List[Ty] = newList()
+  while margs.count < sig.genericArity {
+    margs.add(TirT.TNever)
+  }
+  if sig.genericArity > 0 {
+    var b = 0
+    while b < argTys.count {
+      if not bindMethodArgs(sig.params[b], argTys[b], margs) {
+        return None
+      }
+      b = b + 1
+    }
+    for m in margs {
+      if tyEq(m, TirT.TNever) {
+        return None
+      }
+    }
+  }
   while i < argTys.count {
-    val p = match hostElemTy(sig.params[i], targs, argTys[i]) { case Some(t) -> t; case None -> return None }
+    val p = match hostElemTyM(sig.params[i], targs, margs, argTys[i]) { case Some(t) -> t; case None -> return None }
     if tyEq(p, argTys[i]) {
       score = score + 2
     } else {
@@ -5549,11 +5626,11 @@ func scoreOverload(
   // them ranks above one that does, as the host's overload resolution has it.
   val omitted = sig.params.count - argTys.count
   while i < sig.params.count {
-    val p = match hostElemTy(sig.params[i], targs, TirT.TNever) { case Some(t) -> t; case None -> return None }
+    val p = match hostElemTyM(sig.params[i], targs, margs, TirT.TNever) { case Some(t) -> t; case None -> return None }
     ps.add(p)
     i = i + 1
   }
-  Some(value = OverloadFit(params = ps, score = score * 256 - omitted, omitted = omitted))
+  Some(value = OverloadFit(params = ps, score = score * 256 - omitted, omitted = omitted, margs = margs))
 }
 
 /// A host call's node as the checker typed it: a host string can be null (the checker types the call
@@ -5803,6 +5880,7 @@ func buildExternCallAt(
   }
   var bestSig: Option[ExternMemberSig] = None
   var bestParams: List[Ty] = newList()
+  var bestMargs: List[Ty] = newList()
   // Below every fit: a call that leaves out parameters scores `fit * 256 - omitted`, negative for no fit at all.
   var bestScore = noFitScore()
   var ambiguous = false
@@ -5824,6 +5902,7 @@ func buildExternCallAt(
               bestScore = sc
               bestSig = Some(value = c)
               bestParams = ps
+              bestMargs = fit.margs
               ambiguous = false
             } else if sc == bestScore {
               var same = bestParams.count == ps.count
@@ -5842,6 +5921,7 @@ func buildExternCallAt(
                 if moreSpecificParams(ps, bestParams) {
                   bestSig = Some(value = c)
                   bestParams = ps
+                  bestMargs = fit.margs
                 } else if not moreSpecificParams(bestParams, ps) {
                   ambiguous = true
                 }
@@ -5882,7 +5962,7 @@ func buildExternCallAt(
   } else {
     match sig.ret {
       case EMTVoid -> tyUnit()
-      case EMTType(el) -> match hostElemTy(el, targs, ty) {
+      case EMTType(el) -> match hostElemTyM(el, targs, bestMargs, ty) {
         case Some(t) -> t
         case None -> return uncoveredExpr(env, e, "an extern call with a host result the builder cannot type")
       }
@@ -5935,7 +6015,8 @@ func buildExternCallAt(
     isStatic = sig.isStatic,
     params = params,
     ret = ret,
-    omitted = omitted
+    omitted = omitted,
+    typeArgs = bestMargs
   )
   Some(value = hostResultNode(env, e, ty, ret, XCall(callee = Extern(member = member), args = targsOut)))
 }
