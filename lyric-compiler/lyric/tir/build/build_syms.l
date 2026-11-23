@@ -108,7 +108,8 @@ func noteFuncSymN(
 }
 
 /// The names of the `var` fields of the record or non-generic protected type `sid` (a plain field is
-/// immutable, language reference §3.4), read from its declaration.  Any other symbol has none.
+/// immutable, language reference §3.4), read from its declaration.  Every field of a `foreign record` is
+/// writable in place (T0180 judges the write, language reference §3.4).  Any other symbol has none.
 func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
   val names: Map[String, Bool] = newMap()
   for s in tbl.symbols {
@@ -121,7 +122,9 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
       case Some(rd) -> {
         for m in rd.members {
           match m {
-            case RMField(fd) -> if fd.isMutable and not names.containsKey(fd.name) { names.add(fd.name, true) }
+            case RMField(fd) -> if (fd.isMutable or rd.isForeign) and not names.containsKey(fd.name) {
+              names.add(fd.name, true)
+            }
             case _ -> ()
           }
         }
