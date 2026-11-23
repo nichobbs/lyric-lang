@@ -1025,7 +1025,10 @@ func fakeHost(): FakeHost {
   find.add(
     ExternMemberSig(
       isStatic = true,
-      params = fhParams2(EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(EIEMArg(index = 0))), EIEMArg(index = 0)),
+      params = fhParams2(
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(EIEMArg(index = 0))),
+        EIEMArg(index = 0)
+      ),
       ret = EMTType(elem = fhPrim("Int")),
       genericArity = 1
     )
@@ -1033,12 +1036,22 @@ func fakeHost(): FakeHost {
   sigs.add(fhKey("System.Math", "Find", 2), find)
   val join: List[ExternMemberSig] = newList()
   join.add(
-    fhSig(true, fhParams2(fhPrim("String"), EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(fhPrim("String")))), EMTType(elem = fhPrim("String")))
+    fhSig(
+      true,
+      fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "an array, pointer or by-reference type", args = oneElem(fhPrim("String")))
+      ),
+      EMTType(elem = fhPrim("String"))
+    )
   )
   join.add(
     ExternMemberSig(
       isStatic = true,
-      params = fhParams2(fhPrim("String"), EIEHost(hostName = "System.Collections.Generic.IEnumerable", args = oneElem(EIEMArg(index = 0)))),
+      params = fhParams2(
+        fhPrim("String"),
+        EIEHost(hostName = "System.Collections.Generic.IEnumerable", args = oneElem(EIEMArg(index = 0)))
+      ),
       ret = EMTType(elem = fhPrim("String")),
       genericArity = 1
     )
@@ -1229,6 +1242,12 @@ test "a generic host method is instantiated at the types of its arguments" {
     }
     case None -> assertTrue(false, "an extern call")
   }
+}
+
+test "a generic host method whose type argument two arguments bind differently has no fit" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Long {\n  Math.Pick(a, b)\n}\n")
+  assertTrue(r.env.errors.count > 0, "the call is reported, not built at either type")
+  assertTrue(not isSome(externCallOf(r.body)), "no extern call is recorded")
 }
 
 test "a generic host method binds its type argument from the element of an array argument" {
