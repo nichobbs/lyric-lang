@@ -99,6 +99,8 @@ pub record MemberOwner {
 pub record LambdaFrame {
   start: Int
   caps: List[Capture]
+  /// The lambda's result type: what a `return` inside it yields.
+  ret: Ty
 }
 
 /// The first `NodeId` of a made-up node: above any id `renumberNodeIds` hands out.
@@ -3570,7 +3572,10 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SReturn(v) -> match v {
       case None -> Some(value = stmtOf(s, TsReturn(value = None)))
       case Some(x) -> {
-        if env.lambdas.count == 0 and env.retTy.count > 0 {
+        // A `return` in a lambda returns from the lambda, so its operand takes the lambda's result type.
+        if env.lambdas.count > 0 {
+          settleHole(env, x, env.lambdas[env.lambdas.count - 1].ret)
+        } else if env.retTy.count > 0 {
           settleHole(env, x, env.retTy[0])
         }
         match buildExpr(env, x) {
@@ -6910,7 +6915,7 @@ func buildLambda(
     case None -> return uncoveredExpr(env, e, "a lambda whose type has other parameters")
   }
   pushScope(env)
-  val frame = LambdaFrame(start = env.nextLocal[0], caps = newList())
+  val frame = LambdaFrame(start = env.nextLocal[0], caps = newList(), ret = ls.ret)
   env.lambdas.add(frame)
   val decls: List[LocalDecl] = newList()
   var i = 0
