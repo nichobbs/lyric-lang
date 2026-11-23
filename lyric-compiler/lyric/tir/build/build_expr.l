@@ -2506,11 +2506,65 @@ func openLocalTy(env: in BuildEnv, e: in Expr): Option[Ty] {
   }
 }
 
+/// Whether `msg` already names a source position: it ends in `line:column`, or `line:column)`.
+func messageNamesPosition(msg: in String): Bool {
+  var last = msg.length
+  if last > 0 and msg.substring(last - 1, 1) == ")" {
+    last = last - 1
+  }
+  var i = last
+  var columnDigits = 0
+  while i > 0 and isSome("0123456789".indexOf(msg.substring(i - 1, 1))) {
+    columnDigits = columnDigits + 1
+    i = i - 1
+  }
+  if columnDigits == 0 or i == 0 or msg.substring(i - 1, 1) != ":" {
+    return false
+  }
+  i = i - 1
+  var lineDigits = 0
+  while i > 0 and isSome("0123456789".indexOf(msg.substring(i - 1, 1))) {
+    lineDigits = lineDigits + 1
+    i = i - 1
+  }
+  lineDigits > 0
+}
+
+/// Gives every message the build of one expression added to `env.errors` (from index `from`) a source
+/// position when it has none: a failure reported from deep inside a helper (a type the checker could
+/// not record, a missing symbol) names the innermost expression being built, so the diagnostic points at
+/// code (D769).  A message that already names a position is left as it is.
+func stampErrorPositions(env: in BuildEnv, from: in Int, sp: in Span): Unit {
+  if env.errors.count <= from {
+    return ()
+  }
+  val added: List[String] = newList()
+  var i = from
+  while i < env.errors.count {
+    added.add(env.errors[i])
+    i = i + 1
+  }
+  while env.errors.count > from {
+    env.errors.removeAt(env.errors.count - 1)
+  }
+  val suffix = " at " + toString(sp.startPos.line) + ":" + toString(sp.startPos.column)
+  for msg in added {
+    if messageNamesPosition(msg) {
+      env.errors.add(msg)
+    } else {
+      env.errors.add(msg + suffix)
+    }
+  }
+}
+
 /// Build the expression `e`, or `None` after recording why in `env.errors`.  An array the checker
 /// recorded as a copy site (`arrayCopySites`, D167: an array read out of a place and stored) is
 /// wrapped in an `XArrayCopy`; the sites a consumer only inspects were removed from the table.
 pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
-  match buildExprBody(env, e) {
+  val errorsBefore = env.errors.count
+  val built = buildExprBody(env, e)
+  stampErrorPositions(env, errorsBefore, e.span)
+  match built {
     case Some(t) -> {
       if env.ctx.tbl.arrayCopySites.containsKey(recordCopySiteKey(e.span)) {
         match t.ty {
@@ -3932,7 +3986,13 @@ func annotatedTy(env: in BuildEnv, te: in TypeExpr): Option[Ty] {
   } else {
     GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   }
-  match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+  // The annotation may be one the checker spelled itself (`localBindingTypeSites`): a type of a package
+  // the file does not import is named by its package there, which the import rule would reject, so it
+  // resolves by name alone (D769).
+  val importRule = symTableLiftImportRule(env.ctx.tbl)
+  val resolved = resolveType(env.ctx.tbl, gc, diag, te)
+  symTableRestoreImportRule(env.ctx.tbl, importRule)
+  match tyOfType(env.ctx, resolved) {
     case Ok(w) -> Some(value = w)
     case Err(msg) -> {
       env.errors.add(msg)
