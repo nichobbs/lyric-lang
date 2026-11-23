@@ -2053,7 +2053,7 @@ test "a function builds as a TFnDecl with modes, contracts and its own entry" {
 
 test "a return in a lambda takes the lambda's result type where the checker left it open (D768)" {
   val c = censusOf(
-    "package App\nrecord R[S] {\n  last: S\n  n: Int\n}\nfunc make(n: Int): Result[Int, String] {\n  if n > 0 { Ok(value = n) } else { Err(error = \"bad\") }\n}\nfunc run[S](x: S): Result[R[S], String] {\n  val body: (Int) -> Result[R[S], String] = { d: Int ->\n    val a = match make(d) { case Ok(t) -> t; case Err(m) -> return Err(error = m) }\n    Ok(value = R(last = x, n = a))\n  }\n  body(3)\n}\n"
+    "package App\nrecord R[S] {\n  last: S\n  n: Int\n}\nunion Res[T] {\n  case Good(v: T)\n  case Bad(m: String)\n}\nfunc make(n: Int): Res[Int] {\n  Good(v = n)\n}\nfunc run[S](x: S): Res[R[S]] {\n  val body: (Int) -> Res[R[S]] = { d: Int ->\n    val a = match make(d) { case Good(t) -> t; case Bad(m) -> return Bad(m = m) }\n    Good(v = R(last = x, n = a))\n  }\n  body(3)\n}\n"
   )
   assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val ds = verifyPackage(c.pkg, newList())
