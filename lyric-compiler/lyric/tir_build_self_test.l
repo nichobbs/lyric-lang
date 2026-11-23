@@ -1114,6 +1114,30 @@ func fakeHost(): FakeHost {
   val parseU: List[ExternMemberSig] = newList()
   parseU.add(fhSig(true, fhParams1(fhPrim("String")), EMTType(elem = fhHost("System.UInt32"))))
   sigs.add(fhKey("System.UInt32", "Parse", 1), parseU)
+  val maxByte: List[ExternMemberSig] = newList()
+  maxByte.add(
+    ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = fhPrim("Byte")), isField = true)
+  )
+  maxByte.add(ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = EIEArg(index = 0))))
+  sigs.add(fhKey("System.Byte", "MaxValue", 0), maxByte)
+  val pair: List[ExternMemberSig] = newList()
+  pair.add(
+    ExternMemberSig(
+      isStatic = true,
+      params = fhParams2(EIEMArg(index = 0), EIEMArg(index = 1)),
+      ret = EMTType(
+        elem = EIEHost(hostName = "System.ValueTuple", args = fhParams2(EIEMArg(index = 0), EIEMArg(index = 1)))
+      ),
+      genericArity = 2
+    )
+  )
+  sigs.add(fhKey("System.Math", "Pair", 2), pair)
+  val maxChar: List[ExternMemberSig] = newList()
+  maxChar.add(
+    ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = fhHost("System.Char")), isField = true)
+  )
+  maxChar.add(ExternMemberSig(isStatic = true, params = newList(), ret = EMTType(elem = EIEArg(index = 0))))
+  sigs.add(fhKey("System.Char", "MaxValue", 0), maxChar)
   val pick: List[ExternMemberSig] = newList()
   val arrayName = "an array, pointer or by-reference type"
   val intArray = EIEHost(hostName = arrayName, args = [fhPrim("Int")])
@@ -1389,6 +1413,37 @@ test "a host UInt32 result the checker types as Long is read with CvFromHost (D7
 
 test "a numeric conversion on an element of an untyped host array local is the built-in (D773)" {
   val r = buildFirstFnHost(externHead() + "func f(): Long {\n  val g = Math.Grow(3)\n  g[0].toLong()\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a static constant of a host class is its own member, not a generic interface's type variable (D775)" {
+  val r = buildFirstFnHost("package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Byte {\n  ByteT.MaxValue\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host constant read through its extern type name is built where it is an argument (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type ByteT = \"System.Byte\"\nfunc take(x: Int): Int {\n  x\n}\nfunc f(): Int {\n  take(ByteT.MaxValue)\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host constant read where the context settled a wider type is converted (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type ByteT = \"System.Byte\"\nfunc f(): Int {\n  val i: Int = ByteT.MaxValue\n  i\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "an untyped generic host call is typed at the instantiation its arguments give (D775)" {
+  val r = buildFirstFnHost(externHead() + "func f(): Int {\n  val t = Math.Pair(1, 2)\n  0\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+}
+
+test "a host Char constant has the Lyric Char type (D775)" {
+  val r = buildFirstFnHost(
+    "package App\nextern type NetCharT = \"System.Char\"\nfunc f(): Int {\n  NetCharT.MaxValue.toInt()\n}\n"
+  )
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
 }
 
