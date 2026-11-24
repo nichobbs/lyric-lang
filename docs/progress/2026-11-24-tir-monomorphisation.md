@@ -1,0 +1,5 @@
+# Monomorphisation on TIR (docs/70 phase 3c, D500)
+
+`Lyric.Tir.Mono` (`lyric-compiler/lyric/tir/mono/`) replaces every generic function, member, record, protected type and union reached from a non-generic body by an instance, an ordinary declaration under its own `SymbolId` (DefPath key = the generic's key plus the arguments in brackets), all in the synthetic package `Lyric.Mono.Instances`. Value-generic parameters become their lengths. The output is verified by `Lyric.Tir.Verify`; `tir_mono_self_test.l` builds small packages, runs the pass and checks the keys, the instance entries, the case order, the callee rewrite, value generics and the polymorphic-recursion diagnostic (`M0010`).
+
+The builder now describes every union (its parameter count and every case), which the pass needs. `pipeMonoTir` is the pipeline entry and `lyric build --verify-ir` prints an `I0003 mono census` line per package. Design and decisions: `docs/decisions/D500-tir-monomorphisation.md`. Consumer: the native `--via-tir` lowering (phase 4a).

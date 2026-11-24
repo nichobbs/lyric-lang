@@ -2351,6 +2351,34 @@ pub func pipeMonoTir(interner: in DefPathInterner, bundle: in List[TirBuild.Pack
   TirMono.monoBundle(interner, bundle)
 }
 
+/// The monomorphisation census of one built package (docs/70 §12.2, D500): the package alone is the
+/// bundle, so a generic of a dependency counts as unresolved, and the output is verified.  `I0003 mono
+/// census` counts the verifier's diagnostics over the output, `M census` the instances made and the
+/// diagnostics of the pass.
+func pipeReportMonoCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild.PackageBuild): Unit {
+  val bundle: List[TirBuild.PackageBuild] = newList()
+  bundle.add(pb)
+  val r = TirMono.monoBundle(tbl.interner, bundle)
+  val bad = TirMono.verifyMonoBundle(r)
+  Console.error(
+    "I0003 mono census [" + label + "]: " + toString(bad.count) + " diagnostic(s), " + toString(r.instances.count) +
+      " instance(s), " + toString(r.diags.count) + " pass diagnostic(s)"
+  )
+  var shown = 0
+  for b in bad {
+    if shown < 3 {
+      Console.error("    e.g. " + b)
+      shown = shown + 1
+    }
+  }
+  for d in r.diags {
+    if shown < 6 {
+      Console.error("    e.g. " + d.code + ": " + d.message)
+      shown = shown + 1
+    }
+  }
+}
+
 pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
   TirBuild.newDepDefaults()
 }
@@ -2505,6 +2533,9 @@ pub func pipeCheckFront(
     )
     if opts.wantTir {
       opts.tirOut.add(pb)
+    }
+    if verifyIr {
+      pipeReportMonoCensus(opts.pkgLabel, tcRes.symbols, pb)
     }
     if gateTo(sink, opts.pkgLabel, opts.filePaths, pipeTirDiagnostics(tcRes.symbols, pb)) {
       return None
