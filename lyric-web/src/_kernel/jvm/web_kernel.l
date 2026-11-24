@@ -5,13 +5,12 @@
 //! package name — exactly one file is compiled per build, selected by
 //! feature).
 //!
-//! Web.serve's dotnet branch runs its own Std.HttpServer accept loop and
-//! never calls into this package.  Std.HttpServer's JVM kernel does not yet
-//! expose the query-string/header/byte-body primitives Web.dispatch needs
-//! (see `lyric-stdlib/std/_kernel_jvm/http_server.l`'s header comment), so
-//! this kernel binds `io.undertow` directly instead of routing through
-//! Std.HttpServer: Web.serve's jvm branch delegates entirely to serve()
-//! below.
+//! Web.serve's dotnet and native branches run their own Std.HttpServer accept
+//! loop and never call into this package.  Std.HttpServer is the shared
+//! pure-Lyric driver on the JVM too since docs/73 S4 (D789), but `lyric-web`
+//! has not moved to it yet (docs/73 S6), so this kernel still binds
+//! `io.undertow` directly: Web.serve's jvm branch delegates entirely to
+//! serve() below.
 //!
 //! Dispatch model: one `LyricUndertowHandler` — a Lyric record implementing
 //! the real JDK interface `io.undertow.server.HttpHandler` via `impl`
@@ -41,7 +40,7 @@ import Std.Collections
 import Std.Console as Console
 import Std.Time
 import Std.Tls
-import Std.HttpServer
+import Std.TlsServerContext
 import Std.HttpEngine
 import Web
 import Ws.Kernel.Jvm as WsJvm
@@ -390,10 +389,10 @@ pub func serve(host: in String, port: in Int, router: in Web.Router): Unit
 /// exactly when TLS is — docs/61 §5.2, decision 8).
 ///
 /// The server `SSLContext` is built by reusing
-/// `Std.HttpServer.serverSslContextFromConfig` (non-mTLS) or
-/// `Std.HttpServer.serverSslContextFromConfigMtls` (`tls.clientCa` set) —
+/// `Std.TlsServerContext.serverSslContextFromConfig` (non-mTLS) or
+/// `Std.TlsServerContext.serverSslContextFromConfigMtls` (`tls.clientCa` set) —
 /// the same `KeyManagerFactory`/`TrustManagerFactory`-backed context
-/// construction the JVM `Std.HttpServer` kernel exposes — rather than
+/// construction `Std.TcpHost` and `Std.HttpServer` share — rather than
 /// re-declaring the whole `KeyStore` / reflection extern boundary a second
 /// time.  `tls.minVersion` restricts the negotiated protocol range;
 /// `tls.identity` supplies the server certificate + key.  When `tls.clientCa`

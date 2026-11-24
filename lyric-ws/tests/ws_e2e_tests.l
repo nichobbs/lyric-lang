@@ -2,7 +2,7 @@
 //! server (`Ws.Kernel.Net`, docs/62-jsonrpc-mcp.md §6, #778; docs/73 S7a):
 //! `Ws.startServer` bound to `127.0.0.1` on an ephemeral port, and a
 //! minimal hand-rolled RFC 6455 client built directly on `Std.TcpHost` (the
-//! same raw-socket approach `lyric-stdlib/tests/http_server_dotnet_tests.l`
+//! same raw-socket approach `lyric-stdlib/tests/http_server_tests.l`
 //! uses for its own protocol-level assertions) — deliberately NOT reusing
 //! `Ws.Frame`'s codec, so these tests exercise the server's real byte-level
 //! wire output independently of the module that produces it.

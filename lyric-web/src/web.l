@@ -2033,11 +2033,11 @@ pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
 // Std.HttpServer shell of the dotnet accept loop.  The jvm serve() does not
 // go through Std.HttpServer at all — Web binds `io.undertow` directly
 // (Web.Kernel.Runtime, below) for a production multi-threaded server with
-// real exchange I/O, rather than the JVM kernel's single-consumer
-// pull-model bridge over `com.sun.net.httpserver` (which, since
-// D-progress-648, does expose the same twelve-function surface as the
-// dotnet kernel — the split here is a server-architecture choice, not a
-// kernel-surface gap).  All five items are therefore dotnet-only; erased
+// real exchange I/O, rather than `Std.HttpServer`'s single-consumer pull
+// model (on the JVM that is the shared pure-Lyric driver since docs/73 S4,
+// D789, with the same surface as dotnet, so the split here is a
+// server-architecture choice that docs/73 S6 retires, not a kernel-surface
+// gap).  All five items are therefore dotnet-only; erased
 // for jvm builds by Lyric.Cfg before type-checking.
 @cfg(any(feature = "dotnet", feature = "native"))
 func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback: in String): String {

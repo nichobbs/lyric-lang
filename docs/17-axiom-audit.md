@@ -1050,6 +1050,7 @@ All are provisional pending weaver integration.
 | `Std.PluginTrustedHost`  | `plugin_trusted_host.l`      | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
+| `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.EnvironmentHost`    | `environment_host.l`         | 3      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
@@ -1073,7 +1074,7 @@ All are provisional pending weaver integration.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **40** | **2**       |
+| **Total**                |                              | **41** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1093,7 +1094,6 @@ recorded in the §19 baseline.
 | `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
-| `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.HttpServerHost`     | `http_server_host.l`         | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
@@ -1118,12 +1118,12 @@ recorded in the §19 baseline.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
-| **Total**                |                              | **34** | **0**       |
+| **Total**                |                              | **33** | **0**       |
 
 ### Combined total
 
-.NET (37 stable + 2 provisional = 39) + JVM (31 stable + 0 provisional =
-31) = **70** `@axiom` annotations covering the entire extern boundary
+.NET (37 stable + 2 provisional = 39) + JVM (30 stable + 0 provisional =
+30) = **69** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.PluginWasmBind` (docs/69 §9.3) binds the
 in-process wasm host `lyric_wasmhost` through `@library`, so like
 `Std.FfiHost` its one file lowers on dotnet and the JVM and is counted once,
@@ -1139,11 +1139,14 @@ with `Std.String.StringBuilder` and `indexOfFrom` (#7257, #7258).  `Std.TlsHost`
 with the `Std.Tls` PEM certificate/key loading module (docs/61 phase 1,
 epic #5874).  The JVM `Std.HttpHost` axiom was re-scoped from the
 retired phantom `lyric.stdlib.jvm.HttpClientHost` shim to the real
-`java.net.http.HttpClient` boundary, and `Std.HttpServer` gained its own
-axiom when its kernel was rewritten onto `com.sun.net.httpserver.HttpServer`
-(the .NET `http_server.l` twin carries no axiom: since D788 it is the shared
-server driver with no extern of its own, its threads, locks and semaphores
-come from `Std.HttpServerHost`, whose axiom covers them).  The
+`java.net.http.HttpClient` boundary.  The JVM `Std.HttpServer` kernel over
+`com.sun.net.httpserver.HttpServer`, which carried an axiom, is deleted (D789,
+docs/73 S4): the shared server driver (`_kernel/http_server.l`, read by dotnet
+and the JVM) has no extern of its own (D788) and its threads, locks and
+semaphores come from `Std.HttpServerHost`, whose axiom covers them.  Its one
+axiom, in the .NET table because the file lives in `_kernel/`, backs
+`@sendable` on `HttpListener` (D404): the listener's mutable state is touched
+only under its guard mutex, so a task may be handed the listener.  The
 JVM `Std.HttpHost` axiom widened again in phase 1.3 (#5878, docs/61 §3.2)
 to cover client TLS configuration: `javax.net.ssl.{SSLContext,
 SSLParameters, TrustManagerFactory, KeyManagerFactory}`,
@@ -1199,6 +1202,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
+| `dotnet` | `Std.HttpServer` | `http_server.l` | an HttpListener's mutable state (items, conns, nextConnId, active, stopping) is read and written only while holding its guard mutex, and its mutexes and semaphores are the Std.HttpServerHost primitives, which synchronise themselves, so one listener may be shared between tasks |
 | `dotnet` | `Std.HttpServerHost` | `http_server_host.l` | System.Threading.Tasks.Task.Run, System.Threading.Monitor, System.Threading.ThreadPool.SetMinThreads and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
@@ -1238,7 +1242,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.FormatHost` | `format_host.l` | java.math.BigDecimal, java.lang.Integer, and java.util.Locale conform to their documented JVM contracts |
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents |
 | `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts |
-| `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer and HttpsServer operations conform to their documented JVM contracts |
 | `jvm` | `Std.HttpServerHost` | `http_server_host.l` | java.lang.Thread.startVirtualThread, java.util.concurrent.locks.ReentrantLock and java.util.concurrent.Semaphore operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |

@@ -202,7 +202,7 @@
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
 //! 19723/19724/19725/19726/19727/19728/19729/19730/19731 — item J binds a port too,
 //! even though it never accepts a connection on it),
-//! matching `lyric-stdlib/tests/http_server_dotnet_tests.l`'s own
+//! matching `lyric-stdlib/tests/http_server_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
 //! public surface (unlike `Std.TcpHost`'s) has no `hostLocalPort`-style
 //! ephemeral-port query, so there is no ephemeral-bind option available

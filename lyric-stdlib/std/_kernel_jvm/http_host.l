@@ -370,7 +370,7 @@ pub func resolveTlsValidationDecision(
 // ---------------------------------------------------------------------------
 // Reflection bridge (module header above; mirrored self-contained per this
 // directory's per-file convention rather than shared with
-// `_kernel_jvm/http_server.l`'s in-flight server-TLS counterpart).
+// `_kernel_jvm/tls_server_context.l`'s server-TLS counterpart).
 //
 // The JVM auto-FFI (`jvm/auto_ffi.l`) cannot construct or pass a
 // reference-typed Java array (`Certificate[]`, `TrustManager[]`, `String[]`,
@@ -693,8 +693,8 @@ func trustManagerFactoryFor(ks: in JKeyStore): JTrustManagerFactory {
 // Client identity (`withClientIdentity`, mTLS): a KeyStore holding
 // `identity`'s certificate + private key under a fixed alias, the standard
 // JDK way to feed a `KeyManagerFactory`. Mirrors the equivalent
-// server-identity construction the phase-2 (#5880) JVM server-TLS kernel
-// builds for `HttpsServer`, duplicated rather than shared per this
+// server-identity construction the JVM server-TLS context
+// (`tls_server_context.l`, #5880) builds for the server, duplicated rather than shared per this
 // directory's self-contained-per-file convention.
 func buildClientIdentityKeyStore(identity: in Identity): JKeyStore {
   val handle = Identity.rawHandle(identity)

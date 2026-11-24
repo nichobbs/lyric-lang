@@ -3,17 +3,14 @@
 //! The one place on this target that turns a `Std.Tls` `Identity` (and,
 //! for mutual TLS, a client-CA `Certificate`) into a `javax.net.ssl.SSLContext`
 //! for a server: the `KeyManagerFactory`/`KeyStore` reflection bridge and the
-//! TLS 1.2 floor check, moved here from `_kernel_jvm/http_server.l` (slice S1
-//! of docs/73, D621) so that BOTH `Std.TcpHost` (the TLS accept path) and
-//! `Std.HttpServer` import it. Before the move `Std.TcpHost` imported
-//! `Std.HttpServer` for these helpers, which made it impossible for
-//! `Std.HttpServer` to import `Std.TcpHost` (the shared driver of
-//! docs/73 section 1.2) without an import cycle.
-//!
-//! `Std.HttpServer` re-exports the public surface (`pub use`), so
-//! `serverSslContextFromConfig[Mtls]`, `ServerSslContext` and the
-//! `@experimental` `rawContext` accessor are unchanged for their callers
-//! (`lyric-web`'s Undertow kernel, `tls_server_jvm_tests.l`).
+//! TLS 1.2 floor check. It lived in the JDK `com.sun.net.httpserver`
+//! kernel's `_kernel_jvm/http_server.l` until slice S1 of docs/73 (D621) moved
+//! it here, so that `Std.TcpHost` (the TLS accept path) no longer imported
+//! `Std.HttpServer`, which would have made the shared driver's import of
+//! `Std.TcpHost` a cycle. That kernel is gone (docs/73 S4, D789): the shared
+//! driver reaches this construction only through `Std.TcpHost`
+//! (`hostPrepareServerTls`). `lyric-web`'s Undertow kernel and
+//! `tls_server_jvm_tests.l` import this package directly.
 //!
 //! Why reflection: the JVM auto-FFI cannot construct or pass a
 //! reference-typed Java array (`Certificate[]`, `KeyManager[]`) as a call
@@ -278,13 +275,10 @@ func buildServerSslContextCore(identity: in Identity, minVersion: in TlsVersion,
 // (`assertProtocolFloor` above) rather than trusting it implicitly. No
 // client-cert trust manager is configured; the context trusts no client
 // certificates, which is inert since nothing requests one without
-// `HttpsParameters.setNeedClientAuth`. This function itself never builds
+// `SSLSocket.setNeedClientAuth`/`setWantClientAuth`. This function itself never builds
 // client-cert trust — callers that need mTLS use the sibling
 // `buildServerSslContextWithClientCa`/`serverSslContextFromConfigMtls`
-// (#6017) instead. It is `Std.HttpServer.startListenerTls`'s own
-// `HttpsServer`/`HttpsConfigurator` path (below) that still cannot host
-// mTLS at all — blocked on the unrelated #5930 class-subclassing gap, not
-// a limitation of this function or of the JVM target generally.
+// (#6017) instead.
 func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JSSLContext {
   val tmArr = nullOfClass("[Ljavax.net.ssl.TrustManager;")
   buildServerSslContextCore(identity, minVersion, tmArr)
@@ -293,16 +287,16 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
 /// An opaque, server-identity `javax.net.ssl.SSLContext` built from a
 /// `Std.Tls` `Identity` + `TlsVersion` (optionally with client-cert trust
 /// pinned to a `Certificate`, via `serverSslContextFromConfigMtls`).
-/// Exposed so OTHER JVM server kernels in this project — specifically
+/// Exposed so other JVM server kernels in this project, specifically
 /// `lyric-web`'s Undertow kernel, which drives
 /// `Undertow.Builder.addHttpsListener(port, host, sslContext)` rather than
-/// `com.sun.net.httpserver.HttpsServer` — can reuse the
+/// `Std.TcpHost`, can reuse the
 /// `KeyManagerFactory`/`TrustManagerFactory`/`KeyStore`/`java.lang.reflect`
 /// extern wiring above (module header) instead of re-declaring the whole
 /// boundary a second time. A context built by the non-mTLS
 /// `serverSslContextFromConfig` carries no client-cert trust configuration,
 /// which is inert on its own: the per-server client-auth wiring
-/// (`HttpsServer.setNeedClientAuth` vs Undertow's XNIO
+/// (`SSLSocket.setNeedClientAuth` vs Undertow's XNIO
 /// `SSL_CLIENT_AUTH_MODE`) still differs per server implementation and is
 /// each caller's own responsibility to set.
 @experimental
@@ -313,8 +307,8 @@ pub opaque type ServerSslContext {
 /// Build a server-identity `SSLContext` from a certificate/key `Identity`
 /// and a minimum protocol version. Non-mTLS only (see `ServerSslContext`);
 /// callers that support mutual TLS call `serverSslContextFromConfigMtls`
-/// instead. Reuses `buildServerSslContext` — the exact same construction
-/// `startListenerTls` uses for its own `HttpsServer`.
+/// instead. Reuses `buildServerSslContext`, the same construction
+/// `Std.TcpHost.hostPrepareServerTls` uses.
 @experimental
 pub func serverSslContextFromConfig(identity: in Identity, minVersion: in TlsVersion): ServerSslContext {
   ServerSslContext(ctx = buildServerSslContext(identity, minVersion))
@@ -364,11 +358,9 @@ func buildServerSslContextWithClientCa(
 
 /// Build a server-identity `SSLContext` with client-cert trust pinned to
 /// `clientCa` (mutual TLS). Companion to `serverSslContextFromConfig` for
-/// callers that support mTLS — currently `lyric-web`'s Undertow kernel
-/// (`Web.Kernel.Runtime.serveTls`, issue #6017). `Std.HttpServer`'s own
-/// `startListenerTls` (`com.sun.net.httpserver.HttpsServer`) still rejects
-/// mTLS for the separate, harder `HttpsConfigurator` class-subclassing gap
-/// (#5930) — this function does not touch that path.
+/// callers that support mTLS: `Std.TcpHost.hostPrepareServerTls` (and so
+/// `Std.HttpServer.startListenerTls`) and `lyric-web`'s Undertow kernel
+/// (`Web.Kernel.Runtime.serveTls`, issue #6017).
 @experimental
 pub func serverSslContextFromConfigMtls(
   identity: in Identity, minVersion: in TlsVersion, clientCa: in Certificate

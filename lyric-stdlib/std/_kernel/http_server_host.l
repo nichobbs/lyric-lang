@@ -38,8 +38,8 @@
 //! - `tryStartTask` is `startTask` that reports a thread that could not be
 //!   created as `false` instead of a panic. A server's accept loop uses it so
 //!   running out of threads refuses one connection and keeps serving; on dotnet
-//!   and the JVM it is always `true` (the pool and the virtual-thread scheduler
-//!   queue the work, they do not fail to start).
+//!   it is always `true` (the pool queues the work, it does not fail to start),
+//!   and on the JVM it is `false` when `Thread.startVirtualThread` throws.
 //!
 //! This file is the dotnet kernel and therefore may contain `extern type` and
 //! `@externTarget` declarations (docs/14, Decision F).

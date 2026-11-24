@@ -7,11 +7,10 @@
 #
 #   scripts/ci/http-server-benchmark.sh <target> [scenario...]
 #
-#   target    dotnet | jvm | jvm-nodelay | native | undertow
+#   target    dotnet | jvm | native | undertow
 #               dotnet     benchmarks/http_server/server.l on --target dotnet  (pure-Lyric Std.HttpEngine kernel)
-#               jvm        benchmarks/http_server/server.l on --target jvm     (JDK com.sun.net.httpserver kernel)
-#               jvm-nodelay  as jvm with -Dsun.net.httpserver.nodelay=true: the JDK server leaves Nagle on, so a
-#                          keep-alive response written as headers then body stalls ~40 ms behind the client's delayed ACK
+#               jvm        benchmarks/http_server/server.l on --target jvm     (the shared driver over Std.TcpHost; the JDK
+#                          com.sun.net.httpserver kernel it replaced in D789 is gone)
 #               native     benchmarks/http_server/server.l on --target native  (h1 only)
 #               undertow   benchmarks/http_server/server_web.l through lyric-web on --target jvm (Undertow,
 #                          restores lyric-web's Maven dependencies, so it needs Maven Central)
@@ -37,7 +36,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-target="${1:?usage: http-server-benchmark.sh <dotnet|jvm|jvm-nodelay|native|undertow> [b1 b2 b3 b4 b5 b6]}"
+target="${1:?usage: http-server-benchmark.sh <dotnet|jvm|native|undertow> [b1 b2 b3 b4 b5 b6]}"
 shift || true
 scenarios=("$@")
 [ "${#scenarios[@]}" -gt 0 ] || scenarios=(b1 b2 b3 b4 b5)
@@ -82,14 +81,10 @@ build_server() {
       "$LYRIC" build --target dotnet benchmarks/http_server/server.l -o "$OUT/server.dll" >"$OUT/build-server.log" 2>&1 \
         || { cat "$OUT/build-server.log" >&2; exit 1; }
       server_cmd=(dotnet "$OUT/server.dll") ;;
-    jvm|jvm-nodelay)
+    jvm)
       "$LYRIC" build --target jvm benchmarks/http_server/server.l -o "$OUT/server.jar" >"$OUT/build-server.log" 2>&1 \
         || { cat "$OUT/build-server.log" >&2; exit 1; }
-      if [ "$target" = jvm-nodelay ]; then
-        server_cmd=(java -Dsun.net.httpserver.nodelay=true -jar "$OUT/server.jar")
-      else
-        server_cmd=(java -jar "$OUT/server.jar")
-      fi ;;
+      server_cmd=(java -jar "$OUT/server.jar") ;;
     native)
       "$LYRIC" build --target native benchmarks/http_server/server.l -o "$OUT/server-native" >"$OUT/build-server.log" 2>&1 \
         || { cat "$OUT/build-server.log" >&2; exit 1; }

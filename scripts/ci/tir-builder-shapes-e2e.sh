@@ -1406,12 +1406,12 @@ else
   if [[ "$got" != "0" ]]; then echo "FAIL (jvm_host_local_receiver): exit code $got, want 0"; fail=1; else echo "ok   jvm_host_local_receiver"; fi
 fi
 # A `Std.*` package sees the `internal` functions of another `Std.*` package (`Std.Tls`'s `rawHandle`
-# accessors, D432) and a user package does not: with `Std.HttpServer` imported (it re-exports `Std.TlsServerContext`), the two kernel functions
+# accessors, D432) and a user package does not: with `Std.TlsServerContext` imported, the two kernel functions
 # that call them are built, and a user call of the accessor stays unresolved.
 cat > "$WORK/std_internal_sigs.l" <<'LYRIC'
 package StdInternalSigs
 import Std.Core
-import Std.HttpServer
+import Std.TlsServerContext
 import Std.Tls
 
 func peek(id: in Identity): Int { 0 }

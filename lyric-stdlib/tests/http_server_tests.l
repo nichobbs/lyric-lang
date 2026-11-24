@@ -1,14 +1,12 @@
-//! stdlib/tests/http_server_dotnet_tests.l — runtime tests for the dotnet
-//! HTTP/1.1 server assembly `Std.HttpServer`
-//! (docs/61-https-tls-http-versions.md §6.1/§6.2/§6.3, phase 3.3 of epic
-//! #5874, issue #5884).
+//! stdlib/tests/http_server_tests.l — runtime tests for the shared
+//! `Std.HttpServer` driver (docs/61-https-tls-http-versions.md §6.1/§6.2/§6.3,
+//! phase 3.3 of epic #5874, issue #5884; docs/73 slices S3 and S4, D788 and D789).
 //!
-//! dotnet-only: `Std.HttpServer` on `--target dotnet` is now built on the
-//! `Std.TcpHost` (`System.Net.Sockets`/`SslStream`) transport + the sans-IO
-//! `Std.HttpEngine`, replacing the retired `System.Net.HttpListener` server.
-//! The JVM server is a separate kernel (`_kernel_jvm/http_server.l`) with its
-//! own suite (`tls_server_jvm_tests.l`), so this suite runs only on
-//! `--target dotnet`.
+//! Target neutral: `Std.HttpServer` is one pure-Lyric driver over the sans-IO
+//! `Std.HttpEngine` and the `Std.TcpHost` transport on dotnet and the JVM
+//! (`--target dotnet` and `--target jvm`; native adopts it in docs/73 S5), so
+//! this suite runs unchanged on each. The JVM's TLS-context construction has
+//! its own suite (`tls_server_jvm_tests.l`).
 //!
 //! Coverage: a plaintext GET round trip against the REAL Lyric HTTP client
 //! (path/query/method observed by the handler), a POST whose body reaches the
@@ -23,24 +21,25 @@
 //! through the pure-Lyric `Std.HttpEngine.H2Conn` FSM: a GET and a POST each
 //! asserting `HttpResponse.negotiatedVersion() == Http2` with the routed
 //! request observed by the handler, plus two multiplexed streams on one h2
-//! connection. Both directions of our own stack (the .NET-backed HTTPS client
-//! and the pure-Lyric h2 server) verify each other; a `curl --http2` CI smoke
-//! (`dotnet_h2_smoke.l`) is the independent implementation cross-check.
+//! connection. Both directions of our own stack (the HTTPS client and the
+//! pure-Lyric h2 server) verify each other; a `curl --http2` CI smoke
+//! (`h2_smoke.l`) is the independent implementation cross-check. Also: the
+//! 10 MiB request-body cap (`413`, never dispatched), a chunked h1 response,
+//! `takeConnection`, the handshake and idle timeouts, and the h2 send
+//! scheduler.
 //!
 //! Concurrency: the pull-model server needs its accept loop and the request
 //! driver to run on separate OS threads (Lyric `spawn` is degenerate-
 //! synchronous on `--target dotnet`, D119/D120), so the server's `nextContext`
-//! puller runs on a `System.Threading.Tasks.Task`, exactly as
-//! `tcp_host_tls_tests.l` runs its loopback server. Declaring those `extern`s
-//! in a test file mirrors that suite — a documented test-only exception to the
-//! `_kernel/`-only extern rule for driving the opposite side of a real
-//! protocol. The raw-client helpers reuse `Std.TcpHost` directly.
+//! puller runs on a thread from `Std.HttpServerHost.startTask`, the seam the
+//! driver itself is written over. The raw-client helpers reuse `Std.TcpHost`
+//! directly. The suite declares no extern.
 //!
 //! Fixtures: the same self-signed CA / server leaf (SAN localhost + 127.0.0.1)
 //! / client leaf as `tcp_host_tls_tests.l`, embedded PEM, valid
 //! 2026-07-18..2036-07-15.
 @test_module
-package Std.HttpServer.DotnetTests
+package Std.HttpServer.Tests
 
 import Std.Errors
 import Std.Core
@@ -58,6 +57,7 @@ import Std.HttpEngine as Eng
 import Std.Environment as Env
 import Std.Time
 import Std.Parse
+import Std.HttpServerHost
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -185,39 +185,70 @@ BYr/w9ucuC11rYllBCEkxQ==
 -----END PRIVATE KEY-----
 """
 
-// `Task.Run(Action)` runs the server's request-puller loop on a background
-// thread; `spawn` is degenerate-synchronous on this target (module header).
-extern type Task = "System.Threading.Tasks.Task"
+// The tests' background threads come from the `Std.HttpServerHost` seam
+// (`startTask`, `Semaphore`, `Mutex`), the same primitives the driver itself is
+// written over, so the suite has no extern of its own and runs unchanged on
+// every target whose `Std.HttpServer` is the shared driver (`spawn` is
+// degenerate-synchronous on `--target dotnet`, D119/D120, so it cannot be used
+// to put the puller beside the client).
+//
+// `Task` is a started thread: `done` is posted once when its work has ended,
+// and `failure` holds the panic message when it panicked, which `taskWait`
+// re-raises on the waiting thread (the behaviour `Task.Wait` had).
+ref record Task {
+  done: Semaphore
+  var failure: String
+}
 
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
+func taskRun(work: in () -> Unit): Task {
+  val t = Task(done = newSem(0), failure = "")
+  startTask({ -> runGuarded(work, { m -> t.failure = m }); semPost(t.done) })
+  t
+}
 
-@externInstance
-@externTarget("System.Threading.Tasks.Task.Wait")
-func taskWait(t: in Task): Unit = ()
+func taskWait(t: in Task): Unit {
+  semWait(t.done)
+  semPost(t.done)
+  if t.failure.length > 0 {
+    panic("background task failed: " + t.failure)
+  }
+}
 
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
+func threadSleep(ms: in Int): Unit {
+  sleepMillis(ms)
+}
 
-// Thread-safe accumulator for the concurrent-connections test: four background
-// `Task.Run` clients record their outcome here, so it must not be a plain
-// (non-thread-safe) `List`. `ConcurrentQueue` is the same primitive the server
-// kernel uses for its pull queue; results are drained single-threaded after the
-// clients join (#6079).
-extern type ConcQueue[T] = "System.Collections.Concurrent.ConcurrentQueue`1"
+// Thread-safe accumulator for the tests whose background clients and pullers
+// record their outcome concurrently; drained single-threaded after the
+// producers join (#6079).
+ref record ConcQueue[T] {
+  guard: Mutex
+  items: List[T]
+}
 
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1..ctor")
-func newConcQueue[T](): ConcQueue[T] = ()
+func newConcQueue[T](): ConcQueue[T] {
+  ConcQueue(guard = newMutex(), items = newList())
+}
 
-@externInstance
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.Enqueue")
-func concEnqueue[T](q: in ConcQueue[T], item: in T): Unit = ()
+func concEnqueue[T](q: in ConcQueue[T], item: in T): Unit {
+  lock(q.guard)
+  q.items.add(item)
+  unlock(q.guard)
+}
 
-@externInstance
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue")
-func concTryDequeue[T](q: in ConcQueue[T], result: out T): Bool = ()
+// The oldest item, removed, or `None` when the queue is empty.
+func concPop[T](q: in ConcQueue[T]): Option[T] {
+  lock(q.guard)
+  val r: Option[T] = if q.items.count > 0 {
+    val head = q.items[0]
+    q.items.removeAt(0)
+    Some(value = head)
+  } else {
+    None
+  }
+  unlock(q.guard)
+  r
+}
 
 func serverIdentity(): Identity {
   match Identity.fromPem(serverCertPem, serverKeyPem) {
@@ -388,11 +419,13 @@ func drainConcQueue(results: in ConcQueue[String]): String {
   var acc = ""
   var more = true
   while more {
-    var item = ""
-    if concTryDequeue(results, item) {
-      acc = acc + item + ";"
-    } else {
-      more = false
+    match concPop(results) {
+      case Some(item) -> {
+        acc = acc + item + ";"
+      }
+      case None -> {
+        more = false
+      }
     }
   }
   acc
@@ -492,7 +525,7 @@ test "plaintext GET round trip via the Lyric HTTP client" {
     case Ok(r) -> r
     case Err(e) -> panic("client GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "plaintext response is 200")
@@ -515,6 +548,64 @@ test "POST body reaches the handler" {
   stopListener(listener)
   assertTrue(postResp.contains("m=POST"), "method POST observed: " + postResp)
   assertTrue(postResp.contains("body=hello world"), "request body delivered: " + postResp)
+}
+
+// #7269 (formerly a JVM-only suite): the engine buffers a request body up to
+// `EngineLimits.maxBodyBytes` (10 MiB by default) and answers `413` for more,
+// without the request ever reaching `nextContext`. Exactly one byte over the
+// cap, so the server has read everything the client sent before it answers and
+// the client never writes into a reset connection. The `/after` request that
+// follows is the first one the puller sees: `/big` was never dispatched.
+test "an HTTP/1.1 request body over the 10 MiB cap is answered 413 and never dispatched" {
+  val listener = startListener("http://127.0.0.1:19491/")
+  val dispatched: ConcQueue[String] = newConcQueue()
+  val server = taskRun({ -> serveRecording(listener, dispatched, 1) })
+  threadSleep(100)
+  val conn = dial("127.0.0.1", 19491)
+  hostSetIoTimeout(conn, 20000)
+  val total = 10 * 1048576 + 1
+  val _ = hostWrite(
+    conn,
+    encodeUtf8(
+      "POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: " + toString(total) + "\r\nConnection: close\r\n\r\n"
+    )
+  )
+  val mib = encodeUtf8(Std.String.repeat("x", 1048576))
+  var i = 0
+  while i < 10 {
+    val _ = hostWrite(conn, mib)
+    i = i + 1
+  }
+  val _ = hostWrite(conn, encodeUtf8("x"))
+  val acc: List[String] = newList()
+  val got413 = readInto(conn, acc, "413")
+  hostClose(conn)
+  val after = rawRequest(
+    "127.0.0.1",
+    19491,
+    "GET /after HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    "handled /after"
+  )
+  taskWait(server)
+  stopListener(listener)
+  assertTrue(got413, "the over-cap request is answered 413: " + joined(acc))
+  assertTrue(joined(acc).startsWith("HTTP/1.1 413"), "status line is 413: " + joined(acc))
+  assertEqual(drainConcQueue(dispatched), "/after;", "only the follow-up request reached the handler")
+  assertTrue(after.contains("handled /after"), "the listener keeps serving: " + after)
+}
+
+test "an HTTP/1.1 chunked response streams its chunks and ends cleanly" {
+  val listener = startListener("http://127.0.0.1:19492/")
+  val server = taskRun({ -> serveChunked(listener) })
+  threadSleep(100)
+  val resp = rawRequest("127.0.0.1", 19492, "GET /s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", "\r\n0\r\n\r\n")
+  taskWait(server)
+  stopListener(listener)
+  assertTrue(resp.contains("200"), "status 200: " + resp)
+  assertTrue(Std.String.toLower(resp).contains("transfer-encoding: chunked"), "chunked encoding: " + resp)
+  assertTrue(resp.contains("chunk-A;"), "first chunk: " + resp)
+  assertTrue(resp.contains("chunk-B;"), "second chunk: " + resp)
+  assertTrue(resp.contains("chunk-C"), "third chunk: " + resp)
 }
 
 test "repeated request headers are comma-joined by requestHeaders (#7265)" {
@@ -605,7 +696,7 @@ test "TLS GET round trip via the Lyric HTTPS client" {
     case Ok(r) -> r
     case Err(e) -> panic("HTTPS GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "TLS-terminated response is 200")
@@ -680,7 +771,7 @@ test "HTTP/2 GET negotiates h2 over ALPN and round-trips via the Lyric HTTPS cli
     case Ok(r) -> r
     case Err(e) -> panic("h2 GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "h2 response is 200")
@@ -718,7 +809,10 @@ test "stopListener ends an idle TLS h2 connection promptly" {
   val t0 = nowEpochMillis()
   stopListener(listener)
   val took = nowEpochMillis() - t0
-  assertTrue(took < 2000i64, "stop returned without waiting for the idle h2 connection (took " + took.toString() + " ms)")
+  assertTrue(
+    took < 2000i64,
+    "stop returned without waiting for the idle h2 connection (took " + took.toString() + " ms)"
+  )
 }
 
 test "HTTP/2 POST body reaches the handler and negotiates h2" {
@@ -736,7 +830,7 @@ test "HTTP/2 POST body reaches the handler and negotiates h2" {
     case Ok(r) -> r
     case Err(e) -> panic("h2 POST failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "h2 POST response is 200")
@@ -765,12 +859,18 @@ test "HTTP/2 serves multiple request streams on one connection" {
     case Ok(r) -> r
     case Err(e) -> panic("h2 stream 1 failed: " + HttpError.message(e))
   }
-  val body1 = match await resp1.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 1 body read failed") }
+  val body1: String = match await resp1.bodyText() {
+    case Ok(t) -> t
+    case Err(_) -> panic("stream 1 body read failed")
+  }
   val resp2 = match await client.get("https://localhost:19411/second") {
     case Ok(r) -> r
     case Err(e) -> panic("h2 stream 2 failed: " + HttpError.message(e))
   }
-  val body2 = match await resp2.bodyText() { case Ok(t) -> t; case Err(_) -> panic("stream 2 body read failed") }
+  val body2: String = match await resp2.bodyText() {
+    case Ok(t) -> t
+    case Err(_) -> panic("stream 2 body read failed")
+  }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp1.statusCode(), 200, "stream 1 is 200")
@@ -823,7 +923,7 @@ test "HTTP/2 request body just under maxBodyBytes is accepted" {
     case Ok(r) -> r
     case Err(e) -> panic("under-cap POST failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "under-cap h2 request body accepted")
@@ -892,7 +992,7 @@ test "HTTP/2 large response body spans multiple DATA frames and arrives intact" 
     case Ok(r) -> r
     case Err(e) -> panic("large-body GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "large h2 response is 200")
@@ -919,7 +1019,7 @@ test "HTTP/2 chunked response body arrives fully" {
     case Ok(r) -> r
     case Err(e) -> panic("chunked GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "chunked h2 response is 200")
@@ -1029,7 +1129,8 @@ test "startListenerTls rejects requireClientCert without clientCa" {
 // A full concurrency-timing test would be flaky; this deterministically pins
 // the resolution logic that decides the effective cap — a positive value
 // overrides, and any value that would defeat the backpressure guarantee
-// (zero, negative, non-numeric) falls back to the 1000 default. Each
+// (zero, negative, non-numeric) falls back to the target's default
+// (`defaultMaxConnections`: 1000 on dotnet and native, 10000 on the JVM). Each
 // assertion sets the var first, so the block is order-independent (Env has no
 // unsetVar). A cap of 1 is the documented backpressure-test seam.
 test "resolveMaxConcurrentConnections honours LYRIC_HTTP_MAX_CONNECTIONS with safe fallback (#6071 tunable cap)" {
@@ -1043,13 +1144,13 @@ test "resolveMaxConcurrentConnections honours LYRIC_HTTP_MAX_CONNECTIONS with sa
   assertEqualInt(resolveMaxConcurrentConnections(), 1, "cap of 1 is valid (serializes connections)")
 
   Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "0")
-  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "zero falls back to the 1000 default")
+  assertEqualInt(resolveMaxConcurrentConnections(), defaultMaxConnections(), "zero falls back to the target's default")
 
   Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "-3")
-  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "negative falls back to the default")
+  assertEqualInt(resolveMaxConcurrentConnections(), defaultMaxConnections(), "negative falls back to the default")
 
   Env.setVar("LYRIC_HTTP_MAX_CONNECTIONS", "lots")
-  assertEqualInt(resolveMaxConcurrentConnections(), 1000, "non-numeric falls back to the default")
+  assertEqualInt(resolveMaxConcurrentConnections(), defaultMaxConnections(), "non-numeric falls back to the default")
 
   // Leave the process-global env in an explicit, obvious state (Env has no
   // unsetVar): set it back to the numeric default so any later test in this
@@ -1102,14 +1203,34 @@ test "a silent TLS peer is closed at the handshake timeout (#7268)" {
   threadSleep(100)
   val silent = dial("127.0.0.1", 19419)
   hostSetIoTimeout(silent, 10000)
-  val read = hostRead(silent, 64)
+  // The server may send a TLS alert record (content type 21) before it closes,
+  // as the JVM's `SSLSocket` does when a handshake times out; either way the
+  // connection must reach EOF well inside the client's own 10 s timeout.
+  var reachedEof = false
+  var alertOnly = true
+  var failure = ""
+  var reads = 0
+  while not reachedEof and failure.length == 0 and reads < 8 {
+    match hostRead(silent, 64) {
+      case Ok(b) -> {
+        if b.length == 0 {
+          reachedEof = true
+        } else if b[0].toInt() != 21 {
+          alertOnly = false
+        }
+      }
+      case Err(e) -> {
+        failure = TcpError.message(e)
+      }
+    }
+    reads = reads + 1
+  }
   hostClose(silent)
   stopListener(listener)
   Env.setVar("LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS", "10000")
-  match read {
-    case Ok(b) -> assertEqualInt(b.length, 0, "server closed the silent connection")
-    case Err(e) -> panic("expected the server to close the silent peer, got " + TcpError.message(e))
-  }
+  assertEqual(failure, "", "expected the server to close the silent peer, not fail the read")
+  assertTrue(alertOnly, "the server sent nothing but a TLS alert before closing")
+  assertTrue(reachedEof, "server closed the silent connection")
 }
 
 // #7268: an established connection that goes quiet is closed once it has been
@@ -1182,7 +1303,7 @@ test "HTTP/2 request body far larger than the initial window arrives intact" {
     case Ok(r) -> r
     case Err(e) -> panic("large h2 POST failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
   taskWait(server)
   stopListener(listener)
   match HttpResponse.negotiatedVersion(resp) {
@@ -1351,7 +1472,7 @@ test "HTTP/2 chunked response streams more than the credit and window with backp
     case Ok(r) -> r
     case Err(e) -> panic("chunked GET failed: " + HttpError.message(e))
   }
-  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("body read failed") }
+  val body: String = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("body read failed") }
   taskWait(server)
   stopListener(listener)
   assertEqualInt(resp.statusCode(), 200, "status")

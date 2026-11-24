@@ -10,7 +10,7 @@ nightly job. The recorded numbers are in `docs/progress/2026-11-24-http-server-b
 
 | File | Role |
 |---|---|
-| `server.l` | The server under test over `Std.HttpServer` (dotnet engine, JVM JDK-HttpServer kernel, native). Routes `GET /hello` ("ok") and `POST /echo`. A pool of `BENCH_WORKERS` (32) tasks pulls with `nextContext`. `BENCH_CERT`/`BENCH_KEY` make the listener TLS. |
+| `server.l` | The server under test over `Std.HttpServer` (the shared driver on dotnet and the JVM, the native kernel until docs/73 S5). Routes `GET /hello` ("ok") and `POST /echo`. A pool of `BENCH_WORKERS` (32) tasks pulls with `nextContext`. `BENCH_CERT`/`BENCH_KEY` make the listener TLS. |
 | `server_web.l` | The same routes through `lyric-web`: Undertow on `--target jvm`, `Std.HttpServer` on dotnet and native. Built inside the lyric-web manifest. |
 | `loadgen.l` | HTTP/1.1 load generator in Lyric over `Std.TcpHost` and `Std.Task` (runs on dotnet). Modes `keepalive`, `connclose`, `echo`, `idle`, `soak`. |
 | `ws_server.l`, `ws_clients.l` | B7: a `lyric-ws` broadcast server and a client fleet that measures delivery latency (build inside the lyric-ws manifest). |
@@ -50,15 +50,16 @@ when on `PATH`; without them run only `b1 b2 b3 b4 b5 b6` (the Lyric generator a
 ```sh
 make lyric                                              # ./bin/lyric
 scripts/ci/http-server-benchmark.sh dotnet b1 b2 b3 b4 b5
-scripts/ci/http-server-benchmark.sh jvm    b1 b2 b3 b5
+scripts/ci/http-server-benchmark.sh jvm    b1 b2 b3 b4 b5
 scripts/ci/http-server-benchmark.sh undertow b1 b2 b3 b4 b5   # needs Maven Central for the restore
 scripts/ci/http-server-benchmark.sh native b1 b2 b3 b5        # needs clang and lyric-rt
 BENCH_SOAK_SECONDS=1800 scripts/ci/http-server-benchmark.sh dotnet b1 b6
 scripts/ci/http-server-benchmark.sh dotnet b1w b2w b3w b4h     # with wrk and h2load on PATH
 ```
 
-`jvm-nodelay` is the `jvm` target with `-Dsun.net.httpserver.nodelay=true`: the JDK server leaves Nagle on and, as
-shipped, answers a keep-alive request in about 44 ms (docs/progress/2026-11-24-http-server-baseline.md).
+The S0 baseline (docs/progress/2026-11-24-http-server-baseline.md) also measured the JDK `com.sun.net.httpserver`
+kernel, as shipped and with `-Dsun.net.httpserver.nodelay=true`; that kernel was deleted in docs/73 S4 (D789), so the
+`jvm` target is now the shared driver. The S4 acceptance run is in docs/progress/2026-11-27-http-server-jvm-shared-driver.md.
 
 B7 is run by hand: build `ws_server.l` inside the lyric-ws manifest (see its header; `--target dotnet`, or
 `--target jvm --features jvm` for Undertow) and `ws_clients.l` for `--target jvm`, start the server with
@@ -80,6 +81,6 @@ Tunables are environment variables, listed in the script header (`BENCH_SECONDS`
   D621's `TCP_NODELAY` and shows a 43 ms h2 latency floor). Build the bundle from the tree under test.
 - Latency is measured by the generator (write to last response byte), so it includes generator
   scheduling delay under load.
-- The JVM/JDK-server and dotnet kernels are driven through the pull API with a fixed worker pool;
+- The `Std.HttpServer` targets are driven through the pull API with a fixed worker pool;
   Undertow through `Web.serve`, which has its own job dispatch. The comparison is of the stacks as an
   application meets them, not of the transports alone.

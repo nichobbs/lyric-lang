@@ -1,35 +1,23 @@
-//! stdlib/tests/tls_server_jvm_tests.l — Tests for
+//! stdlib/tests/tls_server_jvm_tests.l — JVM TLS-termination tests for
 //! `Std.HttpServer.startListenerTls` (docs/61-https-tls-http-versions.md
-//! §6.3, phase 2.1 of epic #5874, issue #5880).
+//! §6.3, phase 2.1 of epic #5874, issue #5880) and for the server
+//! `SSLContext` construction in `Std.TlsServerContext`.
 //!
-//! JVM-only: `startListenerTls` only builds a real listener on
-//! `--target jvm` today (`_kernel_jvm/http_server.l`); the `--target
-//! dotnet` twin is a typed `NotSupportedOnTarget` stub (issue #5884) with no
-//! runtime surface to exercise, so this file is not run on that target.
-//!
-//! Coverage boundary: the client-side TLS surface
-//! (`HttpClientBuilder`/`withCaCertificate`, #5877/#5878) has not shipped
-//! yet, so `Std.Http`'s client cannot trust a custom CA and cannot be used
-//! here. Per the task's documented fallback, this suite exercises the TLS
-//! handshake layer directly with raw JDK classes reached through the same
-//! extern surface the kernel itself uses (`javax.net.ssl.*`,
-//! `java.security.*`): a real `SSLSocket`, built from a `SSLContext`
-//! trusting the fixture cert as its own CA, completes a genuine handshake
-//! and HTTP/1.1 request/response round trip against
-//! `Std.HttpServer.startListenerTls`'s real `HttpsServer`. End-to-end
-//! `Std.Http`-client-vs-server coverage arrives with #5878.
-//!
-//! mTLS (`requireClientCert` / `clientCa`) has no accept/reject-at-handshake
-//! coverage here because it is not yet supported on this target at all:
-//! `startListenerTls` rejects any mTLS request with a typed
-//! `NotSupportedOnTarget` error at LISTENER CONSTRUCTION, before a handshake is
-//! ever possible (blocked on issue #5930, an `HttpsConfigurator`
-//! class-subclassing FFI gap — see `_kernel_jvm/http_server.l`'s module
-//! header). The tests below cover that rejection instead.
+//! JVM-only because the clients are raw JDK classes: a real `SSLSocket`,
+//! built from an `SSLContext` trusting the fixture cert as its own CA and
+//! reached through the same extern surface the kernel uses
+//! (`javax.net.ssl.*`, `java.security.*`), completes a genuine handshake and
+//! HTTP/1.1 request/response round trip against the shared driver's TLS
+//! listener (`Std.HttpServer` over `Std.TcpHost`, docs/73 S4, D789). That is
+//! an independent TLS client for the protocol-floor cases below, which pin
+//! the client's own enabled protocols (`TLSv1.1` only, `TLSv1.3` only). The
+//! target-neutral TLS, mTLS and h2 cases (the Lyric HTTPS client against the
+//! listener, both mTLS outcomes, the `InvalidConfig` guard) are in
+//! `http_server_tests.l`.
 //!
 //! Every raw JDK reflection helper below (`nullOfClass`/`makeTypedArray1`/
 //! `invoke1`/`invoke2`/`invoke3`/`makeStringArray`) mirrors the same bridge
-//! `_kernel_jvm/http_server.l` (and `_kernel_jvm/http_host.l`'s
+//! `_kernel_jvm/tls_server_context.l` (and `_kernel_jvm/http_host.l`'s
 //! `buildClientSslParameters`) uses internally to build a client-side trust
 //! store, and to pin a client socket's own enabled-protocol list, without
 //! an `impl X509TrustManager for Record` (see that kernel's module header
@@ -46,6 +34,7 @@ package Std.HttpServer.TlsJvmTests
 import Std.Core
 import Std.Tls
 import Std.HttpServer
+import Std.TlsServerContext
 import Std.Testing
 import Std.Collections
 import Std.Encoding
@@ -304,7 +293,7 @@ func clientTls11OnlyContext(): JSSLContext {
   ctx
 }
 
-test "startListenerTls builds a real HttpsServer that starts and stops cleanly" {
+test "startListenerTls builds a TLS listener that starts and stops cleanly" {
   val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   match startListenerTls("127.0.0.1", 8501, tls) {
     case Ok(listener) -> {
@@ -351,7 +340,7 @@ test "startListenerTls terminates real TLS and serves a real HTTP response" {
 
 // #5997: `startListenerTls`'s `Tls12`-floor `SSLContext` must never
 // negotiate below TLS 1.2, whatever the actual JDK default happens to be
-// (`_kernel_jvm/http_server.l`'s `assertProtocolFloor`). A real handshake
+// (`_kernel_jvm/tls_server_context.l`'s `assertProtocolFloor`). A real handshake
 // against an unrestricted client proves the NEGOTIATED protocol, not just
 // the requested one, is TLSv1.2 or TLSv1.3.
 test "startListenerTls (Tls12 floor) never negotiates below TLS 1.2" {
@@ -504,55 +493,18 @@ test "startListenerTls negotiates a real TLS 1.3 handshake" {
   stopListener(listener)
 }
 
-test "startListenerTls rejects requireClientCert as Unsupported" {
-  val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = true)
-  match startListenerTls("127.0.0.1", 8503, tls) {
-    case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for requireClientCert = true")
-    case Err(e) -> match e {
-      case NotSupportedOnTarget(message) -> assertTrue(
-        message.contains("mutual TLS"),
-        "NotSupportedOnTarget names mutual TLS"
-      )
-    }
-  }
-}
-
-test "startListenerTls rejects a clientCa request as Unsupported" {
-  val ca = match Certificate.fromPem(rsaCert) {
-    case Ok(c) -> c
-    case Err(e) -> panic("fixture cert load failed: " + TlsError.message(e))
-  }
-  val tls = TlsServerConfig(
-    identity = freshIdentity(),
-    minVersion = Tls12,
-    clientCa = Some(value = ca),
-    requireClientCert = false
-  )
-  match startListenerTls("127.0.0.1", 8504, tls) {
-    case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for a clientCa request")
-    case Err(e) -> match e {
-      case NotSupportedOnTarget(message) -> assertTrue(
-        message.contains("mutual TLS"),
-        "NotSupportedOnTarget names mutual TLS"
-      )
-    }
-  }
-}
-
 // PR-6560 review finding #6563: `serverSslContextFromConfigMtls`
-// (`_kernel_jvm/http_server.l` — the mTLS `SSLContext` constructor lyric-web's
-// Undertow `serveTls` calls whenever `clientCa` is set, #6017) was a
-// near-verbatim copy of the non-mTLS `buildServerSslContext` that silently
-// omitted the `assertProtocolFloor` call the two tests above prove for the
-// non-mTLS path — every mTLS listener lost the TLS-1.2-floor guarantee with
+// (`_kernel_jvm/tls_server_context.l`, the mTLS `SSLContext` constructor both
+// `Std.TcpHost` and lyric-web's Undertow `serveTls` call whenever `clientCa`
+// is set, #6017) was a near-verbatim copy of the non-mTLS constructor that
+// silently omitted the `assertProtocolFloor` call the tests above prove for the
+// non-mTLS path, so every mTLS listener lost the TLS-1.2-floor guarantee with
 // no test to catch it. Fixed by routing both constructors through one shared
-// `buildServerSslContextCore` helper; this test proves the mTLS path's
-// resulting `SSLContext` enforces the same floor directly (unit-level on the
-// `internal ServerSslContext.rawContext` accessor, mirroring the non-mTLS
-// tests' `getDefaultSSLParameters().getProtocols()` inspection, since
-// `Std.HttpServer.startListenerTls` itself still cannot host a live
-// mTLS-terminated listener to run a real handshake against — that gap is
-// #5930, unrelated to and unfixed by #6563).
+// core helper; this test proves the mTLS path's resulting `SSLContext`
+// enforces the same floor directly (unit-level on the `ServerSslContext.rawContext`
+// accessor, inspecting `getDefaultSSLParameters().getProtocols()`). A live
+// mTLS handshake through `startListenerTls` is exercised by
+// `http_server_tests.l`.
 test "serverSslContextFromConfigMtls (Tls12 floor) never negotiates below TLS 1.2" {
   val ca = match Certificate.fromPem(rsaCert) {
     case Ok(c) -> c

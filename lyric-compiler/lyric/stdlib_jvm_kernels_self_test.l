@@ -42,7 +42,8 @@
 //!
 //! Also covers the last two phantom-kernel rewrites (docs/59 F-1c, #2663):
 //! `http_host.l` (java.net.http.HttpClient) and `http_server.l`
-//! (com.sun.net.httpserver.HttpServer), which retired the final
+//! (at the time com.sun.net.httpserver.HttpServer; `Std.HttpServer` is the shared
+//! pure-Lyric driver on the JVM since docs/73 S4, D789), which retired the final
 //! `lyric.stdlib.jvm.*` bindings.  These cases run REAL local HTTP round
 //! trips through the PUBLIC `Std.Http` / `Std.HttpServer` APIs -- server on
 //! an ephemeral 127.0.0.1 port in a spawned virtual thread, client driving
@@ -383,9 +384,10 @@ func serveEchoOnce(l: in HttpSrv.HttpListener): Unit {
   val path = HttpSrv.requestPath(ctx)
   val query = HttpSrv.requestQuery(ctx)
   val headers = HttpSrv.requestHeaders(ctx)
-  // com.sun.net.httpserver.Headers normalizes header-name capitalization
-  // ("X-Tag" arrives as "X-tag"); names are case-insensitive per RFC 7230.
-  val tag = match mapGet(headers, "X-tag") { case Some(v) -> v; case None -> "(absent)" }
+  // The shared driver keeps the capitalization the client sent ("X-Tag"); the
+  // JDK server this test was written against normalized it to "X-tag". Names
+  // are case-insensitive per RFC 7230, so a real consumer folds case.
+  val tag = match mapGet(headers, "X-Tag") { case Some(v) -> v; case None -> "(absent)" }
   val body = HttpSrv.requestBody(ctx)
   HttpSrv.respondText(
     ctx,

@@ -1,15 +1,16 @@
-//! stdlib/tests/dotnet_h2_smoke.l — standalone HTTP/2 smoke server for the
-//! dotnet `Std.HttpServer` (docs/61 §6.4 phase 4.4, issue #5889).
+//! stdlib/tests/h2_smoke.l — standalone HTTP/2 smoke server for the shared
+//! `Std.HttpServer` driver (docs/61 §6.4 phase 4.4, issue #5889), built for
+//! dotnet and, since docs/73 S4 (D789), for the JVM.
 //!
-//! Built with `lyric build --target dotnet`, run as a background process, and
+//! Built with `lyric build --target dotnet|jvm`, run as a background process, and
 //! probed by `curl --http2` in CI as the *independent* implementation
 //! cross-check of the pure-Lyric h2 server (the in-process own-client check
-//! lives in `http_server_dotnet_tests.l`). It starts a TLS listener that
+//! lives in `http_server_tests.l`). It starts a TLS listener that
 //! advertises `h2` via ALPN, serves a fixed plaintext body on every request,
 //! and stays up serving many requests until the CI step kills it.
 //!
-//!   lyric build --target dotnet lyric-stdlib/tests/dotnet_h2_smoke.l -o smoke.dll
-//!   dotnet smoke.dll &
+//!   lyric build --target dotnet lyric-stdlib/tests/h2_smoke.l -o smoke.dll
+//!   dotnet smoke.dll &      # or, built with --target jvm: java -jar smoke.jar &
 //!   curl -sk --http2 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello
 //!   # -> 2:200
 //!
@@ -19,11 +20,11 @@
 //! must see `/fast` finish first), `/stream` is a chunked response whose
 //! second chunk is held back (the first must reach the client early), and
 //! `/endless` streams until the client resets the stream, printing
-//! `DOTNET-H2-SMOKE-STREAM-ABORTED` when the write fails. Each request is
+//! `H2-SMOKE-STREAM-ABORTED` when the write fails. Each request is
 //! handled on its own task.
 //!
 //! The fixture CA / server leaf (SAN localhost + 127.0.0.1) is the same
-//! self-signed pair used by `http_server_dotnet_tests.l` / `tcp_host_tls_tests.l`,
+//! self-signed pair used by `http_server_tests.l` / `tcp_host_tls_tests.l`,
 //! valid 2026-07-18..2036-07-15.
 package Main
 
@@ -35,6 +36,7 @@ import Std.Encoding
 import Std.Collections
 import Std.String
 import Std.Time
+import Std.HttpServerHost
 
 val serverCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -96,15 +98,13 @@ func serverIdentity(): Identity {
   }
 }
 
-extern type Task = "System.Threading.Tasks.Task"
+func taskRun(work: in () -> Unit): Unit {
+  startTask(work)
+}
 
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
+func threadSleep(ms: in Int): Unit {
+  sleepMillis(ms)
+}
 
 func streamTwoChunks(ctx: in HttpContext): Unit {
   val headers: Map[String, String] = newMap()
@@ -115,7 +115,7 @@ func streamTwoChunks(ctx: in HttpContext): Unit {
   val _2 = streamWriteChunk(s, encodeUtf8("second\n"), 0, 7)
   // The server's own write times, so a client-side timing failure can be told apart from a
   // server that held a chunk back (the scheduler smoke prints these when check 2 fails).
-  println("DOTNET-H2-SMOKE-STREAM first=" + toString(firstAt) + " second=" + toString(nowEpochMillis()))
+  println("H2-SMOKE-STREAM first=" + toString(firstAt) + " second=" + toString(nowEpochMillis()))
   endChunkedResponse(ctx, s)
 }
 
@@ -128,7 +128,7 @@ func streamUntilAborted(ctx: in HttpContext): Unit {
     match streamWriteChunk(s, chunk, 0, 16000) {
       case Ok(_) -> ()
       case Err(_) -> {
-        println("DOTNET-H2-SMOKE-STREAM-ABORTED")
+        println("H2-SMOKE-STREAM-ABORTED")
         go = false
       }
     }
@@ -148,7 +148,7 @@ func handle(ctx: in HttpContext): Unit {
   } else if path == "/endless" {
     streamUntilAborted(ctx)
   } else {
-    respondText(ctx, 200, "hello h2 dotnet")
+    respondText(ctx, 200, "hello h2")
   }
 }
 
@@ -156,18 +156,18 @@ pub func main(): Int {
   val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   match startListenerTls("127.0.0.1", 8443, cfg) {
     case Err(e) -> {
-      println("DOTNET-H2-SMOKE-ERROR: " + TlsListenError.message(e))
+      println("H2-SMOKE-ERROR: " + TlsListenError.message(e))
       return 1
     }
     case Ok(listener) -> {
-      println("DOTNET-H2-SMOKE-READY")
+      println("H2-SMOKE-READY")
       // Serve a bounded number of requests, then exit — CI kills the process
       // after its curl probes, and the bound guarantees the process never hangs
       // forever if something goes wrong.
       var i = 0
       while i < 100000 {
         val ctx = nextContext(listener)
-        val _ = taskRun({ -> handle(ctx) })
+        taskRun({ -> handle(ctx) })
         i = i + 1
       }
       stopListener(listener)

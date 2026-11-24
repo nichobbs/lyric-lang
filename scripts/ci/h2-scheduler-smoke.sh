@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Cross-checks the dotnet Std.HttpServer h2 send scheduler (#6107) with curl, an
-# independent HTTP/2 client, against a running lyric-stdlib/tests/dotnet_h2_smoke.l
+# Cross-checks the Std.HttpServer h2 send scheduler (#6107) with curl, an
+# independent HTTP/2 client, against a running lyric-stdlib/tests/h2_smoke.l
 # server: concurrent streams do not queue behind a slow handler, chunked
 # responses reach the client per chunk, and a stream the client resets aborts the
 # handler's writes.
 #
-#   dotnet-h2-scheduler-smoke.sh <base-url> <server-log>
+#   h2-scheduler-smoke.sh <base-url> <server-log>
 set -euo pipefail
 
 base="$1"
@@ -33,7 +33,7 @@ done)"
 t_first="$(echo "$stamps" | awk '/first/ {print $1}')"
 t_second="$(echo "$stamps" | awk '/second/ {print $1}')"
 if [ -z "$t_first" ] || [ -z "$t_second" ] || [ $((t_second - t_first)) -lt 1000 ]; then
-  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second); server wrote: $(grep "DOTNET-H2-SMOKE-STREAM first=" "$server_log" | tail -1)"
+  echo "::error::h2 chunked response was not streamed incrementally (first=$t_first second=$t_second); server wrote: $(grep "H2-SMOKE-STREAM first=" "$server_log" | tail -1)"
   exit 1
 fi
 
@@ -50,8 +50,8 @@ fi
 #    chunk write must fail rather than block or spin forever.
 curl -sk --http2 --max-time 1 -o /dev/null "$base/endless" || true
 for _ in $(seq 1 25); do
-  if grep -q DOTNET-H2-SMOKE-STREAM-ABORTED "$server_log"; then
-    echo "dotnet Std.HttpServer h2 scheduler smoke passed (fast=${fast_ms}ms slow=${slow_ms}ms, chunk gap=$((t_second - t_first))ms, half-close: $half_close)"
+  if grep -q H2-SMOKE-STREAM-ABORTED "$server_log"; then
+    echo "Std.HttpServer h2 scheduler smoke passed (fast=${fast_ms}ms slow=${slow_ms}ms, chunk gap=$((t_second - t_first))ms, half-close: $half_close)"
     exit 0
   fi
   sleep 0.2

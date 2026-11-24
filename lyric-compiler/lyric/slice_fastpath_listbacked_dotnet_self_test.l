@@ -11,7 +11,7 @@
 //! drives one fast-path site down its fallback branch.
 //!
 //! dotnet-only: the extern bindings below are test-only (the same documented
-//! exception `http_server_dotnet_tests.l` uses for driving the other side of
+//! exception `http_server_tests.l` uses for driving the other side of
 //! a boundary), and the representation split they exercise exists only on
 //! MSIL.
 //!
