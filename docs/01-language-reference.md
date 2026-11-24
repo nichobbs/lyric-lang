@@ -1749,7 +1749,9 @@ Any other bare member of a `Std.Core` `Result` or `Option` (`r.mapErr`) that
 names no function in scope is **T0113**. Lyric has no trailing-lambda call
 syntax, so `r.mapErr { e -> ... }` is the bare member `r.mapErr` followed by a
 block, and the diagnostic says to pass the arguments in parentheses
-(`r.mapErr(fn)`).
+(`r.mapErr(fn)`). A call `r.f(x)` whose name is a plain function in scope that takes
+the `Result` or `Option` first calls that function with the receiver as its first
+argument, and the checker types it as that call (D785).
 
 ### 5.2 Parameter modes
 
