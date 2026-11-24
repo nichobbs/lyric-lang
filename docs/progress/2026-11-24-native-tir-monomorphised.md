@@ -1,0 +1,3 @@
+# 2026-11-24: native TIR lowers the monomorphised bundle (D533)
+
+`lyric build --target native --via-tir` now monomorphises the bundle's TIR (`Lyric.Tir.Mono.monoBundle`, D500) before lowering: the user package and the bundled standard-library packages are checked with one shared DefPath interner, each unit receives its own monomorphised TIR plus the shared instances package, instance records and unions take the layouts the code generator's own instantiation gives them, and an instance function is lowered from TIR under its AST copy's IR name. `fallback.l` (generic record, union and function) lowers 5 of 5 functions from TIR and runs clean under AddressSanitizer. Project builds do not monomorphise yet (see D533).

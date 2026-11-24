@@ -7289,7 +7289,7 @@ pub func flattenImportedItems(pkgs: in List[ImportedPackage]): List[Item] {
 // last-registered symbol of a given simple name wins every reference —
 // including references inside other packages' signatures.
 pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in List[ImportedPackage]): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, false, SMSUnchecked, newMap(), newList())
+  checkWithImportedPackagesCore(file, importedPackages, true, false, SMSUnchecked, newMap(), newList(), newList())
 }
 
 /// `checkWithImportedPackages` for a build whose backend bridge can say how the
@@ -7305,7 +7305,7 @@ pub func checkWithImportedPackagesExternIter(
   externIter: in Map[String, ExternIterInfo],
   resolver: in List[ExternIterResolver],
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, native, SMSUnchecked, externIter, resolver)
+  checkWithImportedPackagesCore(file, importedPackages, true, native, SMSUnchecked, externIter, resolver, newList())
 }
 
 /// `checkWithImportedPackages` for a `--target native` build: the file may
@@ -7316,7 +7316,7 @@ pub func checkWithImportedPackagesExternIter(
 pub func checkWithImportedPackagesForNative(
   file: in SourceFile, importedPackages: in List[ImportedPackage]
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, true, SMSUnchecked, newMap(), newList())
+  checkWithImportedPackagesCore(file, importedPackages, true, true, SMSUnchecked, newMap(), newList(), newList())
 }
 
 /// `checkWithImportedPackages` / `checkWithImportedPackagesForNative` for a
@@ -7329,7 +7329,16 @@ pub func checkWithImportedPackagesForTarget(
   nativeIntrinsics: in Bool,
   stringSurface: in StringMethodSurface,
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface, newMap(), newList())
+  checkWithImportedPackagesCore(
+    file,
+    importedPackages,
+    true,
+    nativeIntrinsics,
+    stringSurface,
+    newMap(),
+    newList(),
+    newList()
+  )
 }
 
 /// `checkWithImportedPackagesForTarget` for a backend bridge that can say how
@@ -7343,7 +7352,42 @@ pub func checkWithImportedPackagesForTargetIter(
   externIter: in Map[String, ExternIterInfo],
   resolver: in List[ExternIterResolver],
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface, externIter, resolver)
+  checkWithImportedPackagesCore(
+    file,
+    importedPackages,
+    true,
+    nativeIntrinsics,
+    stringSurface,
+    externIter,
+    resolver,
+    newList()
+  )
+}
+
+/// `checkWithImportedPackagesForTargetIter` over a DefPath interner shared with the other packages of
+/// the bundle (docs/70 section 4.2): one declaration is one `SymbolId` in every package's table, which
+/// the monomorphiser (`Lyric.Tir.Mono`) needs to read a bundle's TIR as one program.
+pub func checkWithImportedPackagesForTargetIterShared(
+  file: in SourceFile,
+  importedPackages: in List[ImportedPackage],
+  nativeIntrinsics: in Bool,
+  stringSurface: in StringMethodSurface,
+  externIter: in Map[String, ExternIterInfo],
+  resolver: in List[ExternIterResolver],
+  interner: in DefPathInterner,
+): CheckResult {
+  val shared: List[DefPathInterner] = newList()
+  shared.add(interner)
+  checkWithImportedPackagesCore(
+    file,
+    importedPackages,
+    true,
+    nativeIntrinsics,
+    stringSurface,
+    externIter,
+    resolver,
+    shared
+  )
 }
 
 // The FFI intrinsic types.  Every backend lowers them by name, so they are
@@ -7386,7 +7430,7 @@ func registerNativeIntrinsicTypes(tbl: in SymbolTable, native: in Bool): Unit {
 // this entry point skips the T4 decl pass while keeping every other check.
 pub func checkContractSurface(file: in SourceFile): CheckResult {
   val empty: List[ImportedPackage] = newList()
-  checkWithImportedPackagesCore(file, empty, false, false, SMSUnchecked, newMap(), newList())
+  checkWithImportedPackagesCore(file, empty, false, false, SMSUnchecked, newMap(), newList(), newList())
 }
 
 // T0199: a string-literal template of `format1`-`format4` is checked against
@@ -7462,10 +7506,11 @@ func checkWithImportedPackagesCore(
   stringSurface: in StringMethodSurface,
   externIter: in Map[String, ExternIterInfo],
   resolver: in List[ExternIterResolver],
+  sharedInterner: in List[DefPathInterner],
 ): CheckResult {
   val importedPackages = withoutOwnPackage(allImportedPackages, dottedPackageName(file0.packageDecl.path))
   val diag: List[Diagnostic] = newList()
-  val tbl = newSymbolTable()
+  val tbl = if sharedInterner.count > 0 { newSymbolTableWith(sharedInterner[0]) } else { newSymbolTable() }
   tbl.stringSurface.add(stringSurface)
   for r in resolver {
     tbl.externIterResolver.add(r)

@@ -27,6 +27,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.Symbols
 import Lyric.Tir
+import Lyric.Tir.Mono as TirMono
 
 /// Whether the TIR lowering is requested: `lyric build --target native
 /// --via-tir` sets `LYRIC_NATIVE_VIA_TIR=1` for the build, and CI sets it
@@ -65,6 +66,12 @@ pub record TirUnitInput {
   /// Whether `+`, `-`, `*` and unary `-` on `Int`, `Long`, `UInt`, `ULong` and `Byte` panic on
   /// overflow (D163: a debug build of a user package); false wraps (release, the standard library).
   checkedArith: Bool = false
+  /// On the instances unit of a monomorphised bundle (docs/70 section 7.2, D500; `Lyric.Mono.Instances`
+  /// is the last package of `MonoResult.pkgs`): the table `(generic, arguments) -> instance` and each
+  /// instance union's case symbols in declaration order.  Every unit of the bundle is given the one
+  /// instances unit after its own, as `tir[1]`.
+  instances: List[TirMono.InstanceInfo] = newList()
+  instCases: Map[Int, List[SymbolId]] = newMap()
 }
 
 /// The package, name and parameter count of a top-level function.
@@ -756,6 +763,58 @@ func branchValue(c: in LCtx, x: in TExpr, wantRef: in Bool): Val {
   val r = if wantRef { own(c, v) } else { discard(c, v); v }
   popTemps(c)
   r
+}
+
+/// The spelling of `t` in the name the AST monomorphiser (`Lyric.Mono.specFuncName`) gives a
+/// specialised function: a scalar or declared type by its bare name, a generic instance as its
+/// head, `_` and its arguments.  The AST path names a specialisation after how the source spelled
+/// the argument, so this is a guess that the caller checks against the names that exist; None for a
+/// shape it does not cover.
+pub func tirAstTypeKey(names: in Map[Int, String], byInst: in Map[Int, TirMono.InstanceInfo], t: in Ty): Option[String] {
+  match t {
+    case TPrim(k) -> Some(value = primKindName(k))
+    case TRefined(u, _, _, _) -> tirAstTypeKey(names, byInst, u)
+    case TNamed(sym, args) -> if args.count > 0 {
+      None
+    } else {
+      match mapGet(names, sym.id) {
+        case None -> None
+        case Some(key) -> {
+          val head = match Str.indexOf(key, "[") { case Some(b) -> Str.substring(key, 0, b); case None -> key }
+          val bare = match Str.lastIndexOf(head, "::") { case Some(i) -> Str.substring(head, i + 2); case None -> head }
+          match mapGet(byInst, sym.id) {
+            case None -> Some(value = bare)
+            case Some(ii) -> {
+              var acc = bare
+              for a in ii.args {
+                match tirAstTypeKey(names, byInst, a) {
+                  case Some(k) -> {
+                    acc = acc + "_" + k
+                  }
+                  case None -> return None
+                }
+              }
+              Some(value = acc)
+            }
+          }
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The type argument `t` of a generic instance as the code generator instantiates the generic with
+/// it: a scalar, or a type already laid out (`known`, the type of each record, union and enum by
+/// symbol).  None for a shape the instance registration does not cover; the instance is then left
+/// unregistered and its users stay on the AST path.
+pub func tirInstArgN(known: in Map[Int, NType], t: in Ty): Option[NType] {
+  match t {
+    case TPrim(k) -> match primN(k) { case NVoid -> None; case n -> Some(value = n) }
+    case TRefined(u, _, _, _) -> tirInstArgN(known, u)
+    case TNamed(sym, args) -> if args.count == 0 { mapGet(known, sym.id) } else { None }
+    case _ -> None
+  }
 }
 
 func primN(k: in TPrimKind): NType {
