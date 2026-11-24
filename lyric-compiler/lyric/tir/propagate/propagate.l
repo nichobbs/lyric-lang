@@ -128,7 +128,14 @@ func lowerOne(c: in PCtx, ret: in Ty, e: in TExpr, inner: in TExpr): TExpr {
       id = pNode(c),
       span = sp,
       kind = TsReturn(
-        value = Some(value = TExpr(id = pNode(c), ty = ret, span = sp, kind = XConstruct(sym = failSym, fields = failFields)))
+        value = Some(
+          value = TExpr(
+            id = pNode(c),
+            ty = ret,
+            span = sp,
+            kind = XConstruct(sym = failSym, fields = failFields)
+          )
+        )
       )
     )
   )
@@ -154,7 +161,16 @@ func propPre(c: in PCtx, e: in TExpr): Option[TExpr] {
   match e.kind {
     case XLambda(ps, caps, body) -> match e.ty {
       case TFunc(_, r, _) -> Some(
-        value = TExpr(id = e.id, ty = e.ty, span = e.span, kind = XLambda(params = ps, captures = caps, body = lowerBody(c, r, body)))
+        value = TExpr(
+          id = e.id,
+          ty = e.ty,
+          span = e.span,
+          kind = XLambda(
+            params = ps,
+            captures = caps,
+            body = lowerBody(c, r, body)
+          )
+        )
       )
       case _ -> None
     }
@@ -163,10 +179,7 @@ func propPre(c: in PCtx, e: in TExpr): Option[TExpr] {
 }
 
 func lowerBody(c: in PCtx, ret: in Ty, body: in TExpr): TExpr {
-  val w = Walker(
-    pre = { e: TExpr -> propPre(c, e) },
-    post = { e: TExpr -> propPost(c, ret, e) }
-  )
+  val w = Walker(pre = { e: TExpr -> propPre(c, e) }, post = { e: TExpr -> propPost(c, ret, e) })
   walkExpr(w, body)
 }
 
@@ -188,22 +201,7 @@ pub func lowerPropagateFn(d: in TFnDecl, cs: in PropCases, nextNode: in List[Int
   nl.add(firstPropLocalId())
   val c = PCtx(cs = cs, nextNode = nextNode, nextLocal = nl, diags = diags)
   val lowered = lowerBody(c, d.ret, body)
-  TFnDecl(
-    sym = d.sym,
-    typeParams = d.typeParams,
-    params = d.params,
-    ret = d.ret,
-    isAsync = d.isAsync,
-    preconds = d.preconds,
-    postconds = d.postconds,
-    body = Some(value = lowered),
-    span = d.span,
-    barrier = d.barrier,
-    ownerParamCount = d.ownerParamCount,
-    isGenerator = d.isGenerator,
-    precondTexts = d.precondTexts,
-    postcondTexts = d.postcondTexts
-  )
+  d.copy(body = Some(value = lowered))
 }
 
 /// The outcome of lowering a bundle: the packages and what could not be lowered.
