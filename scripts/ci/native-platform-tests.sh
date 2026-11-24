@@ -179,6 +179,9 @@ for t in \
   lyric-stdlib/tests/tls_tests.l \
   lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/http_server_host_tests.l \
+  lyric-stdlib/tests/http_server_stop_tests.l \
+  lyric-stdlib/tests/tcp_host_tests.l \
+  lyric-stdlib/tests/http_timeout_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/assert_panics_native_tests.l \

@@ -11,7 +11,7 @@
 #               dotnet     benchmarks/http_server/server.l on --target dotnet  (pure-Lyric Std.HttpEngine kernel)
 #               jvm        benchmarks/http_server/server.l on --target jvm     (the shared driver over Std.TcpHost; the JDK
 #                          com.sun.net.httpserver kernel it replaced in D789 is gone)
-#               native     benchmarks/http_server/server.l on --target native  (h1 only)
+#               native     benchmarks/http_server/server.l on --target native  (the shared driver, h1 and h2)
 #               undertow   benchmarks/http_server/server_web.l through lyric-web on --target jvm (Undertow,
 #                          restores lyric-web's Maven dependencies, so it needs Maven Central)
 #   scenario  b1 b2 b3 b4 b5 b6 (default: b1 b2 b3 b4 b5), and the same load driven by wrk and h2load when
@@ -211,7 +211,6 @@ for s in "${scenarios[@]}"; do
     b2) run_rate_scenario b2 LG_MODE=connclose ;;
     b3) run_rate_scenario b3 LG_MODE=echo LG_BODY=65536 ;;
     b4)
-      if [ "$target" = native ]; then record "b4.unsupported=native serves h1 only (docs/73 section 0 item 2)"; continue; fi
       openssl req -x509 -newkey rsa:2048 -nodes -keyout "$OUT/key.pem" -out "$OUT/cert.pem" -days 2 \
         -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
       start_server BENCH_CERT="$OUT/cert.pem" BENCH_KEY="$OUT/key.pem"
@@ -252,7 +251,6 @@ PY
       SERVER_ENV=(); run_wrk_scenario b3w -s "$OUT/echo.lua" "http://127.0.0.1:$PORT/echo" ;;
     b4h)
       command -v h2load >/dev/null || { record "b4h.skipped=h2load is not on PATH"; continue; }
-      if [ "$target" = native ]; then record "b4h.unsupported=native serves h1 only (docs/73 section 0 item 2)"; continue; fi
       openssl req -x509 -newkey rsa:2048 -nodes -keyout "$OUT/key.pem" -out "$OUT/cert.pem" -days 2 \
         -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
       start_server BENCH_CERT="$OUT/cert.pem" BENCH_KEY="$OUT/key.pem"

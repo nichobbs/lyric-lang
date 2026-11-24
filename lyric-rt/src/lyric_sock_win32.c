@@ -626,6 +626,11 @@ fail:
     return -1;
 }
 
+int32_t lyric_sock_listener_refuse(int32_t listen_fd) {
+    (void)listen_fd;
+    return 0;
+}
+
 int32_t lyric_sock_wake_pipe_signal(int32_t write_fd) {
     if (write_fd < 0) return 0;
     char b = 1;

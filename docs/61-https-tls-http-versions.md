@@ -23,7 +23,7 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 | Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (D789, docs/73 S4): the shared driver over `Std.TcpHost` (`SSLSocket`, server `SSLContext` from `Std.TlsServerContext`; identity + `minVersion` + ALPN `h2` then `http/1.1` + mTLS); the JDK `HttpsServer` kernel (phase 2.1, #5880, mTLS #5930) is gone |
 | Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
 | Server HTTP version | 1.1 (`HttpListener` cannot do h2) | `Std.HttpServer`: h1 and h2 (D789, ALPN on TLS); `lyric-web` still serves on Undertow with `ENABLE_HTTP2` until docs/73 S6 |
-| native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. Server shipped (N9.3, #6104): `_kernel_native/http_server.l` — thread-per-connection over `pthread_create`, driving the sans-IO `Std.HttpEngine` + `Std.TcpHost`; `startListenerTls` supports server identity + `minVersion` + mTLS. HTTP/1.1 only (no h2 yet — a negotiated-`h2` connection is closed rather than mis-parsed, tracked as N9.5/#6106); no `LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap yet (`Std.Parse` has no native kernel). | — |
+| native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. Server shipped (N9.3, #6104) and, since docs/73 S5 (D790), the shared driver `std/_kernel/http_server.l` over `Std.TcpHost` and the `Std.HttpServerHost` seam (thread-per-connection over `pthread_create`d threads): TLS with server identity, `minVersion` and mTLS, ALPN `h2` then `http/1.1` with HTTP/2 served through `Std.HttpEngine.H2Conn` (closes N9.5/#6106; the Windows server offers HTTP/1.1 only until its transport has a per-connection lock), the `WithLimits` variants, the connection cap and the timeouts, all as on dotnet. | — |
 
 HTTP/3 exists nowhere: on .NET it needs `libmsquic` plus explicit version
 policy; on JDK 21 it does not exist in `java.net.http` (JEP 517 is still in
@@ -346,8 +346,8 @@ neither blocks again), closes the listening socket and returns once the accept
 loop and all connection tasks have ended, bounded by `LYRIC_HTTP_STOP_GRACE_MS`
 (default 5000). A context a caller still holds stays that caller's obligation.
 
-**Handshake placement and timeouts (#7268).** In the shared driver (dotnet and the JVM today,
-native with S5) the accept loop only accepts the raw socket; the TLS handshake runs on the
+**Handshake placement and timeouts (#7268).** In the shared driver (every target served by it)
+the accept loop only accepts the raw socket; the TLS handshake runs on the
 connection's own task/thread, so a peer that connects and never sends a
 ClientHello cannot stall other connections. The listener builds its TLS
 state once at `startListenerTls` (`Std.TcpHost.hostPrepareServerTls`: the
@@ -467,6 +467,13 @@ curl and scheduler smokes and the lyric-web and lyric-ws dotnet suites pass, and
 against the pre-refactor figures on the same machine hello keep-alive is at 99%,
 connection-per-request 99%, 64 KiB echo 260% and h2 112%.
 
+_Update (docs/73 S5, D790, 2026-11-27):_ native adopts the same driver. On the same
+container, `wrk -t4 -c64` and `h2load -c32 -m10`: hello keep-alive 40.6k req/s (the
+retired native kernel, same session: 33.9k), connection-per-request 13.6k with no
+errors (the old kernel: 0 completed, 1.49M read errors), 64 KiB echo 4.7k (old: 3.3k),
+h2 over TLS 33.7k, within 2% of the Undertow figure of D780 (34.4k); 1.23 million
+connection-per-request exchanges move the server's RSS from 3.0 MB to 4.5 MB.
+
 ## 7. Native target
 
 Native has **no HTTP kernel at all yet**, so "HTTPS on native" decomposes
@@ -497,11 +504,21 @@ core. Considerations codified now so phase 5 doesn't rediscover them:
    _Update (docs/73 S3, D788):_ the server's accept loop, connection driver,
    h2 scheduler and stop logic are now shared Lyric over the
    `Std.HttpServerHost` seam, whose native twin is `lyric_thread_spawn_detached`,
-   `lyric_mutex_*` and `lyric_sem_*` (D786); native keeps its own kernel until
-   S5 swaps it for the shared driver, which also brings h2 and the `WithLimits`
-   variants (N9.5, #6106). The stop contract, including the fixes of #6791 to
-   #6806, is written once in the driver and pinned by `http_server_stop_tests.l`;
-   what S5 still owes is listed in D788.
+   `lyric_mutex_*` and `lyric_sem_*` (D786). The stop contract, including the
+   fixes of #6791 to #6806, is written once in the driver and pinned by
+   `http_server_stop_tests.l`.
+   _Update (docs/73 S5, D790):_ native runs that driver and its own kernel is
+   gone, so native serves h2 (ALPN `h2` over OpenSSL, closing N9.5/#6106), the
+   `WithLimits` variants and the full surface. Three native transport facts it
+   needed: an OpenSSL connection is not safe for one thread reading while another
+   writes, which an h2 connection does, so every `SSL_read`/`SSL_write` runs
+   under a per-connection lock and a blocking read waits for the socket outside
+   it (with `SSL_MODE_AUTO_RETRY` off, so a read never blocks inside the lock for
+   the next record); a client that half-closes without `close_notify` is read as
+   end of input (`SSL_OP_IGNORE_UNEXPECTED_EOF`), as on the other targets; and
+   every socket sets `TCP_NODELAY` (h2 frames are written in pieces: without it
+   h2 over TLS served 1.8k requests/s, with it 25k to 34k). The Windows server
+   offers `http/1.1` only (Schannel has no such lock yet; D790 lists the follow-up).
 6. **Distribution**: dynamic libssl means negotiation behavior varies with
    the host's OpenSSL minor version — documented, not fought. Static
    binaries would switch the seam to mbedTLS (out of scope here).

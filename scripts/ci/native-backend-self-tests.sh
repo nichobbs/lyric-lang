@@ -201,6 +201,9 @@ for t in \
   lyric-stdlib/tests/tls_tests.l \
   lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/http_server_host_tests.l \
+  lyric-stdlib/tests/http_server_stop_tests.l \
+  lyric-stdlib/tests/tcp_host_tests.l \
+  lyric-stdlib/tests/http_timeout_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/assert_panics_native_tests.l \
@@ -217,6 +220,8 @@ for t in \
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
+# docs/73 S5 (D790): the shared HTTP server driver on native serves h2 over TLS (curl --http2, h2load, the scheduler checks).
+LYRIC="$lyric_bin" bash scripts/ci/h2-smoke.sh native
 # D207, D231, D272: the plugin runs with a native host or plugin (native and
 # dotnet plugin processes, protocol sessions, a trusted in-process plugin,
 # lyric-ui plugin widgets); the same set runs on macOS and Linux arm64.
