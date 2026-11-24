@@ -1,14 +1,12 @@
 //! Ws — WebSocket server library for Lyric.
 //! Stability: @experimental — the connection lifecycle compiles and the WsAuth
 //! aspect has tests.  `startServer` is backed by a real running server on
-//! both targets: dotnet is pure-Lyric RFC 6455 over `Std.TcpHost` (`Ws.Kernel.Net`,
-//! docs/62-jsonrpc-mcp.md §6, #778) — real connect/handshake/send/receive/close,
-//! WITH fragmented multi-frame message reassembly and automatic ping keepalive
-//! (see `Ws.Kernel.Net`'s header); Undertow on JVM is a real, tested end-to-end
-//! connect/send/receive/close loop but is missing those two (see
-//! `Ws.Kernel.Jvm`'s header for its documented gaps: fragmented multi-frame
-//! messages and automatic ping keepalives — tracked as Q-WS-001 to bring JVM to
-//! dotnet parity).
+//! every target: pure-Lyric RFC 6455 over `Std.TcpHost` (`Ws.Kernel.Net`,
+//! docs/62-jsonrpc-mcp.md §6, #778, docs/73 S7a) on dotnet, the JVM and
+//! native, with fragmented multi-frame message reassembly and automatic ping
+//! keepalive (see `Ws.Kernel.Net`'s header).  A `createEndpoint` endpoint
+//! served by `lyric-web` on the JVM is still Undertow-backed until docs/73 S7b
+//! (see `Ws.Kernel.Jvm`'s header for the gaps that carries).
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -53,27 +51,25 @@ import Ws.Frame
 import Ws.Kernel.Net as WsKernelNet
 import Ws.Kernel.Jvm as WsKernelJvm
 
-// Kernel boundary: every BCL / JDK interaction goes through the platform
-// kernel (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM), selected per
-// function via the `kernelXxx` `@cfg`-paired wrappers below (mirrors
-// `Auth`'s `Auth.Kernel.Net`/`Auth.Kernel.Jvm` dispatch).  This file is the
+// Kernel boundary: every BCL / JDK interaction goes through a platform
+// kernel.  `Ws.Kernel.Net` is the pure-Lyric RFC 6455 server over
+// `Std.TcpHost` and runs on every target; it serves `startServer` and the
+// rate limiter everywhere.  On the JVM, `Ws.Kernel.Jvm` additionally owns the
+// registries `createEndpoint` allocates, because `lyric-web` on the JVM still
+// serves HTTP through Undertow and mounts those endpoints on it (docs/73
+// slice S7b moves them to `Ws.Kernel.Net` and deletes `Ws.Kernel.Jvm`).  A
+// registry handle says which kernel owns it (`WsKernelJvm.ownsHandle`), so the
+// `kernelXxx` wrappers below route by handle on the JVM.  This file is the
 // public surface of the library; it must not declare its own `@axiom`
 // stubs (doing so previously shadowed the kernel boundary and broke
 // the trust-boundary audit — see lyric-lang #739).  The kernels only ever
 // exchange primitive types (String/Int) with this file — never `WsHandler`/
 // `WsContext`/`WsMessage` — so neither kernel needs to import `Ws` itself,
-// avoiding an `Ws` <-> `Ws.Kernel.Jvm` import cycle.
-@cfg(any(feature = "dotnet", feature = "native"))
+// avoiding an `Ws` <-> kernel import cycle.
 func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
   WsKernelNet.createRegistry(maxMessageSizeBytes, pingIntervalMs)
 }
 
-@cfg(feature = "jvm")
-func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
-  WsKernelJvm.createRegistry(maxMessageSizeBytes, pingIntervalMs)
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelStartServer(
   host: in String,
   port: in Int,
@@ -87,33 +83,6 @@ func kernelStartServer(
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
   WsKernelNet.startServer(
-    host,
-    port,
-    path,
-    maxMessageSizeBytes,
-    allowedOrigins,
-    sameHostPorts,
-    onOpen,
-    onMessage,
-    onClose,
-    onError
-  )
-}
-
-@cfg(feature = "jvm")
-func kernelStartServer(
-  host: in String,
-  port: in Int,
-  path: in String,
-  maxMessageSizeBytes: in Int,
-  allowedOrigins: in slice[String],
-  sameHostPorts: in slice[Int],
-  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
-  onMessage: in (String, String, String) -> Unit,
-  onClose: in (String, Int, String) -> Unit,
-  onError: in (String, String) -> Unit,
-): Result[Int, String] {
-  WsKernelJvm.startServer(
     host,
     port,
     path,
@@ -149,26 +118,14 @@ func kernelCreateEndpoint(
   WsKernelJvm.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
 }
 
-/// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
-/// dispatched to the active kernel so the aspect works on both targets.
+/// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`.
 @stable(since = "0.2")
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
   requires: key.length > 0
   requires: messagesPerMinute > 0
   requires: burstSize > 0
 {
   WsKernelNet.checkRateLimit(key, messagesPerMinute, burstSize)
-}
-
-@stable(since = "0.2")
-@cfg(feature = "jvm")
-pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
-  requires: key.length > 0
-  requires: messagesPerMinute > 0
-  requires: burstSize > 0
-{
-  WsKernelJvm.checkRateLimit(key, messagesPerMinute, burstSize)
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -178,7 +135,11 @@ func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
 
 @cfg(feature = "jvm")
 func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
-  WsKernelJvm.stopServer(registryHandle)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.stopServer(registryHandle)
+  } else {
+    WsKernelNet.stopServer(registryHandle)
+  }
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -192,7 +153,11 @@ func kernelSend(
 func kernelSend(
   registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
 ): Result[Unit, String] {
-  WsKernelJvm.send(registryHandle, connectionId, messageType, data)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.send(registryHandle, connectionId, messageType, data)
+  } else {
+    WsKernelNet.send(registryHandle, connectionId, messageType, data)
+  }
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -202,7 +167,11 @@ func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in St
 
 @cfg(feature = "jvm")
 func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
-  WsKernelJvm.broadcast(registryHandle, messageType, data)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.broadcast(registryHandle, messageType, data)
+  } else {
+    WsKernelNet.broadcast(registryHandle, messageType, data)
+  }
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -212,7 +181,11 @@ func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, 
 
 @cfg(feature = "jvm")
 func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
-  WsKernelJvm.close(registryHandle, connectionId, code, reason)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.close(registryHandle, connectionId, code, reason)
+  } else {
+    WsKernelNet.close(registryHandle, connectionId, code, reason)
+  }
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -222,7 +195,11 @@ func kernelConnectionCount(registryHandle: in Int): Int {
 
 @cfg(feature = "jvm")
 func kernelConnectionCount(registryHandle: in Int): Int {
-  WsKernelJvm.connectionCount(registryHandle)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.connectionCount(registryHandle)
+  } else {
+    WsKernelNet.connectionCount(registryHandle)
+  }
 }
 
 @cfg(any(feature = "dotnet", feature = "native"))
@@ -232,7 +209,11 @@ func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
 
 @cfg(feature = "jvm")
 func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
-  WsKernelJvm.isConnected(registryHandle, connectionId)
+  if WsKernelJvm.ownsHandle(registryHandle) {
+    WsKernelJvm.isConnected(registryHandle, connectionId)
+  } else {
+    WsKernelNet.isConnected(registryHandle, connectionId)
+  }
 }
 
 // ─── Connection identity ──────────────────────────────────────────────────────
@@ -430,9 +411,8 @@ pub record WsServerOptions {
 /// down.  Uses the default `WsServerOptions` (65536-byte max message size,
 /// same-origin handshakes only) — see `startServerWithOptions`.
 ///
-/// See the module header for per-target status: real end-to-end on both
-/// `--target dotnet` (pure-Lyric RFC 6455 over `Std.TcpHost`, #778) and
-/// `--target jvm` (Undertow).
+/// See the module header: one pure-Lyric RFC 6455 server over `Std.TcpHost`
+/// on `--target dotnet`, `--target jvm` and `--target native`.
 @stable(since = "0.1")
 pub func startServer(
   host: in String, port: in Int, path: in String, handler: in WsHandler

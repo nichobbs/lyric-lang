@@ -1,7 +1,8 @@
 # 62 — JSON-RPC 2.0 and Model Context Protocol libraries
 
 Status: specced in D129. lyric-jsonrpc, lyric-mcp (stdio transport),
-the stdlib seams, and the lyric-ws dotnet backend (#778) are implemented;
+the stdlib seams, and the lyric-ws pure-Lyric backend (#778; on the JVM
+and native too since D787) are implemented;
 streamable HTTP (§5.3 milestone 2) and the open questions remain. JVM
 gaps are tracked in #6118–#6124, #6127, #6133–#6136; the lyric-jsonrpc
 and lyric-mcp suites pass on the JVM and run there in CI since #7451,
@@ -368,8 +369,10 @@ handling before the HTTP transport ships).
 Design: pure-Lyric RFC 6455 on top of the `Std.TcpHost` transport
 kernel (the same seam `Std.HttpServer`/`Std.HttpEngine` ride since
 docs/61 phase 3.3), not ASP.NET Core — no new NuGet dependency, and
-the frame codec is target-independent Lyric that a future JVM/native
-kernel could share. Components:
+the frame codec is target-independent Lyric that the JVM and native
+kernels share (docs/73 S7a, D787: the same `Ws.Kernel.Net` now serves
+`Ws.startServer` on dotnet, the JVM and native; only its small per-target
+primitives differ). Components:
 
 1. **Upgrade handshake**: minimal HTTP/1.1 GET parser for the upgrade
    request (request line, headers; reject anything but a well-formed
@@ -392,10 +395,12 @@ kernel could share. Components:
    `lyric-ws/src/_kernel/net/ws_kernel.l`. Periodic ping keepalive per
    `pingIntervalMs`.
 
-Parity note: the JVM kernel's documented gaps (fragmented multi-frame
-messages, automatic pings) should not be replicated — the dotnet
-kernel implements both, and closing the JVM gaps becomes a tracked
-follow-up so the targets converge (Q-WS-001).
+Parity note: the Undertow JVM kernel's documented gaps (fragmented
+multi-frame messages, automatic pings) were not replicated in the dotnet
+kernel, and Q-WS-001 tracked closing them on the JVM. Closed in D787:
+`Ws.startServer` on the JVM is the same pure-Lyric server. Undertow
+remains only behind `Web.addWebSocket` on the JVM, with its old gaps,
+until docs/73 S7b moves that to `Ws.Kernel.Net.adoptConnection`.
 
 Tests: loopback integration (`startServer` + a minimal in-repo test
 client over `Std.TcpHost` — connect, handshake, exchange text/binary/
@@ -444,6 +449,6 @@ PR-4 (when the MCP surface is real).
   _Addressed by docs/64 §3 (Phase A): `2026-07-28`'s `input_required`
   multi-round-trip result shape replaces this need structurally rather
   than via cancellation/progress notifications._
-- Q-WS-001: JVM kernel fragmentation/ping-keepalive parity follow-up.
+- Q-WS-001: JVM kernel fragmentation/ping-keepalive parity follow-up. Resolved in D787 for `Ws.startServer` (the JVM runs the shared pure-Lyric kernel); a `Web.addWebSocket` endpoint on the JVM keeps the gaps until docs/73 S7b.
 - Q-MCP-003: OAuth 2.1 resource-server support on streamable HTTP.
   _Still open — docs/64 §7 explicitly keeps this out of its scope too._

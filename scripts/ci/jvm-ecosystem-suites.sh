@@ -48,9 +48,9 @@
 #               threaded concurrency suite
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
 #               (`__LyricBModeCallContext` on the JVM, #4600)
-#   ws          frames, handshake and the WsSecurity aspects; the dotnet-only
-#               `Ws.WsDotnetE2eTests` suite (it dials Std.TcpHost, which has
-#               no JVM kernel) is left out with --suite
+#   ws          frames, handshake, the WsSecurity aspects and the loopback
+#               suite `Ws.WsE2eTests`, which dials the pure-Lyric server over
+#               Std.TcpHost (docs/73 S7a)
 #   logging     Std.Logging's `LogLevel` enum beside the stdlib's
 #               same-named `Std.Log.LogLevel` (type-scoped enum registry
 #               keys are re-pointed per file)
@@ -96,7 +96,7 @@ trap 'rm -rf "$log_dir"' EXIT
 run_suite() {
   local lib="$1"
   # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
-  # `ws` (Undertow) and `db`
+  # `ws` (Undertow, for the `Web.addWebSocket` endpoint until docs/73 S7b) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
@@ -107,12 +107,7 @@ run_suite() {
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac
-  # `Ws.WsDotnetE2eTests` dials Std.TcpHost, which has no JVM kernel, so the
-  # JVM run names the target-independent suites instead.
   local suite_args=()
-  if [ "$lib" = "ws" ]; then
-    suite_args=(--suite Ws.WsTests --suite Ws.WsFrameTests --suite Ws.WsHandshakeTests --suite Ws.WsSecurityAspectWeavingTests)
-  fi
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared
   # behind their own `[features]` flags, off by default under
   # `--no-default-features`; activate all three so the suite exercises
