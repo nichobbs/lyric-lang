@@ -47,7 +47,7 @@ func bits(i: in Int, l: in Long, b: in Byte, u: in UInt, w: in ULong): Long {
   val d: Byte = b.shl(1).shr(2)
   val e: UInt = u.shr(1)
   val f: ULong = w.shr(1)
-  a.toLong() + c + d.toLong() + e.toLong() + f.toLong()
+  a.toLong() + c + d.toLong() + e.toLong() + f.toInt().toLong()
 }
 
 func negShift(i: in Int): Int {
