@@ -83,6 +83,7 @@ import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
 import Lyric.Tir.Build as TirBuild
 import Lyric.Tir.Mono as TirMono
+import Lyric.Tir.Contracts as TirContracts
 import Lyric.Resolve as Resolve
 import Lyric.IfaceBuild as IfaceBuild
 
@@ -2382,6 +2383,14 @@ func pipeReportMonoCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild
       shown = shown + 1
     }
   }
+}
+
+/// `bundle` with every function's contracts lowered into its body (docs/70 §7.2, D502): the TIR counterpart of
+/// `ContractElaborator.elaborateFile`, run on the output of `pipeMonoTir` or on a built package directly.
+pub func pipeContractsTir(
+  interner: in DefPathInterner, bundle: in List[TirBuild.PackageBuild], enabled: in Bool
+): List[TirBuild.PackageBuild] {
+  TirContracts.elaborateBundle(interner, bundle, enabled)
 }
 
 pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
