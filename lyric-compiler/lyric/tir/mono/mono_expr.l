@@ -304,7 +304,18 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
       idx = mExpr(c, s, idx),
       how = mIndexKind(c, s, recv.ty, how)
     )
-    case XConvert(kind, inner) -> XConvert(kind = mConv(c, s, kind), inner = mExpr(c, s, inner))
+    case XConvert(kind, inner) -> {
+      val mi = mExpr(c, s, inner)
+      val box = match kind { case CvBoxToHost(_) -> true; case _ -> false }
+      // A generic body that boxes a `T` for a host parameter of that host type, read at `T` = that type, converts
+      // a value to the type it has: the conversion is gone.  Only boxing can become an identity this way: the
+      // other kinds change the type by their own rule (a widening, a wrap, an upcast to an interface), and
+      // a substituted type never makes the two sides equal.
+      if box and tyEq(mi.ty, mTy(c, s, e.ty)) {
+        return mi
+      }
+      XConvert(kind = mConv(c, s, kind), inner = mi)
+    }
     case XTuple(elems) -> XTuple(elems = mExprs(c, s, elems))
     case XListLit(elems) -> XListLit(elems = mExprs(c, s, elems))
     case XInterp(parts) -> XInterp(parts = mExprs(c, s, parts))
