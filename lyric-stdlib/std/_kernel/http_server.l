@@ -1,4 +1,4 @@
-//! std/_kernel/http_server.l - dotnet HTTP/1.1 server assembly on the
+//! std/_kernel/http_server.l - the shared HTTP/1.1 + h2 server driver on the
 //! sans-IO `Std.HttpEngine` + `Std.TcpHost` transport
 //! (docs/61-https-tls-http-versions.md §6.1/§6.2/§6.3, D128; phase 3.3 of
 //! epic #5874, issue #5884).
@@ -7,22 +7,26 @@
 //! `HttpListener` externs are gone: nothing here reaches the BCL HTTP stack.
 //! The server is now three composed layers, each already shipped and tested:
 //!
-//!   * **Transport** — `Std.TcpHost` (`_kernel/tcp_host.l`, #5882):
-//!     `System.Net.Sockets.TcpListener` + `System.Net.Security.SslStream`,
-//!     `Result[_, TcpError]` throughout.
+//!   * **Transport** — `Std.TcpHost` (`_kernel/tcp_host.l`, #5882; one twin
+//!     per target): on dotnet `System.Net.Sockets.TcpListener` +
+//!     `System.Net.Security.SslStream`, `Result[_, TcpError]` throughout.
 //!   * **Protocol** — `Std.HttpEngine` (`std/http_engine.l`, #5883): a pure
 //!     Lyric, sans-IO HTTP/1.1 parser + serializer + per-connection FSM. This
 //!     file never parses a byte of HTTP itself; it pumps transport bytes into
 //!     `feed` and writes `serializeResponseHead`/`serializeChunk` output back.
 //!   * **Concurrency** — a structured accept loop (docs/61 §6.2): a background
-//!     `Task` accepts connections and spawns one per-connection `Task` each,
-//!     which drives its own `Std.HttpEngine.Connection`. Lyric `spawn`/`scope`
-//!     is degenerate-synchronous on `--target dotnet` (D119/D120), so the real
-//!     OS-thread concurrency comes from `System.Threading.Tasks.Task.Run` —
-//!     the same background-thread mechanism `tcp_host_tls_tests.l` uses to run
-//!     an in-process loopback server. This fixes the single-threaded
-//!     "bootstrap-grade" concurrency deficiency the old `HttpListener` loop
-//!     carried, in the same change as TLS.
+//!     task accepts connections and starts one task per connection, which
+//!     drives its own `Std.HttpEngine.Connection`. Lyric `spawn`/`scope` is
+//!     degenerate-synchronous on `--target dotnet` (D119/D120), so the real
+//!     OS-thread concurrency comes from the `Std.HttpServerHost` seam
+//!     (`tryStartTask`, `Mutex`, `Semaphore`), the only per-target part of this
+//!     driver. Nothing in this file is specific to the dotnet BCL: it is the
+//!     shared HTTP server driver of docs/73 (D788), written once over
+//!     `Std.HttpEngine`, `Std.TcpHost` and `Std.HttpServerHost`. It stays at
+//!     `std/_kernel/http_server.l` until the native kernel is deleted (the
+//!     source loaders shadow a `_kernel/<name>.l` by the `_kernel_jvm/` and
+//!     `_kernel_native/` file of the same name, never a top-level
+//!     `std/<name>.l`, D780), and only the dotnet loader reads it today.
 //!
 //! ## Preserved public surface (pull model)
 //!
@@ -36,7 +40,11 @@
 //! (`startListenerWithLimits` / `startListenerTlsWithLimits` are additive, for
 //! callers that need to raise the engine's request-size caps, and so is
 //! `takeConnection`, which hands an HTTP/1.1 connection to another protocol
-//! after an `Upgrade` request, D146). `HttpContext`
+//! after an `Upgrade` request, D146, and `tryNextContext`, the form of
+//! `nextContext` that ends a pull loop on a stopped listener instead of
+//! panicking). `stopListener` is the one function whose behaviour widened (D788):
+//! it now shuts the listener's connections down and waits for its tasks, see its
+//! documentation. `HttpContext`
 //! and `HttpListener`, formerly extern aliases for BCL types, are now Lyric
 //! records — they are returned/held by consumers but never named as extern
 //! types, so the shape change is source-compatible. The chunked-stream handle
@@ -122,7 +130,6 @@
 //! reach the wire per chunk. A stream the peer resets, or a connection that
 //! closes, aborts the response: a handler blocked on credit wakes and its next
 //! `streamWriteChunk` returns `Err`.
-@axiom("System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts")
 @io
 package Std.HttpServer
 
@@ -147,128 +154,44 @@ import Std.HttpEngine.H2Conn as H2
 // `Std.HttpEngine`, so it needs no alias.
 import Std.HttpEngine.H2Frame
 import Std.TcpHost
+import Std.HttpServerHost
 import Std.Environment as Env
 import Std.Parse
 import Std.String
 import Std.Time
 
 // =====================================================================
-// Concurrency externs (BCL threading — the only externs in this file).
-// `Task.Run(Action)` gives a background OS thread (Lyric `spawn` is
-// degenerate-synchronous on this target). The blocking hand-off queue is a
-// `ConcurrentQueue<T>` (unblocked enqueue/dequeue) paired with a
-// `SemaphoreSlim` counting available items — chosen over `BlockingCollection`
-// for two reasons that matter to the self-hosted MSIL emitter: (1) every
-// member used here has a *unique arity*, so metadata overload resolution is
-// unambiguous (`BlockingCollection.TryTake` has two two-argument overloads —
-// `out T, int` vs `out T, TimeSpan` — that arity-only selection cannot
-// distinguish, W0008); and (2) the dequeue is `ConcurrentQueue.TryDequeue(out
-// T)`, an `out`-parameter form — a generic-*return* `Take(): T` mis-handles a
-// value-type record with a reference-typed field (the returned copy loses the
-// field's object identity), which silently broke the per-request `done`
-// hand-off. `ConcurrentQueue` + `cqTryDequeue` is the same idiom `lyric-mq`'s
-// kernel already uses.
+// Limits and timeouts.
 // =====================================================================
-@sendable
-extern type Task = "System.Threading.Tasks.Task"
-
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-// Each accepted connection is served on a `Task.Run` (threadpool) thread that
-// blocks in `hostRead` for the connection's lifetime — the thread-per-connection
-// model (docs/61 §6.2). HTTP/2 connections are *persistent*: a client keeps one
-// open and multiplexes many streams over it, so its server task blocks on a
-// threadpool thread until the client disconnects. Under high fan-out (or a test
-// that opens several h2 servers in one process without closing the client's
-// pooled connections) enough blocking threads accumulate to starve the pool the
-// client's own async continuations and the puller loop need — a classic
-// blocking-I/O starvation deadlock. Raising the pool's minimum thread count so
-// on-demand threads are created without the growth throttle keeps the pool from
-// starving. (A fully async transport would remove the per-connection blocking
-// threads entirely; an h2 connection holds two, its reader and its connection
-// task.)
-extern type ThreadPool = "System.Threading.ThreadPool"
-
-@externStatic
-@externTarget("System.Threading.ThreadPool.SetMinThreads")
-func setMinThreads(workerThreads: in Int, completionPortThreads: in Int): Bool = ()
-
-// The minimum threadpool size the server requests once on startup. Comfortably
-// covers a large number of concurrently-blocked connection tasks plus the
-// puller and client async machinery, without eagerly allocating them (threads
-// are still created only on demand — this only raises the no-throttle ceiling).
-func ensureServerThreadCapacity(): Unit {
-  val _ = setMinThreads(200, 200);
-  ()
-}
-
-@sendable
-extern type ConcurrentQueue[T] = "System.Collections.Concurrent.ConcurrentQueue`1"
-
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1..ctor")
-func newConcurrentQueue[T](): ConcurrentQueue[T] = ()
-
-@externInstance
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.Enqueue")
-func cqEnqueue[T](q: in ConcurrentQueue[T], item: in T): Unit = ()
-
-// `TryDequeue(out T)` is `ConcurrentQueue<T>`'s single one-argument dequeue —
-// unambiguous by arity, and its `out` form preserves a value-type record's
-// reference-typed fields (unlike a generic return).
-@externInstance
-@externTarget("System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue")
-func cqTryDequeue[T](q: in ConcurrentQueue[T], result: out T): Bool = ()
-
-// `SemaphoreSlim` is the availability signal: one `Release()` per enqueued
-// item, one blocking `Wait()` per dequeue. All three members have unique arity
-// (ctor takes one `int` initialCount; `Wait()` / `Release()` take none).
-@sendable
-extern type Semaphore = "System.Threading.SemaphoreSlim"
-
-@externTarget("System.Threading.SemaphoreSlim..ctor")
-func newSemaphore(initialCount: in Int): Semaphore = ()
-
-@externInstance
-@externTarget("System.Threading.SemaphoreSlim.Wait")
-func semWait(s: in Semaphore): Unit = ()
-
-@externInstance
-@externTarget("System.Threading.SemaphoreSlim.Release")
-func semRelease(s: in Semaphore): Int = ()
-
 // Bounds the number of connections served concurrently (#6071 hardening): the
-// accept loop spawns one `Task.Run` thread per accepted connection with no
-// upper bound, so a burst of many simultaneously-open connections (malicious
-// or otherwise) could exhaust the .NET threadpool/OS thread or handle limits.
-// A counting semaphore gates `taskRun` in `onAccepted`: the accept loop
-// blocks (backpressure — new connections queue in the OS listen backlog
-// rather than spawning unbounded background tasks) once this many
-// connections are already in flight, and each connection task releases its
-// permit when it finishes. 1000 comfortably covers ordinary production load
-// while still bounding worst-case thread/handle usage. Operators can override
-// it per deployment (without a rebuild) via the `LYRIC_HTTP_MAX_CONNECTIONS`
-// environment variable — see `resolveMaxConcurrentConnections`.
-val maxConcurrentConnectionsDefault: Int = 1000
-
-// Resolve the concurrent-connection cap: honour `LYRIC_HTTP_MAX_CONNECTIONS`
-// when it is set to a positive integer, otherwise fall back to
-// `maxConcurrentConnectionsDefault`. A missing, non-numeric, or < 1 value
-// falls back rather than failing — an unbounded (0/negative) cap would defeat
-// the #6071 backpressure guarantee. Read once per listener at start; a cap of
-// 1 is the seam the backpressure regression test uses. Public so a caller can
-// query the effective cap (and so the resolution logic is directly testable).
+// accept loop starts one task per accepted connection, so a burst of many
+// simultaneously-open connections (malicious or otherwise) could exhaust
+// threads or handles. A counting semaphore gates each start: the accept loop
+// blocks (backpressure, new connections queue in the OS listen backlog) once
+// this many connections are already in flight, and each connection task gives
+// its permit back when it finishes. The default is per target
+// (`Std.HttpServerHost.defaultMaxConnections`: a connection costs a thread on
+// dotnet and native, a virtual thread on the JVM) and operators override it
+// without a rebuild through `LYRIC_HTTP_MAX_CONNECTIONS`, see
+// `resolveMaxConcurrentConnections`.
+/// The concurrent-connection cap a listener applies: the
+/// `LYRIC_HTTP_MAX_CONNECTIONS` environment variable when it is a positive
+/// integer, otherwise the target's `defaultMaxConnections()`. A missing,
+/// non-numeric, or < 1 value falls back rather than failing: an unbounded
+/// (0/negative) cap would defeat the #6071 backpressure guarantee. Read once
+/// per listener at start; a cap of 1 is the seam the backpressure regression
+/// test uses. Public so a caller can query the effective cap (and so the
+/// resolution logic is directly testable).
 @experimental
 pub func resolveMaxConcurrentConnections(): Int {
   match Env.getVar("LYRIC_HTTP_MAX_CONNECTIONS") {
     case Ok(raw) -> {
       match tryParseInt(raw) {
-        case Ok(n) -> if n >= 1 { n } else { maxConcurrentConnectionsDefault }
-        case Err(_) -> maxConcurrentConnectionsDefault
+        case Ok(n) -> if n >= 1 { n } else { defaultMaxConnections() }
+        case Err(_) -> defaultMaxConnections()
       }
     }
-    case Err(_) -> maxConcurrentConnectionsDefault
+    case Err(_) -> defaultMaxConnections()
   }
 }
 
@@ -287,8 +210,18 @@ val tlsHandshakeTimeoutMsDefault: Int = 10000
 
 val connectionIdleTimeoutMsDefault: Int = 120000
 
+// How long `stopListener` waits for the accept loop and the connection tasks
+// to finish before it returns anyway (D780 decision 8).
+val stopGraceMsDefault: Int = 5000
+
 // How often the h2 drain watchdog checks whether its connection has ended.
 val h2DrainWatchSliceMs: Int = 100
+
+// The pause an accept loop takes after `AcceptBackoff` (descriptors or memory
+// exhausted) and after a connection it could not start a task for: short
+// enough that the listener resumes promptly once something else frees a
+// resource, long enough not to spin while the resource is missing.
+val acceptBackoffMs: Int = 5
 
 // The largest timeout either override accepts (one day, the same bound the
 // native twin enforces); anything larger falls back to the default.
@@ -325,6 +258,66 @@ pub func resolveConnectionIdleTimeoutMs(): Int {
   positiveIntFromEnv("LYRIC_HTTP_IDLE_TIMEOUT_MS", connectionIdleTimeoutMsDefault)
 }
 
+/// How long `stopListener` waits, in milliseconds, for the accept loop and
+/// every connection task to finish: the `LYRIC_HTTP_STOP_GRACE_MS`
+/// environment variable when it is an integer in 1..86400000 (one day),
+/// otherwise 5000. Read once per listener at start.
+@experimental
+pub func resolveStopGraceMs(): Int {
+  positiveIntFromEnv("LYRIC_HTTP_STOP_GRACE_MS", stopGraceMsDefault)
+}
+
+// =====================================================================
+// Thread-safe FIFO over the `Std.HttpServerHost` mutex.
+// =====================================================================
+/// A mutex-guarded first-in first-out queue. The server hands work between
+/// threads through these (ready contexts, h2 response notices and chunks,
+/// socket reads). Internal: observe a server only through the public
+/// functions.
+@experimental
+pub ref record ServerFifo[T] {
+  guard: Mutex
+  var items: List[T]
+  var head: Int
+}
+
+func newFifo[T](): ServerFifo[T] {
+  ServerFifo(guard = newMutex(), items = newList(), head = 0)
+}
+
+func fifoPush[T](q: in ServerFifo[T], item: in T): Unit {
+  lock(q.guard)
+  q.items.add(item)
+  unlock(q.guard)
+}
+
+// The oldest item, or `None` when empty. Consumed slots are skipped by index
+// and compacted once half the list is dead, so a pop is O(1) amortised.
+func fifoPop[T](q: in ServerFifo[T]): Option[T] {
+  lock(q.guard)
+  if q.head >= q.items.count {
+    unlock(q.guard)
+    return None
+  }
+  val item = q.items[q.head]
+  q.head = q.head + 1
+  if q.head == q.items.count {
+    q.items.clear()
+    q.head = 0
+  } else if q.head >= 64 and q.head * 2 >= q.items.count {
+    val live: List[T] = newList()
+    var i = q.head
+    while i < q.items.count {
+      live.add(q.items[i])
+      i = i + 1
+    }
+    q.items = live
+    q.head = 0
+  }
+  unlock(q.guard)
+  Some(value = item)
+}
+
 // =====================================================================
 // Public types.
 // =====================================================================
@@ -350,16 +343,29 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 }
 
 /// A running server. Holds the bound transport listener, the queue of ready
-/// request contexts the background accept loop feeds and `nextContext` drains
-/// (with `available` counting queued items), and the accept-loop task handle
-/// (kept alive so the loop is not collected). Opaque to consumers: observe it
-/// only through `nextContext` / `stopListener`.
+/// request contexts the accept loop feeds and `nextContext` drains (`items`
+/// under `guard`, `available` counting them), the registry of live connections
+/// `stopListener` shuts down, and the count of tasks (the accept loop and one
+/// per connection) it waits for. `stopping` is set once, under `guard`, by the
+/// first `stopListener`; nothing is admitted or queued after it. Opaque to
+/// consumers: observe it only through `nextContext` / `tryNextContext` /
+/// `stopListener`.
 @experimental
-pub record HttpListener {
+pub ref record HttpListener {
   transport: Listener
-  queue: ConcurrentQueue[HttpContext]
+  limits: EngineLimits
+  guard: Mutex
+  items: List[HttpContext]
   available: Semaphore
-  acceptTask: Task
+  connLimit: Semaphore
+  conns: Map[Int, Conn]
+  var nextConnId: Int
+  var active: Int
+  var stopping: Bool
+  quiet: Semaphore
+  graceMs: Int
+  // The TLS state of a TLS listener, released once nothing can use it again.
+  serverTls: Option[ServerTls]
 }
 
 /// One fully-parsed request plus the machinery to respond to it. `conn` is the
@@ -396,12 +402,15 @@ pub record HttpContext {
   trailingInput: Bool
 }
 
-// Per-connection ownership flag. `taken` flips once, on the puller thread,
-// before it releases the context's `done` semaphore; the connection task reads
-// it after `semWait(done)`, so the semaphore orders the write before the read.
+// Per-request ownership flags. `taken` flips once, on the puller thread, before
+// it releases the context's `done` semaphore; the connection task reads it after
+// `semWait(done)`, so the semaphore orders the write before the read. `responded`
+// makes the release happen once however many times a handler completes the
+// exchange.
 @experimental
 pub ref record ConnHandoff {
   var taken: Bool = false
+  var responded: Bool = false
 }
 
 // Per-connection state shared between the connection task and the handler
@@ -412,7 +421,7 @@ pub ref record ConnHandoff {
 @experimental
 pub ref record H2Link {
   var closed: Bool = false
-  outbox: ConcurrentQueue[H2Notice]
+  outbox: ServerFifo[H2Notice]
   wake: Semaphore
 }
 
@@ -446,7 +455,7 @@ record H2Inbound {
 pub ref record H2Exchange {
   streamId: Int
   link: H2Link
-  chunks: ConcurrentQueue[H2Chunk]
+  chunks: ServerFifo[H2Chunk]
   credit: Semaphore
   var status: Int
   var contentType: String
@@ -474,7 +483,7 @@ ref record H2Out {
 
 func addH2BodyChunk(exchange: in H2Exchange, bytes: in slice[Byte]): Unit {
   if bytes.length > 0 {
-    cqEnqueue(exchange.chunks, H2Chunk(bytes = bytes))
+    fifoPush(exchange.chunks, H2Chunk(bytes = bytes))
     exchange.bodyLength = exchange.bodyLength + bytes.length
   }
 }
@@ -484,7 +493,7 @@ func addH2BodyChunk(exchange: in H2Exchange, bytes: in slice[Byte]): Unit {
 // which point the stream is dispatched as an `HttpContext`.
 ref record H2ReqAccum {
   var headers: List[HeaderField]
-  body: List[Byte]
+  body: ByteChunks
   var haveHeaders: Bool
 }
 
@@ -503,8 +512,10 @@ ref record H2ConnState {
   conn: Conn
   var h2: H2.H2Connection
   accums: Map[Int, H2ReqAccum]
-  queue: ConcurrentQueue[HttpContext]
-  available: Semaphore
+  listener: HttpListener
+  // The `done` every context of this connection carries: an h2 response is
+  // completed through its exchange mailbox, so nothing ever waits on it.
+  unusedDone: Semaphore
   var open: Bool
   // The peer half-closed (the reader hit end-of-input): nothing more will be
   // read, but dispatched exchanges keep running and their responses are still
@@ -516,7 +527,7 @@ ref record H2ConnState {
   link: H2Link
   // Socket bytes the reader task has read, awaiting the connection task, and
   // the credit that bounds how far the reader may run ahead.
-  inbound: ConcurrentQueue[H2Inbound]
+  inbound: ServerFifo[H2Inbound]
   inCredit: Semaphore
   // Responses in flight, keyed by stream id; touched only by the connection
   // task. `exchanges` holds every dispatched stream's mailbox, `outs` those
@@ -720,19 +731,58 @@ union ReqOutcome {
   case RoProtocolFail(status: Int)
 }
 
+// The engine FSM after one read, and what the read produced. `readOneRequest`
+// takes the connection by value and hands the advanced one back in this
+// record: an `inout` parameter is not portable to every backend this driver
+// is written for (docs/73 section 1.2).
+record ReadOutcome {
+  conn: Connection
+  outcome: ReqOutcome
+}
+
 func emptyBytes(): slice[Byte] {
   val e: slice[Byte] = []
   e
 }
 
-// One `List<byte>.AddRange` per chunk (a single array copy), not an `Add`
-// per byte (#7269).
-@externInstance
-@externTarget("System.Collections.Generic.List`1.AddRange")
-func listAddRangeBytes(acc: in List[Byte], bytes: in slice[Byte]): Unit = ()
+// A request body gathered chunk by chunk. The engine and the h2 FSM hand each
+// chunk over as its own slice, so keeping them and joining once at the end
+// copies the common single-chunk body not at all and a many-chunk body in
+// pairwise merges, with no per-byte `List[Byte]` and no BCL `AddRange` (#7269).
+ref record ByteChunks {
+  parts: List[slice[Byte]]
+  var length: Int
+}
 
-func appendBytes(acc: in List[Byte], bytes: in slice[Byte]): Unit {
-  listAddRangeBytes(acc, bytes)
+func newByteChunks(): ByteChunks {
+  ByteChunks(parts = newList(), length = 0)
+}
+
+func chunksAppend(acc: in ByteChunks, bytes: in slice[Byte]): Unit {
+  if bytes.length > 0 {
+    acc.parts.add(bytes)
+    acc.length = acc.length + bytes.length
+  }
+}
+
+func chunksJoin(acc: in ByteChunks): slice[Byte] {
+  if acc.parts.count == 0 {
+    return emptyBytes()
+  }
+  var level: List[slice[Byte]] = acc.parts
+  while level.count > 1 {
+    val merged: List[slice[Byte]] = newList()
+    var i = 0
+    while i + 1 < level.count {
+      merged.add(level[i].concat(level[i + 1]))
+      i = i + 2
+    }
+    if i < level.count {
+      merged.add(level[i])
+    }
+    level = merged
+  }
+  level[0]
 }
 
 // Write an interim `100 Continue` head (no body) when the request carried
@@ -748,12 +798,13 @@ func writeInterimContinue(conn: in Conn, version: in HttpVersion): Unit {
 // Drains any already-buffered (pipelined) bytes before issuing a fresh read,
 // so a keep-alive connection with a second request already in the buffer does
 // not block waiting for more network input.
-func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
+func readOneRequest(conn: in Conn, initialEngineConn: in Connection): ReadOutcome {
+  var engineConn = initialEngineConn
   var method = ""
   var target = ""
   var version: HttpVersion = Http1_1
   var headers: List[HeaderField] = newList()
-  val body: List[Byte] = newList()
+  val body = newByteChunks()
   var first = true
   while true {
     // Statement form (not `val = if ... else match ...`): the tail-position
@@ -767,10 +818,10 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
       events = fr0.events
     } else {
       match hostRead(conn, 65536) {
-        case Err(_) -> return RoClose
+        case Err(_) -> return ReadOutcome(conn = engineConn, outcome = RoClose)
         case Ok(bytes) -> {
           if bytes.length == 0 {
-            return RoClose
+            return ReadOutcome(conn = engineConn, outcome = RoClose)
           }
           val fr1 = Std.HttpEngine.feed(engineConn, bytes)
           engineConn = fr1.conn
@@ -790,24 +841,29 @@ func readOneRequest(conn: in Conn, engineConn: inout Connection): ReqOutcome {
           headers = hs
         }
         case ExpectContinue -> writeInterimContinue(conn, version)
-        case BodyChunk(b) -> appendBytes(body, b)
+        case BodyChunk(b) -> chunksAppend(body, b)
         case RequestComplete -> {
-          return RoRequest(
-            method = method,
-            target = target,
-            version = version,
-            headers = headers,
-            body = body.toArray(),
-            keepAlive = not shouldClose(engineConn),
-            trailingInput = i + 1 < events.count or hasBufferedInput(engineConn)
+          return ReadOutcome(
+            conn = engineConn,
+            outcome = RoRequest(
+              method = method,
+              target = target,
+              version = version,
+              headers = headers,
+              body = chunksJoin(body),
+              keepAlive = not shouldClose(engineConn),
+              trailingInput = i + 1 < events.count or hasBufferedInput(engineConn)
+            )
           )
         }
-        case ProtocolError(kind, _) -> return RoProtocolFail(status = protocolErrorStatus(kind))
+        case ProtocolError(kind, _) -> {
+          return ReadOutcome(conn = engineConn, outcome = RoProtocolFail(status = protocolErrorStatus(kind)))
+        }
       }
       i = i + 1
     }
   }
-  RoClose
+  ReadOutcome(conn = engineConn, outcome = RoClose)
 }
 
 // Write a minimal bodyless error response (used for a `ProtocolError` before a
@@ -821,36 +877,137 @@ func writeErrorResponse(conn: in Conn, status: in Int): Unit {
   ()
 }
 
+// =====================================================================
+// The listener: ready-context queue, connection registry, task accounting.
+// =====================================================================
+func newListener(transport: in Listener, limits: in EngineLimits, serverTls: in Option[ServerTls]): HttpListener {
+  HttpListener(
+    transport = transport,
+    limits = limits,
+    guard = newMutex(),
+    items = newList(),
+    available = newSem(0),
+    connLimit = newSem(resolveMaxConcurrentConnections()),
+    conns = newMap(),
+    nextConnId = 0,
+    // The accept loop is the first task the listener counts.
+    active = 1,
+    stopping = false,
+    quiet = newSem(0),
+    graceMs = resolveStopGraceMs(),
+    serverTls = serverTls
+  )
+}
+
+func isStopping(l: in HttpListener): Bool {
+  lock(l.guard)
+  val stopping = l.stopping
+  unlock(l.guard)
+  stopping
+}
+
+// Hand a fully-parsed request to the pull queue. Once the listener is stopping
+// nothing is queued: a context queued after `stopListener` drained the queue
+// would never be pulled, and its connection task would wait for its response
+// forever (#6798). The credit is posted while the lock is held, so a stop that
+// drains the queue never sees an item whose credit has not been posted yet
+// (#6803).
+func enqueueContext(l: in HttpListener, ctx: in HttpContext): Unit {
+  lock(l.guard)
+  if l.stopping {
+    unlock(l.guard)
+    signalDone(ctx)
+    return
+  }
+  l.items.add(ctx)
+  semPost(l.available)
+  unlock(l.guard)
+}
+
+// Register an accepted connection with the stop path and count its task. `-1`
+// when the listener is stopping: the caller closes the connection itself.
+// Registered before the task starts, so a connection that finishes at once
+// cannot leave an entry behind for a later connection to inherit (#6792).
+func admitConn(l: in HttpListener, conn: in Conn): Int {
+  lock(l.guard)
+  if l.stopping {
+    unlock(l.guard)
+    return 0 - 1
+  }
+  val id = l.nextConnId
+  l.nextConnId = id + 1
+  l.conns.add(id, conn)
+  l.active = l.active + 1
+  unlock(l.guard)
+  id
+}
+
+// One counted task has ended. The last one to end while the listener is
+// stopping wakes `stopListener`.
+func taskFinished(l: in HttpListener): Unit {
+  lock(l.guard)
+  l.active = l.active - 1
+  if l.stopping and l.active == 0 {
+    semPost(l.quiet)
+  }
+  unlock(l.guard)
+}
+
+// A connection task's last act, on every path: take the connection out of the
+// registry (before the close, never after, so `stopListener` can never touch a
+// socket this thread has begun releasing), close it unless it was handed to a
+// new owner, give the connection's permit back and stop being counted. The
+// permit and the close run however the task ends, or a fire-and-forget task
+// that threw would leak the #6071 permit and eventually wedge the accept loop
+// on `semWait(connLimit)` (#6221).
+func endConn(l: in HttpListener, conn: in Conn, id: in Int, closeIt: in Bool): Unit {
+  lock(l.guard)
+  val _ = l.conns.remove(id)
+  unlock(l.guard)
+  if closeIt {
+    hostClose(conn)
+  }
+  semPost(l.connLimit)
+  taskFinished(l)
+}
+
+// The accept loop has ended (the listener was stopped, or its socket died).
+func acceptLoopDone(l: in HttpListener): Unit {
+  taskFinished(l)
+}
+
+// Whether an accept failure leaves the loop running. A stopping listener always
+// ends it; otherwise the target's classification decides, and resource
+// exhaustion pauses briefly instead of spinning on the same failure.
+func acceptContinues(l: in HttpListener, e: in TcpError): Bool {
+  if isStopping(l) {
+    return false
+  }
+  match acceptOutcome(e) {
+    case AcceptStop -> false
+    case AcceptRetry -> true
+    case AcceptBackoff -> {
+      sleepMillis(acceptBackoffMs)
+      true
+    }
+  }
+}
+
 // The per-connection loop: parse a request, hand a ready context to the puller,
 // block until the puller responds, then either read the next request (keep
-// alive) or close.
-func processConnection(
-  conn: in Conn,
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
-): Unit {
-  // Guarantee the socket is closed and this connection's concurrency-limit
-  // permit (#6071) is released even if request handling throws — a broken
-  // socket can throw from readOneRequest/writeErrorResponse. Because this
-  // runs via fire-and-forget `taskRun`, a leaked permit is never recovered
-  // and would eventually wedge the accept loop on `semWait(connLimit)` (#6221).
-  // After `takeConnection` the socket belongs to the caller, so it is not
-  // closed here; the permit is still released, since the connection no
-  // longer counts against the HTTP server's cap.
-  val handoff = ConnHandoff()
+// alive) or close. The connection task's last act, whatever ends it, is
+// `endConn`.
+func processConnection(l: in HttpListener, conn: in Conn, id: in Int): Unit {
+  var taken = false
   defer {
-    if not handoff.taken {
-      hostClose(conn)
-    }
-    val _ = semRelease(connLimit)
+    endConn(l, conn, id, not taken)
   }
-  var engineConn = newConnection(limits)
+  var engineConn = newConnection(l.limits)
   var open = true
   while open {
-    val outcome = readOneRequest(conn, engineConn)
-    match outcome {
+    val read = readOneRequest(conn, engineConn)
+    engineConn = read.conn
+    match read.outcome {
       case RoClose -> {
         open = false
       }
@@ -859,7 +1016,8 @@ func processConnection(
         open = false
       }
       case RoRequest(method, target, version, headers, body, keepAlive, trailingInput) -> {
-        val done: Semaphore = newSemaphore(0)
+        val done: Semaphore = newSem(0)
+        val handoff = ConnHandoff()
         val noH2: Option[H2Exchange] = None
         val ctx = HttpContext(
           conn = conn,
@@ -874,68 +1032,42 @@ func processConnection(
           handoff = handoff,
           trailingInput = trailingInput
         )
-        cqEnqueue(queue, ctx)
-        val _ = semRelease(available)
+        enqueueContext(l, ctx)
         // Block until a respond helper releases `done`. Keep-alive is the
         // engine's decision (`keepAlive`); a failed response write is not
-        // signalled here — the next `readOneRequest` hits the broken socket and
+        // signalled here: the next `readOneRequest` hits the broken socket and
         // returns `RoClose`, closing the connection one iteration later.
         semWait(done)
-        if not keepAlive or handoff.taken {
+        releaseSem(done)
+        if handoff.taken {
+          // `takeConnection` handed the connection to a new owner: leave it
+          // open and stop reading HTTP from it.
+          taken = true
+          open = false
+        } else if not keepAlive {
           open = false
         }
       }
     }
   };
-  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
-  // they still fire if the loop body throws (#6221).
   ()
 }
 
-// Handle one plain accept result: on success apply the idle timeout, spawn a
-// per-connection task and keep the loop running; on a stopped listener
-// (`AcceptFailed`/`BindFailed`) end the loop. Returns whether the accept loop
-// should keep running.
-func onAccepted(
-  accepted: in Result[Conn, TcpError],
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
-  idleTimeoutMs: in Int,
-): Bool {
-  match accepted {
-    case Ok(conn) -> {
-      hostSetIoTimeout(conn, idleTimeoutMs)
-      // Bound the number of connections served concurrently (#6071): acquire
-      // a permit before spawning the connection task, so the accept loop
-      // itself blocks (backpressure) once the resolved cap
-      // (`resolveMaxConcurrentConnections`) connections are already in flight,
-      // rather than spawning an unbounded number of background tasks. The
-      // connection task releases the permit when it finishes
-      // (`processConnection`/`processH2Connection`).
-      semWait(connLimit)
-      // Select the protocol on the negotiated ALPN (docs/61 §6.4): a TLS peer
-      // that negotiated `h2` drives the HTTP/2 FSM; everything else (plain
-      // connection, `http/1.1`, or no ALPN) speaks HTTP/1.1.
-      if hostAlpn(conn) == "h2" {
-        val _ = taskRun({ -> processH2Connection(conn, queue, available, limits, connLimit) })
-      } else {
-        val _ = taskRun({ -> processConnection(conn, queue, available, limits, connLimit) })
-      }
-      true
-    }
-    case Err(e) -> acceptLoopContinues(e)
-  }
-}
-
-// Whether an accept failure leaves the loop running: a stopped listener
-// (`AcceptFailed`/`BindFailed`) ends it; anything else is per-connection.
-func acceptLoopContinues(e: in TcpError): Bool {
-  match e {
-    case AcceptFailed(_) -> false
-    case BindFailed(_) -> false
-    case _ -> true
+// Take a connection permit and register the connection, then run its task. A
+// task that cannot be started (no thread left) refuses this one connection and
+// the loop keeps serving; one that arrives while the listener is stopping is
+// closed. Shared by the plain and TLS loops through the two functions below
+// rather than a closure parameter: a captured closure value called from inside
+// another closure is not portable (docs/73 section 1.2).
+func spawnPlain(l: in HttpListener, conn: in Conn): Unit {
+  semWait(l.connLimit)
+  val id = admitConn(l, conn)
+  if id < 0 {
+    hostClose(conn)
+    semPost(l.connLimit)
+  } else if not tryStartTask({ -> processConnection(l, conn, id) }) {
+    endConn(l, conn, id, true)
+    sleepMillis(acceptBackoffMs)
   }
 }
 
@@ -943,30 +1075,41 @@ func acceptLoopContinues(e: in TcpError): Bool {
 // connection's own task, so a slow or silent peer never blocks the accept
 // loop, then serve the connection on this same task with the protocol its
 // ALPN selected. A failed handshake closes the socket and releases the
-// connection permit the accept loop took.
+// connection permit the accept loop took. The connection stays registered under
+// the plain `Conn` throughout (the upgraded one wraps the same socket), so
+// `stopListener` interrupts a handshake in progress like a blocked read.
 func serveTlsConnection(
+  l: in HttpListener,
   plain: in Conn,
+  id: in Int,
   tls: in ServerTls,
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
   handshakeTimeoutMs: in Int,
   idleTimeoutMs: in Int,
 ): Unit {
   match hostUpgradeServerTlsPrepared(plain, tls, handshakeTimeoutMs) {
-    case Err(_) -> {
-      hostClose(plain)
-      val _ = semRelease(connLimit)
-    }
+    case Err(_) -> endConn(l, plain, id, true)
     case Ok(conn) -> {
       hostSetIoTimeout(conn, idleTimeoutMs)
       if hostAlpn(conn) == "h2" {
-        processH2Connection(conn, queue, available, limits, connLimit)
+        processH2Connection(l, conn, id)
       } else {
-        processConnection(conn, queue, available, limits, connLimit)
+        processConnection(l, conn, id)
       }
     }
+  }
+}
+
+func spawnTls(
+  l: in HttpListener, plain: in Conn, tls: in ServerTls, handshakeTimeoutMs: in Int, idleTimeoutMs: in Int
+): Unit {
+  semWait(l.connLimit)
+  val id = admitConn(l, plain)
+  if id < 0 {
+    hostClose(plain)
+    semPost(l.connLimit)
+  } else if not tryStartTask({ -> serveTlsConnection(l, plain, id, tls, handshakeTimeoutMs, idleTimeoutMs) }) {
+    endConn(l, plain, id, true)
+    sleepMillis(acceptBackoffMs)
   }
 }
 
@@ -977,18 +1120,22 @@ func serveTlsConnection(
 // emitter's #2494 generic-instantiation degradation), so the `match tls` there
 // silently faulted and the accept loop never accepted. Two monomorphic loops
 // carry no generic-over-extern-payload parameter and are unaffected.
-func plainAcceptLoop(
-  transport: in Listener,
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
-): Unit {
+func plainAcceptLoop(l: in HttpListener): Unit {
+  defer {
+    acceptLoopDone(l)
+  }
   val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
-    val accepted = hostAccept(transport)
-    running = onAccepted(accepted, queue, available, limits, connLimit, idleTimeoutMs)
+    match hostAccept(l.transport) {
+      case Ok(conn) -> {
+        hostSetIoTimeout(conn, idleTimeoutMs)
+        spawnPlain(l, conn)
+      }
+      case Err(e) -> {
+        running = acceptContinues(l, e)
+      }
+    }
   }
 }
 
@@ -996,29 +1143,18 @@ func plainAcceptLoop(
 // permit; the handshake itself runs on the connection's task
 // (`serveTlsConnection`, #7268) against the `ServerTls` state the listener
 // built once at start.
-func tlsAcceptLoop(
-  transport: in Listener,
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  tls: in ServerTls,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
-): Unit {
+func tlsAcceptLoop(l: in HttpListener, tls: in ServerTls): Unit {
+  defer {
+    acceptLoopDone(l)
+  }
   val handshakeTimeoutMs = resolveTlsHandshakeTimeoutMs()
   val idleTimeoutMs = resolveConnectionIdleTimeoutMs()
   var running = true
   while running {
-    match hostAccept(transport) {
-      case Ok(plain) -> {
-        semWait(connLimit)
-        val _ = taskRun(
-          { ->
-            serveTlsConnection(plain, tls, queue, available, limits, connLimit, handshakeTimeoutMs, idleTimeoutMs)
-          }
-        )
-      }
+    match hostAccept(l.transport) {
+      case Ok(plain) -> spawnTls(l, plain, tls, handshakeTimeoutMs, idleTimeoutMs)
       case Err(e) -> {
-        running = acceptLoopContinues(e)
+        running = acceptContinues(l, e)
       }
     }
   }
@@ -1075,7 +1211,7 @@ func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
   match mapGet(state.accums, streamId) {
     case Some(a) -> a
     case None -> {
-      val fresh = H2ReqAccum(headers = newList(), body = newList(), haveHeaders = false)
+      val fresh = H2ReqAccum(headers = newList(), body = newByteChunks(), haveHeaders = false)
       state.accums.add(streamId, fresh)
       fresh
     }
@@ -1295,8 +1431,8 @@ val h2InboundCredits: Int = 8
 // down (checked after the enqueue, so a teardown that ran in between is seen),
 // the exchange is aborted here so no handler ever blocks on a dead connection.
 func h2Notify(x: in H2Exchange): Unit {
-  cqEnqueue(x.link.outbox, H2Notice(streamId = x.streamId))
-  val _ = semRelease(x.link.wake)
+  fifoPush(x.link.outbox, H2Notice(streamId = x.streamId))
+  semPost(x.link.wake)
   if x.link.closed {
     h2Abort(x)
   }
@@ -1307,14 +1443,12 @@ func h2Notify(x: in H2Exchange): Unit {
 // `aborted` and returns an error instead of writing.
 func h2Abort(x: in H2Exchange): Unit {
   x.aborted = true
-  val _ = semRelease(x.credit)
-  val _2 = semRelease(x.credit);
-  ()
+  semPost(x.credit)
+  semPost(x.credit)
 }
 
 func h2ReleaseCredit(x: in H2Exchange): Unit {
-  val _ = semRelease(x.credit);
-  ()
+  semPost(x.credit)
 }
 
 // Forget a stream's server-side response state once its response has been fully
@@ -1350,8 +1484,8 @@ func h2Teardown(state: in H2ConnState): Unit {
     i = i + 1
   }
   // Let a reader task parked on its credit wake up and observe the closed socket.
-  val _ = semRelease(state.inCredit);
-  ()
+  semPost(state.inCredit)
+  releaseSem(state.unusedDone)
 }
 
 func h2WriteOrClose(state: in H2ConnState, bytes: in slice[Byte]): Unit {
@@ -1421,21 +1555,25 @@ func h2StepOut(state: in H2ConnState, so: in H2Out): Bool {
     // `ended` is read before the dequeue: the handler enqueues every chunk
     // before it sets `ended`, so a miss with `ended` already true is final.
     val ended = x.ended
-    var c: H2Chunk = default()
-    if cqTryDequeue(x.chunks, c) {
-      so.cur = c.bytes
-      so.curOff = 0
-      so.hasCur = true
-      h2ReleaseCredit(x)
-    } else if ended {
-      match H2.sendData(state.h2, x.streamId, emptyBytes(), true) {
-        case Ok(bytes) -> h2WriteOrClose(state, bytes)
-        case Err(_) -> ()
+    match fifoPop(x.chunks) {
+      case Some(c) -> {
+        so.cur = c.bytes
+        so.curOff = 0
+        so.hasCur = true
+        h2ReleaseCredit(x)
       }
-      so.finished = true
-      return true
-    } else {
-      return false
+      case None -> {
+        if ended {
+          match H2.sendData(state.h2, x.streamId, emptyBytes(), true) {
+            case Ok(bytes) -> h2WriteOrClose(state, bytes)
+            case Err(_) -> ()
+          }
+          so.finished = true
+          return true
+        } else {
+          return false
+        }
+      }
     }
   }
   val sendable = H2.maxSendableOnStream(state.h2, x.streamId)
@@ -1450,13 +1588,15 @@ func h2StepOut(state: in H2ConnState, so: in H2Out): Bool {
     // Look ahead so END_STREAM rides the final DATA frame when the body is
     // already complete, as it always has for a buffered response.
     val ended = x.ended
-    var nxt: H2Chunk = default()
-    if cqTryDequeue(x.chunks, nxt) {
-      so.hasNext = true
-      so.next = nxt.bytes
-      h2ReleaseCredit(x)
-    } else {
-      isLast = ended
+    match fifoPop(x.chunks) {
+      case Some(nxt) -> {
+        so.hasNext = true
+        so.next = nxt.bytes
+        h2ReleaseCredit(x)
+      }
+      case None -> {
+        isLast = ended
+      }
     }
   }
   // A slice that fits one frame is framed as-is, without a sub-slice copy.
@@ -1526,28 +1666,35 @@ func h2SendPass(state: in H2ConnState): Bool {
 
 // Register the streams handlers have published a response for.
 func h2DrainOutbox(state: in H2ConnState): Unit {
-  var n: H2Notice = default()
-  while cqTryDequeue(state.link.outbox, n) {
-    match mapGet(state.exchanges, n.streamId) {
-      case None -> ()
-      case Some(x) -> {
-        match mapGet(state.outs, n.streamId) {
-          case Some(_) -> ()
-          case None -> {
-            state.outs.add(
-              n.streamId,
-              H2Out(
-                exchange = x,
-                headersSent = false,
-                hasCur = false,
-                cur = emptyBytes(),
-                curOff = 0,
-                hasNext = false,
-                next = emptyBytes(),
-                finished = false
-              )
-            )
-            state.order.add(n.streamId)
+  var more = true
+  while more {
+    match fifoPop(state.link.outbox) {
+      case None -> {
+        more = false
+      }
+      case Some(n) -> {
+        match mapGet(state.exchanges, n.streamId) {
+          case None -> ()
+          case Some(x) -> {
+            match mapGet(state.outs, n.streamId) {
+              case Some(_) -> ()
+              case None -> {
+                state.outs.add(
+                  n.streamId,
+                  H2Out(
+                    exchange = x,
+                    headersSent = false,
+                    hasCur = false,
+                    cur = emptyBytes(),
+                    curOff = 0,
+                    hasNext = false,
+                    next = emptyBytes(),
+                    finished = false
+                  )
+                )
+                state.order.add(n.streamId)
+              }
+            }
           }
         }
       }
@@ -1564,8 +1711,12 @@ func h2BeginDrain(state: in H2ConnState): Unit {
   if not state.draining {
     state.draining = true
     val timeoutMs = resolveConnectionIdleTimeoutMs()
-    val _watchdog = taskRun({ -> h2DrainWatchdog(state, timeoutMs) });
-    ()
+    // Without a watchdog nothing would bound the wait for a handler that never
+    // answers, so a connection whose watchdog cannot start stops draining now,
+    // and so does one on a listener that is stopping (`h2DrainFinished`).
+    if isStopping(state.listener) or not tryStartTask({ -> h2DrainWatchdog(state, timeoutMs) }) {
+      state.drainExpired = true
+    }
   }
 }
 
@@ -1579,24 +1730,30 @@ func h2DrainWatchdog(state: in H2ConnState, timeoutMs: in Int): Unit {
   }
   if not state.link.closed {
     state.drainExpired = true
-    val _ = semRelease(state.link.wake);
-    ()
+    semPost(state.link.wake)
   }
 }
 
 // True once a draining connection has nothing left to wait for.
-func h2DrainFinished(state: in H2ConnState): Bool = state.draining and (state.drainExpired or state.exchanges.count == 0)
+func h2DrainFinished(state: in H2ConnState): Bool = state.draining and (state.drainExpired or state.exchanges.count == 0 or isStopping(state.listener))
 
 // Feed everything the reader task has queued into the connection FSM. A
 // zero-length entry is the reader's end-of-input marker.
 func h2DrainInbound(state: in H2ConnState): Unit {
-  var ib: H2Inbound = default()
-  while state.open and cqTryDequeue(state.inbound, ib) {
-    val _ = semRelease(state.inCredit)
-    if ib.bytes.length == 0 {
-      h2BeginDrain(state)
-    } else {
-      processH2Batch(state, ib.bytes)
+  var more = true
+  while more and state.open {
+    match fifoPop(state.inbound) {
+      case None -> {
+        more = false
+      }
+      case Some(ib) -> {
+        semPost(state.inCredit)
+        if ib.bytes.length == 0 {
+          h2BeginDrain(state)
+        } else {
+          processH2Batch(state, ib.bytes)
+        }
+      }
     }
   }
 }
@@ -1615,7 +1772,7 @@ func h2Cycle(state: in H2ConnState): Unit {
 // The per-connection reader: moves socket bytes into the inbound queue and
 // nothing else, so the connection task can wait on one signal for both input and
 // handler output. Each read is copied (the transport reuses its read buffer).
-func h2ReadLoop(conn: in Conn, inbound: in ConcurrentQueue[H2Inbound], wake: in Semaphore, inCredit: in Semaphore): Unit {
+func h2ReadLoop(conn: in Conn, inbound: in ServerFifo[H2Inbound], wake: in Semaphore, inCredit: in Semaphore): Unit {
   var go = true
   while go {
     semWait(inCredit)
@@ -1627,16 +1784,14 @@ func h2ReadLoop(conn: in Conn, inbound: in ConcurrentQueue[H2Inbound], wake: in 
         if bytes.length == 0 {
           go = false
         } else {
-          cqEnqueue(inbound, H2Inbound(bytes = bytes.slice(0, bytes.length)))
-          val _ = semRelease(wake);
-          ()
+          fifoPush(inbound, H2Inbound(bytes = bytes.slice(0, bytes.length)))
+          semPost(wake)
         }
       }
     }
   }
-  cqEnqueue(inbound, H2Inbound(bytes = emptyBytes()))
-  val _ = semRelease(wake);
-  ()
+  fifoPush(inbound, H2Inbound(bytes = emptyBytes()))
+  semPost(wake)
 }
 
 // Dispatch a fully-received request stream: build an `HttpContext` (h2 mailbox
@@ -1648,11 +1803,12 @@ func dispatchH2Stream(state: in H2ConnState, streamId: in Int): Unit {
     case None -> ()
     case Some(accum) -> {
       val line = extractH2Request(accum.headers)
+      val chunks: ServerFifo[H2Chunk] = newFifo()
       val exchange = H2Exchange(
         streamId = streamId,
         link = state.link,
-        chunks = newConcurrentQueue(),
-        credit = newSemaphore(h2StreamChunkCredits),
+        chunks = chunks,
+        credit = newSem(h2StreamChunkCredits),
         status = 0,
         contentType = "",
         extra = newMap(),
@@ -1664,24 +1820,21 @@ func dispatchH2Stream(state: in H2ConnState, streamId: in Int): Unit {
       )
       state.exchanges.add(streamId, exchange)
       val someH2: Option[H2Exchange] = Some(value = exchange)
-      val done: Semaphore = newSemaphore(0)
       val ctx = HttpContext(
         conn = state.conn,
         method = line.method,
         target = line.target,
         version = Http1_1,
         headers = line.headers,
-        body = accum.body.toArray(),
+        body = chunksJoin(accum.body),
         keepAlive = true,
-        done = done,
+        done = state.unusedDone,
         h2 = someH2,
         handoff = ConnHandoff(),
         trailingInput = false
       )
       removeAccum(state, streamId)
-      cqEnqueue(state.queue, ctx)
-      val _ = semRelease(state.available);
-      ()
+      enqueueContext(state.listener, ctx)
     }
   }
 }
@@ -1780,7 +1933,7 @@ func onH2Data(state: in H2ConnState, streamId: in Int, data: in slice[Byte], end
     return
   }
   val accum = getOrCreateAccum(state, streamId)
-  if accum.body.count + data.length > state.limits.maxBodyBytes {
+  if accum.body.length + data.length > state.limits.maxBodyBytes {
     // Reject terminally: cap the memory (do not append this frame), mark the
     // stream (which drops its accumulator, #6145), and send a 413. Matches the
     // HTTP/1.1 path, which rejects an oversized body as `BodyTooLarge` at
@@ -1793,7 +1946,7 @@ func onH2Data(state: in H2ConnState, streamId: in Int, data: in slice[Byte], end
     }
     return
   }
-  appendBytes(accum.body, data)
+  chunksAppend(accum.body, data)
   // Under the cap: stream-level window is topped up too, so a large legal body
   // can exceed the 64 KiB initial receive window (not once the peer has ended
   // the stream: no further DATA can arrive on it).
@@ -1848,39 +2001,65 @@ func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
   }
 }
 
+// The h2 reader task, counted so `stopListener` waits for it: it only moves
+// socket bytes into the inbound queue and ends when the socket closes.
+func h2ReaderTask(
+  l: in HttpListener,
+  conn: in Conn,
+  inbound: in ServerFifo[H2Inbound],
+  wake: in Semaphore,
+  inCredit: in Semaphore,
+): Unit {
+  defer {
+    taskFinished(l)
+  }
+  h2ReadLoop(conn, inbound, wake, inCredit)
+}
+
+func startH2Reader(
+  l: in HttpListener,
+  conn: in Conn,
+  inbound: in ServerFifo[H2Inbound],
+  wake: in Semaphore,
+  inCredit: in Semaphore,
+): Bool {
+  lock(l.guard)
+  l.active = l.active + 1
+  unlock(l.guard)
+  val started = tryStartTask({ -> h2ReaderTask(l, conn, inbound, wake, inCredit) })
+  if not started {
+    taskFinished(l)
+  }
+  started
+}
+
 // The per-connection h2 connection task: send the server's initial SETTINGS,
 // start the reader task, then loop on the wake signal, running one scheduling
 // cycle (`h2Cycle`) per wake until the connection closes or fails. This task
 // alone feeds the FSM, encodes HPACK and writes frames; the reader only moves
 // socket bytes and handlers only publish response values, so the FSM state has
 // a single owner.
-func processH2Connection(
-  conn: in Conn,
-  queue: in ConcurrentQueue[HttpContext],
-  available: in Semaphore,
-  limits: in EngineLimits,
-  connLimit: in Semaphore,
-): Unit {
+func processH2Connection(l: in HttpListener, conn: in Conn, id: in Int): Unit {
   // Guarantee socket close + concurrency-permit release even if the initial
-  // `hostWrite` or `processH2Batch` throws on a broken socket — otherwise a
-  // fire-and-forget `taskRun` exception leaks the #6071 permit and eventually
-  // wedges the accept loop on `semWait(connLimit)` (#6221).
+  // `hostWrite` or `processH2Batch` throws on a broken socket: a fire-and-forget
+  // task that threw would leak the #6071 permit and eventually wedge the accept
+  // loop on `semWait(connLimit)` (#6221).
   defer {
-    hostClose(conn)
-    val _ = semRelease(connLimit)
+    endConn(l, conn, id, true)
   }
   val h2 = H2.newServerConnection(H2.h2DefaultServerSettings())
   val _ = hostWrite(conn, H2.serverInitialFrame(h2))
-  val wake = newSemaphore(0)
-  val inCredit = newSemaphore(h2InboundCredits)
-  val inbound: ConcurrentQueue[H2Inbound] = newConcurrentQueue()
-  val link = H2Link(closed = false, outbox = newConcurrentQueue(), wake = wake)
+  val wake = newSem(0)
+  val inCredit = newSem(h2InboundCredits)
+  val inbound: ServerFifo[H2Inbound] = newFifo()
+  val outbox: ServerFifo[H2Notice] = newFifo()
+  val link = H2Link(closed = false, outbox = outbox, wake = wake)
   val state = H2ConnState(
     conn = conn,
     h2 = h2,
     accums = newMap(),
-    queue = queue,
-    available = available,
+    listener = l,
+    unusedDone = newSem(0),
     open = true,
     draining = false,
     drainExpired = false,
@@ -1890,14 +2069,17 @@ func processH2Connection(
     exchanges = newMap(),
     outs = newMap(),
     order = newList(),
-    limits = limits,
+    limits = l.limits,
     rejectedStreams = newMap()
   )
-  val _reader = taskRun({ -> h2ReadLoop(conn, inbound, wake, inCredit) })
-  // Teardown runs however the loop ends (peer close, FSM failure, a throw), so
-  // no handler stays blocked on a connection that is gone.
+  // Teardown runs however the loop ends (peer close, FSM failure, a throw, a
+  // reader that could not start), so no handler stays blocked on a connection
+  // that is gone.
   defer {
     h2Teardown(state)
+  }
+  if not startH2Reader(l, conn, inbound, wake, inCredit) {
+    return
   }
   while state.open and not H2.isFailed(state.h2) {
     semWait(wake)
@@ -1933,15 +2115,17 @@ pub func startListener(prefix: in String): HttpListener {
 /// loop was just hardened against.
 @experimental
 pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): HttpListener {
-  ensureServerThreadCapacity()
+  ensureThreadCapacity(resolveMaxConcurrentConnections())
   val parsed = parsePrefix(prefix)
   match hostListen(resolveBindHost(parsed.bindHost), parsed.port) {
     case Ok(transport) -> {
-      val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
-      val available = newSemaphore(0)
-      val connLimit = newSemaphore(resolveMaxConcurrentConnections())
-      val task = taskRun({ -> plainAcceptLoop(transport, queue, available, limits, connLimit) })
-      HttpListener(transport = transport, queue = queue, available = available, acceptTask = task)
+      val noTls: Option[ServerTls] = None
+      val l = newListener(transport, limits, noTls)
+      if not tryStartTask({ -> plainAcceptLoop(l) }) {
+        hostStopListener(transport)
+        panic("Std.HttpServer.startListener: could not start the accept thread")
+      }
+      l
     }
     case Err(e) -> panic("Std.HttpServer.startListener: bind failed: " + TcpError.message(e))
   }
@@ -1949,15 +2133,15 @@ pub func startListenerWithLimits(prefix: in String, limits: in EngineLimits): Ht
 
 /// TLS twin of `startListener` (docs/61 §6.3, issue #5884), using
 /// `EngineLimits.defaults()`. Binds `host`:`port` and terminates TLS on every
-/// connection using `tls` (server identity, `minVersion`, ALPN `http/1.1`, and
-/// callback-free mTLS). `host` is an IP literal, `"*"`/`"+"` (wildcard), or
-/// `"localhost"`. Returns `Err(InvalidConfig(...))` for a mutual-TLS
-/// misconfiguration (`requireClientCert` with no `clientCa`) or an identity the
-/// platform cannot use, caught before binding. Each handshake runs on its
-/// connection's own task under the `resolveTlsHandshakeTimeoutMs` timeout; a
-/// failed or timed-out handshake drops that connection and is never fatal to
-/// the listener. Use `startListenerTlsWithLimits` to raise the request-size
-/// caps.
+/// connection using `tls` (server identity, `minVersion`, ALPN `h2` then
+/// `http/1.1`, and callback-free mTLS). `host` is an IP literal, `"*"`/`"+"`
+/// (wildcard), or `"localhost"`. Returns `Err(InvalidConfig(...))` for a
+/// mutual-TLS misconfiguration (`requireClientCert` with no `clientCa`) or an
+/// identity the platform cannot use, caught before binding. Each handshake runs
+/// on its connection's own task under the `resolveTlsHandshakeTimeoutMs`
+/// timeout; a failed or timed-out handshake drops that connection and is never
+/// fatal to the listener. Use `startListenerTlsWithLimits` to raise the
+/// request-size caps.
 @experimental
 pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig): Result[HttpListener, TlsListenError] {
   startListenerTlsWithLimits(host, port, tls, EngineLimits.defaults())
@@ -1986,42 +2170,149 @@ pub func startListenerTlsWithLimits(
     case Ok(t) -> t
     case Err(e) -> return Err(error = InvalidConfig(message = TcpError.message(e)))
   }
-  ensureServerThreadCapacity()
+  ensureThreadCapacity(resolveMaxConcurrentConnections())
   match hostListen(resolveBindHost(host), port) {
     case Ok(transport) -> {
-      val queue: ConcurrentQueue[HttpContext] = newConcurrentQueue()
-      val available = newSemaphore(0)
-      val connLimit = newSemaphore(resolveMaxConcurrentConnections())
-      val task = taskRun({ -> tlsAcceptLoop(transport, queue, available, serverTls, limits, connLimit) })
-      Ok(value = HttpListener(transport = transport, queue = queue, available = available, acceptTask = task))
+      val someTls: Option[ServerTls] = Some(value = serverTls)
+      val l = newListener(transport, limits, someTls)
+      if not tryStartTask({ -> tlsAcceptLoop(l, serverTls) }) {
+        hostStopListener(transport)
+        return Err(error = InvalidConfig(message = "could not start the accept thread"))
+      }
+      Ok(value = l)
     }
     case Err(e) -> Err(error = InvalidConfig(message = "bind failed: " + TcpError.message(e)))
   }
 }
 
-/// Block until the next fully-parsed request is ready, returning its context.
+/// Block until the next fully-parsed request is ready and return its context,
+/// or `None` once the listener has been stopped: a pull loop ends on `None`
+/// instead of on a panic. Every puller parked here when `stopListener` runs
+/// wakes with `None`, and so does every later call, so a loop can never be left
+/// blocked on a dead listener.
 @experimental
-pub func nextContext(l: in HttpListener): HttpContext {
-  semWait(l.available)
-  var ctx: HttpContext = default()
-  // The semaphore is released once per enqueue, so an item is always present
-  // here; a `false` return means the queue/semaphore invariant was violated
-  // (never expected) — surface it loudly rather than returning a `default()`
-  // context that would fault on first use.
-  if not cqTryDequeue(l.queue, ctx) {
+pub func tryNextContext(l: in HttpListener): Option[HttpContext] {
+  while true {
+    semWait(l.available)
+    lock(l.guard)
+    if l.items.count > 0 {
+      val ctx = l.items[0]
+      l.items.removeAt(0)
+      unlock(l.guard)
+      return Some(value = ctx)
+    }
+    val stopping = l.stopping
+    unlock(l.guard)
+    if stopping {
+      // Leave the credit for the next puller: the stop posted one for the
+      // whole group, and each woken puller passes it on.
+      semPost(l.available)
+      return None
+    }
+    // A credit with no item on a running listener: the queue and its semaphore
+    // disagree, which only a bug here can cause. Fail loudly rather than hand
+    // back a `default()` context that would fault on first use.
     panic(
-      "Std.HttpServer.nextContext: request queue empty after its availability semaphore was signalled (invariant violation)"
+      "Std.HttpServer.tryNextContext: request queue empty after its availability semaphore was signalled (invariant violation)"
     )
   }
-  ctx
+  None
 }
 
-/// Stop accepting connections and release the socket. In-flight connection
-/// tasks finish their current request; the accept loop ends when the stopped
-/// listener's next accept fails.
+/// Block until the next fully-parsed request is ready, returning its context.
+/// Panics once the listener has been stopped, and never blocks after that: a
+/// loop that must end cleanly uses `tryNextContext`.
+@experimental
+pub func nextContext(l: in HttpListener): HttpContext {
+  match tryNextContext(l) {
+    case Some(ctx) -> ctx
+    case None -> panic("Std.HttpServer.nextContext: the listener was stopped (use tryNextContext to end a pull loop)")
+  }
+}
+
+// Wait, up to the listener's grace period, for the accept loop and every
+// connection task to finish. Polled because the `Std.HttpServerHost` seam has
+// no timed semaphore wait (native has no timed `lyric_sem_*`); the pause starts
+// at one millisecond and grows to twenty, so a stop that finds the tasks
+// already ending returns within a millisecond or two.
+func waitQuiet(l: in HttpListener): Bool {
+  val deadline = monotonicNanos() + l.graceMs.toLong() * 1000000
+  var pauseMs = 1
+  var quiet = semTryWait(l.quiet)
+  while (not quiet) and monotonicNanos() < deadline {
+    sleepMillis(pauseMs)
+    if pauseMs < 20 {
+      pauseMs = pauseMs * 2
+    }
+    quiet = semTryWait(l.quiet)
+  }
+  quiet
+}
+
+// Everything a stopped listener still owns, released once no task can use it:
+// the listening socket (kept open past `hostStopListener` on native, where the
+// accept loop must be gone first) and the TLS state.
+func releaseListener(l: in HttpListener): Unit {
+  hostCloseListener(l.transport)
+  match l.serverTls {
+    case Some(t) -> hostReleaseServerTls(t)
+    case None -> ()
+  }
+}
+
+/// Stop the listener, then return once the accept loop and every connection
+/// task have finished, bounded by `resolveStopGraceMs()` (`LYRIC_HTTP_STOP_GRACE_MS`,
+/// default 5000 ms). In order: the listener is marked stopping (nothing is
+/// admitted or queued after that, a request that finishes parsing meanwhile is
+/// completed without a response), its socket is closed so the accept loop ends,
+/// every registered connection is shut down so a task parked in a read ends, and
+/// every request still queued and never pulled is completed so its connection
+/// task is released. Every puller parked in `nextContext`/`tryNextContext`
+/// wakes (`nextContext` panics, `tryNextContext` returns `None`).
+///
+/// A context already handed to a caller by `nextContext` stays that caller's
+/// obligation: its connection task ends only once the caller responds, so a
+/// stop issued while such a context is outstanding returns after the grace
+/// period rather than waiting for it. Idempotent: a second call returns at once.
 @experimental
 pub func stopListener(l: in HttpListener): Unit {
+  lock(l.guard)
+  if l.stopping {
+    unlock(l.guard)
+    return
+  }
+  l.stopping = true
+  val unpulled = l.items.toArray()
+  l.items.clear()
+  // The registry is walked with the lock held: a connection task takes its
+  // entry out (`endConn`) before it closes the socket and `endConn` needs this
+  // lock, so every connection shut down here is one that is still open.
+  val ids = mapKeys(l.conns).toArray()
+  var i = 0
+  while i < ids.length {
+    match mapGet(l.conns, ids[i]) {
+      case Some(c) -> hostShutdown(c)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  val running = l.active
+  unlock(l.guard)
+  var k = 0
+  while k < unpulled.length {
+    signalDone(unpulled[k])
+    k = k + 1
+  }
+  semPost(l.available)
   hostStopListener(l.transport)
+  // An accept loop parked at the connection cap takes one more permit, sees the
+  // listener stopping and closes that connection.
+  semPost(l.connLimit)
+  // Nothing is released if the grace period ran out: a task still running
+  // would be left holding freed resources.
+  if running == 0 or waitQuiet(l) {
+    releaseListener(l)
+  }
 }
 
 /// HTTP method (`"GET"`, `"POST"`, ...).
@@ -2236,7 +2527,15 @@ func appendConnectionHeader(headers: in List[HeaderField], version: in HttpVersi
 // failed write is not distinguished here — the broken socket surfaces on the
 // task's next read (see `processConnection`).
 func signalDone(c: in HttpContext): Unit {
-  val _ = semRelease(c.done)
+  match c.h2 {
+    case Some(_) -> ()
+    case None -> {
+      if not c.handoff.responded {
+        c.handoff.responded = true
+        semPost(c.done)
+      }
+    }
+  }
 }
 
 // A response status must be a three-digit code. Checked here, on the handler's
@@ -2444,13 +2743,10 @@ pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
       // (END_STREAM on the final DATA frame) once the queued chunks are sent.
       exchange.ended = true
       h2Notify(exchange)
-      val _ = semRelease(s.done);
-      ()
     }
     case None -> {
       val _ = hostWrite(s.conn, serializeLastChunk())
-      val _ = semRelease(s.done);
-      ()
+      signalDone(c)
     }
   }
 }

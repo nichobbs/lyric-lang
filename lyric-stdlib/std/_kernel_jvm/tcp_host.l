@@ -408,6 +408,17 @@ pub func hostStopListener(l: in Listener): Unit {
   }
 }
 
+/// Release the listening socket's remaining resources once `hostStopListener`
+/// has been called and no thread can still be inside `hostAccept` on `l` (the
+/// accept loop has ended). Nothing is left to release on this target:
+/// `hostStopListener` already closed the socket. The native twin keeps the
+/// descriptor open after `hostStopListener` and frees it here, so a driver
+/// written once calls this after it has joined its accept loop.
+@experimental
+pub func hostCloseListener(l: in Listener): Unit {
+  ()
+}
+
 /// Block until a client connects and return the plain connection.
 @experimental
 pub func hostAccept(l: in Listener): Result[Conn, TcpError] {
