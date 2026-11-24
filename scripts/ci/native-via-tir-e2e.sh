@@ -494,6 +494,55 @@ done
 diff -u "$work/oob_ast.out" "$work/oob_tir.out"
 echo "arrays: ok"
 
+# Numeric conversions and bitwise methods (docs/70 phase 4a, D532): the conversion family, the checked
+# `toNat` and `toChar`, a `Float` receiver and `.and/.or/.xor/.shl/.shr` from TIR, then under
+# AddressSanitizer; a negative `toNat` and a surrogate `toChar` panic with the AST path's message.
+numsrc=scripts/ci/native-via-tir/numeric.l
+"$lyric_bin" build --target native "$numsrc" -o "$work/nu_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$numsrc" -o "$work/nu_tir" 2> "$work/nu_census.txt" >/dev/null
+cat "$work/nu_census.txt"
+"$work/nu_ast" > "$work/nu_ast.out"
+"$work/nu_tir" > "$work/nu_tir.out"
+diff -u "$work/nu_ast.out" "$work/nu_tir.out"
+printf '99999998461.75\n252\n3000000400\n12\n198\n4500000002000000877\n-8\n' | diff -u - "$work/nu_tir.out"
+if grep -q '^  fallback:' "$work/nu_census.txt"; then
+  echo "::error::numeric.l has a TIR fallback"
+  exit 1
+fi
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/nu_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/nu_asan"
+"$work/nu_asan" > "$work/nu_asan.out"
+diff -u "$work/nu_tir.out" "$work/nu_asan.out"
+echo "numeric under AddressSanitizer: clean"
+for case in 'Int:(0 - 5).toNat()' 'Char:(55296).toChar()'; do
+  cname=${case%%:*}
+  cexpr=${case#*:}
+  cat > "$work/numpanic_$cname.l" <<LYRICSRC
+package NumPanicViaTir
+
+func main(): Unit {
+  println(toString($cexpr))
+}
+LYRICSRC
+  "$lyric_bin" build --target native "$work/numpanic_$cname.l" -o "$work/np_ast" >/dev/null
+  "$lyric_bin" build --target native --via-tir "$work/numpanic_$cname.l" -o "$work/np_tir" 2> "$work/np_census.txt" >/dev/null
+  if grep -q '^  fallback:' "$work/np_census.txt"; then
+    cat "$work/np_census.txt"
+    echo "::error::the $cname panic program has a TIR fallback"
+    exit 1
+  fi
+  for which in ast tir; do
+    if "$work/np_$which" > /dev/null 2> "$work/np_$which.err"; then
+      echo "::error::the $which build of the $cname conversion did not panic"
+      exit 1
+    fi
+  done
+  grep -o 'to[A-Za-z]*: .*' "$work/np_ast.err" | head -1 > "$work/np_ast.msg"
+  grep -o 'to[A-Za-z]*: .*' "$work/np_tir.err" | head -1 > "$work/np_tir.msg"
+  test -s "$work/np_tir.msg" || { echo "::error::no panic message for $cname"; cat "$work/np_tir.err"; exit 1; }
+  diff -u "$work/np_ast.msg" "$work/np_tir.msg"
+done
+echo "numeric: ok"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 

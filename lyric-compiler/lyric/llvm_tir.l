@@ -3078,7 +3078,7 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     case Some(v) -> return v
     case None -> ()
   }
-  match lowerNumericConversion(c, name, ins) {
+  match lowerNumericConversion(c, name, ins, line) {
     case Some(v) -> return v
     case None -> ()
   }
@@ -4316,41 +4316,193 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
 /// on more than the source type (`UInt`, `ULong`, `Nat`, `Char` and `Float` sources stay on the AST
 /// path): widening is sign- or zero-extending by the source's signedness, narrowing truncates,
 /// `Double` to an integer is `fptosi`.
-func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int): Option[Val] {
+  val dot = match Str.indexOf(name, ".") { case Some(i) -> i; case None -> return None }
+  val from = Str.substring(name, 0, dot)
+  val method = Str.substring(name, dot + 1)
+  if not (from == "Int" or from == "Long" or from == "Byte" or from == "UInt" or from == "ULong" or from == "Double" or from == "Float" or from == "Char" or from == "Nat") {
+    return None
+  }
+  if ins.count == 2 and (method == "and" or method == "or" or method == "xor" or method == "shl" or method == "shr") {
+    return Some(value = lowerBitwise(c, from, method, ins))
+  }
   if ins.count != 1 {
     return None
   }
-  val from = match Str.indexOf(name, ".") { case Some(i) -> Str.substring(name, 0, i); case None -> return None }
-  val to = match name {
-    case "Int.toLong" -> "Long"
-    case "Byte.toLong" -> "Long"
-    case "Int.toDouble" -> "Double"
-    case "Long.toDouble" -> "Double"
-    case "Long.toInt" -> "Int"
-    case "Byte.toInt" -> "Int"
-    case "Double.toInt" -> "Int"
-    case "Double.toLong" -> "Long"
-    case "Int.toByte" -> "Byte"
-    case "Long.toByte" -> "Byte"
-    case _ -> return None
+  val unsigned = from == "UInt" or from == "ULong" or from == "Byte"
+  val v0 = borrow(c, lowerExpr(c, ins[0]))
+  val isFloat = match v0.ty { case NFloat -> true; case _ -> false }
+  if isFloat and method == "toFloat" {
+    return Some(value = v0)
   }
-  val v = borrow(c, lowerExpr(c, ins[0]))
-  val target = match to { case "Long" -> NI64; case "Int" -> NI32; case "Byte" -> NI8; case _ -> NDouble }
-  val d = tmp(c)
-  if from == "Double" {
-    c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = target))
-  } else if to == "Double" {
-    c.insns.add(NSIToFP(dest = d, fromTy = v.ty, value = v.value, toTy = NDouble))
-  } else if bitsOf(target) > bitsOf(v.ty) {
-    if from == "Byte" {
-      c.insns.add(NZExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
-    } else {
-      c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = target))
-    }
+  // A `Float` converts as the `Double` it widens to exactly.
+  val v = if isFloat {
+    val w = tmp(c)
+    c.insns.add(NFPExt(dest = w, value = v0.value))
+    Val(ty = NDouble, value = NLocal(name = w))
   } else {
-    c.insns.add(NTrunc(dest = d, fromTy = v.ty, value = v.value, toTy = target))
+    v0
   }
-  Some(value = Val(ty = target, value = NLocal(name = d)))
+  val isInt = bitsOf(v.ty) > 0
+  val isDouble = match v.ty { case NDouble -> true; case _ -> false }
+  if not (isInt or isDouble) {
+    return None
+  }
+  if method == "toFloat" or method == "toDouble" {
+    val target = if method == "toFloat" { NFloat } else { NDouble }
+    if isDouble {
+      if method == "toDouble" {
+        return Some(value = v)
+      }
+      val d = tmp(c)
+      c.insns.add(NFPTrunc(dest = d, value = v.value))
+      return Some(value = Val(ty = NFloat, value = NLocal(name = d)))
+    }
+    if from == "UInt" or from == "ULong" {
+      return None
+    }
+    val src = if bitsOf(v.ty) == 8 { zextTo(c, v, NI32) } else { v }
+    val d = tmp(c)
+    c.insns.add(NSIToFP(dest = d, fromTy = src.ty, value = src.value, toTy = target))
+    return Some(value = Val(ty = target, value = NLocal(name = d)))
+  }
+  if method == "toLong" or method == "toInt" or method == "toByte" or method == "toULong" or method == "toUInt" {
+    val target = if method == "toLong" or method == "toULong" { NI64 } else if method == "toByte" { NI8 } else { NI32 }
+    if isDouble {
+      if method == "toULong" or method == "toUInt" {
+        return None
+      }
+      // Truncate toward zero; a `Byte` keeps the low 8 bits of the `Long`.
+      val wideTy = if method == "toByte" { NI64 } else { target }
+      val d = tmp(c)
+      c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = wideTy))
+      val w = Val(ty = wideTy, value = NLocal(name = d))
+      return Some(value = if method == "toByte" { truncTo(c, w, NI8) } else { w })
+    }
+    if bitsOf(target) == bitsOf(v.ty) {
+      return Some(value = Val(ty = target, value = v.value))
+    }
+    if bitsOf(target) > bitsOf(v.ty) {
+      // A widening from an unsigned source or to an unsigned target zero-extends.
+      return Some(value = if unsigned or method == "toULong" or method == "toUInt" { zextTo(c, v, target) } else { sextTo(c, v, target) })
+    }
+    return Some(value = truncTo(c, v, target))
+  }
+  if method == "toNat" {
+    // Checked: `Nat` is the non-negative `Long` it lowers to.  A `Byte` and a
+    // `Char` cannot be negative.
+    if isDouble {
+      // Truncation toward zero follows, so the bound is an exclusive -1.0; the
+      // ordered compare is false for NaN.
+      val gt = tmp(c)
+      c.insns.add(NFCmp(dest = gt, pred = FOgt, ty = NDouble, a = v.value, b = NLitFloat(v = 0.0 - 1.0, ty = NDouble)))
+      val bad = tmp(c)
+      c.insns.add(NXor(dest = bad, ty = NI1, a = NLocal(name = gt), b = NLitInt(v = 1i64, ty = NI1)))
+      trapIf(c, NLocal(name = bad), Lex.toNatRangeMessage(), line)
+      val d = tmp(c)
+      c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = NI64))
+      return Some(value = Val(ty = NI64, value = NLocal(name = d)))
+    }
+    if from == "Byte" {
+      return Some(value = zextTo(c, v, NI64))
+    }
+    val wide = if bitsOf(v.ty) == 64 { v } else { sextTo(c, v, NI64) }
+    if from != "Char" {
+      trapIf(c, icmpV(c, ISlt, NI64, wide.value, intLit(NI64, 0i64)), Lex.toNatRangeMessage(), line)
+    }
+    return Some(value = Val(ty = NI64, value = wide.value))
+  }
+  if method == "toChar" {
+    // Checked narrowing: a `Char` is a BMP scalar value, never a surrogate.
+    val vi = if isDouble {
+      val gt = icmpFV(c, FOgt, v.value, 0.0 - 1.0)
+      val lt = icmpFV(c, FOlt, v.value, 65536.0)
+      val inRange = tmp(c)
+      c.insns.add(NAnd(dest = inRange, ty = NI1, a = gt, b = lt))
+      val outOfRange = tmp(c)
+      c.insns.add(NXor(dest = outOfRange, ty = NI1, a = NLocal(name = inRange), b = NLitInt(v = 1i64, ty = NI1)))
+      trapIf(c, NLocal(name = outOfRange), Lex.toCharRangeMessage(), line)
+      val d = tmp(c)
+      c.insns.add(NFPToSI(dest = d, fromTy = NDouble, value = v.value, toTy = NI32))
+      Val(ty = NI32, value = NLocal(name = d))
+    } else if bitsOf(v.ty) == 8 {
+      return Some(value = zextTo(c, v, NI32))
+    } else {
+      v
+    }
+    trapIf(c, charBad(c, vi), Lex.toCharRangeMessage(), line)
+    return Some(value = if bitsOf(vi.ty) == 64 { truncTo(c, vi, NI32) } else { vi })
+  }
+  None
+}
+
+func icmpFV(c: in LCtx, pred: in FCmpPred, a: in NValue, k: in Double): NValue {
+  val d = tmp(c)
+  c.insns.add(NFCmp(dest = d, pred = pred, ty = NDouble, a = a, b = NLitFloat(v = k, ty = NDouble)))
+  NLocal(name = d)
+}
+
+/// True when `x` is above `U+FFFF` or in the surrogate range `U+D800..U+DFFF`.
+func charBad(c: in LCtx, x: in Val): NValue {
+  val ty = x.ty
+  val over = icmpV(c, IUgt, ty, x.value, intLit(ty, 65535i64))
+  val off = tmp(c)
+  c.insns.add(NSub(dest = off, ty = ty, a = x.value, b = intLit(ty, 55296i64)))
+  val surr = icmpV(c, IUlt, ty, NLocal(name = off), intLit(ty, 2048i64))
+  val bad = tmp(c)
+  c.insns.add(NOr(dest = bad, ty = NI1, a = over, b = surr))
+  NLocal(name = bad)
+}
+
+func zextTo(c: in LCtx, v: in Val, to: in NType): Val {
+  val d = tmp(c)
+  c.insns.add(NZExt(dest = d, fromTy = v.ty, value = v.value, toTy = to))
+  Val(ty = to, value = NLocal(name = d))
+}
+
+func sextTo(c: in LCtx, v: in Val, to: in NType): Val {
+  val d = tmp(c)
+  c.insns.add(NSExt(dest = d, fromTy = v.ty, value = v.value, toTy = to))
+  Val(ty = to, value = NLocal(name = d))
+}
+
+func truncTo(c: in LCtx, v: in Val, to: in NType): Val {
+  val d = tmp(c)
+  c.insns.add(NTrunc(dest = d, fromTy = v.ty, value = v.value, toTy = to))
+  Val(ty = to, value = NLocal(name = d))
+}
+
+/// `a.and(b)`, `.or`, `.xor`, `.shl` and `.shr` on an integer.  A shift amount is an `Int`
+/// converted to the operand's width; `.shr` is logical for `Byte`, `UInt` and `ULong` and
+/// arithmetic for the signed widths.
+func lowerBitwise(c: in LCtx, from: in String, method: in String, ins: in List[TExpr]): Val {
+  val a = borrow(c, lowerExpr(c, ins[0]))
+  val b0 = borrow(c, lowerExpr(c, ins[1]))
+  val ty = a.ty
+  if bitsOf(ty) == 0 {
+    return unsupported(c, "bitwise " + method + " on " + from)
+  }
+  val isShift = method == "shl" or method == "shr"
+  val bv = if isShift and bitsOf(b0.ty) != bitsOf(ty) {
+    if bitsOf(ty) > bitsOf(b0.ty) { sextTo(c, b0, ty).value } else { truncTo(c, b0, ty).value }
+  } else {
+    b0.value
+  }
+  val d = tmp(c)
+  if method == "and" {
+    c.insns.add(NAnd(dest = d, ty = ty, a = a.value, b = bv))
+  } else if method == "or" {
+    c.insns.add(NOr(dest = d, ty = ty, a = a.value, b = bv))
+  } else if method == "xor" {
+    c.insns.add(NXor(dest = d, ty = ty, a = a.value, b = bv))
+  } else if method == "shl" {
+    c.insns.add(NShl(dest = d, ty = ty, a = a.value, b = bv))
+  } else if from == "Byte" or from == "UInt" or from == "ULong" {
+    c.insns.add(NLShr(dest = d, ty = ty, a = a.value, b = bv))
+  } else {
+    c.insns.add(NAShr(dest = d, ty = ty, a = a.value, b = bv))
+  }
+  Val(ty = ty, value = NLocal(name = d))
 }
 
 /// `+`, `==`, `!=` and the orderings on two borrowed strings.
