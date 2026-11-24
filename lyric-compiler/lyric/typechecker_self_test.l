@@ -16109,3 +16109,23 @@ test "iterating a slice, an array or a list of a type parameter is not T0230 (D6
   val src = "package App\nfunc countS[T](a: in slice[T]): Int {\n  var n = 0\n  for x in a {\n    n = n + 1\n  }\n  n\n}\nfunc countA[T, N: Nat](a: in array[N, T]): Int {\n  var n = 0\n  for x in a {\n    n = n + 1\n  }\n  n\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0230"), "slice[T] and array[N, T] iterate")
 }
+
+func inoutSelfSource(call: in String): String {
+  "package App\nrecord Box {\n  n: Int\n}\ninterface Absorber {\n  func absorb(self: in Self, other: inout Self): Int\n  func merged(self: in Self, other: in Self): Int\n}\nimpl Absorber for Box {\n  func absorb(self: in Box, other: inout Box): Int {\n    self.n + other.n\n  }\n  func merged(self: in Box, other: in Box): Int {\n    self.n + other.n\n  }\n}\nfunc f(): Int {\n  " +
+    call +
+    "\n}\n"
+}
+
+test "an inout Self parameter through an interface with a concrete argument is T0232 (D751)" {
+  val src = inoutSelfSource("val a: Absorber = Box(n = 3)\n  var o = Box(n = 7)\n  a.absorb(o)")
+  assertTrue(hasDiagCode(parseCheck(src), "T0232"), "inout Self through the interface: T0232")
+}
+
+test "an inout Self parameter on the implementing type, in Self through the interface and an interface-typed argument are not T0232 (D751)" {
+  val onConcrete = inoutSelfSource("val a: Box = Box(n = 3)\n  var o = Box(n = 7)\n  a.absorb(o)")
+  assertTrue(not hasDiagCode(parseCheck(onConcrete), "T0232"), "a Box receiver is allowed")
+  val inThrough = inoutSelfSource("val a: Absorber = Box(n = 3)\n  a.merged(Box(n = 7))")
+  assertTrue(not hasDiagCode(parseCheck(inThrough), "T0232"), "in Self through the interface is allowed")
+  val ofInterface = inoutSelfSource("val a: Absorber = Box(n = 3)\n  var o: Absorber = Box(n = 7)\n  a.absorb(o)")
+  assertTrue(not hasDiagCode(parseCheck(ofInterface), "T0232"), "an interface-typed argument is allowed")
+}

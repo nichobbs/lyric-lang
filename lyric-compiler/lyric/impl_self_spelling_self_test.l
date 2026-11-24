@@ -82,8 +82,8 @@ test "return position through an interface-typed binding" {
   assertEqualInt(Box(n = 1).merged(Box(n = 2)).n, 12, "concrete merge still works")
 }
 
-test "inout parameter through an interface-typed binding" {
-  val a: Absorber = Box(n = 3)
+test "inout parameter through a binding of the implementing type" {
+  val a: Box = Box(n = 3)
   var other = Box(n = 7)
   assertEqualInt(a.absorb(other), 10, "sum before reset")
   assertEqualInt(other.n, 0, "inout write-back")

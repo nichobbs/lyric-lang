@@ -5178,6 +5178,89 @@ func isBuiltinDefaultCall(sigs: in Map[String, ResolvedSignature], e: in Expr): 
   }
 }
 
+// True when `t` mentions `Self` anywhere inside it.
+func tyMentionsSelf(t: in Type): Bool {
+  match t {
+    case TySelf -> true
+    case TyUser(_, _, args) -> anyTyMentionsSelf(args)
+    case TySlice(e) -> tyMentionsSelf(e)
+    case TyArray(_, e, _) -> tyMentionsSelf(e)
+    case TyNullable(inner) -> tyMentionsSelf(inner)
+    case TyTuple(elems) -> anyTyMentionsSelf(elems)
+    case TyFunction(ps, ret, _) -> anyTyMentionsSelf(ps) or tyMentionsSelf(ret)
+    case TyRefined(u, _, _, _, _) -> tyMentionsSelf(u)
+    case _ -> false
+  }
+}
+
+func anyTyMentionsSelf(ts: in List[Type]): Bool {
+  for t in ts {
+    if tyMentionsSelf(t) {
+      return true
+    }
+  }
+  false
+}
+
+// T0232: an interface method with an `out` or `inout` parameter whose type mentions `Self`, called through
+// a value typed as the interface with an argument that is not itself a value of the interface type.  The
+// callee writes back its own implementing type: into a variable of the interface type that is sound, but
+// into a variable of one concrete implementer's type (`Box`) another implementer's value could land.  A call
+// through the concrete implementing type, `in` parameters of `Self`, and an interface-typed argument are
+// allowed.
+func reportInoutSelfThroughInterface(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recv: in Type,
+  name: in String,
+  argTypes: in List[Type],
+  span: in Span,
+): Unit {
+  match unrefine(recv) {
+    case TyUser(tid, tname, _) -> match symbolOfDefId(tbl, tid) {
+      case Some(s) -> match s.kind {
+        case DKInterface(_, _) -> {
+          for entry in symTableMethodSigs(tbl, tid, name) {
+            val offset = if entry.sig.params.count > 0 and entry.sig.params[0].name == "self" { 1 } else { 0 }
+            var j = 0
+            while j < entry.sig.params.count {
+              val p = entry.sig.params[j]
+              val byRef = match p.mode { case PMIn -> false; case _ -> true }
+              val ai = j - offset
+              if byRef and tyMentionsSelf(p.ty) and ai >= 0 and ai < argTypes.count {
+                val ofInterface = match unrefine(argTypes[ai]) {
+                  case TyUser(aid, _, _) -> symbolIdEq(aid, tid)
+                  case TyError(_) -> true
+                  case _ -> false
+                }
+                if not ofInterface {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0232",
+                      "'" + name + "' takes '" + p.name +
+                        "' by reference as `Self`, so it cannot be called through a value of the interface type '" +
+                        tname +
+                        "' with an argument of another type: the callee writes back its own implementing type, which that variable need not hold; pass a '" +
+                        tname +
+                        "' variable or call the method on the concrete type",
+                      span
+                    )
+                  )
+                  return
+                }
+              }
+              j = j + 1
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
@@ -21155,6 +21238,9 @@ func inferExprCore(
                   e.span
                 )
                 recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
+                if methodPick.isSome() {
+                  reportInoutSelfThroughInterface(tbl, diag, rt3, memberName, argTypes, e.span)
+                }
               }
               case None -> {
               }
