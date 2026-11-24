@@ -743,7 +743,7 @@ func checkQualifiedTypePackageRef(
   // The import rule is the checked file's: a dependency's own signatures were
   // checked against its imports when it was built, and a restored one carries
   // its types fully qualified without the aliases that made them reachable.
-  if curPkg.length == 0 or pkgSegs.count == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+  if curPkg.length == 0 or pkgSegs.count == 0 or not symTableImportRuleApplies(tbl, curPkg) or symTableQualifiedRuleLifted(tbl) {
     return false
   }
   val pkg = modulePathJoin(pkgSegs)
@@ -1046,7 +1046,7 @@ func resolveTypePath(
 // checked package, whose files' imports decide (`symTableQualifiedType`).
 func dependencyQualifiedType(tbl: in SymbolTable, ownerPkg: in String, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or symTableImportRuleApplies(tbl, curPkg) {
+  if curPkg.length == 0 or (symTableImportRuleApplies(tbl, curPkg) and not symTableQualifiedRuleLifted(tbl)) {
     return None
   }
   val owners: List[String] = newList()
