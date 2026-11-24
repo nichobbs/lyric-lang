@@ -1054,6 +1054,8 @@ pub record SymbolTable {
   /// package's signatures were checked under the same rule when that
   /// package was itself compiled.
   importRulePkg: List[String]
+  /// One entry while a pass after the check resolves a type the checker spelled itself (`symTableLiftQualifiedRule`).
+  qualifiedRuleLifted: List[Bool]
   /// The file whose scope is entered, boxed as a 0/1-element list; empty =
   /// the package union (`symTableEnterFile`).
   curFile: List[Int]
@@ -1368,6 +1370,7 @@ pub func newSymbolTable(): SymbolTable {
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),
+    qualifiedRuleLifted = newList(),
     curFile = newList(),
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
@@ -2317,30 +2320,23 @@ pub func symTableSetImportRule(tbl: in SymbolTable, pkg: in String): Unit {
   tbl.importRulePkg.add(pkg)
 }
 
-/// The package whose names the import rule judges, saved (empty when none).  With
-/// `symTableLiftImportRule` and `symTableRestoreImportRule`, a pass after the check resolves a type
-/// the checker spelled itself (a `TypeExpr` in `localBindingTypeSites`, `hoistOperandTypeSites`: a
-/// type of a package the file does not import is spelled by its package, `Ui.Core.Prop`) by name
-/// alone: that spelling is a reference to a known declaration, not source the import rule judges
-/// (D769).
-pub func symTableLiftImportRule(tbl: in SymbolTable): List[String] {
-  val saved: List[String] = newList()
-  for p in tbl.importRulePkg {
-    saved.add(p)
-  }
-  while tbl.importRulePkg.count > 0 {
-    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
-  }
-  saved
+/// A pass after the check resolves a type the checker spelled itself (a `TypeExpr` in
+/// `localBindingTypeSites`, `hoistOperandTypeSites`: a type of a package the file does not import is
+/// spelled by its package, `Ui.Core.Prop`) with the qualified-package reachability rule lifted
+/// (`checkQualifiedTypePackageRef`): that spelling is a reference to a known declaration, not source the
+/// rule judges.  Bare names still resolve through the file's import scopes (D769, D779).
+pub func symTableLiftQualifiedRule(tbl: in SymbolTable): Unit {
+  tbl.qualifiedRuleLifted.add(true)
 }
 
-pub func symTableRestoreImportRule(tbl: in SymbolTable, saved: in List[String]): Unit {
-  while tbl.importRulePkg.count > 0 {
-    tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
+pub func symTableRestoreQualifiedRule(tbl: in SymbolTable): Unit {
+  if tbl.qualifiedRuleLifted.count > 0 {
+    tbl.qualifiedRuleLifted.removeAt(tbl.qualifiedRuleLifted.count - 1)
   }
-  for p in saved {
-    tbl.importRulePkg.add(p)
-  }
+}
+
+pub func symTableQualifiedRuleLifted(tbl: in SymbolTable): Bool {
+  tbl.qualifiedRuleLifted.count > 0
 }
 
 func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {
