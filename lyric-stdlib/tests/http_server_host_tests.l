@@ -22,6 +22,7 @@ import Std.Core
 import Std.Collections
 import Std.HttpServerHost
 import Std.String
+import Std.TcpHost
 import Std.Testing
 import Std.Time as Time
 
@@ -241,7 +242,7 @@ test "workerJoinAll on an empty set returns and the set is reusable" {
 }
 
 test "runGuarded runs the work and ensureThreadCapacity is harmless" {
-  ensureThreadCapacity()
+  ensureThreadCapacity(1000)
   val c = newCounter()
   runGuarded({ -> c.n = 7 }, { msg -> c.n = 99 })
   assertEqualInt(c.n, 7, "the work ran")
@@ -253,4 +254,50 @@ test "runGuarded reports a panic to onFailure where the target can catch one" {
 
 test "a worker that panicked still counts as joined" {
   checkPanickingTaskStillJoins()
+}
+
+test "tryStartTask runs its work and reports that the thread started" {
+  val s = newSem(0)
+  assertTrue(tryStartTask({ -> semPost(s) }), "the thread started")
+  semWait(s)
+  assertTrue(true, "the task ran")
+  releaseSem(s)
+}
+
+test "defaultMaxConnections is a positive per-target cap" {
+  assertTrue(defaultMaxConnections() >= 1000, "at least the one-thread-per-connection floor")
+}
+
+func outcomeCode(o: in AcceptOutcome): Int {
+  match o {
+    case AcceptStop -> 0
+    case AcceptRetry -> 1
+    case AcceptBackoff -> 2
+  }
+}
+
+@cfg(target = "dotnet")
+func failedAcceptCode(): Int {
+  outcomeCode(acceptOutcome(AcceptFailed(message = "stopped")))
+}
+
+@cfg(target = "jvm")
+func failedAcceptCode(): Int {
+  outcomeCode(acceptOutcome(AcceptFailed(message = "stopped")))
+}
+
+@cfg(target = "native")
+func failedAcceptCode(): Int {
+  outcomeCode(acceptOutcome(AcceptFailed(message = "stopped", errno = 9, kind = AcceptFatal)))
+}
+
+test "acceptOutcome ends the loop on a dead listener and retries a failure of one connection" {
+  assertEqualInt(failedAcceptCode(), 0, "a failed accept on a dead listener ends the loop")
+  assertEqualInt(outcomeCode(acceptOutcome(BindFailed(message = "in use"))), 0, "a failed bind ends the loop")
+  assertEqualInt(
+    outcomeCode(acceptOutcome(TlsHandshakeFailed(message = "bad hello"))),
+    1,
+    "one bad connection is retried"
+  )
+  assertEqualInt(outcomeCode(acceptOutcome(TransportFailed(message = "reset"))), 1, "a transport failure is retried")
 }

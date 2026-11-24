@@ -16,6 +16,7 @@
 package Std.HttpServerHost
 
 import Std.Core
+import Std.TcpHost
 
 extern type JThread = "java.lang.Thread"
 
@@ -36,8 +37,17 @@ impl JRunnable for StartJob {
 }
 
 /// A no-op on the JVM; the dotnet twin raises the thread pool minimum.
-pub func ensureThreadCapacity(): Unit {
+pub func ensureThreadCapacity(connections: in Int): Unit
+  requires: connections >= 1
+{
   ()
+}
+
+/// The cap on concurrently served connections when `LYRIC_HTTP_MAX_CONNECTIONS`
+/// is unset: a connection is a virtual thread here, which costs a few KiB
+/// parked, so 10000 (D780: 10 000 idle connections held in about 260 MB).
+pub func defaultMaxConnections(): Int {
+  10000
 }
 
 /// Run `work` on its own virtual thread, fire-and-forget. A panic in `work`
@@ -45,6 +55,34 @@ pub func ensureThreadCapacity(): Unit {
 pub func startTask(work: in () -> Unit): Unit {
   val t: JThread = JThread.startVirtualThread(StartJob(work = work));
   ()
+}
+
+/// `startTask` that reports a thread that could not be created as `false`.
+/// Always `true` here: the virtual-thread scheduler queues the work.
+pub func tryStartTask(work: in () -> Unit): Bool {
+  startTask(work)
+  true
+}
+
+/// What a server's accept loop does with one failed accept.
+pub union AcceptOutcome {
+  /// The listening socket is gone (the loop ends).
+  case AcceptStop
+  /// A failure of one connection (the loop goes on at once).
+  case AcceptRetry
+  /// Resource exhaustion, such as no file descriptors left (the loop goes on
+  /// after a short pause).
+  case AcceptBackoff
+}
+
+/// Classify a failed `hostAccept`. Here a failed accept or bind ends the loop,
+/// anything else keeps it going.
+pub func acceptOutcome(e: in TcpError): AcceptOutcome {
+  match e {
+    case AcceptFailed(_) -> AcceptStop
+    case BindFailed(_) -> AcceptStop
+    case _ -> AcceptRetry
+  }
 }
 
 /// A reentrant mutual-exclusion lock, held per thread.

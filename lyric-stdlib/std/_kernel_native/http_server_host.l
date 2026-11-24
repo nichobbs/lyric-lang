@@ -24,6 +24,7 @@ package Std.HttpServerHost
 
 import Std.Core
 import Std.Collections
+import Std.TcpHost
 
 extern func rtMallocRaw(n: Long): NativePtr[Byte] = "lyric_malloc_raw"
 
@@ -66,21 +67,64 @@ extern func rtRetain(p: NativePtr[Byte]): Unit = "lyric_retain"
 extern func rtRelease(p: NativePtr[Byte]): Unit = "lyric_release"
 
 /// A no-op on native; the dotnet twin raises the thread pool minimum.
-pub func ensureThreadCapacity(): Unit {
+pub func ensureThreadCapacity(connections: in Int): Unit
+  requires: connections >= 1
+{
   ()
 }
 
+/// The cap on concurrently served connections when `LYRIC_HTTP_MAX_CONNECTIONS`
+/// is unset: a connection is a pthread here, so 1000.
+pub func defaultMaxConnections(): Int {
+  1000
+}
+
 /// Run `work` on its own detached OS thread, fire-and-forget. The thread
-/// releases the closure when `work` returns. Panics if the thread cannot be
-/// created.
+/// releases the closure when `work` returns. `false` when the thread could not
+/// be created (the retain is undone, nothing leaks).
 @unsafe_ffi
-pub func startTask(work: in () -> Unit): Unit {
+pub func tryStartTask(work: in () -> Unit): Bool {
   val worker: () -> NativePtr[Byte] = { -> work(); nativeNullPtr() }
   rtRetain(worker)
   val rc = rtThreadSpawnDetached(worker, worker)
   if rc != 0 {
     rtRelease(worker)
-    panic("Std.HttpServerHost.startTask: could not start a thread (errno " + rc.toString() + ")")
+    return false
+  }
+  true
+}
+
+/// Run `work` on its own detached OS thread, fire-and-forget. Panics if the
+/// thread cannot be created; `tryStartTask` reports that as `false` instead.
+@unsafe_ffi
+pub func startTask(work: in () -> Unit): Unit {
+  if not tryStartTask(work) {
+    panic("Std.HttpServerHost.startTask: could not start a thread")
+  }
+}
+
+/// What a server's accept loop does with one failed accept.
+pub union AcceptOutcome {
+  /// The listening socket is gone (the loop ends).
+  case AcceptStop
+  /// A failure of one connection (the loop goes on at once).
+  case AcceptRetry
+  /// Resource exhaustion, such as no file descriptors left (the loop goes on
+  /// after a short pause).
+  case AcceptBackoff
+}
+
+/// Classify a failed `hostAccept` by the portable `AcceptFailureKind` the
+/// native transport attaches to it (issue #6805).
+pub func acceptOutcome(e: in TcpError): AcceptOutcome {
+  match e {
+    case AcceptFailed(_, _, kind) -> match kind {
+      case AcceptFatal -> AcceptStop
+      case AcceptTransient -> AcceptRetry
+      case AcceptOverloaded -> AcceptBackoff
+    }
+    case BindFailed(_) -> AcceptStop
+    case _ -> AcceptRetry
   }
 }
 
