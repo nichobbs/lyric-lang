@@ -1191,6 +1191,16 @@ int32_t lyric_sock_wake_pipe_new(int32_t* read_fd_out, int32_t* write_fd_out);
  * not a failure).  Returns 0 on success, -1 on a genuine write failure. */
 int32_t lyric_sock_wake_pipe_signal(int32_t write_fd);
 
+/* Stops a listening socket accepting without releasing its descriptor number:
+ * new connections are refused from the moment this returns (Linux; elsewhere
+ * once no thread is inside accept/poll on it) and the descriptor refers to an
+ * unconnected socket, so a thread that still polls or accepts on it fails
+ * instead of reaching a descriptor another thread opened and reused.  Release
+ * the number with `lyric_sock_close` once the accept threads are gone.  The
+ * Windows twin does nothing and returns 0 (Winsock has no equivalent of
+ * dup2).  Returns 0, or -1 with last_error set. */
+int32_t lyric_sock_listener_refuse(int32_t listen_fd);
+
 /* Like `lyric_sock_accept(listen_fd)`, but also polls `wake_read_fd` (the
  * read end of a `lyric_sock_wake_pipe_new` pipe) and returns -2 — a
  * sentinel distinct from -1 — the instant that pipe becomes readable,

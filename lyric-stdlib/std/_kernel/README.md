@@ -15,17 +15,19 @@ tokenizer, TLS), threading primitives, IEEE 754 corner cases.
 Anything else lives in the parent `lyric-compiler/lyric/std/` directory
 as a native Lyric implementation.
 
-## `Std.HttpServer` and `Std.HttpServerHost` (D786, D788, D789, docs/73 slices S2, S3 and S4)
+## `Std.HttpServer` and `Std.HttpServerHost` (D786, D788, D789, D790, docs/73 slices S2 to S5)
 
 `http_server.l` is **not a dotnet kernel**: since slice S3 it is the shared HTTP
-server driver, written once over `Std.HttpEngine`, `Std.TcpHost` and the
+server driver (dotnet since D788, the JVM since D789, native since D790), written once over `Std.HttpEngine`, `Std.TcpHost` and the
 per-target seam `Std.HttpServerHost`, and it contains no extern and no
 `@axiom`. It lives under `_kernel/` only because the source loaders shadow a
 `_kernel/<name>.l` by the `_kernel_jvm/` and `_kernel_native/` file of the same
 name and never a top-level `std/<name>.l`. The JDK kernel was deleted in slice
-S4 (D789), so the dotnet and JVM loaders both read this file; only
-`_kernel_native/http_server.l` still shadows it, until slice S5 deletes it and
-moves the driver to `std/http_server.l` (D780).
+S4 (D789) and the native one in slice S5 (D790), so every loader reads the one
+driver, which therefore lives at `lyric-stdlib/std/http_server.l` (D780). On native
+the driver frees its locks and semaphores for real (the seam's `release*`
+functions); see D790 for the lifetime rules (`waitingPullers`, the h2 link and
+exchange counts).
 
 `http_server_host.l` is the seam: `startTask` and `tryStartTask`, `Mutex`
 (reentrant), `Semaphore`, `runGuarded`, `WorkerSet`, `ensureThreadCapacity`,

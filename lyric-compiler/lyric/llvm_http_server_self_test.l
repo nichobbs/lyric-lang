@@ -1,11 +1,17 @@
-//! llvm_http_server_self_test.l — end-to-end self-test for N9.3's native
-//! `Std.HttpServer` twin (issue #6104): real programs compile through the
-//! full bridge pipeline (`Lyric.LlvmBridge.compileToNativeWithFlags` with
-//! the `_kernel_native/` twins loaded, exactly like `lyric build --target
-//! native`) and run, mirroring `llvm_tls_self_test.l`'s and
-//! `llvm_http_client_self_test.l`'s harness shape.
+//! llvm_http_server_self_test.l — end-to-end self-test for `Std.HttpServer`
+//! on `--target native` (N9.3, issue #6104; since docs/73 S5, D790, the
+//! server under test is the shared driver `std/http_server.l` over
+//! the `_kernel_native/` transport, not a native twin of its own): real
+//! programs compile through the full bridge pipeline
+//! (`Lyric.LlvmBridge.compileToNativeWithFlags` with the `_kernel_native/`
+//! twins loaded, exactly like `lyric build --target native`) and run,
+//! mirroring `llvm_tls_self_test.l`'s and `llvm_http_client_self_test.l`'s
+//! harness shape. The internals named in the older item descriptions below
+//! (`ServerQueue`, `activeConns`, `dequeueContext`, `spawnHandler`) are those
+//! of the retired native kernel; each regression it describes is pinned by the
+//! same scenario against the shared driver.
 //!
-//! Sixteen cases (items N-P cover takeConnection, its refusals and chunked responses, after M):
+//! Eighteen cases (items N-P cover takeConnection, its refusals and chunked responses, after M; item R is connection churn):
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -31,14 +37,14 @@
 //!     a self-signed EC test certificate (the exact fixture
 //!     `llvm_tls_self_test.l` already verified parses with real OpenSSL and
 //!     completes a real `openssl s_server`/`s_client` handshake).
-//!   - item C: the module header's h2-rejection guard
-//!     (`_kernel_native/http_server.l`'s `onAccepted`). The client offers
-//!     ONLY `"h2"` ALPN against a real TLS handshake (so it genuinely
-//!     negotiates `h2`, not merely claims to), then asserts the server
-//!     closed the connection rather than silently mis-parsing h2's binary
-//!     frame format as HTTP/1.1 text (D-N-003 has no exceptions/hangs to
-//!     rely on as an alternate "it broke" signal, so this checks for an
-//!     explicit close/EOF or read error instead).
+//!   - item C: HTTP/2 over TLS (docs/73 S5, closing #6106). The client
+//!     offers `h2,http/1.1` against a real TLS handshake and speaks whatever
+//!     ALPN selected: on Linux and macOS that is `h2`, so it sends the
+//!     connection preface, an empty SETTINGS frame and a HEADERS frame for
+//!     `GET /` and checks the server's SETTINGS frame, a `:status 200`
+//!     HEADERS frame and a DATA frame carrying the handler's body; on Windows
+//!     (whose server offers HTTP/1.1 only, see `alpnPreference` in
+//!     `_kernel_native/tcp_host.l`) the same case does an HTTP/1.1 request.
 //!   - item D: a keep-alive round trip — two requests over the SAME
 //!     connection, neither one carrying `Connection: close`, so both stay
 //!     open under HTTP/1.1's default keep-alive semantics
@@ -99,10 +105,11 @@
 //!     still completes cleanly and promptly under that concurrent load.
 //!
 //!   - item H: the regression case for #6802 — `stopListener` must not
-//!     `rtMutexDestroy`/`rtFree` the queue's mutex, or `rtSemDestroy`/
-//!     `rtFree` its semaphore, while a caller-owned puller thread is
-//!     genuinely parked inside `nextContext` -> `dequeueContext` ->
-//!     `rtSemWait(q.available)`. Before the fix this was a real ASan
+//!     free the listener's lock and availability semaphore while a
+//!     caller-owned puller thread is genuinely parked inside
+//!     `tryNextContext` (the driver counts such pullers in
+//!     `waitingPullers` and frees only once they have left; the puller is
+//!     now woken by the stop and joined). Before the fix this was a real ASan
 //!     use-after-free under concurrent shutdown that none of items A-G
 //!     exercised (every one of them only calls `stopListener` after every
 //!     `nextContext` call on the SAME thread had already returned). No
@@ -111,23 +118,16 @@
 //!     scheduling instant a freshly `lyric_thread_create`d thread reaches its
 //!     own blocking wait is not observable from here), so — matching item
 //!     F/G's own stress-test approach — this case repeats fifteen times: a
-//!     fresh listener, a puller thread spawned to call `nextContext` on it
+//!     fresh listener, a puller thread spawned to call `tryNextContext` on it
 //!     (which — deliberately, since no connection is ever made — can only
 //!     end up genuinely parked or not yet scheduled, never legitimately
 //!     fed a real request), and an immediate `stopListener` call racing
-//!     that thread's startup. `stopListener`'s own preceding work (joining
-//!     the accept thread, which itself requires a real `shutdown()`/
-//!     `accept()` round trip to unblock) gives the freshly spawned puller
-//!     thread ample wall-clock time to reach `rtSemWait` first in the
-//!     overwhelming majority of runs. Every spawned puller thread is
-//!     deliberately never joined (it can never legitimately return — see
-//!     `_kernel_native/http_server.l`'s `stopListener` doc comment on why
-//!     this is now a disclosed, ASan-LeakSanitizer-invisible deferred
-//!     free rather than a hang or a corruption) and process exit does not
-//!     wait for it, so this case's own pass/fail signal is the harness
-//!     completing promptly and cleanly under ASan across all fifteen
-//!     iterations — a reintroduced use-after-free fails the run
-//!     immediately on whichever iteration first hits the race.
+//!     that thread's startup, after a short sleep that lets the puller reach
+//!     its wait. The stop wakes the puller (`None`), the thread is joined, and
+//!     the pass/fail signal is the harness completing cleanly under ASan
+//!     across all fifteen iterations: a reintroduced use-after-free of the
+//!     lock or semaphore fails the run, and a listener whose slots were never
+//!     freed fails it through LeakSanitizer.
 //!   - item I: the regression case for #6803 — `enqueueContext` used to
 //!     release `q.mutex` BEFORE calling `rtSemPost(q.available)`, so a
 //!     handler thread that had just unlocked but not yet posted could be
@@ -186,21 +186,21 @@
 //!     one-day ceiling, and empty/non-digit/signed/zero/over-range input
 //!     falling back to the defaults, matching the dotnet resolver.
 //!
-//! Every scenario compiles with `-fsanitize=address`, so a leaked
-//! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
-//! a thread-join failure fails the run — the load-bearing check for
-//! `_kernel_native/http_server.l`'s "shutdown drains every spawned thread
-//! before freeing the queue" design (its own module header's "Shutdown"
-//! section). Item H's own deliberately-never-freed queue buffer (see that
-//! item's own description above, and `stopListener`'s doc comment) is NOT
-//! flagged by LeakSanitizer: the still-live, still-parked puller thread's
-//! own stack keeps the buffer's address reachable for as long as the
-//! process runs, which is precisely why LSan's "reachable from a live
-//! thread" rule, not an unconditional free, is what makes that design
-//! choice safe rather than a leak.
+//!   - item R: connection-per-request churn (defect 2 of the docs/73
+//!     baseline). 3000 sequential `Connection: close` requests; the number of
+//!     lines in `/proc/self/maps` must not grow by more than 300 across them.
+//!     The retired native kernel created every connection thread joinable and
+//!     joined them only at `stopListener`, so each finished connection kept
+//!     its stack mapping (about 12 KB resident, two mappings) until the
+//!     process hit `vm.max_map_count` and no connection could be served any
+//!     more. Skipped (passes) where `/proc/self/maps` does not exist.
+//!
+//! Every scenario compiles with `-fsanitize=address`, so a leaked `malloc`'d
+//! mutex/semaphore slot (the listener's, an HTTP/2 connection's, a request's),
+//! a leaked fd, a double-release or a thread-join failure fails the run.
 //!
 //! Every connection-oriented case binds a FIXED port (19720/19721/19722/
-//! 19723/19724/19725/19726/19727/19728/19729/19730/19731 — item J binds a port too,
+//! 19723/19724/19725/19726/19727/19728/19729/19730/19731/19732 — item J binds a port too,
 //! even though it never accepts a connection on it),
 //! matching `lyric-stdlib/tests/http_server_tests.l`'s own
 //! established convention for testing this exact API — `Std.HttpServer`'s
@@ -493,7 +493,17 @@ test "native Std.HttpServer TLS round trip: request headers/body, JSON response 
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native TLS round trip (item B)")
 }
 
-test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than mis-parsing it as HTTP/1.1 (item C)" {
+// `h2` where the server offers it, `http/1.1` on Windows: Schannel's connection state is not safe for the
+// concurrent read and write an h2 server does (see `alpnPreference` in `_kernel_native/tcp_host.l`).
+func expectedAlpn(): String {
+  if Environment.getVarOrDefault("OS", "") == "Windows_NT" {
+    "http/1.1"
+  } else {
+    "h2"
+  }
+}
+
+test "native Std.HttpServer serves a TLS request in the protocol ALPN selects, HTTP/2 where offered (item C)" {
   val src = "package C\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
     "import Std.Tls\n" +
     "import Std.HttpServer\n" +
@@ -503,31 +513,89 @@ test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than m
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
+    "func sendHex(conn: in Conn, hex: in String): Bool {\n" +
+    "  match tryDecodeHex(hex) {\n" +
+    "    case Some(bytes) -> match hostWrite(conn, bytes) {\n" +
+    "      case Ok(_) -> true\n" +
+    "      case Err(_) -> false\n" +
+    "    }\n" +
+    "    case None -> false\n" +
+    "  }\n" +
+    "}\n" +
+    "// Reads until `marker` shows up in the hex of what arrived, the peer closes, or the tries run out.\n" +
+    "func readHexUntil(conn: in Conn, marker: in String): String {\n" +
+    "  var acc = \"\"\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 400 and not done {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        }\n" +
+    "        acc = acc + encodeHex(b)\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    if acc.contains(marker) {\n" +
+    "      done = true\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  acc\n" +
+    "}\n" +
+    "// The client speaks whatever ALPN selected, so the same case runs where the\n" +
+    "// server offers h2 and where it offers HTTP/1.1 only (Windows).\n" +
     "@unsafe_ffi\n" +
-    "func clientOfferH2(certPem: in String): NativePtr[Byte] {\n" +
-    "  val conn = match hostConnectTls(\"127.0.0.1\", 19722, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"h2\") {\n" +
+    "func clientNegotiated(certPem: in String): NativePtr[Byte] {\n" +
+    "  val conn = match hostConnectTls(\"127.0.0.1\", 19722, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"h2,http/1.1\") {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return toC(\"FAIL:handshake\")\n" +
     "  }\n" +
-    "  if hostAlpn(conn) != \"h2\" {\n" +
+    "  val proto = hostAlpn(conn)\n" +
+    "  if proto == \"h2\" {\n" +
+    "    // The client preface, an empty SETTINGS frame, and HEADERS for GET / on stream 1\n" +
+    "    // (HPACK: :method GET, :scheme https, :path /, :authority localhost), END_STREAM.\n" +
+    "    val sentPreface = sendHex(conn, \"505249202a20485454502f322e300d0a0d0a534d0d0a0d0a\")\n" +
+    "    val sentSettings = sendHex(conn, \"000000040000000000\")\n" +
+    "    val sentHeaders = sendHex(conn, \"00000e01050000000182878441096c6f63616c686f7374\")\n" +
+    "    if not (sentPreface and sentSettings and sentHeaders) {\n" +
+    "      hostClose(conn)\n" +
+    "      return toC(\"FAIL:write\")\n" +
+    "    }\n" +
+    "    // The response DATA frame: 2 bytes, END_STREAM, stream 1, \"hi\".\n" +
+    "    val acc = readHexUntil(conn, \"0000020001000000016869\")\n" +
     "    hostClose(conn)\n" +
-    "    return toC(\"FAIL:alpn-not-h2\")\n" +
-    "  }\n" +
-    "  val _ = hostWrite(conn, encodeUtf8(\"garbage-h2-bytes\"))\n" +
-    "  var closedOk = false\n" +
-    "  match hostRead(conn, 64) {\n" +
-    "    case Ok(bytes) -> {\n" +
-    "      closedOk = bytes.length == 0\n" +
+    "    if not acc.startsWith(\"0000\") or acc.substring(6, 2) != \"04\" {\n" +
+    "      toC(\"FAIL:no-server-settings\")\n" +
+    "    } else if not acc.contains(\"010400000001\" + \"88\") {\n" +
+    "      toC(\"FAIL:no-status-200-headers\")\n" +
+    "    } else if not acc.contains(\"0000020001000000016869\") {\n" +
+    "      toC(\"FAIL:no-data\")\n" +
+    "    } else {\n" +
+    "      toC(\"PASS:h2\")\n" +
     "    }\n" +
-    "    case Err(_) -> {\n" +
-    "      closedOk = true\n" +
+    "  } else if proto == \"http/1.1\" {\n" +
+    "    val req = \"GET / HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "    match hostWrite(conn, encodeUtf8(req)) {\n" +
+    "      case Ok(_) -> ()\n" +
+    "      case Err(_) -> {\n" +
+    "        hostClose(conn)\n" +
+    "        return toC(\"FAIL:write\")\n" +
+    "      }\n" +
     "    }\n" +
-    "  }\n" +
-    "  hostClose(conn)\n" +
-    "  if closedOk {\n" +
-    "    toC(\"PASS\")\n" +
+    "    val acc = readHexUntil(conn, \"6869\")\n" +
+    "    hostClose(conn)\n" +
+    "    if acc.startsWith(encodeHex(encodeUtf8(\"HTTP/1.1 200\"))) and acc.endsWith(\"6869\") {\n" +
+    "      toC(\"PASS:http/1.1\")\n" +
+    "    } else {\n" +
+    "      toC(\"FAIL:h1-response\")\n" +
+    "    }\n" +
     "  } else {\n" +
-    "    toC(\"FAIL:not-closed\")\n" +
+    "    hostClose(conn)\n" +
+    "    toC(\"FAIL:alpn\")\n" +
     "  }\n" +
     "}\n" +
     "@unsafe_ffi\n" +
@@ -548,30 +616,43 @@ test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than m
     "    case Err(_) -> return 2\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val worker: () -> NativePtr[Byte] = { -> clientOfferH2(certPem) }\n" +
+    "  val worker: () -> NativePtr[Byte] = { -> clientNegotiated(certPem) }\n" +
     "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    stopListener(listener)\n" +
     "    return 3\n" +
     "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  var exitCode = 0\n" +
+    "  if requestMethod(ctx) != \"GET\" {\n" +
+    "    exitCode = 4\n" +
+    "  } else if requestPath(ctx) != \"/\" {\n" +
+    "    exitCode = 5\n" +
+    "  }\n" +
+    "  respondText(ctx, 200, \"hi\")\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
     "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  if rj != 0 {\n" +
     "    stopListener(listener)\n" +
-    "    return 4\n" +
+    "    return 6\n" +
     "  }\n" +
     "  stopListener(listener)\n" +
-    "  val passC = toC(\"PASS\")\n" +
+    "  val passC = toC(\"PASS:" +
+    expectedAlpn() +
+    "\")\n" +
     "  val clientOk = cStrcmp(outp, passC) == 0\n" +
     "  freeC(passC)\n" +
     "  freeC(outp)\n" +
+    "  if exitCode != 0 {\n" +
+    "    return exitCode\n" +
+    "  }\n" +
     "  if not clientOk {\n" +
-    "    return 5\n" +
+    "    return 7\n" +
     "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)
-  assertEqualInt(r.exitCode, 42, "Std.HttpServer native h2-rejection guard (item C)")
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native ALPN-selected round trip (item C)")
 }
 
 test "native Std.HttpServer keep-alive round trip: two requests over one connection (item D)" {
@@ -925,25 +1006,23 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native shutdown-vs-natural-completion race regression (item G, #6795)")
 }
 
-test "native Std.HttpServer stopListener does not free the queue while a puller is genuinely parked in nextContext (item H, #6802 regression)" {
+test "native Std.HttpServer stopListener does not free the queue while a puller is genuinely parked in tryNextContext (item H, #6802 regression)" {
   val src = "package H\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
     "import Std.Time\n" +
     "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "@unsafe_ffi\n" +
     "func main(): Int {\n" +
     "  // Every spawned worker closure is kept alive here for main's whole\n" +
-    "  // lifetime: each one's own thread never returns (nextContext blocks\n" +
-    "  // forever -- no connection is ever made on these listeners), so\n" +
-    "  // nothing else would otherwise keep the closure retained once this\n" +
-    "  // loop iteration's own local binding would normally go out of scope.\n" +
+    "  // lifetime, so nothing frees one while its thread may still read it.\n" +
     "  val keepAlive: List[() -> NativePtr[Byte]] = newList()\n" +
     "  var i = 0\n" +
     "  var failCode = 0\n" +
     "  while i < 15 and failCode == 0 {\n" +
     "    val listener = startListener(\"http://127.0.0.1:19727/\")\n" +
     "    var tid: Long = 0\n" +
-    "    val worker: () -> NativePtr[Byte] = { -> val _ = nextContext(listener); nativeNullPtr() }\n" +
+    "    val worker: () -> NativePtr[Byte] = { -> val _ = tryNextContext(listener); nativeNullPtr() }\n" +
     "    keepAlive.add(worker)\n" +
     "    val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "    if rc != 0 {\n" +
@@ -971,6 +1050,14 @@ test "native Std.HttpServer stopListener does not free the queue while a puller 
     "      // returns promptly, leaving the puller thread permanently (but\n" +
     "      // safely) parked.\n" +
     "      stopListener(listener)\n" +
+    "      // The stop woke the puller (tryNextContext returns None), so the\n" +
+    "      // thread ends and is joined: its parked wait kept the listener's\n" +
+    "      // lock and semaphore alive until it left.\n" +
+    "      var outp: NativePtr[Byte] = nativeNullPtr()\n" +
+    "      val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
+    "      if rj != 0 {\n" +
+    "        failCode = 2\n" +
+    "      }\n" +
     "    }\n" +
     "    i = i + 1\n" +
     "  }\n" +
@@ -1585,4 +1672,80 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     42,
     "Std.HttpServer native LYRIC_HTTP_MAX_CONNECTIONS=1 gating and saturated shutdown (item Q)"
   )
+}
+
+test "native Std.HttpServer connection-per-request load leaves no thread stacks or memory mappings behind (item R, defect 2 of the docs/73 baseline)" {
+  val src = "package R\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "import Std.File as File\n" +
+    "import Std.String\n" +
+    "func mapCount(): Int {\n" +
+    "  match File.readText(\"/proc/self/maps\") {\n" +
+    "    case Ok(t) -> split(t, \"\\n\").length\n" +
+    "    case Err(_) -> 0 - 1\n" +
+    "  }\n" +
+    "}\n" +
+    "func oneRequest(listener: in HttpListener): Bool {\n" +
+    "  val conn = match hostConnect(\"127.0.0.1\", 19732, 0) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return false\n" +
+    "  }\n" +
+    "  val req = \"GET /r HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(conn, encodeUtf8(req)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return false\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  respondText(ctx, 200, \"ok\")\n" +
+    "  var got = false\n" +
+    "  var tries = 0\n" +
+    "  var done = false\n" +
+    "  while tries < 50 and not done {\n" +
+    "    match hostRead(conn, 1024) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          done = true\n" +
+    "        } else {\n" +
+    "          got = true\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> {\n" +
+    "        done = true\n" +
+    "      }\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  hostClose(conn)\n" +
+    "  got\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19732/\")\n" +
+    "  var i = 0\n" +
+    "  while i < 50 {\n" +
+    "    if not oneRequest(listener) {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  val before = mapCount()\n" +
+    "  if before < 0 {\n" +
+    "    stopListener(listener)\n" +
+    "    return 42\n" +
+    "  }\n" +
+    "  while i < 3050 {\n" +
+    "    if not oneRequest(listener) {\n" +
+    "      return 2\n" +
+    "    }\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  val after = mapCount()\n" +
+    "  stopListener(listener)\n" +
+    "  if after - before > 300 {\n" +
+    "    return 3\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native connection churn does not accumulate mappings (item R)")
 }

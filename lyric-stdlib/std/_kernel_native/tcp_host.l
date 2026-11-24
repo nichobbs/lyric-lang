@@ -296,6 +296,8 @@ extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
 extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 
+extern func rtSockListenerRefuse(fd: Int): Int = "lyric_sock_listener_refuse"
+
 extern func rtSockPeerString(fd: Int): String = "lyric_sock_peer_string"
 
 // POSIX shutdown(2): interrupts a blocking read/write on `fd` from ANOTHER
@@ -442,7 +444,15 @@ val boundedInterrupted: Int = 3
 // The server's ALPN preference list — `h2` first, matching docs/61 §6.4
 // phase 4.4 and the dotnet twin's `setApplicationProtocols`; a peer that
 // offers only `http/1.1` (or no ALPN) falls back to HTTP/1.1.
+@cfg(not(target_os = "windows"))
 val alpnPreference: String = "h2,http/1.1"
+
+// Schannel's connection state is not safe for the concurrent read and write an
+// HTTP/2 server does on one connection (its reader task against its connection
+// task), and the Windows transport has no per-connection lock yet, so a Windows
+// server offers HTTP/1.1 only.
+@cfg(target_os = "windows")
+val alpnPreference: String = "http/1.1"
 
 // =====================================================================
 // Public API.
@@ -506,7 +516,14 @@ pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): R
 /// `Listener`'s accept-loop thread. Idempotent-safe: signaling more than
 /// once is harmless (`rtSockWakePipeSignal`'s own doc comment).
 ///
-/// **Does NOT close anything — see `hostCloseListener` below for that,
+/// **It also stops the listening socket accepting (#9184).** A connect made
+/// after this returns is refused, as on the dotnet and JVM twins, whose stop
+/// closes the socket: `rtSockListenerRefuse` takes the socket out of the
+/// kernel's listening state and leaves the descriptor NUMBER allocated, so the
+/// fd-reuse hazard below cannot arise. On Windows (no `dup2` equivalent) the
+/// socket keeps listening until `hostCloseListener`.
+///
+/// **Does NOT close the descriptor — see `hostCloseListener` below for that,
 /// and read this doc comment in full before calling either.** An earlier
 /// version of this function signaled AND closed the listening socket and
 /// the wake pipe all in one call, immediately, on the calling (stopping)
@@ -555,6 +572,12 @@ pub func hostConnect(host: in String, port: in Int, connectTimeoutMs: in Int): R
 @experimental
 pub func hostStopListener(l: in Listener): Unit {
   val _ = rtSockWakePipeSignal(l.wakeWriteFd)
+  // The listening socket stops accepting now (#9184): a connect after this
+  // call is refused. The descriptor number stays allocated until
+  // `hostCloseListener`, so an accept thread still on its way into
+  // `poll`/`accept` can only fail on it, never reach a descriptor another
+  // thread opened in the meantime (#6883).
+  val _2 = rtSockListenerRefuse(l.fd)
 }
 
 /// Release a `Listener`'s OS resources (the listening socket and the wake

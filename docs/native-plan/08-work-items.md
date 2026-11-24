@@ -1511,7 +1511,7 @@ connection, each pumping `hostRead` bytes through its own
 the `_kernel/http_server.l` .NET-specific concurrency (Task.Run /
 ConcurrentQueue / SemaphoreSlim) with the native thread model. Gated on N9.2.
 
-**SHIPPED (D-progress-850).** `_kernel_native/http_server.l` implements the
+**SHIPPED (D-progress-850); superseded by D790 (docs/73 S5):** the native kernel described here was replaced by the shared driver `std/_kernel/http_server.l`, which also serves h2. `_kernel_native/http_server.l` implemented the
 same twelve-function `Std.HttpServer` surface as the dotnet/JVM twins
 (`startListener`/`nextContext`/`stopListener`/`requestMethod`/`requestPath`/
 `requestBody`/`requestQuery`/`requestHeaders`/`urlDecode`/`respondText`/
@@ -1793,7 +1793,7 @@ handshake needs both peers actively exchanging handshake records at once,
 unlike a bare TCP `connect`, which completes into the listen backlog before
 `accept` runs).
 
-### N9.5 — lyric-web `serveTls` on native; ALPN h2 — ⛔ BLOCKED on two structural gaps (D-progress-852, #6106); blocker 1's `inout`/`out` root cause now ✅ SHIPPED (N9.6, D-progress-853, #6794)
+### N9.5 — lyric-web `serveTls` on native; ALPN h2 — ✅ native `Std.HttpServer` serves h2 since docs/73 S5 (D790, #6106); original blocked-status text below (D-progress-852, #6106); blocker 1's `inout`/`out` root cause now ✅ SHIPPED (N9.6, D-progress-853, #6794)
 
 lyric-web's `serveTls` onto the native `Std.HttpServer`, plus ALPN-selected
 h2 (docs/61 §6.4) once the engine's h2 stack is target-independent. Gated on

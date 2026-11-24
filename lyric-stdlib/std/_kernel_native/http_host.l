@@ -30,7 +30,7 @@
 //! RESPONSE serializer — the SERVER's half of HTTP/1.1 (docs/61 §6.1: "HTTP
 //! request parser, response serializer, connection state machine" — its own
 //! header is explicit that this is the server side; consumed today only by
-//! `_kernel/http_server.l` and this same file's sibling
+//! `std/http_server.l` and this same file's sibling
 //! `_kernel_native/tcp_host.l`'s doc comments, never a client). A CLIENT
 //! needs the opposite pair — REQUEST serialization + RESPONSE parsing — and
 //! no such engine exists on any target; `_kernel/http_host.l` /
