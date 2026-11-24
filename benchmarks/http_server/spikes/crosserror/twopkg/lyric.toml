@@ -1,0 +1,12 @@
+[package]
+name = "Repro"
+version = "0.1.0"
+
+[project]
+name = "Repro"
+output = "single"
+output_assembly = "Repro.dll"
+
+[project.packages]
+"Repro.Lib" = "src/lib.l"
+"Repro.Api" = "src/api.l"

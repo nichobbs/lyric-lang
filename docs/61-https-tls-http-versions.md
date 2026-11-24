@@ -427,6 +427,15 @@ throughput within a documented factor of the `HttpListener` baseline it
 replaced. Tracked as its own issue at that point; not scheduled in this
 epic's phases.
 
+_Update (docs/73 S0, D780, 2026-11-24):_ criterion (c) is now concrete. The
+`HttpListener` baseline no longer exists, and the JVM server being replaced is
+Undertow, so the gate is relative to Undertow through lyric-web, measured by
+`scripts/ci/http-server-benchmark.sh` on the same runner: at least 60% of its
+throughput with p99 within 2x for hello over HTTP/1.1 keep-alive, connection per
+request and h2, 50% for 64 KiB bodies, plus the idle-connection, soak and
+WebSocket fan-out gates in D780. On the 2026-11-24 container the dotnet engine is
+at 167% of Undertow for HTTP/1.1 keep-alive hello and 170% for h2.
+
 ## 7. Native target
 
 Native has **no HTTP kernel at all yet**, so "HTTPS on native" decomposes
