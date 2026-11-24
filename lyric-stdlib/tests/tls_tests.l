@@ -436,9 +436,14 @@ func startServer(port: in Int): HttpListener {
   }
 }
 
+// A listener stopped while this waits (a client that was rejected never sends a
+// request) ends the wait with `None`; `nextContext` would panic, which ends the
+// whole test program on native.
 func serveOne(l: in HttpListener): Unit {
-  val ctx = nextContext(l)
-  respondText(ctx, 200, "bundle-ok")
+  match tryNextContext(l) {
+    case Some(ctx) -> respondText(ctx, 200, "bundle-ok")
+    case None -> ()
+  }
 }
 
 // "ok" when the TLS exchange and the request succeeded with the expected

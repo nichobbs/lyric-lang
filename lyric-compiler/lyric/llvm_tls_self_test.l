@@ -92,10 +92,11 @@
 //! boundary. `Std.TcpHost`'s own `_kernel_native/` surface is unchanged by
 //! item D.
 //!
-//! The server's ALPN preference is the existing hardcoded
-//! `"h2,http/1.1"` (`_kernel_native/tcp_host.l`'s `alpnPreference`); the
-//! client thread offers exactly `"h2"` so the negotiated protocol is
-//! unambiguous regardless of ALPN preference-order semantics. The
+//! The server's ALPN preference is `"h2,http/1.1"`, or `"http/1.1"` alone on
+//! Windows (`_kernel_native/tcp_host.l`'s `alpnPreference`); the client
+//! thread offers exactly the protocol the platform serves (`expectedAlpn()`)
+//! so the negotiated protocol is unambiguous regardless of ALPN
+//! preference-order semantics. The
 //! self-signed `certPemLines` fixture below (reused from item B) is
 //! `Basic Constraints: CA:TRUE`, so it doubles as its own trust anchor for
 //! the client's `lyric_tls_client_new(ca_pem, ...)` call — the same
@@ -500,6 +501,16 @@ test "Std.TcpHost native plain round-trip: listen/connect/accept/read/write/clos
   assertEqualInt(r.exitCode, 42, "Std.TcpHost plain round-trip")
 }
 
+// `h2` where the server offers it, `http/1.1` on Windows: Schannel's connection state is not safe for the
+// concurrent read and write an h2 server does (see `alpnPreference` in `_kernel_native/tcp_host.l`).
+func expectedAlpn(): String {
+  if Environment.getVarOrDefault("OS", "") == "Windows_NT" {
+    "http/1.1"
+  } else {
+    "h2"
+  }
+}
+
 test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (item D)" {
   // The client side is a raw `lyric_tls_*` FFI driver on a genuine second
   // pthread (module header's "item D" section explains why these externs
@@ -540,7 +551,9 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "    return toC(\"FAIL:ctxnew\")\n" +
     "  }\n" +
     "  val sniC = toC(\"localhost\")\n" +
-    "  val alpnC = toC(\"h2\")\n" +
+    "  val alpnC = toC(\"" +
+    expectedAlpn() +
+    "\")\n" +
     "  val conn = rtTlsClientConnect(ctx, fd, sniC, alpnC)\n" +
     "  freeC(alpnC)\n" +
     "  freeC(sniC)\n" +
@@ -550,7 +563,9 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "    return toC(\"FAIL:handshake\")\n" +
     "  }\n" +
     "  val alpn = rtTlsAlpnString(conn)\n" +
-    "  if alpn != \"h2\" {\n" +
+    "  if alpn != \"" +
+    expectedAlpn() +
+    "\" {\n" +
     "    rtTlsShutdown(conn)\n" +
     "    rtTlsFree(conn)\n" +
     "    rtTlsCtxFree(ctx)\n" +
@@ -619,7 +634,9 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "      exitCode = 4\n" +
     "    }\n" +
     "    case Ok(c) -> {\n" +
-    "      if hostAlpn(c) != \"h2\" {\n" +
+    "      if hostAlpn(c) != \"" +
+    expectedAlpn() +
+    "\" {\n" +
     "        exitCode = 5\n" +
     "      } else {\n" +
     "        var gotPing = false\n" +

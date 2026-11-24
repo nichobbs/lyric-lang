@@ -70,6 +70,11 @@ int32_t lyric_sock_wake_pipe_signal(int32_t write_fd) {
     return -1;
 }
 
+int32_t lyric_sock_listener_refuse(int32_t listen_fd) {
+    (void)listen_fd;
+    return fail_sock();
+}
+
 int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd) {
     (void)listen_fd; (void)wake_read_fd;
     return fail_sock();

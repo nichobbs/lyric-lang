@@ -50,6 +50,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -72,7 +73,7 @@ static _Thread_local int32_t g_sock_accept_errno;
  * (#6115). */
 static char g_load_err[256];
 
-static void sock_nosigpipe(int fd);
+static void sock_set_options(int fd);
 static void set_err(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -165,7 +166,7 @@ int32_t lyric_sock_connect(const char* host, int32_t port) {
             last_errno = errno;
             continue;
         }
-        sock_nosigpipe(fd);
+        sock_set_options(fd);
         int rc;
         do {
             rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
@@ -276,12 +277,15 @@ int32_t lyric_sock_local_port(int32_t fd) {
  * thread and a SIGPIPE they generated is consumed before unblocking,
  * skipped when the caller already had it blocked -- then it stays pending
  * for them, as in lyric_process.c's stdin_write). */
-static void sock_nosigpipe(int fd) {
-#if defined(SO_NOSIGPIPE)
+static void sock_set_options(int fd) {
+    /* Every socket this file creates or adopts also has Nagle off: a response
+     * or an HTTP/2 frame sequence is written in pieces, and the second piece
+     * would otherwise wait for the peer's delayed ACK (about 40 ms), which is
+     * the cost the dotnet and JVM transports avoid with TCP_NODELAY too. */
     int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#if defined(SO_NOSIGPIPE)
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#else
-    (void)fd;
 #endif
 }
 
@@ -319,7 +323,7 @@ static void sigpipe_unblock(sigpipe_guard* g) {
  * (macOS) hand it the listener's O_NONBLOCK, Linux does not, and every read and
  * write here assumes a blocking descriptor with SO_RCVTIMEO/SO_SNDTIMEO. */
 static void accepted_fd_blocking(int fd) {
-    sock_nosigpipe(fd);
+    sock_set_options(fd);
     int flags = fcntl(fd, F_GETFL);
     if (flags >= 0 && (flags & O_NONBLOCK)) {
         (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
@@ -442,6 +446,37 @@ int32_t lyric_sock_wake_pipe_signal(int32_t write_fd) {
     }
     if (w < 0) {
         set_err("write (wake pipe): %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+int32_t lyric_sock_listener_refuse(int32_t listen_fd) {
+    if (listen_fd < 0) return 0;
+    /* On Linux shutdown(2) takes a listening socket out of the hash at once, so
+     * a connect that arrives while another thread is still inside poll(2) on
+     * the old description (which keeps it alive until that call returns) is
+     * refused; elsewhere it fails harmlessly. */
+    (void)shutdown(listen_fd, SHUT_RDWR);
+    int placeholder = socket(AF_INET, SOCK_STREAM, 0);
+    if (placeholder < 0) {
+        set_err("socket (listener placeholder): %s", strerror(errno));
+        return -1;
+    }
+    /* dup2 swaps the description under the descriptor number, atomically:
+     * the number stays allocated (nothing else can be handed it) while the
+     * listening socket is released, so a thread that polls or accepts on this
+     * number afterwards gets an error, never an unrelated socket (#6883).
+     * hostCloseListener releases the number itself. */
+    int rc;
+    do {
+        rc = dup2(placeholder, listen_fd);
+    } while (rc < 0 && errno == EINTR);
+    int saved = errno;
+    close(placeholder);
+    if (rc < 0) {
+        errno = saved;
+        set_err("dup2 (listener placeholder): %s", strerror(errno));
         return -1;
     }
     return 0;
@@ -759,7 +794,7 @@ static ssize_t send_now(int fd, const uint8_t* buf, size_t n) {
     flags |= MSG_DONTWAIT;
 #endif
 #if defined(MSG_NOSIGNAL)
-    flags |= MSG_NOSIGNAL; /* macOS: SO_NOSIGPIPE, see sock_nosigpipe */
+    flags |= MSG_NOSIGNAL; /* macOS: SO_NOSIGPIPE, see sock_set_options */
 #endif
     ssize_t w;
     do {
@@ -1074,7 +1109,7 @@ int32_t lyric_sock_connect_bounded(const char* host, int32_t port, int64_t deadl
             last_errno = errno;
             continue;
         }
-        sock_nosigpipe(fd);
+        sock_set_options(fd);
         if (set_nonblocking(fd, 1) != 0) {
             last_errno = errno;
             close(fd);
@@ -1302,6 +1337,9 @@ struct ossl_fns {
     int (*SSL_read)(ossl_ssl*, void*, int);
     int (*SSL_write)(ossl_ssl*, const void*, int);
     int (*SSL_shutdown)(ossl_ssl*);
+    uint64_t (*SSL_set_options)(ossl_ssl*, uint64_t);
+    int (*SSL_has_pending)(const ossl_ssl*);
+    int (*SSL_get_fd)(const ossl_ssl*);
     int (*SSL_get_error)(const ossl_ssl*, int);
     long (*SSL_get_verify_result)(const ossl_ssl*);
     void (*SSL_get0_alpn_selected)(const ossl_ssl*, const unsigned char**, unsigned int*);
@@ -1411,6 +1449,9 @@ static void load_openssl(void) {
     O.SSL_read = (int (*)(ossl_ssl*, void*, int))resolve(hs, "SSL_read", &ok);
     O.SSL_write = (int (*)(ossl_ssl*, const void*, int))resolve(hs, "SSL_write", &ok);
     O.SSL_shutdown = (int (*)(ossl_ssl*))resolve(hs, "SSL_shutdown", &ok);
+    O.SSL_set_options = (uint64_t (*)(ossl_ssl*, uint64_t))resolve(hs, "SSL_set_options", &ok);
+    O.SSL_has_pending = (int (*)(const ossl_ssl*))resolve(hs, "SSL_has_pending", &ok);
+    O.SSL_get_fd = (int (*)(const ossl_ssl*))resolve(hs, "SSL_get_fd", &ok);
     O.SSL_get_error = (int (*)(const ossl_ssl*, int))resolve(hs, "SSL_get_error", &ok);
     O.SSL_get_verify_result = (long (*)(const ossl_ssl*))resolve(hs, "SSL_get_verify_result", &ok);
     O.SSL_get0_alpn_selected =
@@ -1783,6 +1824,49 @@ int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, co
     return use_identity(w->ctx, cert_pem ? cert_pem : "", key_pem ? key_pem : "") == 0 ? 0 : -1;
 }
 
+/* SSL_MODE_AUTO_RETRY is off for every connection: with it, a blocking SSL_read
+ * that meets a post-handshake message (a TLS 1.3 session ticket, a KeyUpdate)
+ * goes on to wait for the next record while still inside the call, which would
+ * keep the connection lock from a writer for as long as the peer stays quiet.
+ * Without it SSL_read returns WANT_READ and the read loop waits for the socket
+ * outside the lock. */
+static void tls_no_auto_retry(ossl_ssl* ssl) {
+    O.SSL_ctrl(ssl, 78 /* SSL_CTRL_CLEAR_MODE */, 4 /* SSL_MODE_AUTO_RETRY */, NULL);
+}
+
+/* The handle the Lyric side holds for a TLS connection: the SSL object and the
+ * lock that serializes calls on it.  An HTTP/2 server reads a connection on one
+ * thread (its reader task) while another writes it (its connection task), and
+ * OpenSSL's SSL object is not safe for that: SSL_read can itself write (a TLS
+ * 1.3 KeyUpdate answer) and both directions share state.  Every SSL_read,
+ * SSL_write and SSL_shutdown on one connection therefore runs under that
+ * connection's lock.  The lock is never held while waiting for the peer to send
+ * more than one record: a blocking read first waits for the socket outside the
+ * lock (tls_wait_readable) and the connection runs without SSL_MODE_AUTO_RETRY,
+ * so SSL_read returns after a post-handshake message instead of blocking for
+ * the next record. */
+typedef struct {
+    ossl_ssl* ssl;
+    pthread_mutex_t lock;
+} tls_conn;
+
+static void tls_lock(tls_conn* c) { pthread_mutex_lock(&c->lock); }
+static void tls_unlock(tls_conn* c) { pthread_mutex_unlock(&c->lock); }
+
+/* Takes ownership of `ssl`; NULL (with the SSL object freed) when the handle
+ * cannot be allocated. */
+static tls_conn* tls_wrap(ossl_ssl* ssl) {
+    tls_conn* c = (tls_conn*)calloc(1, sizeof *c);
+    if (!c) {
+        set_err("out of memory");
+        O.SSL_free(ssl);
+        return NULL;
+    }
+    c->ssl = ssl;
+    pthread_mutex_init(&c->lock, NULL);
+    return c;
+}
+
 /* The client handshake; `bounded` makes it honour `deadline_ns`/`wake_fd`
  * over a socket switched to non-blocking for the duration.  *status is a
  * LYRIC_BOUNDED_* code. */
@@ -1793,11 +1877,12 @@ static void* client_connect_impl(void* client_ctx, int32_t fd, const char* sni_h
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)client_ctx;
     __atomic_store_n(&w->connected, 1, __ATOMIC_RELEASE);
     ossl_ssl* ssl = O.SSL_new(w->ctx);
+    if (ssl) tls_no_auto_retry(ssl);
     if (!ssl) {
         set_ossl_err("create client TLS connection");
         return NULL;
     }
-    sock_nosigpipe(fd);
+    sock_set_options(fd);
     if (O.SSL_set_fd(ssl, fd) != 1) {
         set_ossl_err("bind socket to TLS connection");
         O.SSL_free(ssl);
@@ -1882,7 +1967,7 @@ static void* client_connect_impl(void* client_ctx, int32_t fd, const char* sni_h
         }
     }
     *status = LYRIC_BOUNDED_OK;
-    return ssl;
+    return tls_wrap(ssl);
 }
 
 void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv) {
@@ -1985,11 +2070,20 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
     if (!tls_ready() || !server_ctx) return NULL;
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)server_ctx;
     ossl_ssl* ssl = O.SSL_new(w->ctx);
+    if (ssl) {
+        tls_no_auto_retry(ssl);
+        /* A client that half-closes its end of the socket without a TLS
+         * close_notify (a request sent, then the write side shut) is read as a
+         * clean end of input, as on the dotnet and JVM transports: with the
+         * default, OpenSSL 3 reports an error and then refuses to write the
+         * response still owed (SSL_OP_IGNORE_UNEXPECTED_EOF). */
+        O.SSL_set_options(ssl, 0x80 /* SSL_OP_IGNORE_UNEXPECTED_EOF */);
+    }
     if (!ssl) {
         set_ossl_err("create server TLS connection");
         return NULL;
     }
-    sock_nosigpipe(fd);
+    sock_set_options(fd);
     if (O.SSL_set_fd(ssl, fd) != 1) {
         set_ossl_err("bind socket to TLS connection");
         O.SSL_free(ssl);
@@ -2012,28 +2106,71 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
         O.SSL_free(ssl);
         return NULL;
     }
-    return ssl;
+    return tls_wrap(ssl);
 }
 
 /* ── Shared connection I/O ────────────────────────────────────────────── */
+
+/* Waits, without holding the connection lock, until the socket has bytes for
+ * SSL_read to consume, bounded by the socket's receive timeout.  1 when a read
+ * may proceed (data buffered inside OpenSSL counts), 0 on the timeout, -1 on a
+ * poll failure (last_error set). */
+static int tls_wait_readable(tls_conn* c) {
+    tls_lock(c);
+    int buffered = O.SSL_has_pending(c->ssl);
+    tls_unlock(c);
+    if (buffered) return 1;
+    int fd = O.SSL_get_fd(c->ssl);
+    if (fd < 0) return 1;
+    int timeout_ms = -1;
+    struct timeval tv;
+    socklen_t len = (socklen_t)sizeof tv;
+    if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, &len) == 0 && (tv.tv_sec != 0 || tv.tv_usec != 0)) {
+        int64_t ms = (int64_t)tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
+        timeout_ms = ms > 2147483647 ? 2147483647 : (int)ms;
+    }
+    struct pollfd p;
+    for (;;) {
+        p.fd = fd;
+        p.events = POLLIN;
+        p.revents = 0;
+        int rc = poll(&p, 1, timeout_ms);
+        if (rc > 0) return 1;
+        if (rc == 0) return 0;
+        if (errno == EINTR) continue;
+        set_err("TLS read: poll: %s", strerror(errno));
+        return -1;
+    }
+}
 
 /* The read loop.  `bounded` means `fd` is non-blocking and a WANT_* waits on
  * it within the limits; otherwise the fd blocks and a WANT_* with EAGAIN is
  * its socket timeout.  Returns the count, 0 at a clean close, or -1 with
  * *status set (LYRIC_BOUNDED_ERROR, _DEADLINE or _INTERRUPTED). */
-static int64_t tls_read_impl(ossl_ssl* ssl, uint8_t* buf, int64_t n, int bounded, int fd, int64_t deadline_ns,
+static int64_t tls_read_impl(tls_conn* c, uint8_t* buf, int64_t n, int bounded, int fd, int64_t deadline_ns,
                              int32_t wake_fd, int32_t* status) {
+    ossl_ssl* ssl = c->ssl;
     int want = (n > 0x7fffffff) ? 0x7fffffff : (int)n;
     *status = LYRIC_BOUNDED_ERROR;
     for (;;) {
+        if (!bounded) {
+            int ready = tls_wait_readable(c);
+            if (ready == 0) {
+                set_err("TLS read: timed out");
+                return -1;
+            }
+            if (ready < 0) return -1;
+        }
         errno = 0;
         sigpipe_guard guard;
         sigpipe_block(&guard);
+        tls_lock(c);
         int r = O.SSL_read(ssl, buf, want);
+        int saved_errno = errno;
+        int err = r > 0 ? 0 : O.SSL_get_error(ssl, r);
+        tls_unlock(c);
         sigpipe_unblock(&guard);
         if (r > 0) return (int64_t)r;
-        int saved_errno = errno;
-        int err = O.SSL_get_error(ssl, r);
         if (err == OSSL_SSL_ERROR_ZERO_RETURN) return 0; /* clean close_notify */
         if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
             if (bounded) {
@@ -2059,13 +2196,14 @@ static int64_t tls_read_impl(ossl_ssl* ssl, uint8_t* buf, int64_t n, int bounded
 int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
     if (!conn || n <= 0) return 0;
     int32_t status;
-    return tls_read_impl((ossl_ssl*)conn, buf, n, 0, -1, 0, -1, &status);
+    return tls_read_impl((tls_conn*)conn, buf, n, 0, -1, 0, -1, &status);
 }
 
 /* The write loop, with tls_read_impl's `bounded` convention.  Returns `n`,
  * or -1 with *status set. */
-static int64_t tls_write_impl(ossl_ssl* ssl, const uint8_t* buf, int64_t n, int bounded, int fd,
+static int64_t tls_write_impl(tls_conn* c, const uint8_t* buf, int64_t n, int bounded, int fd,
                               int64_t deadline_ns, int32_t wake_fd, int32_t* status) {
+    ossl_ssl* ssl = c->ssl;
     *status = LYRIC_BOUNDED_ERROR;
     int64_t off = 0;
     while (off < n) {
@@ -2074,14 +2212,16 @@ static int64_t tls_write_impl(ossl_ssl* ssl, const uint8_t* buf, int64_t n, int 
         errno = 0;
         sigpipe_guard guard;
         sigpipe_block(&guard);
+        tls_lock(c);
         int w = O.SSL_write(ssl, buf + off, chunk);
+        int saved_errno = errno;
+        int err = w > 0 ? 0 : O.SSL_get_error(ssl, w);
+        tls_unlock(c);
         sigpipe_unblock(&guard);
         if (w > 0) {
             off += w;
             continue;
         }
-        int saved_errno = errno;
-        int err = O.SSL_get_error(ssl, w);
         if (err == OSSL_SSL_ERROR_WANT_READ || err == OSSL_SSL_ERROR_WANT_WRITE) {
             if (bounded) {
                 /* The retry passes the same buffer and length, as SSL_write
@@ -2108,7 +2248,7 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
     if (!conn) return -1;
     if (n <= 0) return 0;
     int32_t status;
-    return tls_write_impl((ossl_ssl*)conn, buf, n, 0, -1, 0, -1, &status);
+    return tls_write_impl((tls_conn*)conn, buf, n, 0, -1, 0, -1, &status);
 }
 
 /* TLS counterparts of lyric_sock_read_bytes/lyric_sock_write_bytes above
@@ -2175,7 +2315,7 @@ LyricList* lyric_tls_read_bytes_bounded(void* conn, int32_t fd, int64_t max_byte
         return list;
     }
     int32_t st = LYRIC_BOUNDED_ERROR;
-    int64_t n = tls_read_impl((ossl_ssl*)conn, buf, max_bytes, 1, fd, deadline_ns, wake_fd, &st);
+    int64_t n = tls_read_impl((tls_conn*)conn, buf, max_bytes, 1, fd, deadline_ns, wake_fd, &st);
     if (n < 0) {
         set_nonblocking_quiet(fd, 0);
         free(buf);
@@ -2217,7 +2357,7 @@ int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, 
         return LYRIC_BOUNDED_ERROR;
     }
     int32_t st = LYRIC_BOUNDED_ERROR;
-    int64_t rc = tls_write_impl((ossl_ssl*)conn, buf, n, 1, fd, deadline_ns, wake_fd, &st);
+    int64_t rc = tls_write_impl((tls_conn*)conn, buf, n, 1, fd, deadline_ns, wake_fd, &st);
     free(buf);
     if (rc < 0) {
         set_nonblocking_quiet(fd, 0);
@@ -2228,7 +2368,7 @@ int32_t lyric_tls_write_bytes_bounded(void* conn, int32_t fd, void* bytes_list, 
 
 int32_t lyric_tls_alpn(void* conn, char* out, int32_t out_cap) {
     if (!conn || !out || out_cap <= 0) return 0;
-    ossl_ssl* ssl = (ossl_ssl*)conn;
+    ossl_ssl* ssl = ((tls_conn*)conn)->ssl;
     const unsigned char* data = NULL;
     unsigned int len = 0;
     O.SSL_get0_alpn_selected(ssl, &data, &len);
@@ -2247,13 +2387,19 @@ void lyric_tls_shutdown(void* conn) {
     if (!conn) return;
     sigpipe_guard guard;
     sigpipe_block(&guard);
-    O.SSL_shutdown((ossl_ssl*)conn);
+    tls_conn* c = (tls_conn*)conn;
+    tls_lock(c);
+    O.SSL_shutdown(c->ssl);
+    tls_unlock(c);
     sigpipe_unblock(&guard);
 }
 
 void lyric_tls_free(void* conn) {
     if (!conn) return;
-    O.SSL_free((ossl_ssl*)conn);
+    tls_conn* c = (tls_conn*)conn;
+    O.SSL_free(c->ssl);
+    pthread_mutex_destroy(&c->lock);
+    free(c);
 }
 
 void lyric_tls_ctx_free(void* ctx) {
