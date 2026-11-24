@@ -15,6 +15,18 @@ tokenizer, TLS), threading primitives, IEEE 754 corner cases.
 Anything else lives in the parent `lyric-compiler/lyric/std/` directory
 as a native Lyric implementation.
 
+## `Std.HttpServerHost` (D786, docs/73 slice S2)
+
+`http_server_host.l` is the per-target concurrency seam of the shared HTTP
+server driver: `startTask`, `Mutex` (reentrant), `Semaphore`, `runGuarded` and
+`WorkerSet`, with the same package and public surface in `_kernel_jvm/` and
+`_kernel_native/`. dotnet uses `Task.Run`, `Monitor` and `SemaphoreSlim`; native
+reuses `lyric_mutex_*`, `lyric_sem_*`, `lyric_thread_create`/`lyric_thread_join`
+and `lyric_thread_spawn_detached`, retaining every closure it hands to a thread
+(#6797). The contracts are listed in the file header and pinned by
+`lyric-stdlib/tests/http_server_host_tests.l` on all three targets. Nothing
+consumes the package until slice S3.
+
 ## What does NOT live here
 
 Native Lyric code. Pure-Lyric algorithms over `slice[T]`, primitives,

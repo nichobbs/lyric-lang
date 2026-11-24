@@ -102,6 +102,7 @@ build_server() {
         || { cat "$OUT/restore-web.log" >&2; exit 1; }
       # The file must sit inside the manifest's directory to resolve lyric-web's dependencies (a path outside it
       # fails with T0211), so it is copied in for the build and removed again.
+      trap 'rm -f lyric-web/tests/zz_bench_server_web.l' EXIT
       cp benchmarks/http_server/server_web.l lyric-web/tests/zz_bench_server_web.l
       (cd lyric-web && "$LYRIC" build --target jvm tests/zz_bench_server_web.l -o "$OUT/server-web.jar") \
         >"$OUT/build-server.log" 2>&1; rc=$?
@@ -120,7 +121,7 @@ stop_server() {
   [ -n "$server_pid" ] && { kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; }
   server_pid=""; sampler_pid=""
 }
-trap stop_server EXIT
+trap 'stop_server; rm -f lyric-web/tests/zz_bench_server_web.l' EXIT
 
 start_server() { # [env assignments...]
   stop_server

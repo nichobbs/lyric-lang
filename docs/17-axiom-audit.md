@@ -1064,6 +1064,7 @@ All are provisional pending weaver integration.
 | `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.TcpHost`            | `tcp_host.l`                 | 1      | 0           |
 | `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
+| `Std.HttpServerHost`     | `http_server_host.l`         | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
 | `Std.Task`               | `task.l`                     | 4      | 0           |
@@ -1073,7 +1074,7 @@ All are provisional pending weaver integration.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **40** | **2**       |
+| **Total**                |                              | **41** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1094,6 +1095,7 @@ recorded in the §19 baseline.
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
 | `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
+| `Std.HttpServerHost`     | `http_server_host.l`         | 1      | 0           |
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
@@ -1117,7 +1119,7 @@ recorded in the §19 baseline.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
-| **Total**                |                              | **33** | **0**       |
+| **Total**                |                              | **34** | **0**       |
 
 ### Combined total
 
@@ -1198,6 +1200,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HttpServer` | `http_server.l` | System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
+| `dotnet` | `Std.HttpServerHost` | `http_server_host.l` | System.Threading.Tasks.Task.Run, System.Threading.Monitor, System.Threading.ThreadPool.SetMinThreads and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
 | `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; \n JvmException wraps it for Lyric callers at the FFI boundary \n per docs/31-maven-linking.md §5 |
@@ -1237,6 +1240,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.HashHost` | `hash_host.l` | java.security.MessageDigest.getInstance(\"SHA-1\") and getInstance(\"SHA-256\") and getInstance(\"SHA-512\") conform to documented JDK SHA-1/SHA-256/SHA-512 semantics and are pure functions of their input bytes; update() over java.io.FileInputStream.readNBytes chunks digests the file's current contents |
 | `jvm` | `Std.HttpHost` | `http_host.l` | java.net.http.HttpClient and javax.net.ssl / java.security TLS configuration operations conform to their documented JVM contracts |
 | `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer and HttpsServer operations conform to their documented JVM contracts |
+| `jvm` | `Std.HttpServerHost` | `http_server_host.l` | java.lang.Thread.startVirtualThread, java.util.concurrent.locks.ReentrantLock and java.util.concurrent.Semaphore operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |

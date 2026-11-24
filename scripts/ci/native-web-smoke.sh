@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build examples/native-web with --target native, run it, and exercise
 # HTTP routes, the static-file root check against symlinks that leave the
-# root (#8507), and a WebSocket echo over a raw RFC 6455 client.
+# root (#8507), and a WebSocket echo over a raw RFC 6455 client; then runs
+# lyric-ws's loopback suites on native.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
@@ -89,4 +90,11 @@ while len(body) < n:
 assert body == b"echo:ping", body
 print("ws echo:", body)
 PY
+# lyric-ws's own suites on native: the loopback tests (docs/73 S7a) dial the
+# real server over Std.TcpHost. The aspect-weaving suite is left out: native
+# does not yet resolve cross-package aspect templates (A0045, #3498), and a
+# panicking handler cannot be caught on native (D-N-003), so the e2e suite
+# skips that one check.
+(cd "$ROOT" && "$LYRIC" test --manifest lyric-ws/lyric.toml --target native --no-default-features --features native \
+  --suite Ws.WsTests --suite Ws.WsFrameTests --suite Ws.WsHandshakeTests --suite Ws.WsE2eTests)
 echo "native-web smoke OK"

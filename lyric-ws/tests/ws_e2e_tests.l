@@ -1,6 +1,6 @@
-//! tests/ws_dotnet_e2e_tests.l — loopback integration tests for the real
-//! dotnet WebSocket server (`Ws.Kernel.Net`, docs/62-jsonrpc-mcp.md §6,
-//! #778): `Ws.startServer` bound to `127.0.0.1` on an ephemeral port, and a
+//! tests/ws_e2e_tests.l — loopback integration tests for the real WebSocket
+//! server (`Ws.Kernel.Net`, docs/62-jsonrpc-mcp.md §6, #778; docs/73 S7a):
+//! `Ws.startServer` bound to `127.0.0.1` on an ephemeral port, and a
 //! minimal hand-rolled RFC 6455 client built directly on `Std.TcpHost` (the
 //! same raw-socket approach `lyric-stdlib/tests/http_server_dotnet_tests.l`
 //! uses for its own protocol-level assertions) — deliberately NOT reusing
@@ -13,14 +13,12 @@
 //! with pong by the application handler (the kernel itself does not
 //! auto-pong — see `Ws.Kernel.Net`'s module header), a clean close with an
 //! explicit code, `connectionCount`/`isConnected` registry-state assertions,
-//! and `send`/`broadcast` pushed from outside any handler callback.
+//! `send`/`broadcast` pushed from outside any handler callback, the Origin
+//! policy, a throwing handler, and many simultaneous connections (#9335).
 //!
-//! dotnet-only (`Ws.Kernel.Net` is `@cfg(feature = "dotnet")`); the JVM
-//! Undertow path has its own established test coverage
-//! (`tests/ws_tests.l`/`ws_security_aspect_weaving_tests.l` run on both
-//! targets today) which this file does not touch or regress.
+//! Runs on every target `lyric-ws` claims: dotnet, the JVM and native.
 @test_module
-package Ws.WsDotnetE2eTests
+package Ws.WsE2eTests
 
 import Std.Core
 import Std.Collections
@@ -28,22 +26,10 @@ import Std.Encoding
 import Std.String
 import Std.TcpHost
 import Std.Testing
+import Std.Time
 import Ws
 import Ws.Frame
 import Ws.Handshake
-
-// ─── Concurrency externs (mirrors lyric-stdlib/tests/http_server_dotnet_tests.l) ──
-// `spawn` is degenerate-synchronous on `--target dotnet` (D119/D120); a real
-// background thread for the client side of this loopback isn't actually
-// needed here (the server itself is the one running in the background, via
-// `Ws.Kernel.Net`'s own `Task.Run` accept/read loops) — this test's client
-// calls are all synchronous, blocking `Std.TcpHost` reads/writes on the
-// caller's own thread.
-extern type Thread = "System.Threading.Thread"
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
 
 // ─── Test handler ───────────────────────────────────────────────────────────────
 // The handler needs the registry (to reply from inside onMessage) but the
@@ -120,7 +106,7 @@ func startEchoServer(port: in Int): StartedServer {
     case Err(e) -> panic("startServer failed: " + e.message)
   }
   holder.registry = Some(registry)
-  threadSleep(100)
+  sleepMillis(100)
   StartedServer(registry = registry, holder = holder)
 }
 
@@ -393,7 +379,7 @@ test "loopback: connect, handshake, text echo, and registry state" {
   assertEqualInt(echoed.opcode, 1, "echoed frame is a text frame")
   assertEqual(payloadText(echoed), "echo:hello", "text message echoed by the handler")
 
-  threadSleep(50)
+  sleepMillis(50)
   assertEqualInt(connectionCount(registry), 1, "one open connection")
   assertTrue(isConnected(registry, lastConnIdOrPanic(started.holder)), "isConnected is true for the live connection")
 
@@ -403,7 +389,7 @@ test "loopback: connect, handshake, text echo, and registry state" {
   val closeCode = closeFrame.payload[0].toInt().shl(8).or(closeFrame.payload[1].toInt())
   assertEqualInt(closeCode, 1000, "echoed close code matches")
 
-  threadSleep(150)
+  sleepMillis(150)
   assertEqualInt(connectionCount(registry), 0, "connection count drops to 0 after the close handshake completes")
   assertFalse(
     isConnected(registry, lastConnIdOrPanic(started.holder)),
@@ -460,7 +446,7 @@ test "loopback: send and broadcast pushed from outside any handler callback" {
   val conn1 = dial("127.0.0.1", 19504)
   val hs1 = clientHandshake(conn1, "/ws")
   val reader1 = ClientReader()
-  threadSleep(50)
+  sleepMillis(50)
   // Captured before connection 2 dials — `RegistryHolder.lastConnId` holds
   // whichever connection's onOpen ran most recently, so this must be read
   // while connection 1 is still the only one open.
@@ -468,7 +454,7 @@ test "loopback: send and broadcast pushed from outside any handler callback" {
   val conn2 = dial("127.0.0.1", 19504)
   val hs2 = clientHandshake(conn2, "/ws")
   val reader2 = ClientReader()
-  threadSleep(50)
+  sleepMillis(50)
   assertEqualInt(connectionCount(registry), 2, "two open connections")
 
   val _ = sendText(registry, conn1Id, "direct-to-conn1")
@@ -498,7 +484,7 @@ test "loopback: a cross-origin browser handshake is refused with 403 before the 
   val conn = dial("127.0.0.1", 19511)
   val outcome = clientHandshakeWith(conn, "/ws", "Origin: https://evil.example\r\n")
   assertTrue(contains(outcome.statusLine, "403"), "cross-origin handshake is refused: " + outcome.statusLine)
-  threadSleep(50)
+  sleepMillis(50)
   assertEqualInt(connectionCount(started.registry), 0, "no connection was opened")
   hostClose(conn)
   val _ = stopServer(started.registry)
@@ -509,10 +495,32 @@ test "loopback: a same-origin handshake is accepted and its headers reach onOpen
   val conn = dial("127.0.0.1", 19512)
   val outcome = clientHandshakeWith(conn, "/ws", "Origin: http://127.0.0.1\r\n")
   assertTrue(contains(outcome.statusLine, "101"), "same-origin handshake is accepted: " + outcome.statusLine)
-  threadSleep(50)
+  sleepMillis(50)
   assertEqual(started.holder.lastOrigin, "http://127.0.0.1", "the Origin header is in the onOpen context")
   hostClose(conn)
   val _ = stopServer(started.registry)
+}
+
+test "loopback: allowedOrigins admits a listed origin, ignoring case, and refuses an unlisted one" {
+  val holder = RegistryHolder()
+  val options = WsServerOptions(allowedOrigins = ["https://app.example.com"])
+  val registry = match startServerWithOptions("127.0.0.1", 19514, "/ws", options, EchoHandler(holder = holder)) {
+    case Ok(r) -> r
+    case Err(e) -> panic("startServerWithOptions failed: " + e.message)
+  }
+  sleepMillis(100)
+  val listed = dial("127.0.0.1", 19514)
+  val listedOutcome = clientHandshakeWith(listed, "/ws", "Origin: https://APP.example.com\r\n")
+  assertTrue(contains(listedOutcome.statusLine, "101"), "a listed origin is accepted: " + listedOutcome.statusLine)
+  val unlisted = dial("127.0.0.1", 19514)
+  val unlistedOutcome = clientHandshakeWith(unlisted, "/ws", "Origin: https://evil.example\r\n")
+  assertTrue(
+    contains(unlistedOutcome.statusLine, "403"),
+    "an unlisted origin is refused: " + unlistedOutcome.statusLine
+  )
+  hostClose(listed)
+  hostClose(unlisted)
+  val _ = stopServer(registry)
 }
 
 test "loopback: an empty peer close is answered with an empty close, never code 1005" {
@@ -573,14 +581,31 @@ impl WsHandler for PanickyHandler {
   }
 }
 
-test "loopback: a handler that throws is reported to onError and the connection keeps working" {
+// `--target native` has no exception unwinding (D-N-003): a panicking handler
+// ends the process, so there is no failure for the kernel to report and this
+// check runs on dotnet and the JVM only.
+@cfg(target = "dotnet")
+func checkHandlerFailureIsReported(): Unit {
+  checkHandlerFailureIsReportedBody()
+}
+
+@cfg(target = "jvm")
+func checkHandlerFailureIsReported(): Unit {
+  checkHandlerFailureIsReportedBody()
+}
+
+@cfg(target = "native")
+func checkHandlerFailureIsReported(): Unit {
+}
+
+func checkHandlerFailureIsReportedBody(): Unit {
   val log = FailureLog()
   val registry = match startServer("127.0.0.1", 19508, "/ws", PanickyHandler(log = log)) {
     case Ok(r) -> r
     case Err(e) -> panic("startServer failed: " + e.message)
   }
   log.registry = Some(registry)
-  threadSleep(100)
+  sleepMillis(100)
   val conn = dial("127.0.0.1", 19508)
   val _ = clientHandshake(conn, "/ws")
   val reader = ClientReader()
@@ -593,4 +618,92 @@ test "loopback: a handler that throws is reported to onError and the connection 
   assertTrue(contains(log.errors[0], "onMessage"), "and names the callback that failed")
   hostClose(conn)
   val _ = stopServer(registry)
+}
+
+test "loopback: a handler that throws is reported to onError and the connection keeps working" {
+  checkHandlerFailureIsReported()
+}
+
+// Many simultaneous connections (#9335). Each open connection holds a thread
+// for its read loop and one more for its ping loop; on dotnet those come from
+// the threadpool, whose minimum is the core count, so before the kernel raised
+// it only a few hundred handshakes could be in flight over any useful time and
+// the rest waited for the pool to grow one thread at a time.
+val manyConnections: Int = 250
+
+test "loopback: many simultaneous connections all complete the handshake promptly" {
+  val started = startEchoServer(19509)
+  val conns: List[Conn] = newList()
+  var failed = ""
+  var i = 0
+  while i < manyConnections and failed == "" {
+    val conn = dial("127.0.0.1", 19509)
+    hostSetIoTimeout(conn, 5000)
+    conns.add(conn)
+    val request = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      "Sec-WebSocket-Key: " +
+      clientKey +
+      "\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    val _ = hostWrite(conn, encodeUtf8(request))
+    match hostRead(conn, 4096) {
+      case Ok(bytes) -> {
+        val text = match tryDecodeUtf8(bytes) { case Some(t) -> t; case None -> "" }
+        if not contains(text, "101") {
+          failed = "connection " + i.toString() + " got no 101: " + text
+        }
+      }
+      case Err(e) -> {
+        failed = "connection " + i.toString() + " did not complete the handshake: " + TcpError.message(e)
+      }
+    }
+    i = i + 1
+  }
+  assertEqual(failed, "", "every handshake completes within its 5 s budget")
+  sleepMillis(200)
+  assertEqualInt(connectionCount(started.registry), manyConnections, "every connection is open at once")
+  var j = 0
+  while j < conns.count {
+    hostClose(conns[j])
+    j = j + 1
+  }
+  val _ = stopServer(started.registry)
+}
+
+// A `createEndpoint` registry (served by lyric-web's HTTP server) and a
+// `startServer` registry coexist in one process. On the JVM the first is
+// Undertow-backed and the second pure Lyric until docs/73 S7b, so each call
+// has to reach the kernel that owns its registry.
+test "an endpoint registry and a server registry in one process each reach their own connections" {
+  val endpoint = match createEndpoint("/live", WsServerOptions(), EchoHandler(holder = RegistryHolder())) {
+    case Ok(e) -> e
+    case Err(e) -> panic("createEndpoint failed: " + e.message)
+  }
+  val started = startEchoServer(19510)
+  val conn = dial("127.0.0.1", 19510)
+  val _ = clientHandshake(conn, "/ws")
+  val reader = ClientReader()
+  clientSendMasked(conn, 1, true, encodeUtf8("hi"))
+  val echoed = clientReadFrame(conn, reader)
+  assertEqual(payloadText(echoed), "echo:hi", "the server registry still serves its connection")
+  sleepMillis(50)
+  assertEqualInt(connectionCount(started.registry), 1, "the server registry counts its own connection")
+  assertEqualInt(connectionCount(endpoint.registry), 0, "the endpoint registry counts none of them")
+  assertFalse(
+    isConnected(endpoint.registry, lastConnIdOrPanic(started.holder)),
+    "the endpoint registry does not know the server's connection"
+  )
+  match sendText(endpoint.registry, lastConnIdOrPanic(started.holder), "x") {
+    case Ok(_) -> assertTrue(false, "a send through the endpoint registry must not reach the server's connection")
+    case Err(e) -> assertTrue(
+      contains(e.message, "unknown connection"),
+      "the endpoint registry reports an unknown connection: " + e.message
+    )
+  }
+  match stopServer(endpoint.registry) {
+    case Ok(_) -> assertTrue(false, "an endpoint has no listener to stop")
+    case Err(e) -> assertTrue(contains(e.message, "no running server"), "stopping an endpoint is refused: " + e.message)
+  }
+  assertTrue(isConnected(started.registry, lastConnIdOrPanic(started.holder)), "the server's connection is untouched")
+  hostClose(conn)
+  val _ = stopServer(started.registry)
 }

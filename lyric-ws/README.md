@@ -6,57 +6,28 @@ WebSocket server with pluggable backends and aspect-based security.
 
 ## Platform parity
 
-| Feature flag | Backend                                                    | Status                                                    |
-|--------------|-------------------------------------------------------------|-----------------------------------------------------------|
-| `dotnet`     | Pure-Lyric RFC 6455 over `Std.TcpHost` via `Ws.Kernel.Net`  | Real: `Ws.startServer` runs a genuine `System.Net.Sockets.TcpListener`-backed server (docs/62-jsonrpc-mcp.md §6, #778). Connect, handshake (`Ws.Handshake`), send/receive (text/binary/ping/pong/close), **fragmented multi-frame message reassembly**, and **automatic ping-interval keepalive** are all real and tested end-to-end (`tests/ws_dotnet_e2e_tests.l`) — including the two capabilities the JVM kernel still lacks (see below, tracked as Q-WS-001) |
-| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`                      | Real: `Ws.startServer` runs a genuine `io.undertow.Undertow` server; connect, send (text/binary/ping/pong/close), receive (single-frame text/binary/ping/pong), and connection-registry queries are all backed by real Undertow/XNIO calls. `scripts/ci/lyric-ws-undertow-jvm-smoke.sh` checks the Origin policy, handshake headers and a text round trip against a live server in CI (#7243; before it, the receive listener failed every event with `AbstractMethodError` and nothing noticed) |
+`Ws.startServer` is one pure-Lyric RFC 6455 server, `Ws.Kernel.Net`, on every target. It sits on the `Std.TcpHost` transport kernel, the seam `Std.HttpServer` and `Std.HttpEngine` use (docs/61 phase 3.3, docs/62 section 6, docs/73 slice S7a, D787). No new NuGet or Maven dependency; not ASP.NET Core WebSockets and not Undertow.
 
-`Ws.Kernel.Net` is pure Lyric: a minimal HTTP/1.1 upgrade-handshake
-parser + `Sec-WebSocket-Accept` derivation (`Ws.Handshake`, via the new
-`Std.Hash.sha1OfBytes`) and an RFC 6455 frame codec (`Ws.Frame`) on top
-of the `Std.TcpHost` transport kernel — the same seam
-`Std.HttpServer`/`Std.HttpEngine` use (docs/61 phase 3.3). No new NuGet
-dependency; not ASP.NET Core WebSockets. Concurrency mirrors
-`Std.HttpServer`'s dotnet assembly: a background `Task` runs the accept
-loop, and each connection gets its own read-loop `Task` plus (when
-ping keepalive is enabled) a ping-loop `Task`. See `Ws.Kernel.Net`'s
-module header for the full design, including why `pingIntervalMs` is
-read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` directly rather than
-threaded through `startServer`'s parameters.
+| Feature flag | `Ws.startServer` | Per-target primitives (`src/_kernel/<dir>/ws_prims.l`) | Tested in CI |
+|--------------|------------------|--------------------------------------------------------|--------------|
+| `dotnet`     | `Ws.Kernel.Net` over `Std.TcpHost` | `Monitor` locks, `Task.Run` background tasks, `ConcurrentDictionary`; the threadpool minimum is raised so a connection burst is not throttled (#9335) | `lyric test --manifest lyric-ws/lyric.toml`: frame, handshake, aspect and loopback suites |
+| `jvm`        | the same `Ws.Kernel.Net` | `ReentrantLock` locks (never `synchronized`, which pins a virtual thread's carrier), virtual-thread background tasks, a lock-guarded map | the same five suites through `scripts/ci/jvm-ecosystem-suites.sh` |
+| `native`     | the same `Ws.Kernel.Net` | pthread mutex pool, detached pthreads, a lock-guarded map | frame, handshake and loopback suites through `scripts/ci/native-web-smoke.sh` (the aspect-weaving suite does not build on native, `A0045`, #3498) |
 
-`Ws.Kernel.Jvm` binds `io.undertow:undertow-core` (declared in this
-package's `[maven]` table) via `extern type` + auto-FFI — no
-`extern package` (a confirmed no-op FFI mechanism) and no hand-routed
-host shim. `WebSocketConnectionCallback` and the receive/close listeners
-(`org.xnio.ChannelListener`) are real Lyric records implementing the
-real JDK interfaces via `impl <ExternInterface> for Record` — the JVM
-analog of docs/51's MSIL-only support, whose interface-name and
-param/return-type resolution this library's development fixed in the
-self-hosted JVM backend (`lyric-compiler/jvm/codegen/06_items.l`; see
-`ffi_iface_impl_jvm_self_test.l`).
+All three targets share the handshake parser and `Sec-WebSocket-Accept` derivation (`Ws.Handshake`), the frame codec (`Ws.Frame`: masking, control frames, **fragmented multi-frame message reassembly**, UTF-8 validation, size cap), **automatic ping-interval keepalive**, the Origin check, and the `onError` isolation of a failing handler. Concurrency: a background task runs the accept loop, and each connection gets a read-loop task plus (when ping keepalive is enabled) a ping-loop task; `pingIntervalMs` is read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` rather than threaded through `startServer`'s parameters (see `Ws.Kernel.Net`'s module header).
 
-Known JVM-kernel gaps (documented in `Ws.Kernel.Jvm`'s own header, not
-silent stubs — the dotnet kernel above does not replicate them, tracked
-to close as Q-WS-001): fragmented (multi-frame) WebSocket messages are
-not reassembled; automatic ping-interval keepalives are not scheduled;
-text decoding is lenient UTF-8 (substitutes U+FFFD) rather than
-`Std.Encoding.tryDecodeUtf8`'s strict validate-and-reject. The backend bug
-that forced this (`slice[Byte]` element indexing, #5453) is fixed, so
-`Std.Encoding` works on the JVM now; moving the kernel to the strict
-decoder is a behaviour change left for its own PR. A real end-to-end test
-(`tests/ws_jvm_e2e_test.l` — starts a real server, connects a real
-Undertow `WebSocketClient`, sends/receives a frame) is written but not
-yet runnable end-to-end: it hits a further, precisely-diagnosed
-self-hosted JVM backend gap in cross-package `impl` of a *native*
-(non-extern) interface — see that file's header for the full
-diagnosis. It is intentionally not registered in `[project.tests]`
-until that gap is fixed.
+The loopback suite (`tests/ws_e2e_tests.l`, `Ws.WsE2eTests`) dials the real server over `Std.TcpHost` with a hand-written RFC 6455 client: handshake, text and binary echo, a fragmented message, ping and pong, close handshake, registry state, `send` and `broadcast` from outside callbacks, the Origin policy (same-origin, cross-origin, `allowedOrigins`), a throwing handler, 250 simultaneous connections, and the routing of endpoint and server registries. A throwing handler cannot be caught on native (no unwinding, D-N-003), so that one check is a no-op there.
 
-The JVM suite (`Ws.WsTests`, `Ws.WsFrameTests`, `Ws.WsHandshakeTests` and
-`Ws.WsSecurityAspectWeavingTests`, including the `WsAuth`/`WsRateLimit`
-aspects) runs in CI through `scripts/ci/jvm-ecosystem-suites.sh`;
-`Ws.WsDotnetE2eTests` dials `Std.TcpHost`, which has no JVM kernel, so that
-script selects the other suites with `--suite`.
+### What is still Undertow, and when it goes
+
+`Web.addWebSocket` on the JVM mounts a listener-less endpoint (`Ws.createEndpoint`) on `lyric-web`'s Undertow listener, through `Ws.Kernel.Jvm.endpointHandler`. That is all `Ws.Kernel.Jvm` does now, and it is why `lyric.toml` still has a `[maven]` table (`io.undertow:undertow-core` 2.3.13.Final, the same coordinate as `lyric-web`). It keeps the gaps of the old JVM kernel for those endpoints: fragmented messages are not reassembled, no ping keepalive is sent, and text decoding is lenient UTF-8. docs/73 slice S7b moves `Web.addWebSocket` to `Ws.Kernel.Net.adoptConnection` (as on dotnet and native) once `lyric-web` serves HTTP through the shared pure-Lyric server (S4, S6), and then deletes `Ws.Kernel.Jvm` and the `[maven]` table. Until then a `Ws.startServer` registry and a `createEndpoint` registry are told apart by their handle, so every `Ws` call reaches the right kernel.
+
+### Known gaps
+
+- `Ws.startServer` is plain `ws://`; there is no TLS listener (docs/73 question 8). A `wss` socket is served by `Web.serveTls` with `Web.addWebSocket`.
+- No write timeout, connection cap, bounded outbound queue or slow-consumer handling: a stalled peer blocks its writer, and `broadcast` is a serial loop over the connections (docs/73 slice S8).
+- No `permessage-deflate` (RFC 7692) and no subprotocol negotiation.
+- `[package] targets` is not declared. Whether to claim native depends on the aspect-template limit above.
 
 ## Packages
 
@@ -80,7 +51,8 @@ val router = Web.addWebSocket(Web.create(), endpoint)
 
 `endpoint.registry` is a `NativeRegistry` like `startServer`'s. On dotnet
 the HTTP server hands the connection to `Ws.Kernel.Net.adoptConnection`; on
-the JVM `Ws.Kernel.Jvm.endpointHandler` is mounted on the Undertow listener.
+the JVM `Ws.Kernel.Jvm.endpointHandler` is mounted on the Undertow listener
+(until docs/73 S7b).
 Both apply the same `WsServerOptions` Origin check as `startServer`.
 
 ## Quick start
@@ -109,7 +81,7 @@ Ws.register(registry, "/chat", func(ctx: in WsContext): Unit {
 
 ## Backends
 
-dotnet backend is pure-Lyric RFC 6455 over `Std.TcpHost` (`Ws.Kernel.Net`, not ASP.NET Core WebSockets). JVM backend uses Undertow (`Ws.Kernel.Jvm`). See "Platform parity" above for per-target status.
+`Ws.startServer` is the pure-Lyric RFC 6455 server over `Std.TcpHost` (`Ws.Kernel.Net`) on dotnet, the JVM and native. Undertow (`Ws.Kernel.Jvm`) remains only for `Web.addWebSocket` endpoints on the JVM until docs/73 S7b. See "Platform parity" above.
 
 ## Core types and functions
 
@@ -192,15 +164,16 @@ holds:
   means the scheme's default);
 - `allowedOrigins` contains `"*"`, which disables the check.
 
-The policy is `Ws.Handshake.originAllowedFor` and is the same on both
-targets.
+The policy is `Ws.Handshake.originAllowedFor` and is the same on every
+target.
 
 **Handler failures.** If `onOpen`, `onMessage` or `onClose` throws (a
 `panic`, a failed contract, a host exception), the kernel reports it to the
 handler's `onError` as "the onMessage handler failed: ..." and keeps the
 connection open; the next message is handled normally. An `onError` that
-throws as well is written to stderr. The behaviour is the same on both
-targets.
+throws as well is written to stderr. The behaviour is the same on dotnet
+and the JVM; on native a `panic` has no unwinding (D-N-003) and ends the
+process.
 
 ### Sending and closing
 
@@ -256,7 +229,7 @@ If token validation fails, the connection is rejected with a 401 Unauthorized re
 A per-connection message limit on handlers that take a `ctx: WsContext`
 parameter. It is a refilling token bucket (`Resilience.TokenBucket`): up to
 `messagesPerMinute + burstSize` messages at once, then `messagesPerMinute` a
-minute. It works on both targets (`Ws.checkRateLimit`).
+minute. It works on every target (`Ws.checkRateLimit`, served by `Ws.Kernel.Net`).
 
 ```lyric
 import Ws.Aspects
