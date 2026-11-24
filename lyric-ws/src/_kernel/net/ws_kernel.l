@@ -1,5 +1,5 @@
-//! Ws.Kernel.Net — dotnet WebSocket connection registry and real server
-//! (docs/62-jsonrpc-mcp.md §6, #778).
+//! Ws.Kernel.Net — WebSocket connection registry and real server, on dotnet,
+//! the JVM and native (docs/62-jsonrpc-mcp.md §6, #778; docs/73 S7a).
 //!
 //! Pure-Lyric RFC 6455 implementation on top of the `Std.TcpHost` transport
 //! kernel (the same seam `Std.HttpServer`/`Std.HttpEngine` ride, docs/61
@@ -17,7 +17,8 @@
 //! http_server.l`, #5884): a background `Task` runs the accept loop, and
 //! each accepted connection gets its own `Task` running a blocking
 //! handshake + frame-read loop, plus (when ping keepalive is enabled) a
-//! third `Task` sending periodic Ping frames. Lyric `spawn`/`scope` is
+//! third `Task` sending periodic Ping frames (on the JVM each is a virtual
+//! thread, on native a detached pthread). Lyric `spawn`/`scope` is
 //! degenerate-synchronous on `--target dotnet` (D119/D120), so the real
 //! OS-thread concurrency comes from `System.Threading.Tasks.Task.Run`, not
 //! Lyric's own concurrency keywords — the same reasoning `_kernel/
@@ -39,11 +40,13 @@
 //! so a ping keepalive and an application `send`/`close` call can never
 //! interleave bytes on the same socket.
 //!
-//! Only active when compiled with feature = "dotnet" or "native". The few
-//! target-specific primitives (locks, the concurrent dictionary, background
-//! threads, sleep) are in `ws_prims.l` (dotnet) and `_kernel/native/ws_prims.l`.
+//! Active on every target: feature = "dotnet", "jvm" or "native". The few
+//! target-specific primitives (locks, background threads, sleep, handler
+//! crash isolation, and on dotnet the concurrent dictionary) are in `ws_prims.l`
+//! (dotnet), `_kernel/jvm/ws_prims.l` and `_kernel/native/ws_prims.l`; the
+//! dictionary for `jvm` and `native` is `ws_dict.l`.
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-@cfg(any(feature = "dotnet", feature = "native"))
+@cfg(any(feature = "dotnet", feature = "jvm", feature = "native"))
 @io
 package Ws.Kernel.Net
 
@@ -101,9 +104,11 @@ val handleCounter: HandleCounter = HandleCounter()
 
 val handleCounterLock: WsLock = newWsLock()
 
-val registryMap: ConcurrentDict[Int, RegistryMeta] = newConcurrentDict()
+// Explicit type arguments: the JVM monomorphiser cannot infer a no-argument
+// generic call at a module-level binding.
+val registryMap: ConcurrentDict[Int, RegistryMeta] = newConcurrentDict[Int, RegistryMeta]()
 
-val connMap: ConcurrentDict[String, ConnState] = newConcurrentDict()
+val connMap: ConcurrentDict[String, ConnState] = newConcurrentDict[String, ConnState]()
 
 func connKey(registryHandle: in Int, connectionId: in String): String {
   return registryHandle.toString() + ":" + connectionId
@@ -741,6 +746,7 @@ pub func startServer(
   requires: maxMessageSizeBytes >= 1024
 {
   val pingIntervalMs = resolvePingIntervalMs()
+  ensureThreadCapacity()
   match hostListen(resolveBindHost(host), port) {
     case Err(e) -> Err(error = TcpError.message(e))
     case Ok(transport) -> {
@@ -785,6 +791,7 @@ pub func createEndpoint(
 ): Result[Int, String]
   requires: maxMessageSizeBytes >= 1024
 {
+  ensureThreadCapacity()
   lockEnter(handleCounterLock)
   handleCounter.next = handleCounter.next + 1
   val handle: Int = handleCounter.next
@@ -953,7 +960,7 @@ ref record RateEntry {
 // Single global lock serialises all rate-limiter mutations.
 val rateLock: WsLock = newWsLock()
 
-val rateLimitMap: ConcurrentDict[String, RateEntry] = newConcurrentDict()
+val rateLimitMap: ConcurrentDict[String, RateEntry] = newConcurrentDict[String, RateEntry]()
 
 @stable(since = "0.1")
 pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool

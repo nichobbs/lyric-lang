@@ -1,85 +1,54 @@
-//! Ws.Kernel.Jvm — Undertow WebSockets extern boundary.
+//! Ws.Kernel.Jvm — the Undertow WebSocket endpoint behind `Web.addWebSocket`
+//! on the JVM, and nothing else.
 //!
-//! Bridges the Ws package to a real Undertow WebSocket server
-//! (io.undertow:undertow-core, see lyric-ws/lyric.toml's `[maven]` table):
-//!   startServer()        — starts a real Undertow server, upgrades the given
-//!                          path to WebSocket, and wires the connection
-//!                          lifecycle (onOpen/onMessage/onClose/onError)
-//!                          through to the caller's callbacks
-//!   stopServer()         — stops a server started by startServer()
-//!   createRegistry()     — allocates a bookkeeping-only registry (no live
-//!                          server); kept for API parity with Ws.Kernel.Net
-//!                          and for tests that only exercise error paths
-//!   send()               — send a typed frame to one connection
-//!   broadcast()          — send a typed frame to all connections
-//!   close()              — close a connection with an RFC 6455 numeric code
-//!   connectionCount()    — number of open connections
-//!   isConnected()        — query whether a specific connection is open
-//!   checkRateLimit()     — sliding-window rate limiter keyed by arbitrary string
+//! `Ws.startServer` on the JVM is the pure-Lyric RFC 6455 server over
+//! `Std.TcpHost` (`Ws.Kernel.Net`, docs/73 slice S7a), the same code as dotnet
+//! and native. What remains here exists only because `lyric-web` on the JVM
+//! still serves HTTP through Undertow (`Web.addWebSocket` mounts
+//! `endpointHandler` on its `PathHandler`) until `Web.serve` moves to the
+//! shared pure-Lyric server (docs/73 S4 and S6); `Web.addWebSocket` then
+//! moves to `Ws.Kernel.Net.adoptConnection` (S7b) and this package, with the
+//! `[maven]` Undertow coordinates in `lyric-ws/lyric.toml`, is deleted.
 //!
-//! Every extern binding here is `extern type` + auto-FFI (metadata-resolved
-//! at compile time) against real `io.undertow.*` / `org.xnio.*` / JDK
-//! classes — no `extern package` (a confirmed no-op FFI mechanism) and no
-//! hand-routed host shim.  `WebSocketConnectionCallback` and the
-//! receive/close listeners (`org.xnio.ChannelListener`) are real Lyric
-//! records implementing the real JDK interfaces via `impl <ExternInterface>
-//! for Record` — the JVM analog of docs/51, whose interface-name and
-//! param/return-type resolution this library's development uncovered and
-//! fixed in `lyric-compiler/jvm/codegen/06_items.l` (`constraintRefToJvmClass`,
-//! `holderAwareParamTypes`, `lowerImplMethod`; see
-//! `ffi_iface_impl_jvm_self_test.l`).
+//!   createEndpoint()     — allocates an endpoint registry (no listener)
+//!   endpointHandler()    — the Undertow handler that upgrades a request to
+//!                          that endpoint, behind the Origin check (#7243)
+//!   stopServer()         — always `Err`: an endpoint has no listener of its own
+//!   send()/broadcast()/close()/connectionCount()/isConnected()
+//!                        — operate on an endpoint's connections
+//!   ownsHandle()         — whether a registry handle belongs to this kernel
 //!
-//! Known, documented gap: fragmented (multi-frame, `fin=false`) WebSocket
-//! messages are not reassembled.  Each `WebSocketFrameType.CONTINUATION`
-//! frame is drained (so the channel does not stall) but not dispatched to
-//! `onMessage` — only single-frame TEXT/BINARY/PING/PONG messages (the
-//! common case: most WebSocket clients, including the JDK's own
-//! `io.undertow.websockets.client.WebSocketClient` used by this library's
-//! own end-to-end test, send single-frame messages by default) are
-//! delivered.  Automatic ping-interval keepalives are not wired either
-//! (the `pingIntervalMs` parameter threads through for API symmetry with
-//! `createRegistry` but nothing currently schedules pings).  Both are
-//! real, scoped gaps — not silent stubs — and are candidates for a
-//! tracked follow-up rather than being pretended-away here.
+//! Registry handles from this kernel start at `handleBase`, far above the
+//! small sequential handles `Ws.Kernel.Net` allocates, so `Ws` can route a
+//! `NativeRegistry` to the kernel that owns it by handle alone.
 //!
-//! Text/binary payload conversion (bytes <-> String) is done via direct
-//! JDK calls (`java.lang.String(byte[], String)`, `java.util.Base64`)
-//! rather than `Std.Encoding`: `Std.Encoding.tryDecodeUtf8` (and every
-//! other pure-Lyric byte-indexing helper in that module) reads a
-//! `slice[Byte]` element and calls a numeric builtin (`.toInt()`) on it,
-//! which on the self-hosted JVM backend resolves against the slice's
-//! JVM-erased `Object` element type instead of the Lyric-level `Byte`
-//! static type, failing to compile (`no matching instance or inherited
-//! method for 'java.lang.Object.toInt()'`) — a genuine, pre-existing
-//! self-hosted JVM backend gap, confirmed in complete isolation from this
-//! library, that is out of this library's scope to fix.  `String(byte[])`
-//! decoding is therefore lenient (invalid UTF-8 substitutes U+FFFD per the
-//! JDK's default `CodingErrorAction`) rather than the stricter validate-
-//! and-reject behaviour `Std.Encoding.tryDecodeUtf8` gives on `.NET` — a
-//! second, narrower, documented deviation from `Ws.Kernel.Net`.
+//! Known, documented gap (inherited, and the reason `Ws.startServer` left this
+//! kernel): fragmented (multi-frame, `fin=false`) messages are not reassembled
+//! and no ping keepalive is sent. Both exist in `Ws.Kernel.Net`, which
+//! `Web.addWebSocket` gets in S7b.
 //!
-//! Only active when compiled with feature = "jvm" (Phase 6).
-//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Every extern binding here is `extern type` + auto-FFI against real
+//! `io.undertow.*` / `org.xnio.*` / JDK classes. `WebSocketConnectionCallback`
+//! and the receive/close listeners (`org.xnio.ChannelListener`) are Lyric
+//! records implementing the real interfaces via `impl <ExternInterface> for
+//! Record` (docs/51).
+//!
+//! Text/binary payload conversion uses direct JDK calls
+//! (`java.lang.String(byte[], String)`, `java.util.Base64`); decoding is
+//! lenient (invalid UTF-8 becomes U+FFFD), unlike `Ws.Kernel.Net`.
+//!
+//! Only active when compiled with feature = "jvm".
 @cfg(feature = "jvm")
 @io
 package Ws.Kernel.Jvm
 
 import Std.Core
 import Std.Console
-import Resilience
 import Std.Collections
 import Ws.Frame
 import Ws.Handshake
 
 // ─── JDK / Undertow / XNIO externs ────────────────────────────────────────────
-extern type JUndertow = "io.undertow.Undertow"
-
-extern type JUndertowBuilder = "io.undertow.Undertow$Builder"
-
-extern type JHandlers = "io.undertow.Handlers"
-
-extern type JPathHandler = "io.undertow.server.handlers.PathHandler"
-
 extern type JWsConnectionCallback = "io.undertow.websockets.WebSocketConnectionCallback"
 
 extern type JWsHandshakeHandler = "io.undertow.websockets.WebSocketProtocolHandshakeHandler"
@@ -128,8 +97,6 @@ extern type JCollection = "java.util.Collection"
 
 extern type JIterator = "java.util.Iterator"
 
-extern type JSystem = "java.lang.System"
-
 // Origin check ahead of the upgrade (#7243): a Lyric `HttpHandler` wraps the
 // handshake handler, so a refused handshake is answered 403 before Undertow
 // writes its `101 Switching Protocols`.
@@ -146,9 +113,6 @@ extern type JJavaList = "java.util.List"
 extern type JJavaSet = "java.util.Set"
 
 // ─── Registry state ───────────────────────────────────────────────────────────
-// `onOpen`/`onMessage`/`onClose`/`onError` are `None` for a bookkeeping-only
-// registry allocated via `createRegistry` (no live server, kept for parity
-// with `Ws.Kernel.Net` and error-path tests); `startServer` fills them in.
 ref record RegistryState {
   handle: Int
   maxMessageSizeBytes: Int
@@ -158,13 +122,21 @@ ref record RegistryState {
   onMessage: Option[(String, String, String) -> Unit]
   onClose: Option[(String, Int, String) -> Unit]
   onError: Option[(String, String) -> Unit]
-  var server: Option[JUndertow]
   lock: JReentrantLock
 }
 
 val registryMap: JConcurrentHashMap = JConcurrentHashMap.new()
 
-val handleCounter: JAtomicInteger = JAtomicInteger.new(0)
+// Handles of this kernel start here; `Ws.Kernel.Net`'s are small and sequential.
+val handleBase: Int = 1000000000
+
+val handleCounter: JAtomicInteger = JAtomicInteger.new(handleBase)
+
+/// Whether `handle` was allocated by this kernel (an endpoint), as opposed to
+/// `Ws.Kernel.Net` (a `startServer` or bookkeeping registry).
+pub func ownsHandle(handle: in Int): Bool {
+  handle >= handleBase
+}
 
 func nextHandle(): Int {
   handleCounter.incrementAndGet()
@@ -603,100 +575,18 @@ impl JHttpHandler for WsOriginGuard {
 }
 
 // ─── Public kernel surface ─────────────────────────────────────────────────────
-/// Allocate a bookkeeping-only connection registry (no live server).  Kept
-/// for parity with `Ws.Kernel.Net` and for tests that only exercise the
-/// "unknown registry/connection" error paths.  Use `startServer` to get a
-/// registry backed by a real, running Undertow WebSocket server.
-@stable(since = "0.1")
-pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String]
-  requires: maxMessageSizeBytes >= 1024
-  requires: pingIntervalMs >= 0
-{
-  val handle = nextHandle()
-  val state = RegistryState(
-    handle = handle,
-    maxMessageSizeBytes = maxMessageSizeBytes,
-    openCount = 0,
-    connMap = JConcurrentHashMap.new(),
-    onOpen = None,
-    onMessage = None,
-    onClose = None,
-    onError = None,
-    server = None,
-    lock = JReentrantLock.new()
-  )
-  registryMap.put(handle.toString(), state)
-  Ok(handle)
-}
-
-/// Start a real Undertow WebSocket server: binds `host:port`, upgrades
-/// exactly `path` to WebSocket, and invokes the given callbacks for the
-/// connection lifecycle.  Returns a registry handle usable with
-/// `send`/`broadcast`/`close`/`connectionCount`/`isConnected`.
-///
-/// Callback signatures (kept primitive, matching this kernel's other
-/// functions, so `Ws.Kernel.Jvm` never needs to import the public `Ws`
-/// package's `WsHandler`/`WsContext`/`WsMessage` types — `ws.l` does the
-/// primitive <-> rich-type translation, avoiding an import cycle):
-///   onOpen(connectionId, path, query, remoteAddress, handshakeHeaders)
-///   onMessage(connectionId, messageType, data)      — messageType per `send`
-///   onClose(connectionId, code, reason)
-///   onError(connectionId, message)
-@stable(since = "0.1")
-pub func startServer(
-  host: in String,
-  port: in Int,
-  path: in String,
-  maxMessageSizeBytes: in Int,
-  allowedOrigins: in slice[String],
-  sameHostPorts: in slice[Int],
-  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
-  onMessage: in (String, String, String) -> Unit,
-  onClose: in (String, Int, String) -> Unit,
-  onError: in (String, String) -> Unit,
-): Result[Int, String]
-  requires: host.length > 0
-  requires: port >= 1 and port <= 65535
-  requires: path.length > 0
-  requires: maxMessageSizeBytes >= 1024
-{
-  val handle = nextHandle()
-  val state = RegistryState(
-    handle = handle,
-    maxMessageSizeBytes = maxMessageSizeBytes,
-    openCount = 0,
-    connMap = JConcurrentHashMap.new(),
-    onOpen = Some(onOpen),
-    onMessage = Some(onMessage),
-    onClose = Some(onClose),
-    onError = Some(onError),
-    server = None,
-    lock = JReentrantLock.new()
-  )
-  registryMap.put(handle.toString(), state)
-
-  try {
-    val guarded: JHttpHandler = endpointHandler(handle, allowedOrigins, sameHostPorts)
-    val pathHandler: JPathHandler = JHandlers.path()
-    val routedHandler: JPathHandler = pathHandler.addExactPath(path, guarded)
-    var builder: JUndertowBuilder = JUndertow.builder()
-    builder = builder.addHttpListener(port, host)
-    builder = builder.setHandler(routedHandler)
-    val server: JUndertow = builder.build()
-    server.start()
-    state.server = Some(server)
-    Ok(handle)
-  } catch Exception as e {
-    registryMap.remove(handle.toString())
-    Err(e.message)
-  }
-}
-
 /// Create a WebSocket endpoint with no listener of its own: an HTTP server
 /// mounts `endpointHandler(handle, ...)` at the endpoint's path on its own
 /// Undertow listener.  Returns a registry handle usable with
-/// `send`/`broadcast`/`close`/`connectionCount`/`isConnected`, exactly like
-/// `startServer`'s.  The callbacks are those of `startServer`.
+/// `send`/`broadcast`/`close`/`connectionCount`/`isConnected`.
+///
+/// Callback signatures are kept primitive so this kernel never imports the
+/// public `Ws` package's `WsHandler`/`WsContext`/`WsMessage` types (`ws.l` does
+/// the translation, avoiding an import cycle):
+///   onOpen(connectionId, path, query, remoteAddress, handshakeHeaders)
+///   onMessage(connectionId, messageType, data)
+///   onClose(connectionId, code, reason)
+///   onError(connectionId, message)
 @stable(since = "0.3")
 pub func createEndpoint(
   maxMessageSizeBytes: in Int,
@@ -717,7 +607,6 @@ pub func createEndpoint(
     onMessage = Some(onMessage),
     onClose = Some(onClose),
     onError = Some(onError),
-    server = None,
     lock = JReentrantLock.new()
   )
   registryMap.put(handle.toString(), state)
@@ -725,9 +614,9 @@ pub func createEndpoint(
 }
 
 /// The Undertow handler that upgrades a request to the endpoint
-/// `registryHandle` (from `createEndpoint` or `startServer`), behind the same
-/// cross-site WebSocket hijacking defence `startServer` installs.  The caller
-/// routes only the endpoint's exact path to it.
+/// `registryHandle` (from `createEndpoint`), behind the cross-site WebSocket
+/// hijacking defence (#7243).  The caller routes only the endpoint's exact
+/// path to it.
 @stable(since = "0.3")
 pub func endpointHandler(
   registryHandle: in Int, allowedOrigins: in slice[String], sameHostPorts: in slice[Int]
@@ -742,24 +631,15 @@ pub func endpointHandler(
   guarded
 }
 
-/// Stop a server started by `startServer`.
+/// An endpoint has no listener of its own, so there is nothing to stop: the
+/// HTTP server that mounts it owns the listener.
 @stable(since = "0.1")
 pub func stopServer(registryHandle: in Int): Result[Unit, String] {
   val state = lookupRegistry(registryHandle)
   if JObjects.isNull(state) {
     return Err("unknown registry handle " + registryHandle.toString())
   }
-  match state.server {
-    case Some(srv) -> {
-      // Explicit re-annotation: the `Some(srv)` binding from a
-      // `Option[JUndertow]` field degrades to `Object` without it, and
-      // `.stop()` then fails to resolve (auto-FFI has no `Object.stop()`).
-      val realSrv: JUndertow = srv
-      realSrv.stop()
-      Ok(())
-    }
-    case None -> Err("registry " + registryHandle.toString() + " has no running server")
-  }
+  Err("registry " + registryHandle.toString() + " has no running server")
 }
 
 /// Send a WebSocket frame to a single connection.
@@ -862,60 +742,4 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   } else {
     channel.isOpen()
   }
-}
-
-// ─── Rate limiting ────────────────────────────────────────────────────────────
-// One `Resilience.TokenBucket` per key, as in `Ws.Kernel.Net`: up to
-// `messagesPerMinute + burstSize` messages at once, refilling at
-// `messagesPerMinute` a minute.  It replaced a tumbling window whose burst
-// budget never refilled (#7249, #1178).
-ref record RateEntry {
-  var scaledTokens: Long
-  var lastRefillMs: Long
-  lock: JReentrantLock
-}
-
-val rateLimitMap: JConcurrentHashMap = JConcurrentHashMap.new()
-
-func nowMs(): Long {
-  JSystem.currentTimeMillis()
-}
-
-/// Check whether a call identified by `key` is within the rate limit.
-/// Returns true (allow) or false (deny).
-/// State is per-process and per-key; resets on process restart.
-@stable(since = "0.1")
-pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
-  requires: key.length > 0
-  requires: messagesPerMinute > 0
-  requires: burstSize > 0
-{
-  val fullBucket = Resilience.newTokenBucket(messagesPerMinute, burstSize, nowMs())
-  val fresh = RateEntry(
-    scaledTokens = fullBucket.scaledTokens,
-    lastRefillMs = fullBucket.lastRefillMs,
-    lock = JReentrantLock.new()
-  )
-  // No explicit type annotation on `prior` — matches `Lyric.Resilience`'s
-  // proven-working `circuitRegistry.putIfAbsent` idiom.  Pre-annotating the
-  // intermediate binding's type strips the nullable-return marker the type
-  // checker attaches to the raw `putIfAbsent` call, so `??` below then
-  // rejects it as "LHS must be a nullable type".
-  val prior = rateLimitMap.putIfAbsent(key, fresh)
-  val entry: RateEntry = prior ?? fresh
-
-  entry.lock.lock()
-  defer {
-    entry.lock.unlock()
-  }
-
-  val take = Resilience.takeToken(
-    Resilience.TokenBucket(scaledTokens = entry.scaledTokens, lastRefillMs = entry.lastRefillMs),
-    messagesPerMinute,
-    burstSize,
-    nowMs()
-  )
-  entry.scaledTokens = take.bucket.scaledTokens
-  entry.lastRefillMs = take.bucket.lastRefillMs
-  take.allowed
 }

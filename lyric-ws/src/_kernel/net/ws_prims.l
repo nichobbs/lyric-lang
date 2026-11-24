@@ -54,6 +54,29 @@ func taskRun(work: in () -> Unit): Task = ()
 @externTarget("System.Threading.Thread.Sleep")
 func threadSleep(ms: in Int): Unit = ()
 
+// Every open connection occupies a threadpool thread for its read loop and a
+// second one for its ping loop, both blocked for the connection's lifetime. The
+// pool starts with one thread per core and above that adds one every half
+// second, so a burst of connections queues behind the growth throttle: with the
+// default minimum only about 125 of 1000 clients completed the handshake (#9335).
+// Raising the minimum lets threads be created on demand without the throttle; no
+// thread exists until a connection needs it. `Std.HttpServer`'s kernel does the
+// same (`ensureServerThreadCapacity`, 200 there; a WebSocket holds two threads
+// per client for as long as it lives, so this is larger).
+extern type ThreadPool = "System.Threading.ThreadPool"
+
+@externStatic
+@externTarget("System.Threading.ThreadPool.SetMinThreads")
+func setMinThreads(workerThreads: in Int, completionPortThreads: in Int): Bool = ()
+
+val minWorkerThreads: Int = 4096
+
+/// Raise the threadpool minimum as a server or endpoint is created.
+func ensureThreadCapacity(): Unit {
+  val _ = setMinThreads(minWorkerThreads, 200);
+  ()
+}
+
 /// A mutual-exclusion lock: the object a `Monitor` is taken on.
 pub record WsLock {
 }
@@ -92,25 +115,29 @@ func guardOnOpen(
   headers: in Map[String, String],
 ): Option[String] {
   try {
-    cb(connId, path, query, remoteAddress, headers);
+    cb(connId, path, query, remoteAddress, headers)
     None
   } catch Exception as e {
     Some(value = e.message)
   }
 }
 
-func guardOnMessage(cb: in (String, String, String) -> Unit, connId: in String, msgType: in String, data: in String): Option[String] {
+func guardOnMessage(
+  cb: in (String, String, String) -> Unit, connId: in String, msgType: in String, data: in String
+): Option[String] {
   try {
-    cb(connId, msgType, data);
+    cb(connId, msgType, data)
     None
   } catch Exception as e {
     Some(value = e.message)
   }
 }
 
-func guardOnClose(cb: in (String, Int, String) -> Unit, connId: in String, code: in Int, reason: in String): Option[String] {
+func guardOnClose(
+  cb: in (String, Int, String) -> Unit, connId: in String, code: in Int, reason: in String
+): Option[String] {
   try {
-    cb(connId, code, reason);
+    cb(connId, code, reason)
     None
   } catch Exception as e {
     Some(value = e.message)
@@ -119,7 +146,7 @@ func guardOnClose(cb: in (String, Int, String) -> Unit, connId: in String, code:
 
 func guardOnError(cb: in (String, String) -> Unit, connId: in String, message: in String): Option[String] {
   try {
-    cb(connId, message);
+    cb(connId, message)
     None
   } catch Exception as e {
     Some(value = e.message)
