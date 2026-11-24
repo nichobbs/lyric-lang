@@ -7226,6 +7226,14 @@ func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
         }
         case _ -> ()
       }
+      // An unsuffixed literal too large for `Int` is typed `Long` (`3000000000`), and is as much a literal of
+      // `UInt` or `ULong` as a small one is of `Byte` (docs/01 section 1).
+      case TPrim(TPLong) -> match ty {
+        case TPrim(k) -> if intLiteralFits(k, v) {
+          return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind))
+        }
+        case _ -> ()
+      }
       case _ -> ()
     }
     case _ -> ()
