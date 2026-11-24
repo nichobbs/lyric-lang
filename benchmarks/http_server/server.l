@@ -1,7 +1,7 @@
 //! benchmarks/http_server/server.l - the benchmark server over `Std.HttpServer` (docs/73 S0, B1-B6).
 //!
-//! One program for every target that has `Std.HttpServer` (dotnet engine, JVM JDK-HttpServer kernel,
-//! native). It serves three routes:
+//! One program for every target that has `Std.HttpServer` (the shared driver on dotnet and the JVM,
+//! the native kernel). It serves three routes:
 //!
 //!   GET  /hello        200 "ok"                       (B1, B2, B4, B5, B6)
 //!   POST /echo         200 with the request body      (B3)

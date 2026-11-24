@@ -350,6 +350,8 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 /// first `stopListener`; nothing is admitted or queued after it. Opaque to
 /// consumers: observe it only through `nextContext` / `tryNextContext` /
 /// `stopListener`.
+@sendable
+@axiom("an HttpListener's mutable state (items, conns, nextConnId, active, stopping) is read and written only while holding its guard mutex, and its mutexes and semaphores are the Std.HttpServerHost primitives, which synchronise themselves, so one listener may be shared between tasks")
 @experimental
 pub ref record HttpListener {
   transport: Listener
@@ -749,27 +751,43 @@ func emptyBytes(): slice[Byte] {
 // chunk over as its own slice, so keeping them and joining once at the end
 // copies the common single-chunk body not at all and a many-chunk body in
 // pairwise merges, with no per-byte `List[Byte]` and no BCL `AddRange` (#7269).
+// The first chunk is held outside the list: a slice taken out of a
+// `List[slice[Byte]]` is converted back to its element type on the JVM, which
+// copies it, and most bodies are one chunk.
 ref record ByteChunks {
-  parts: List[slice[Byte]]
+  var first: slice[Byte]
+  more: List[slice[Byte]]
   var length: Int
+  var count: Int
 }
 
 func newByteChunks(): ByteChunks {
-  ByteChunks(parts = newList(), length = 0)
+  ByteChunks(first = emptyBytes(), more = newList(), length = 0, count = 0)
 }
 
 func chunksAppend(acc: in ByteChunks, bytes: in slice[Byte]): Unit {
   if bytes.length > 0 {
-    acc.parts.add(bytes)
+    if acc.count == 0 {
+      acc.first = bytes
+    } else {
+      acc.more.add(bytes)
+    }
+    acc.count = acc.count + 1
     acc.length = acc.length + bytes.length
   }
 }
 
 func chunksJoin(acc: in ByteChunks): slice[Byte] {
-  if acc.parts.count == 0 {
-    return emptyBytes()
+  if acc.count <= 1 {
+    return acc.first
   }
-  var level: List[slice[Byte]] = acc.parts
+  var level: List[slice[Byte]] = newList()
+  level.add(acc.first)
+  var k = 0
+  while k < acc.more.count {
+    level.add(acc.more[k])
+    k = k + 1
+  }
   while level.count > 1 {
     val merged: List[slice[Byte]] = newList()
     var i = 0
@@ -2549,6 +2567,10 @@ func checkResponseStatus(status: in Int): Unit {
   }
 }
 
+// A response body of at least this many bytes is written after its head
+// rather than joined to it (`respondBytesWith`).
+val separateBodyWriteBytes: Int = 16384
+
 func respondBytesWith(
   c: in HttpContext,
   status: in Int,
@@ -2581,7 +2603,21 @@ func respondBytesWith(
       appendConnectionHeader(headers, c.version, c.keepAlive)
       appendExtraHeaders(headers, extra)
       val head = serializeResponseHead(c.version, status, reasonForStatus(status), headers)
-      val _ = hostWrite(c.conn, head.concat(body))
+      if body.length < separateBodyWriteBytes {
+        val _ = hostWrite(c.conn, head.concat(body));
+        ()
+      } else {
+        // A large body is written as its own transport call: joining it to the
+        // head copies it (boxed per element on the JVM) only to be split again
+        // by the transport's write window.
+        match hostWrite(c.conn, head) {
+          case Ok(_) -> {
+            val _ = hostWrite(c.conn, body);
+            ()
+          }
+          case Err(_) -> ()
+        }
+      }
       signalDone(c)
     }
   }

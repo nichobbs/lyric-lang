@@ -612,13 +612,14 @@ func clientIdentity(): Identity {
 }
 
 // Mutual TLS: the server pins `clientCa` and requires a client certificate
-// signed by CA 2. Where the listener cannot be built with a client CA (the
-// JVM `HttpsServer` kernel rejects mTLS at construction, #5930; the context
-// path is covered by `tls_server_jvm_tests.l`) there is no handshake to run.
+// signed by CA 2. Every target builds the listener with a client CA (the JVM
+// server is the shared driver over `Std.TcpHost` since docs/73 S4, D789, so the
+// old `HttpsServer` construction-time rejection, #5930, is gone), so each case
+// runs a real handshake.
 func mtlsOutcome(clientCa: in Certificate, port: in Int): String {
   val cfg = TlsServerConfig(identity = serverIdentity(), clientCa = Some(value = clientCa), requireClientCert = true)
   match startListenerTls("127.0.0.1", port, cfg) {
-    case Err(_) -> "unsupported"
+    case Err(e) -> panic("startListenerTls with a client CA failed: " + TlsListenError.message(e))
     case Ok(l) -> {
       val sc = Task.makeScope()
       Task.scopeSpawn(sc, { -> serveOne(l) })
@@ -636,7 +637,7 @@ func mtlsOutcome(clientCa: in Certificate, port: in Int): String {
 
 test "mTLS: a client certificate signed by the second CA of the server's clientCa bundle is accepted" {
   val outcome = mtlsOutcome(certOrPanic(bundleOf(ca1Pem, ca2Pem)), 19721)
-  assertTrue(outcome == "ok" or outcome == "unsupported", "mTLS with a clientCa bundle: " + outcome)
+  assertEqual(outcome, "ok", "mTLS with a clientCa bundle")
 }
 
 test "mTLS: a client certificate signed by a CA outside the server's clientCa is rejected" {

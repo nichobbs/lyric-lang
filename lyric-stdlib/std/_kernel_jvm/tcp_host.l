@@ -34,7 +34,8 @@
 //! passing one to a JDK `byte[]` parameter materialises a COPY, so
 //! `InputStream.read(byte[], int, int)` can only fill a buffer the Lyric side
 //! never holds as a `slice`. Each connection therefore owns one reusable
-//! `ByteBuffer` (16 KiB, the .NET kernel's `readBufferSize`) whose backing
+//! `ByteBuffer` (16 KiB to start, the .NET kernel's `readBufferSize`; it
+//! grows to 64 KiB once a read fills it, see `readChunk`) whose backing
 //! array is fetched as an extern argument in the same expression that
 //! consumes it (`stream.read(buffer.array(), 0, n)`): the compiler hands the
 //! raw `byte[]` through, `read` fills it in place, and only the `n` bytes that
@@ -211,10 +212,16 @@ pub opaque type Conn {
   raw: JSocket
   input: JInputStream
   output: JOutputStream
-  readBuf: JByteBuffer
+  readBuf: ReadBuffer
   alpn: String
   timeoutMs: JAtomicLong
   guard: WriteGuard
+}
+
+/// A connection's read buffer, replaced by a larger one when a read fills it
+/// (`readChunk`).
+ref record ReadBuffer {
+  var buf: JByteBuffer
 }
 
 /// A server TLS configuration prepared once and reused for every accepted
@@ -233,7 +240,13 @@ pub opaque type ServerTls {
 // queue deeper on dotnet (D621).
 val backlog: Int = 128
 
+// A connection starts with `readBufferSize` and grows to `readBufferMax` once
+// a read fills the whole buffer, the sign of a bulk transfer: a body that
+// arrives in fewer, larger chunks is joined and boxed fewer times (docs/73 S4,
+// D789), while the many idle connections of a server keep the small buffer.
 val readBufferSize: Int = 16384
+
+val readBufferMax: Int = 65536
 
 val writeChunkBytes: Int = 65536
 
@@ -317,7 +330,7 @@ func wrapSocket(
       raw = raw,
       input = input,
       output = output,
-      readBuf = JByteBuffer.allocate(readBufferSize),
+      readBuf = ReadBuffer(buf = JByteBuffer.allocate(readBufferSize)),
       alpn = alpn,
       timeoutMs = timeoutMs,
       guard = guard
@@ -660,16 +673,22 @@ pub func hostAlpn(c: in Conn): String {
 }
 
 func readChunk(c: in Conn, maxBytes: in Int): slice[Byte] {
-  val want = if maxBytes < readBufferSize { maxBytes } else { readBufferSize }
-  val n: Int = c.input.read(c.readBuf.array(), 0, want)
+  val capacity: Int = c.readBuf.buf.capacity()
+  val want = if maxBytes < capacity { maxBytes } else { capacity }
+  val n: Int = c.input.read(c.readBuf.buf.array(), 0, want)
   if n <= 0 {
     return []
   }
-  JArrays.copyOfRange(c.readBuf.array(), 0, n)
+  val chunk: slice[Byte] = JArrays.copyOfRange(c.readBuf.buf.array(), 0, n)
+  if n == capacity and capacity < readBufferMax {
+    c.readBuf.buf = JByteBuffer.allocate(readBufferMax)
+  }
+  chunk
 }
 
 /// Read up to `maxBytes` bytes from the connection, blocking until at least
-/// one byte arrives. Returns the bytes actually read (at most 16 KiB per call);
+/// one byte arrives. Returns the bytes actually read (at most 16 KiB per call, 64 KiB once a
+/// read has filled the connection's buffer);
 /// an empty slice means the peer closed its half of the connection (EOF). A
 /// socket error or an I/O timeout is `Err(TransportFailed(...))`. Reads on one
 /// connection must not run concurrently (they share the connection's read

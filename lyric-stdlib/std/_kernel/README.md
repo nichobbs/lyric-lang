@@ -15,16 +15,17 @@ tokenizer, TLS), threading primitives, IEEE 754 corner cases.
 Anything else lives in the parent `lyric-compiler/lyric/std/` directory
 as a native Lyric implementation.
 
-## `Std.HttpServer` and `Std.HttpServerHost` (D786, D788, docs/73 slices S2 and S3)
+## `Std.HttpServer` and `Std.HttpServerHost` (D786, D788, D789, docs/73 slices S2, S3 and S4)
 
 `http_server.l` is **not a dotnet kernel**: since slice S3 it is the shared HTTP
 server driver, written once over `Std.HttpEngine`, `Std.TcpHost` and the
 per-target seam `Std.HttpServerHost`, and it contains no extern and no
 `@axiom`. It lives under `_kernel/` only because the source loaders shadow a
 `_kernel/<name>.l` by the `_kernel_jvm/` and `_kernel_native/` file of the same
-name and never a top-level `std/<name>.l`: until those two kernels are deleted
-(slices S4 and S5) the dotnet loader is the only one that reads it, and the
-move to `std/http_server.l` is the last step of S5 (D780).
+name and never a top-level `std/<name>.l`. The JDK kernel was deleted in slice
+S4 (D789), so the dotnet and JVM loaders both read this file; only
+`_kernel_native/http_server.l` still shadows it, until slice S5 deletes it and
+moves the driver to `std/http_server.l` (D780).
 
 `http_server_host.l` is the seam: `startTask` and `tryStartTask`, `Mutex`
 (reentrant), `Semaphore`, `runGuarded`, `WorkerSet`, `ensureThreadCapacity`,
@@ -35,7 +36,7 @@ surface in `_kernel_jvm/` and `_kernel_native/`. dotnet uses `Task.Run`,
 retaining every closure it hands to a thread (#6797). The contracts are listed
 in the file header and pinned by `lyric-stdlib/tests/http_server_host_tests.l`
 on all three targets; the driver's own contract (stop, pull queue, limits,
-h2) by `http_server_dotnet_tests.l` and `http_server_stop_tests.l`.
+h2) by `http_server_tests.l` and `http_server_stop_tests.l`.
 
 ## What does NOT live here
 

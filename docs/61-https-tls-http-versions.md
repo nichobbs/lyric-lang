@@ -1,7 +1,7 @@
 # 61 — HTTPS/TLS and HTTP-version support: client, server, and all three targets
 
 _Specced in D128. Implementation tracked under epic #5874 (one sub-issue per
-PR; see §8). The server driver was shared across targets in D788 (docs/73 S3). Extends `docs/10-stdlib-plan.md` (Std.Http surface),
+PR; see §8). The server driver was shared across targets in D788 (docs/73 S3) and adopted by the JVM in D789 (docs/73 S4). Extends `docs/10-stdlib-plan.md` (Std.Http surface),
 `docs/44-jvm-production-readiness-plan.md` (JVM parity), and
 `docs/native-plan/05-ffi-design.md` (native kernel boundary)._
 
@@ -20,9 +20,9 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 |---|---|---|
 | Client TLS | Works (platform trust), no config surface | Works (default `SSLContext`), no config surface |
 | Client HTTP version | **1.1 only** (`HttpClient` default; the kernel never sets `DefaultRequestVersion`) | **h2 with 1.1 fallback** (JDK default; `_kernel_jvm/http_host.l` never calls `Builder.version()`) |
-| Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (phase 2.1, #5880): `HttpsServer` + `SSLContext` from `TlsServerConfig` (mTLS is #5930) |
+| Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (D789, docs/73 S4): the shared driver over `Std.TcpHost` (`SSLSocket`, server `SSLContext` from `Std.TlsServerContext`; identity + `minVersion` + ALPN `h2` then `http/1.1` + mTLS); the JDK `HttpsServer` kernel (phase 2.1, #5880, mTLS #5930) is gone |
 | Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
-| Server HTTP version | 1.1 (`HttpListener` cannot do h2) | 1.1 (`com.sun.net.httpserver` cannot; Undertow can but `ENABLE_HTTP2` is not set) |
+| Server HTTP version | 1.1 (`HttpListener` cannot do h2) | `Std.HttpServer`: h1 and h2 (D789, ALPN on TLS); `lyric-web` still serves on Undertow with `ENABLE_HTTP2` until docs/73 S6 |
 | native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. Server shipped (N9.3, #6104): `_kernel_native/http_server.l` — thread-per-connection over `pthread_create`, driving the sans-IO `Std.HttpEngine` + `Std.TcpHost`; `startListenerTls` supports server identity + `minVersion` + mTLS. HTTP/1.1 only (no h2 yet — a negotiated-`h2` connection is closed rather than mis-parsed, tracked as N9.5/#6106); no `LYRIC_HTTP_MAX_CONNECTIONS` backpressure cap yet (`Std.Parse` has no native kernel). | — |
 
 HTTP/3 exists nowhere: on .NET it needs `libmsquic` plus explicit version
@@ -55,7 +55,10 @@ D128:
    `Std.HttpServer`, `addHttpsListener` + `ENABLE_HTTP2` for lyric-web's
    Undertow kernel). The JVM converges onto the shared engine (below) only
    after that engine has parity and performance evidence on .NET —
-   Undertow retirement is a tracked issue, not a promise.
+   Undertow retirement is a tracked issue, not a promise. _Update (D789,
+   docs/73 S4): `Std.HttpServer` on the JVM converged onto the shared driver
+   and the `HttpsServer` kernel is deleted; the measured evidence is in D789.
+   `lyric-web`'s Undertow kernel stays until docs/73 S6._
 7. **The .NET server is replaced by a pure-Lyric sans-IO HTTP protocol
    engine** plus a thin `TcpListener`/`SslStream` transport kernel (§6).
 8. **HTTP/2 is TLS-only (ALPN); no h2c.** It is implemented once, in the
@@ -268,8 +271,10 @@ HttpClientBuilder.withHttpVersion(v: in HttpVersion): HttpClientBuilder
 - JVM lyric-web: `UndertowOptions.ENABLE_HTTP2` is set whenever TLS is
   configured (§6.3) — h2 requires ALPN in practice, so it sequences with,
   not before, server TLS.
-- `com.sun.net.httpserver` stays 1.1 (it cannot do h2); that path's h2 story
-  *is* the engine convergence (decision 6).
+- `com.sun.net.httpserver` was 1.1 only (it cannot do h2); that path's h2 story
+  was the engine convergence (decision 6). Done in D789 (docs/73 S4): the JVM
+  `Std.HttpServer` is the shared driver and serves h2 over ALPN, and the JDK
+  kernel is deleted.
 - .NET server h2 arrives via the sans-IO engine (§6.4). `HttpListener` h2 is
   impossible, which is one of the reasons `HttpListener` goes away.
 - Server h3 is out of scope for this epic.
@@ -304,7 +309,7 @@ boundary is kernel. Being sans-IO makes it:
 | Target | Accept + bytes | TLS |
 |---|---|---|
 | dotnet | `System.Net.Sockets.TcpListener` / `NetworkStream` (new `_kernel/tcp_host.l`) | `System.Net.Security.SslStream` server-auth (`X509Certificate2` from `Std.Tls`), ALPN via `SslServerAuthenticationOptions.ApplicationProtocols`, mTLS via `ClientCertificateRequired` + a `CertificateChainPolicy` (`CustomRootTrust` over `clientCa`) — the callback-free path, since `RemoteCertificateValidationCallback` is a custom delegate the FFI bridge cannot construct (#5947); see D-progress-697 |
-| jvm | `java.net.ServerSocket` / `Socket` (`_kernel_jvm/tcp_host.l`, `Std.TcpHost`, D611); fit to carry a server since D621 (docs/73 S1): per-connection read buffer, a shared write-timeout watchdog, `hostShutdown`; the `Std.HttpServer` JVM kernel still uses `com.sun.net.httpserver` until docs/73 S4 | `SSLSocket` layered over the accepted socket, server `SSLContext` from `Std.TlsServerContext`, ALPN `h2` then `http/1.1`, `setNeedClientAuth` / `setWantClientAuth` |
+| jvm | `java.net.ServerSocket` / `Socket` (`_kernel_jvm/tcp_host.l`, `Std.TcpHost`, D611); fit to carry a server since D621 (docs/73 S1): per-connection read buffer, a shared write-timeout watchdog, `hostShutdown`; `Std.HttpServer` on the JVM is the shared driver over it since D789 (docs/73 S4) | `SSLSocket` layered over the accepted socket, server `SSLContext` from `Std.TlsServerContext`, ALPN `h2` then `http/1.1`, `setNeedClientAuth` / `setWantClientAuth` |
 | native (phase 5) | POSIX sockets in `lyric-rt` | OpenSSL 3.x (§7) |
 
 Using `SslStream` is emphatically **not** the "implement TLS by hand,
@@ -312,17 +317,18 @@ multi-year" item docs/23 §"TLS / cert path" rejected — the handshake,
 record layer, and crypto stay in the platform library; Lyric owns only the
 plaintext byte streams on either side.
 
-### 6.2 Concurrency model (.NET)
+### 6.2 Concurrency model (the shared driver)
 
 The accept loop is a background task that starts one task per connection, each
 pumping transport bytes through its own engine instance (`Lyric` `spawn`/`scope`
 is degenerate-synchronous on dotnet, D119/D120, so the threads come from the
-`Std.HttpServerHost` seam: `Task.Run` here). Since D788 (docs/73 S3) this driver
+`Std.HttpServerHost` seam: `Task.Run` on dotnet, a virtual thread on the JVM). Since D788 (docs/73 S3) this driver
 is one Lyric file, `lyric-stdlib/std/_kernel/http_server.l`, with no extern: the
 seam (`tryStartTask`, `Mutex`, `Semaphore`, `ensureThreadCapacity`,
 `defaultMaxConnections`, `acceptOutcome`) is the only per-target part, so the
-JVM and native kernels converge on it (docs/73 S4 and S5) instead of writing
-their own accept loops.
+JVM converged on it in D789 (docs/73 S4, the JDK `com.sun.net.httpserver` kernel
+is deleted) and native follows in docs/73 S5, instead of writing their own
+accept loops.
 
 **Connection cap and thread capacity.** At most `LYRIC_HTTP_MAX_CONNECTIONS`
 connections are served at once (default per target: 1000 on dotnet and native,
@@ -340,8 +346,8 @@ neither blocks again), closes the listening socket and returns once the accept
 loop and all connection tasks have ended, bounded by `LYRIC_HTTP_STOP_GRACE_MS`
 (default 5000). A context a caller still holds stays that caller's obligation.
 
-**Handshake placement and timeouts (#7268).** In the shared driver (dotnet today,
-native and the JVM with S5 and S4) the accept loop only accepts the raw socket; the TLS handshake runs on the
+**Handshake placement and timeouts (#7268).** In the shared driver (dotnet and the JVM today,
+native with S5) the accept loop only accepts the raw socket; the TLS handshake runs on the
 connection's own task/thread, so a peer that connects and never sends a
 ClientHello cannot stall other connections. The listener builds its TLS
 state once at `startListenerTls` (`Std.TcpHost.hostPrepareServerTls`: the
@@ -359,9 +365,9 @@ write timeout is not the same measure on every target: dotnet applies
 to 64 KiB one deadline window and larger writes a fresh window per 64 KiB
 chunk, so a peer that drains slowly is cut off by the JVM only if one chunk
 stalls for the whole timeout. The
-JVM server (`com.sun.net.httpserver.HttpsServer`) already handshakes off its
-dispatcher thread with one `SSLContext` per listener and applies the JDK's
-own idle limit (`sun.net.httpserver.idleInterval`).
+JVM runs the same driver, so its handshakes also run off the accept loop, with one
+server `SSLContext` per listener and the same two timeouts (the JDK server's own
+`sun.net.httpserver.idleInterval` no longer applies).
 
 ### 6.3 Public surface
 
@@ -699,6 +705,13 @@ items marked ∥ are independent and can proceed in parallel.
    negotiation lands on TLSv1.2 or TLSv1.3, and a client whose own socket is
    pinned to TLSv1.1 alone (`SSLParameters.setProtocols`) failing the
    handshake outright against a `Tls12`-floor listener.
+   _Update (D789, docs/73 S4): the `HttpsServer` kernel described here is
+   deleted. `startListenerTls` on the JVM is the shared driver over
+   `Std.TcpHost`, so mTLS (`requireClientCert`/`clientCa`) works, h2 is offered
+   through ALPN, and the `SSLContext` construction and floor check live in
+   `_kernel_jvm/tls_server_context.l` (`Std.TlsServerContext`, imported by
+   `Std.TcpHost`, `lyric-web`'s Undertow kernel and `tls_server_jvm_tests.l`; the
+   `pub use` re-export through `Std.HttpServer` is gone). The #5930 gap is moot._
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
@@ -788,7 +801,7 @@ items marked ∥ are independent and can proceed in parallel.
    `BlockingCollection` because every member has a unique arity (no W0008
    overload ambiguity) and the `out`-parameter dequeue preserves a value-type
    record's reference-typed fields (a generic-return `Take(): T` drops them).
-   Verified by `lyric-stdlib/tests/http_server_dotnet_tests.l` (plaintext GET,
+   Verified by `lyric-stdlib/tests/http_server_tests.l` (plaintext GET,
    POST body, keep-alive reuse, concurrent connections, TLS + mTLS accept/reject,
    `startListenerTls` `InvalidConfig` guard) plus curl/real-client interop. Item
    10 (lyric-web onto the new server, #5885) and h2/ALPN end-to-end (#5889)
@@ -873,17 +886,17 @@ items marked ∥ are independent and can proceed in parallel.
     through the H2Conn send path, so `lyric-web`/`examples` serve h2 with no
     source change. Race-free by construction: all socket I/O and h2 FSM mutation
     stay on the connection task; the puller only fills a per-stream response
-    mailbox. Verified by `http_server_dotnet_tests.l` (GET + POST + multiplexed
+    mailbox. Verified by `http_server_tests.l` (GET + POST + multiplexed
     streams, each asserting `HttpResponse.negotiatedVersion() == Http2`) — our
     own .NET-backed HTTPS client and the pure-Lyric h2 server verifying each
-    other — plus a `curl --http2` CI smoke (`dotnet_h2_smoke.l`) as the
+    other — plus a `curl --http2` CI smoke (`h2_smoke.l`) as the
     independent nghttp2 cross-check (`%{http_version}` 2, `%{http_code}` 200).
     The v1 bounded characteristics (per-connection stream serialization; response
     body bounded by the peer's granted flow-control window; buffered h2 chunked
     responses) were removed by the send scheduler (D296, #6107), verified by
-    `http_server_dotnet_tests.l` (slow handler vs fast stream, concurrent large
+    `http_server_tests.l` (slow handler vs fast stream, concurrent large
     bodies, 3.2 MB chunked backpressure) and the curl scheduler smoke
-    (`scripts/ci/dotnet-h2-scheduler-smoke.sh`: concurrency, incremental chunks,
+    (`scripts/ci/h2-scheduler-smoke.sh`: concurrency, incremental chunks,
     reset abort). TLS-only per decision 7._
 
 **Phase 5 — native (opens when native HTTP work starts)**

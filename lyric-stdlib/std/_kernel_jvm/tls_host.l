@@ -22,8 +22,8 @@
 //! `JCertificate`/`JPrivateKey` and `CertHandle`'s `cert`/`key` fields are
 //! `pub` so `std/tls.l`'s `internal Identity.rawHandle` kernel-boundary
 //! accessor (a `Host.CertHandle` pass-through, docs/61 §3.2 phase 1.2) can
-//! be consumed by `_kernel_jvm/http_server.l`'s `SSLContext` construction
-//! for `Std.HttpServer.startListenerTls` (docs/61 §6.3, issue #5880)
+//! be consumed by `_kernel_jvm/tls_server_context.l`'s `SSLContext` construction
+//! for `Std.TcpHost`'s server TLS (docs/61 §6.3, issue #5880)
 //! without weakening `Std.Tls`'s own opacity guarantee: `Identity`/
 //! `Certificate` stay opaque to every consumer outside `Std.Tls`; only
 //! this already-`pub` handle record's fields became readable, and only

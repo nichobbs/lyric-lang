@@ -20,7 +20,7 @@
 //! client to HTTP/1.1 (`withHttpVersion(Http11)`) — a .NET HttpClient pinned to
 //! 1.1 sends no ALPN, so the server reports `hostAlpn == ""` (the JDK client
 //! offers `http/1.1`, which the JVM server reports); the h2 ALPN end-to-end path is
-//! covered by `http_server_dotnet_tests.l`. The server echoes
+//! covered by `http_server_tests.l`. The server echoes
 //! its own `hostAlpn` in the response body, so
 //! a main-thread assertion confirms the negotiated protocol end to end.
 //!
@@ -326,7 +326,7 @@ test "server TLS terminates and round-trips bytes with an http/1.1 client" {
   // Pin HTTP/1.1: the transport now advertises `h2` too (phase 4.4), and the
   // default h2-or-lower client would negotiate h2 — but `serveOneTls` is a raw
   // HTTP/1.1 echo server, not an h2 endpoint. (h2 end-to-end is covered by
-  // `http_server_dotnet_tests.l`.) A .NET HttpClient pinned to HTTP/1.1 sends no
+  // `http_server_tests.l`.) A .NET HttpClient pinned to HTTP/1.1 sends no
   // ALPN extension, so the server negotiates no protocol and `hostAlpn` reports
   // `""` — this verifies the server correctly reports "no ALPN" and still
   // round-trips the raw bytes.

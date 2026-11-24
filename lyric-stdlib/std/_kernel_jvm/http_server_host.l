@@ -51,17 +51,25 @@ pub func defaultMaxConnections(): Int {
 }
 
 /// Run `work` on its own virtual thread, fire-and-forget. A panic in `work`
-/// ends only that thread; wrap `work` in `runGuarded` to observe it.
+/// ends only that thread; wrap `work` in `runGuarded` to observe it. Panics if
+/// the thread cannot be started (`tryStartTask` reports that as `false`).
 pub func startTask(work: in () -> Unit): Unit {
-  val t: JThread = JThread.startVirtualThread(StartJob(work = work));
-  ()
+  if not tryStartTask(work) {
+    panic("Std.HttpServerHost.startTask: could not start a thread")
+  }
 }
 
-/// `startTask` that reports a thread that could not be created as `false`.
-/// Always `true` here: the virtual-thread scheduler queues the work.
+/// `startTask` that reports a thread that could not be created as `false`: a
+/// JVM that is out of memory or native threads fails `startVirtualThread` with
+/// an `Error` rather than queueing the work, and the server's accept loop turns
+/// `false` into one refused connection instead of a dead listener.
 pub func tryStartTask(work: in () -> Unit): Bool {
-  startTask(work)
-  true
+  try {
+    val t: JThread = JThread.startVirtualThread(StartJob(work = work))
+    true
+  } catch Bug as _ {
+    false
+  }
 }
 
 /// What a server's accept loop does with one failed accept.

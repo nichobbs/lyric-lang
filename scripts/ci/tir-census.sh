@@ -72,7 +72,7 @@ fi
 SKIP=(
   lyric-stdlib/tests/async_echo_main.l        # names Std.TcpHost.hostCloseListener, which no longer exists
   lyric-stdlib/tests/metadata_reader_tests.l  # needs the compiler packages (PeImage), built by `lyric test`
-  lyric-stdlib/tests/tls_server_jvm_tests.l   # a --target jvm test (TlsListenError.InvalidConfig, mTLS helpers)
+  lyric-stdlib/tests/tls_server_jvm_tests.l   # a --target jvm test (raw JDK TLS clients, the JVM-only Std.TlsServerContext)
 )
 filtered=()
 for f in "${FILES[@]}"; do

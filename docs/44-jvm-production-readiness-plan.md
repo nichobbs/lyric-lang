@@ -651,7 +651,8 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   `docs/18`), or invest in specialised helpers / await Valhalla (Q-J001/Q-J003)?
 - **Server TLS / h2 on JVM: SPECCED (D128, `docs/61-https-tls-http-versions.md`);
   phase 2.1 shipped (issue #5880).** `Std.HttpServer.startListenerTls`
-  (`_kernel_jvm/http_server.l`) now builds a real `HttpsServer` +
+  (`_kernel_jvm/http_server.l`, deleted in D789: it is now the shared driver over
+  `Std.TcpHost`, with mTLS and h2) built a real `HttpsServer` +
   `KeyManagerFactory`-backed `SSLContext` from `TlsServerConfig`, lifting the
   `https://` rejection (formerly tracked with #2663) for the non-mTLS case —
   verified by a real TLS handshake + HTTP/1.1 round trip

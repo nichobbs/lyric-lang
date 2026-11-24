@@ -86,7 +86,9 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 >
 > **Wave 4 (2026-07-11, D-progress-647/648/649/650):** **H5 is fully
 > closed** — Std.Http and Std.HttpServer have real JVM kernels; zero
-> phantom `_kernel_jvm` bindings remain. §9.2's bridge triplication is
+> phantom `_kernel_jvm` bindings remain (_update, D789: the JVM `Std.HttpServer`
+> kernel of that wave, over `com.sun.net.httpserver`, was itself replaced by the
+> shared pure-Lyric driver in docs/73 S4_). §9.2's bridge triplication is
 > consolidated into `Lyric.Pipeline` (sha256-identical outputs on all
 > three targets; net −300 lines; pass order single-sourced). #5560 and
 > #5561 (async FFI correctness) are fixed with the missing HTTP
