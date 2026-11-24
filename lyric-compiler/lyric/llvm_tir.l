@@ -824,7 +824,7 @@ pub func tirAstTypeKey(names: in Map[Int, String], byInst: in Map[Int, TirMono.I
 /// unregistered and its users stay on the AST path.
 pub func tirInstArgN(known: in Map[Int, NType], t: in Ty): Option[NType] {
   match t {
-    case TPrim(k) -> match primN(k) { case NVoid -> None; case n -> Some(value = n) }
+    case TPrim(k) -> Some(value = primN(k))
     case TRefined(u, _, _, _) -> tirInstArgN(known, u)
     case TNamed(sym, args) -> if args.count == 0 { mapGet(known, sym.id) } else { None }
     case _ -> None

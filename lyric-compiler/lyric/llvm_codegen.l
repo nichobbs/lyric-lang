@@ -19282,6 +19282,25 @@ func registerTirInstanceFns(
   }
 }
 
+/// `unit` with the names of the instances unit added (every package's names, `monoTirInputs`): a type an
+/// instance's arguments mention is laid out like the unit's own types.
+func withInstanceNames(unit: in LlvmTir.TirUnitInput, inst: in LlvmTir.TirUnitInput): LlvmTir.TirUnitInput {
+  val names: Map[Int, String] = newMap()
+  for id in mapKeys(unit.names) {
+    match mapGet(unit.names, id) {
+      case Some(k) -> names.add(id, k)
+      case None -> ()
+    }
+  }
+  for id in mapKeys(inst.names) {
+    match mapGet(inst.names, id) {
+      case Some(k) -> if not names.containsKey(id) { names.add(id, k) }
+      case None -> ()
+    }
+  }
+  LlvmTir.TirUnitInput(pkg = unit.pkg, names = names, census = unit.census, checkedArith = unit.checkedArith)
+}
+
 func tirUnitMaps(
   ctx: in Ctx,
   sigs: in Map[String, NFuncSig],
@@ -19289,7 +19308,7 @@ func tirUnitMaps(
   invariantRecs: in Map[String, Bool],
   unitPkg: in String,
 ): TirUnitMaps {
-  val input = inputs[0]
+  val input = if inputs.count > 1 { withInstanceNames(inputs[0], inputs[1]) } else { inputs[0] }
   val fnNames: Map[Int, String] = newMap()
   // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code
   // generator keeps the layout and the lowering only reads it.  Heap records come with their

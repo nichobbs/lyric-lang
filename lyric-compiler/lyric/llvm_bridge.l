@@ -3263,9 +3263,20 @@ func monoTirInputs(
     return byPkg
   }
   val last = r.pkgs[r.pkgs.count - 1]
+  // The names of every package, so a type that only an instance's arguments mention (`IOError` in
+  // `Result[Unit, IOError]`) is found by its DefPath key.
+  val allNames: Map[Int, String] = newMap()
+  for pb in r.pkgs {
+    for id in mapKeys(pb.names) {
+      match mapGet(pb.names, id) {
+        case Some(k) -> if not allNames.containsKey(id) { allNames.add(id, k) }
+        case None -> ()
+      }
+    }
+  }
   val instIn = LlvmTir.TirUnitInput(
     pkg = last.pkg,
-    names = last.names,
+    names = allNames,
     census = LlvmTir.newTirCensus(),
     instances = r.instances,
     instCases = last.cases
