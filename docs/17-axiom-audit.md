@@ -1063,7 +1063,6 @@ All are provisional pending weaver integration.
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.TcpHost`            | `tcp_host.l`                 | 1      | 0           |
-| `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.HttpServerHost`     | `http_server_host.l`         | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
@@ -1074,7 +1073,7 @@ All are provisional pending weaver integration.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **41** | **2**       |
+| **Total**                |                              | **40** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1142,8 +1141,9 @@ epic #5874).  The JVM `Std.HttpHost` axiom was re-scoped from the
 retired phantom `lyric.stdlib.jvm.HttpClientHost` shim to the real
 `java.net.http.HttpClient` boundary, and `Std.HttpServer` gained its own
 axiom when its kernel was rewritten onto `com.sun.net.httpserver.HttpServer`
-(the .NET `http_server.l` twin carries no axiom; its extern boundary is
-covered by per-declaration `@externTarget` bindings audited in §12).  The
+(the .NET `http_server.l` twin carries no axiom: since D788 it is the shared
+server driver with no extern of its own, its threads, locks and semaphores
+come from `Std.HttpServerHost`, whose axiom covers them).  The
 JVM `Std.HttpHost` axiom widened again in phase 1.3 (#5878, docs/61 §3.2)
 to cover client TLS configuration: `javax.net.ssl.{SSLContext,
 SSLParameters, TrustManagerFactory, KeyManagerFactory}`,
@@ -1199,7 +1199,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts |
-| `dotnet` | `Std.HttpServer` | `http_server.l` | System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HttpServerHost` | `http_server_host.l` | System.Threading.Tasks.Task.Run, System.Threading.Monitor, System.Threading.ThreadPool.SetMinThreads and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |

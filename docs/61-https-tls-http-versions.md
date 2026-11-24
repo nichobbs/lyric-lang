@@ -1,7 +1,7 @@
 # 61 — HTTPS/TLS and HTTP-version support: client, server, and all three targets
 
 _Specced in D128. Implementation tracked under epic #5874 (one sub-issue per
-PR; see §8). Extends `docs/10-stdlib-plan.md` (Std.Http surface),
+PR; see §8). The server driver was shared across targets in D788 (docs/73 S3). Extends `docs/10-stdlib-plan.md` (Std.Http surface),
 `docs/44-jvm-production-readiness-plan.md` (JVM parity), and
 `docs/native-plan/05-ffi-design.md` (native kernel boundary)._
 
@@ -314,15 +314,34 @@ plaintext byte streams on either side.
 
 ### 6.2 Concurrency model (.NET)
 
-The current `Std.HttpServer` accept loop is single-threaded and synchronous
-(its own header says "bootstrap-grade"). The replacement runs a
-`scope`/`spawn` structured-concurrency accept loop: one spawned task per
-connection, each pumping transport bytes through its own engine instance.
-This fixes the concurrency deficiency in the same stroke as TLS —
-`async_spawn_self_test.l` already exercises the primitives on both targets.
+The accept loop is a background task that starts one task per connection, each
+pumping transport bytes through its own engine instance (`Lyric` `spawn`/`scope`
+is degenerate-synchronous on dotnet, D119/D120, so the threads come from the
+`Std.HttpServerHost` seam: `Task.Run` here). Since D788 (docs/73 S3) this driver
+is one Lyric file, `lyric-stdlib/std/_kernel/http_server.l`, with no extern: the
+seam (`tryStartTask`, `Mutex`, `Semaphore`, `ensureThreadCapacity`,
+`defaultMaxConnections`, `acceptOutcome`) is the only per-target part, so the
+JVM and native kernels converge on it (docs/73 S4 and S5) instead of writing
+their own accept loops.
 
-**Handshake placement and timeouts (#7268).** On dotnet and native the
-accept loop only accepts the raw socket; the TLS handshake runs on the
+**Connection cap and thread capacity.** At most `LYRIC_HTTP_MAX_CONNECTIONS`
+connections are served at once (default per target: 1000 on dotnet and native,
+10000 on the JVM); the accept loop blocks at the cap and further connections
+wait in the OS backlog. On dotnet each connection holds a threadpool thread
+blocked in a read (an h2 connection two), so the listener raises the pool
+minimum to twice the cap plus 64 once at start: without that the pool's slow
+thread injection left every connection past the first few hundred unserved under
+a large idle population (D780 defect, fixed in D788).
+
+**Stop (D788, D780 decision 8).** `stopListener` marks the listener stopping,
+shuts down every live connection, completes every queued request nobody pulled,
+wakes every puller (`nextContext` then panics, `tryNextContext` returns `None`,
+neither blocks again), closes the listening socket and returns once the accept
+loop and all connection tasks have ended, bounded by `LYRIC_HTTP_STOP_GRACE_MS`
+(default 5000). A context a caller still holds stays that caller's obligation.
+
+**Handshake placement and timeouts (#7268).** In the shared driver (dotnet today,
+native and the JVM with S5 and S4) the accept loop only accepts the raw socket; the TLS handshake runs on the
 connection's own task/thread, so a peer that connects and never sends a
 ClientHello cannot stall other connections. The listener builds its TLS
 state once at `startListenerTls` (`Std.TcpHost.hostPrepareServerTls`: the
@@ -436,6 +455,12 @@ request and h2, 50% for 64 KiB bodies, plus the idle-connection, soak and
 WebSocket fan-out gates in D780. On the 2026-11-24 container the dotnet engine is
 at 167% of Undertow for HTTP/1.1 keep-alive hello and 170% for h2.
 
+_Update (docs/73 S3, D788, 2026-11-26):_ criteria (a) and (b) are met by the
+shared driver, which is the dotnet server: 33 `Std.HttpServer` tests, the h2
+curl and scheduler smokes and the lyric-web and lyric-ws dotnet suites pass, and
+against the pre-refactor figures on the same machine hello keep-alive is at 99%,
+connection-per-request 99%, 64 KiB echo 260% and h2 112%.
+
 ## 7. Native target
 
 Native has **no HTTP kernel at all yet**, so "HTTPS on native" decomposes
@@ -463,6 +488,14 @@ core. Considerations codified now so phase 5 doesn't rediscover them:
    lowering); the server starts thread-per-connection over the existing
    pthread kernel (callback trampolines shipped in N4), async via LLVM coro
    later. The sans-IO engine is agnostic to this.
+   _Update (docs/73 S3, D788):_ the server's accept loop, connection driver,
+   h2 scheduler and stop logic are now shared Lyric over the
+   `Std.HttpServerHost` seam, whose native twin is `lyric_thread_spawn_detached`,
+   `lyric_mutex_*` and `lyric_sem_*` (D786); native keeps its own kernel until
+   S5 swaps it for the shared driver, which also brings h2 and the `WithLimits`
+   variants (N9.5, #6106). The stop contract, including the fixes of #6791 to
+   #6806, is written once in the driver and pinned by `http_server_stop_tests.l`;
+   what S5 still owes is listed in D788.
 6. **Distribution**: dynamic libssl means negotiation behavior varies with
    the host's OpenSSL minor version — documented, not fought. Static
    binaries would switch the seam to mbedTLS (out of scope here).

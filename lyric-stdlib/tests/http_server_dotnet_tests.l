@@ -693,6 +693,34 @@ test "HTTP/2 GET negotiates h2 over ALPN and round-trips via the Lyric HTTPS cli
   assertTrue(body.contains("q=x=1"), "query observed over h2: " + body)
 }
 
+// docs/73 S3 (D788): `stopListener` shuts every registered connection down, so
+// an idle pooled h2 connection (its connection task parked on the wake signal,
+// its reader in a TLS read) ends at once instead of after the 120 s idle timeout
+// or the grace period.
+test "stopListener ends an idle TLS h2 connection promptly" {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  val listener = match startListenerTls("127.0.0.1", 19480, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+  val server = taskRun({ -> serveN(listener, 1) })
+  threadSleep(100)
+  val client = HttpClientBuilder.build(
+    HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate())
+  )
+  val resp = match await client.get("https://localhost:19480/idle") {
+    case Ok(r) -> r
+    case Err(e) -> panic("h2 GET failed: " + HttpError.message(e))
+  }
+  val _ = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("response body read failed") }
+  taskWait(server)
+  // The client keeps its h2 connection pooled and idle.
+  val t0 = nowEpochMillis()
+  stopListener(listener)
+  val took = nowEpochMillis() - t0
+  assertTrue(took < 2000i64, "stop returned without waiting for the idle h2 connection (took " + took.toString() + " ms)")
+}
+
 test "HTTP/2 POST body reaches the handler and negotiates h2" {
   val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   val listener = match startListenerTls("127.0.0.1", 19410, cfg) {

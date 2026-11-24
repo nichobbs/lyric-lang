@@ -12,11 +12,13 @@
 //!
 //! | Seam | dotnet | JVM | native |
 //! |---|---|---|---|
-//! | `startTask` | `Task.Run` | virtual thread | detached `pthread` (`lyric_thread_spawn_detached`) |
+//! | `startTask`, `tryStartTask` | `Task.Run` | virtual thread | detached `pthread` (`lyric_thread_spawn_detached`) |
 //! | `Mutex` | `Monitor` (reentrant) | `ReentrantLock` | `lyric_mutex_*` (reentrant) |
 //! | `Semaphore` | `SemaphoreSlim` | `java.util.concurrent.Semaphore` | `lyric_sem_*` |
 //! | `runGuarded` | `try`/`catch Bug` | `try`/`catch Bug` | a direct call (no unwinding, D-N-003) |
 //! | `WorkerSet` | tracked tasks, joined by a completion semaphore | same | `pthread_create` + `pthread_join` |
+//! | `acceptOutcome` | `AcceptFailed`/`BindFailed` end the loop | same | the `AcceptFailureKind` of the failure |
+//! | `defaultMaxConnections` | 1000 (one pool thread per connection) | 10000 (virtual threads) | 1000 (one pthread per connection) |
 //!
 //! Contracts every twin keeps (the shared tests, `http_server_host_tests.l`,
 //! pin them on each target):
@@ -33,6 +35,11 @@
 //!   panic ends the process).
 //! - `runGuarded` reports a panic raised by `work` to `onFailure` (dotnet and
 //!   JVM). On native the panic ends the process, `onFailure` is never called.
+//! - `tryStartTask` is `startTask` that reports a thread that could not be
+//!   created as `false` instead of a panic. A server's accept loop uses it so
+//!   running out of threads refuses one connection and keeps serving; on dotnet
+//!   and the JVM it is always `true` (the pool and the virtual-thread scheduler
+//!   queue the work, they do not fail to start).
 //!
 //! This file is the dotnet kernel and therefore may contain `extern type` and
 //! `@externTarget` declarations (docs/14, Decision F).
@@ -41,6 +48,7 @@
 package Std.HttpServerHost
 
 import Std.Core
+import Std.TcpHost
 
 @sendable
 extern type Task = "System.Threading.Tasks.Task"
@@ -79,12 +87,28 @@ func semaphoreWaitMs(s: in Semaphore, millisecondsTimeout: in Int): Bool = ()
 @externTarget("System.Threading.SemaphoreSlim.Release")
 func semaphoreRelease(s: in Semaphore): Int = ()
 
-/// Raise the thread pool's minimum so a server that parks one pool thread per
-/// connection is not throttled by the pool's slow thread injection. Call once
-/// before the first `startTask`. A no-op on the JVM and native.
-pub func ensureThreadCapacity(): Unit {
-  val _ = setMinThreads(200, 200);
+/// Raise the thread pool's minimum so a server that parks pool threads per
+/// connection is not throttled by the pool's slow thread injection (about one
+/// new thread every 500 ms past the minimum, which left every connection past
+/// the first few hundred unserved under a large idle population, D780). A
+/// connection holds one pool thread, an h2 connection two, so the minimum is
+/// twice `connections` plus headroom for the accept loop and the caller's own
+/// tasks, never below 200. Raising the minimum allocates nothing: threads are
+/// still created on demand, only without the throttle. Call once before the
+/// first `startTask`. A no-op on the JVM and native.
+pub func ensureThreadCapacity(connections: in Int): Unit
+  requires: connections >= 1
+{
+  val wanted = connections * 2 + 64
+  val workers = if wanted < 200 { 200 } else { wanted }
+  val _ = setMinThreads(workers, 200);
   ()
+}
+
+/// The cap on concurrently served connections when `LYRIC_HTTP_MAX_CONNECTIONS`
+/// is unset: each connection costs a pool thread here, so 1000.
+pub func defaultMaxConnections(): Int {
+  1000
 }
 
 /// Run `work` on its own thread, fire-and-forget. A panic in `work` ends only
@@ -92,6 +116,34 @@ pub func ensureThreadCapacity(): Unit {
 pub func startTask(work: in () -> Unit): Unit {
   val _ = taskRun(work);
   ()
+}
+
+/// `startTask` that reports a thread that could not be created as `false`.
+/// Always `true` here.
+pub func tryStartTask(work: in () -> Unit): Bool {
+  val _ = taskRun(work)
+  true
+}
+
+/// What a server's accept loop does with one failed accept.
+pub union AcceptOutcome {
+  /// The listening socket is gone (the loop ends).
+  case AcceptStop
+  /// A failure of one connection (the loop goes on at once).
+  case AcceptRetry
+  /// Resource exhaustion, such as no file descriptors left (the loop goes on
+  /// after a short pause).
+  case AcceptBackoff
+}
+
+/// Classify a failed `hostAccept`. Here a failed accept or bind ends the loop,
+/// anything else keeps it going.
+pub func acceptOutcome(e: in TcpError): AcceptOutcome {
+  match e {
+    case AcceptFailed(_) -> AcceptStop
+    case BindFailed(_) -> AcceptStop
+    case _ -> AcceptRetry
+  }
 }
 
 /// A reentrant mutual-exclusion lock, held per thread.
