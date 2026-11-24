@@ -366,7 +366,7 @@ func startMtlsServer(tls: in Std.Tls.TlsServerConfig): Unit {
 // Err(ServerTlsUnsupported), never silently start a plaintext-auth listener
 // (#6040) or crash. This is unrelated to #6017's TLS-layer accept/reject
 // (`runMtlsAcceptRejectSelfCheck` below) — mirrors the dotnet kernel's
-// `InvalidConfig` guard (`_kernel/http_server.l`). serveTls returns this
+// `InvalidConfig` guard (`std/http_server.l`). serveTls returns this
 // immediately — it rejects the misconfiguration before binding — so this
 // runs on the main thread with no port actually opened.
 func runMtlsMisconfigCheck(): Unit {

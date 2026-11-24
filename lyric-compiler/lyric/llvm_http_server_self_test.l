@@ -1,6 +1,6 @@
 //! llvm_http_server_self_test.l — end-to-end self-test for `Std.HttpServer`
 //! on `--target native` (N9.3, issue #6104; since docs/73 S5, D790, the
-//! server under test is the shared driver `std/_kernel/http_server.l` over
+//! server under test is the shared driver `std/http_server.l` over
 //! the `_kernel_native/` transport, not a native twin of its own): real
 //! programs compile through the full bridge pipeline
 //! (`Lyric.LlvmBridge.compileToNativeWithFlags` with the `_kernel_native/`

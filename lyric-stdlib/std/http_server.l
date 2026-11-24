@@ -1,4 +1,4 @@
-//! std/_kernel/http_server.l - the shared HTTP/1.1 + h2 server driver on the
+//! std/http_server.l - the shared HTTP/1.1 + h2 server driver on the
 //! sans-IO `Std.HttpEngine` + `Std.TcpHost` transport
 //! (docs/61-https-tls-http-versions.md §6.1/§6.2/§6.3, D128; phase 3.3 of
 //! epic #5874, issue #5884).
@@ -22,11 +22,11 @@
 //!     (`tryStartTask`, `Mutex`, `Semaphore`), the only per-target part of this
 //!     driver. Nothing in this file is specific to the dotnet BCL: it is the
 //!     shared HTTP server driver of docs/73 (D788), written once over
-//!     `Std.HttpEngine`, `Std.TcpHost` and `Std.HttpServerHost`. It stays at
-//!     `std/_kernel/http_server.l` until the native kernel is deleted (the
-//!     source loaders shadow a `_kernel/<name>.l` by the `_kernel_jvm/` and
-//!     `_kernel_native/` file of the same name, never a top-level
-//!     `std/<name>.l`, D780), and only the dotnet loader reads it today.
+//!     `Std.HttpEngine`, `Std.TcpHost` and `Std.HttpServerHost`. It lives at
+//!     `std/http_server.l`: it started under `std/_kernel/` because the source
+//!     loaders shadow a `_kernel/<name>.l` by the `_kernel_jvm/` and
+//!     `_kernel_native/` file of the same name, and moved up once both platform
+//!     kernels were gone (D780, D789, D790). dotnet, the JVM and native all read it.
 //!
 //! ## Preserved public surface (pull model)
 //!

@@ -42,7 +42,7 @@ directory.  The only JVM-side gap left in `http_host.l` fails loudly by design
 (Unix-socket clients, which the JDK's client API cannot express here, see the
 file header).  There is no `http_server.l` here any more: since docs/73 S4
 (D789) `Std.HttpServer` on the JVM is the shared pure-Lyric driver
-(`../_kernel/http_server.l`, no extern) over `Std.TcpHost` and the
+(`../http_server.l`, no extern) over `Std.TcpHost` and the
 `http_server_host.l` seam.
 
 `tcp_host.l` (`Std.TcpHost`, #9042, D611) is the JVM twin of `_kernel/tcp_host.l`

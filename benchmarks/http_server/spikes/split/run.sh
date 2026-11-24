@@ -35,7 +35,7 @@ python3 -I - "$OUT/bundle/lyric-stdlib/lyric.full.toml" <<'PY'
 import sys
 p = sys.argv[1]
 s = open(p).read()
-anchor = '"Std.HttpServer"       = "std/_kernel/http_server.l"\n'
+anchor = '"Std.HttpServer"       = "std/http_server.l"\n'
 assert anchor in s
 s = s.replace(anchor, anchor + '"Std.SpikeServerHost" = "std/_kernel/spike_server_host.l"\n"Std.SpikeServer" = "std/spike_server.l"\n')
 open(p, "w").write(s)

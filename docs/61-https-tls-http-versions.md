@@ -323,7 +323,7 @@ The accept loop is a background task that starts one task per connection, each
 pumping transport bytes through its own engine instance (`Lyric` `spawn`/`scope`
 is degenerate-synchronous on dotnet, D119/D120, so the threads come from the
 `Std.HttpServerHost` seam: `Task.Run` on dotnet, a virtual thread on the JVM). Since D788 (docs/73 S3) this driver
-is one Lyric file, `lyric-stdlib/std/_kernel/http_server.l`, with no extern: the
+is one Lyric file, `lyric-stdlib/std/http_server.l`, with no extern: the
 seam (`tryStartTask`, `Mutex`, `Semaphore`, `ensureThreadCapacity`,
 `defaultMaxConnections`, `acceptOutcome`) is the only per-target part, so the
 JVM converged on it in D789 (docs/73 S4, the JDK `com.sun.net.httpserver` kernel

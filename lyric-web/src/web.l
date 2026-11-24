@@ -2457,7 +2457,7 @@ pub func serveTls(
 /// misconfiguration is rejected up front, with a typed
 /// `ServerTlsUnsupported`: `requireClientCert` set with no `clientCa` to
 /// pin trust to, mirroring the `dotnet` kernel's `InvalidConfig` guard
-/// (`_kernel/http_server.l`).  A valid config delegates entirely to
+/// (`std/http_server.l`).  A valid config delegates entirely to
 /// `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS listener with
 /// `ENABLE_HTTP2` (h2 via ALPN) built from `tls` — which blocks forever once
 /// bound, so the `Ok(())` return is unreachable in normal operation.
