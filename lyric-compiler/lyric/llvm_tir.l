@@ -4384,7 +4384,13 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
     }
     if bitsOf(target) > bitsOf(v.ty) {
       // A widening from an unsigned source or to an unsigned target zero-extends.
-      return Some(value = if unsigned or method == "toULong" or method == "toUInt" { zextTo(c, v, target) } else { sextTo(c, v, target) })
+      return Some(
+        value = if unsigned or method == "toULong" or method == "toUInt" {
+          zextTo(c, v, target)
+        } else {
+          sextTo(c, v, target)
+        }
+      )
     }
     return Some(value = truncTo(c, v, target))
   }
@@ -4484,7 +4490,11 @@ func lowerBitwise(c: in LCtx, from: in String, method: in String, ins: in List[T
   }
   val isShift = method == "shl" or method == "shr"
   val bv = if isShift and bitsOf(b0.ty) != bitsOf(ty) {
-    if bitsOf(ty) > bitsOf(b0.ty) { sextTo(c, b0, ty).value } else { truncTo(c, b0, ty).value }
+    if bitsOf(ty) > bitsOf(b0.ty) {
+      sextTo(c, b0, ty).value
+    } else {
+      truncTo(c, b0, ty).value
+    }
   } else {
     b0.value
   }
