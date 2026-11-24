@@ -110,7 +110,7 @@ standard library but are outside the SemVer boundary.
 | `Std.PluginSign` | `std/plugin_sign.l` | Plugin artifact signatures |
 | `Std.PluginWasm` | `std/plugin_wasm.l` | WIT-typed component plugins |
 | `Std.Zip` | `std/zip.l` | Pure-Lyric zip and DEFLATE |
-| `Std.HttpServer` | `std/_kernel/http_server.l` | HTTP server listener and context; in flux with the docs/61 engine work. Kernel-resident, imported directly (default tier, see below) |
+| `Std.HttpServer` | `std/http_server.l` | HTTP server listener and context; in flux with the docs/61 engine work. Kernel-resident, imported directly (default tier, see below) |
 | `Std.Jvm` | `std/_kernel/jvm.l` | JVM-target escape hatches (`catch`). Kernel-resident, imported directly (default tier, see below) |
 | `Std.Task` | `std/_kernel/task.l` | Cancellation tokens, scopes, `runWithin`; the docs/68 `Std.Task` API is unbacked. Kernel-resident, imported directly (default tier, see below) |
 | `Std.TcpHost` | `std/_kernel/tcp_host.l` | TCP listener and connection primitives. Kernel-resident, imported directly (default tier, see below) |
@@ -134,7 +134,7 @@ kernel files.  Kernel symbols carry no stability guarantee.
 
 Four packages that live in the kernel directory are imported directly by
 programs rather than wrapped by a top-level `Std.*` module: `Std.Task`
-(`_kernel/task.l`), `Std.HttpServer` (`_kernel/http_server.l`), `Std.TcpHost`
+(`_kernel/task.l`), `Std.HttpServer` (`std/http_server.l`), `Std.TcpHost`
 (`_kernel/tcp_host.l`) and `Std.Jvm` (`_kernel/jvm.l`).  They are listed in the
 "Experimental at v1.0" table above and every `pub` item in them, including in
 their `_kernel_jvm/` and `_kernel_native/` twins, is `@experimental`.
