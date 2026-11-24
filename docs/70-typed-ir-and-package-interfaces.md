@@ -930,6 +930,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A method call on a `Std.Core` `Result` or `Option` that names a plain function in scope resolves to that function with the receiver first, so the checker records its callee and type instead of a silent `TyError` (D785).
   - A pointer in one spelling of a C callback's userdata slot (`NativePtr[Byte]`, `NativeUserdata`) used as the other is a `CvUserdataSlot` conversion (D427).
   - A numeric conversion method of a range subtype whose result is not an implicit conversion of the underlying primitive (`toInt()` of a `UInt`-backed subtype) builds as that primitive's built-in on the unwrapped value (D428).
+  - The gate (§12.2, D347): `pipeCheckFront` always numbers the nodes and builds the package as TIR after a clean check; a body the builder cannot build is the error I0002 (at the node it has no case for) and a node the verifier rejects is the error I0003 (at the function), both in every package of a build, before any backend runs. `--verify-ir` only prints the census. Q-TIR-001 is resolved for I0002 and I0003: both always stop the build. Phase 3a is complete.
   - A generic record built in a lambda whose parameter types the checker erased takes its fields from the type the node settled at, as a union case does (D408).
   - `format1` to `format4` take their arguments of any type as `println` does, so a number or `Bool` argument is built as the checker typed it (D407).
   - A call on a receiver with an open type argument is typed from the method's arguments (D742); a bare `T` argument after a container fixed `T` keeps the binding (D743); `f[3](a)` on a value-generic function records its callee (D744); `Pkg.Type.from(x)` types as the distinct factory (D745).
@@ -1081,7 +1082,7 @@ and move to the resolver. `B0012` is retired with #8690 (§4.1).
   builds, or only in CI and `--verify-ir`? (Proposed: I0001, I0002 and
   I0004 always stop the build; I0003 verification runs only in CI,
   self-tests and `--verify-ir` for speed.) Resolved for I0001 in D338: it
-  always stops the build, callee positions exempt until the TIR builder.
+  always stops the build, callee positions exempt until the TIR builder. Resolved for I0002 and I0003 in D347: both always stop the build.
 - **Q-TIR-002:** May a `@proof_required` caller assume the postcondition of
   a `RuntimeChecked` callee? It is sound for partial correctness; docs/08
   §10.4 currently forbids such calls.
