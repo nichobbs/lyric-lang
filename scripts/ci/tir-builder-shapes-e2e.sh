@@ -2262,6 +2262,27 @@ func main(): Int {
 }
 LYRIC
 
+# A method call on a Result or Option naming a plain function is that function called with the receiver
+# first (D785): the checker types it, so the builder has a callee and a result type.
+check monad_plain_function_method_call 5 <<'LYRIC'
+package Shapes12
+import Std.Core
+
+func twice(r: in Result[Int, String]): Int {
+  2
+}
+
+func some(o: in Option[Int]): Int {
+  3
+}
+
+func main(): Int {
+  val r: Result[Int, String] = Ok(value = 1)
+  val o: Option[Int] = Some(value = 1)
+  r.twice() + o.some()
+}
+LYRIC
+
 # A match arm of a type from a package the file does not import joined with an open `newList()` (D769): the
 # checker spells the join's type by its package (`Rep.A.Prop`), which the builder resolves without the
 # file's import rule, as a spelling the checker made and no source of the file's.

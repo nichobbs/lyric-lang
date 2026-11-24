@@ -6312,7 +6312,7 @@ func recordMethodCalleeNode(
       // the declaration at the signature's span, named without the receiver's type.
       match target {
         case Some(_) -> ()
-        case None -> if receiverBindsPlainFunctions(unrefine(recvTy)) {
+        case None -> if receiverBindsPlainFunctions(tbl, unrefine(recvTy)) {
           match symTableFuncDefPathKey(tbl, sig, memberName, false) {
             case Some(dp) -> {
               target = Some(value = internDefPathKey(tbl.interner, dp))
@@ -6484,11 +6484,13 @@ func resolveBoundMethodPick(
 // type-associated functions.  The call binds the declaration `pickByShape`
 // would choose for a free call (#7828, #8355).
 // Whether a method call on a receiver of this type binds a plain function by method syntax (docs/01
-// 12.1): a primitive.  A `buffer[T]` has no members but `.length` (docs/01 2.7).
-func receiverBindsPlainFunctions(recv: in Type): Bool {
+// 12.1): a primitive, or a `Std.Core` `Result` or `Option`.  A `buffer[T]` has no members but `.length` (docs/01 2.7).
+func receiverBindsPlainFunctions(tbl: in SymbolTable, recv: in Type): Bool {
   match recv {
     case TyPrim(_) -> true
-    case _ -> false
+    // `Std.Core`'s `Result` and `Option` have a fixed set of members, so a plain function of another name
+    // is what `r.f()` calls (docs/01 2.12, D780).
+    case _ -> stdCoreMonadName(tbl, recv).isSome()
   }
 }
 
@@ -6522,7 +6524,7 @@ func resolveMethodCallPick(
   // A plain function of that name the file can call bare binds by method syntax to its first argument
   // on a primitive receiver (`s.equalsCaseInsensitive(t)`, docs/01 12.1), when the receiver's type has
   // no method or dot-named function of the name.
-  if picks.count == 0 and receiverBindsPlainFunctions(recv) {
+  if picks.count == 0 and receiverBindsPlainFunctions(tbl, recv) {
     for c in visibleBareFuncSigs(tbl, sigs, name, -1) {
       if takesArgCount(c, argc + 1) and receiverFitsSig(tbl, c, recv) {
         picks.add(MethodCallPick(sig = dropReceiverParam(c), fullSig = Some(value = c), plain = true))
