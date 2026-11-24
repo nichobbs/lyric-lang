@@ -6489,7 +6489,7 @@ func receiverBindsPlainFunctions(tbl: in SymbolTable, recv: in Type): Bool {
   match recv {
     case TyPrim(_) -> true
     // `Std.Core`'s `Result` and `Option` have a fixed set of members, so a plain function of another name
-    // is what `r.f()` calls (docs/01 2.12, D780).
+    // is what `r.f()` calls (docs/01 5.1, D785).
     case _ -> stdCoreMonadName(tbl, recv).isSome()
   }
 }
