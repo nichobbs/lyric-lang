@@ -15,4 +15,5 @@ func main(): Unit {
   val p = Calc.swap(Pair(left = 1, right = 2))
   println(toString(p.left))
   println(toString(Calc.apply(Add, 21)))
+  println(toString(Calc.unwrap(Calc.Box(value = 9))))
 }

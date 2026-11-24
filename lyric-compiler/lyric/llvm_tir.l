@@ -301,6 +301,10 @@ pub record TirLowerEnv {
   /// found missing.
   scans: Map[String, String] = newMap()
   needScans: List[TirScanNeed] = newList()
+  /// The symbols of the functions a call named that have no IR name (`fnNames`): the code generator
+  /// instantiates a generic function of another package on demand, so the name of one of its
+  /// instances exists only once it has been asked for.
+  needFns: List[Int] = newList()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
@@ -455,6 +459,7 @@ pub record TirFallback {
   needMaps: List[TirMapNeed] = newList()
   needTasks: List[TirListNeed] = newList()
   needScans: List[TirScanNeed] = newList()
+  needFns: List[Int] = newList()
 }
 
 pub record TirLowered {
@@ -552,6 +557,15 @@ func unitVal(): Val {
 
 /// Record why the function cannot be lowered and hand back a placeholder so
 /// lowering can continue to the end; the function is discarded afterwards.
+func listContainsInt(xs: in List[Int], x: in Int): Bool {
+  for y in xs {
+    if y == x {
+      return true
+    }
+  }
+  false
+}
+
 func unsupported(c: in LCtx, why: in String): Val {
   c.problems.add(why)
   Val(ty = NI32, value = NUndef(ty = NI32))
@@ -2641,7 +2655,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         return unsupported(c, "a generic call")
       }
       match mapGet(c.env.fnNames, sym.id) {
-        case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+        case None -> {
+          if not listContainsInt(c.env.needFns, sym.id) {
+            c.env.needFns.add(sym.id)
+          }
+          unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+        }
         case Some(irName) -> {
           if c.coro {
             match lowerCoroLeaf(c, irName, args) {
@@ -5813,7 +5832,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         needLists = env.needLists,
         needMaps = env.needMaps,
         needTasks = env.needTasks,
-        needScans = env.needScans
+        needScans = env.needScans,
+        needFns = env.needFns
       )
     )
   }
