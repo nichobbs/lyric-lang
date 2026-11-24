@@ -103,7 +103,7 @@ func assertClean(m: in Mono, what: in String): Unit {
   assertTrue(m.total > 0, what + ": the source has bodies")
   assertEqualInt(m.built, m.total, what + ": every body builds")
   assertEqualInt(m.r.diags.count, 0, what + ": no mono diagnostic" + (if m.r.diags.count > 0 { " " + m.r.diags[0].message } else { "" }))
-  val bad = verifyMonoBundle(m.r)
+  val bad = verifyMonoBundle(m.r).failures
   assertEqualInt(bad.count, 0, what + ": verifies" + (if bad.count > 0 { " " + bad[0] } else { "" }))
   for pb in m.r.pkgs {
     for f in pb.pkg.funcs {

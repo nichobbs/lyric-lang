@@ -331,6 +331,7 @@ func mParamDecl(c: in MCtx, s: in Subst, p: in TParamDecl): TParamDecl {
 /// `d` read at `s` and named `sym`: the declaration of an instance (generic parameters substituted,
 /// every node renumbered) or of a non-generic function (nothing substituted).
 func mFnDecl(c: in MCtx, s: in Subst, sym: in SymbolId, d: in TFnDecl): TFnDecl {
+  c.cur[0] = sym.id
   val ps: List[TParamDecl] = newList()
   for p in d.params {
     ps.add(mParamDecl(c, s, p))

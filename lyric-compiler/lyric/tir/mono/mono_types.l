@@ -48,6 +48,9 @@ pub record MonoResult {
   instances: List[InstanceInfo]
   diags: List[MonoDiag]
   unresolved: Map[String, Int]
+  /// The functions of `pkgs` (by symbol id) that call a generic function whose declaration is not in
+  /// the bundle: its signature stays generic, so the verifier cannot accept the rewritten call.
+  tainted: Map[Int, Bool]
 }
 
 record Pending {
@@ -72,6 +75,10 @@ record MCtx {
   diags: List[MonoDiag]
   unresolved: Map[String, Int]
   nextNode: List[Int]
+  /// The symbol of the function being rewritten, in slot 0.
+  cur: List[Int]
+  /// Output functions that call a generic function the bundle has no declaration of.
+  tainted: Map[Int, Bool]
 }
 
 /// What a body is read under: the declaration whose parameters are replaced (`owner`) by `args`.
@@ -553,7 +560,10 @@ func instCallee(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolI
       instFn(c, d, args)
     }
     case None -> {
-      noteUnresolved(c, "origin callee without a declaration")
+      noteUnresolved(c, "generic callee without a declaration")
+      if not c.tainted.containsKey(c.cur[0]) {
+        c.tainted.add(c.cur[0], true)
+      }
       None
     }
   }

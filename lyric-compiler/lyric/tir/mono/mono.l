@@ -89,9 +89,12 @@ func newMCtx(interner: in DefPathInterner, pkgs: in List[PackageBuild]): MCtx {
     work = newList(),
     diags = newList(),
     unresolved = newMap(),
-    nextNode = newList()
+    nextNode = newList(),
+    cur = newList(),
+    tainted = newMap()
   )
   c.nextNode.add(firstInstanceNodeId())
+  c.cur.add(0)
   for pb in pkgs {
     for f in pb.pkg.funcs {
       if not c.decls.containsKey(f.sym.id) {
@@ -185,7 +188,7 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
       sites = newMap()
     )
   )
-  MonoResult(pkgs = res, instances = c.instList, diags = c.diags, unresolved = c.unresolved)
+  MonoResult(pkgs = res, instances = c.instList, diags = c.diags, unresolved = c.unresolved, tainted = c.tainted)
 }
 
 /// The instance of `generic` at `args` in `r`, if the pass made one: the table the code generator
@@ -199,11 +202,19 @@ pub func instanceOf(r: in MonoResult, origin: in SymbolId, args: in List[Ty]): O
   None
 }
 
-/// Verify every package of `r` (docs/70 §6.4) with the others' declarations visible to it.  The
-/// result is every broken rule, rendered with its package's name; it is empty when the pass's output
-/// is well formed.
-pub func verifyMonoBundle(r: in MonoResult): List[String] {
+/// The verifier's verdict on a mono bundle: `failures` are broken rules in a function whose generic
+/// callees all resolved, `tolerated` counts the broken rules in functions that call a generic with no
+/// declaration in the bundle (`MonoResult.tainted`), whose generic signature the rewritten call cannot match.
+pub record MonoVerify {
+  failures: List[String]
+  tolerated: Int
+}
+
+/// Verify every package of `r` (docs/70 §6.4) with the others' declarations visible to it.  Empty
+/// `failures` means the pass's output is well formed.
+pub func verifyMonoBundle(r: in MonoResult): MonoVerify {
   val res: List[String] = newList()
+  var tolerated = 0
   var i = 0
   while i < r.pkgs.count {
     val own: Map[Int, Bool] = newMap()
@@ -225,9 +236,13 @@ pub func verifyMonoBundle(r: in MonoResult): List[String] {
       j = j + 1
     }
     for d in verifyPackage(r.pkgs[i].pkg, deps) {
-      res.add(renderVerifyDiag(r.pkgs[i].pkg.name, d))
+      if r.tainted.containsKey(d.fnSym.id) {
+        tolerated = tolerated + 1
+      } else {
+        res.add(renderVerifyDiag(r.pkgs[i].pkg.name, d))
+      }
     }
     i = i + 1
   }
-  res
+  MonoVerify(failures = res, tolerated = tolerated)
 }
