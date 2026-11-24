@@ -308,7 +308,9 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
       val mi = mExpr(c, s, inner)
       val box = match kind { case CvBoxToHost(_) -> true; case _ -> false }
       // A generic body that boxes a `T` for a host parameter of that host type, read at `T` = that type, converts
-      // a value to the type it has: the conversion is gone.
+      // a value to the type it has: the conversion is gone.  Only boxing can become an identity this way: the
+      // other kinds change the type by their own rule (a widening, a wrap, an upcast to an interface), and
+      // a substituted type never makes the two sides equal.
       if box and tyEq(mi.ty, mTy(c, s, e.ty)) {
         return mi
       }
