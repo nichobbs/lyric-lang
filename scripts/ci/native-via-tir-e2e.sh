@@ -504,7 +504,7 @@ cat "$work/nu_census.txt"
 "$work/nu_ast" > "$work/nu_ast.out"
 "$work/nu_tir" > "$work/nu_tir.out"
 diff -u "$work/nu_ast.out" "$work/nu_tir.out"
-printf '99999998461.75\n252\n3000000400\n12\n198\n4500000002000000877\n-8\n' | diff -u - "$work/nu_tir.out"
+printf '99999998461.75\n252\n1705033304\n12\n198\n4500000002000000877\n-8\n' | diff -u - "$work/nu_tir.out"
 if grep -q '^  fallback:' "$work/nu_census.txt"; then
   echo "::error::numeric.l has a TIR fallback"
   exit 1

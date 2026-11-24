@@ -27,7 +27,7 @@ func unsignedWidths(b: in Byte, u: in UInt): Long {
   val a: UInt = b.toUInt()
   val w: ULong = b.toULong()
   val x: ULong = u.toULong()
-  a.toLong() + w.toLong() + x.toLong()
+  a.toLong() + b.toLong() + u.toLong() + w.toInt().toLong() + x.toInt().toLong()
 }
 
 func nats(i: in Int, l: in Long, d: in Double): Long {

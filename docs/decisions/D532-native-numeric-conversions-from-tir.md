@@ -11,7 +11,7 @@ The TIR lowering of the compiler's numeric builtins (`<Type>.toX`, `<Type>.and/o
 - The checked `toNat` (a negative value or NaN panics with `toNat: value must be non-negative`) and `toChar` (a value above U+FFFF or a surrogate panics with the shared message), with the same panic text as the AST path.
 - `.and/.or/.xor/.shl/.shr` on any integer width; the shift amount is converted to the operand's width, and `.shr` is logical for `Byte`, `UInt` and `ULong`, arithmetic otherwise.
 
-`UInt`/`ULong` to `Float`/`Double` and `Double` to `UInt`/`ULong` stay on the AST path (the AST path converts through a signed instruction, which is wrong above the signed range; fixing both paths is tracked separately rather than copied).
+`ULong.toLong`, `ULong.toDouble` and `ULong.toFloat` stay on the AST path: the contract elaborator rewrites them into a checked or corrected block (D278, always on), and TIR does not carry that rewrite until phase 3c, so lowering them here would convert unchecked. Unsigned `UInt` to floating point and `Double` to `UInt`/`ULong` also stay on the AST path.
 
 ## Verification
 

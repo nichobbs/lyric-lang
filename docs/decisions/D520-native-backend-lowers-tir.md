@@ -257,4 +257,4 @@ and still holds generics and un-elaborated contracts.
 
 ## Slice 33: numeric conversions and bitwise methods
 
-- The conversion family, the checked `toNat` and `toChar` and `.and/.or/.xor/.shl/.shr` lower from TIR (D532); unsigned to floating point stays on the AST path.
+- The conversion family, the checked `toNat` and `toChar` and `.and/.or/.xor/.shl/.shr` lower from TIR (D532); `ULong.toLong/toDouble/toFloat` and unsigned to floating point stay on the AST path.

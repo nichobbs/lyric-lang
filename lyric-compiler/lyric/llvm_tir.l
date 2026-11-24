@@ -4329,6 +4329,11 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
   if ins.count != 1 {
     return None
   }
+  // The contract elaborator rewrites these three into a checked or corrected block on the AST (D278,
+  // always on); TIR does not carry that rewrite until phase 3c, so the function stays on the AST path.
+  if from == "ULong" and (method == "toLong" or method == "toDouble" or method == "toFloat") {
+    return None
+  }
   val unsigned = from == "UInt" or from == "ULong" or from == "Byte"
   val v0 = borrow(c, lowerExpr(c, ins[0]))
   val isFloat = match v0.ty { case NFloat -> true; case _ -> false }
