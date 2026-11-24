@@ -61,6 +61,13 @@ twin): the `KeyManagerFactory`/`KeyStore` reflection bridge and TLS 1.2 floor
 check that build a server `SSLContext` from a `Std.Tls` `Identity` (and a
 client CA for mutual TLS).
 
+`http_server_host.l` (`Std.HttpServerHost`, D786, docs/73 slice S2) is the JVM twin
+of the concurrency seam of the shared HTTP server driver: `startTask` on a
+virtual thread (a `Runnable` record, `Thread.startVirtualThread`), `Mutex` over
+`ReentrantLock` (not `synchronized`, which pins carrier threads on JDK 21),
+`Semaphore`, `runGuarded` over `try`/`catch Bug`, and `WorkerSet`. Nothing
+consumes it until slice S3.
+
 ## What does NOT live here
 
 Native Lyric code.  Pure-Lyric algorithms belong in the parent
