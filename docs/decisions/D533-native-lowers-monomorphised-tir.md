@@ -15,7 +15,9 @@ Status: accepted (docs/70 phase 4a, part 6; D520 slice 34; consumes D500).
 
 ## Not done
 
-- Instance arguments that are lists, tuples, functions, arrays or value-generic lengths; generic interfaces and impls (3c mono slice 2); `async` instance functions.
+Tracked in #9370:
+
+- Instance arguments that are `List`/`Map` host types, functions, arrays, value-generic lengths or distinct types (scalars, `Unit`, records, unions, enums, tuples and slices are covered); generic interfaces and impls (3c mono slice 2); `async` instance functions; lowering the on-demand instances' bodies from TIR.
 
 ## Verification
 

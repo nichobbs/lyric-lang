@@ -18976,6 +18976,7 @@ record TirUnitMaps {
   instInfos: Map[Int, TirMono.InstanceInfo] = newMap()
   instDecls: Map[Int, Tir.TFnDecl] = newMap()
   instKeys: Map[Int, String] = newMap()
+  symNames: Map[Int, String] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
   ifaceVts: Map[String, String] = newMap()
@@ -19056,6 +19057,28 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
 /// generator instantiates the generic over the argument types (`instantiateGenericUnionOpt`), so a
 /// function lowered from TIR and one lowered from the AST agree on the LLVM type of `Option[Int]`.
 /// An instance with an argument the registration does not cover stays unregistered.
+/// A type argument of a generic instance as the code generator lays it out: `LlvmTir.tirInstArgN`'s
+/// scalars and known types, and the tuples and slices of those.
+func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NType] {
+  match t {
+    case Tir.TTuple(es) -> {
+      val tys: List[NType] = newList()
+      for e in es {
+        match tirInstArg(ctx, known, e) {
+          case Some(n) -> tys.add(n)
+          case None -> return None
+        }
+      }
+      Some(value = recPtrType(tupleRecInfo(ctx, tys)))
+    }
+    case Tir.TSlice(e) -> match tirInstArg(ctx, known, e) {
+      case Some(n) -> Some(value = listNType(ctx, n))
+      case None -> None
+    }
+    case _ -> LlvmTir.tirInstArgN(known, t)
+  }
+}
+
 func registerTirInstances(
   ctx: in Ctx,
   inst: in LlvmTir.TirUnitInput,
@@ -19102,7 +19125,7 @@ func registerTirInstances(
       val argTys: List[NType] = newList()
       var ok = true
       for a in ii.args {
-        match LlvmTir.tirInstArgN(known, a) {
+        match tirInstArg(ctx, known, a) {
           case Some(n) -> argTys.add(n)
           case None -> {
             ok = false
@@ -19607,6 +19630,7 @@ func tirUnitMaps(
     instInfos = instInfos,
     instDecls = instDecls,
     instKeys = instKeys,
+    symNames = input.names,
     checkedArith = input.checkedArith
   )
 }
@@ -19663,7 +19687,7 @@ func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool
   }
   val envTys: List[NType] = newList()
   for a in ii.args {
-    match LlvmTir.tirInstArgN(known, a) {
+    match tirInstArg(ctx, known, a) {
       case Some(n) -> envTys.add(n)
       case None -> return false
     }
@@ -19708,6 +19732,7 @@ func lowerWithTuples(
       ifaceMethods = maps.ifaceMethods,
       ifaceVts = maps.ifaceVts,
       intrinsics = maps.intrinsics,
+      symNames = maps.symNames,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {

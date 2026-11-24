@@ -305,6 +305,8 @@ pub record TirLowerEnv {
   /// instantiates a generic function of another package on demand, so the name of one of its
   /// instances exists only once it has been asked for.
   needFns: List[Int] = newList()
+  /// The DefPath key of each symbol, for naming a type in a fallback reason.
+  symNames: Map[Int, String] = newMap()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
@@ -564,6 +566,32 @@ func listContainsInt(xs: in List[Int], x: in Int): Bool {
     }
   }
   false
+}
+
+/// `renderTy` with each declared type shown by its DefPath key instead of its symbol number.
+func renderTyIn(env: in TirLowerEnv, t: in Ty): String {
+  match t {
+    case TNamed(sym, args) -> {
+      val name = match mapGet(env.symNames, sym.id) { case Some(k) -> k; case None -> "#" + toString(sym.id) }
+      if args.count == 0 {
+        name
+      } else {
+        var acc = name + "["
+        var i = 0
+        while i < args.count {
+          if i > 0 {
+            acc = acc + ", "
+          }
+          acc = acc + renderTyIn(env, args[i])
+          i = i + 1
+        }
+        acc + "]"
+      }
+    }
+    case TSlice(e) -> "slice[" + renderTyIn(env, e) + "]"
+    case TNullable(i) -> renderTyIn(env, i) + "?"
+    case _ -> renderTy(t)
+  }
 }
 
 func unsupported(c: in LCtx, why: in String): Val {
@@ -1740,12 +1768,12 @@ func assignOp(k: in AssignKind): Option[IntrinsicOp] {
 func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
   match tyToN(c.env, d.ty) {
     case None -> {
-      c.problems.add("a local of type " + renderTy(d.ty))
+      c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
       None
     }
     case Some(nt) -> match nt {
       case NVoid -> {
-        c.problems.add("a local of type " + renderTy(d.ty))
+        c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
         None
       }
       case _ -> {
@@ -2704,7 +2732,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
             }
           }
           val result = match tyToN(c.env, e.ty) {
-            case None -> unsupported(c, "a call returning " + renderTy(e.ty))
+            case None -> unsupported(c, "a call returning " + renderTyIn(c.env, e.ty))
             case Some(rt) -> match rt {
               case NVoid -> {
                 c.insns.add(NCallVoid(fn = NGlobal(name = irName), args = nargs))
@@ -2757,7 +2785,7 @@ func lowerIndirect(c: in LCtx, e: in TExpr, fnValue: in TExpr, args: in List[TAr
   }
   val rt = match tyToN(c.env, e.ty) {
     case Some(r) -> r
-    case None -> return unsupported(c, "a call returning " + renderTy(e.ty))
+    case None -> return unsupported(c, "a call returning " + renderTyIn(c.env, e.ty))
   }
   if not okSig {
     return unsupported(c, "a call through " + renderTy(fnValue.ty))
@@ -5856,7 +5884,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   val body = match fn.body { case Some(b) -> b; case None -> return fallback(fn.sym, "no body") }
   val retTy = match tyToN(env, fn.ret) {
     case Some(t) -> t
-    case None -> return fallback(fn.sym, "return type " + renderTy(fn.ret))
+    case None -> return fallback(fn.sym, "return type " + renderTyIn(env, fn.ret))
   }
   val c = LCtx(
     env = env,
@@ -5885,7 +5913,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
     val byRef = match p.mode { case TMIn -> false; case _ -> true }
     val pt = match tyToN(env, p.local.ty) {
       case Some(t) -> t
-      case None -> return fallback(fn.sym, "parameter type " + renderTy(p.local.ty))
+      case None -> return fallback(fn.sym, "parameter type " + renderTyIn(env, p.local.ty))
     }
     match pt {
       case NVoid -> return fallback(fn.sym, "a Unit parameter")
