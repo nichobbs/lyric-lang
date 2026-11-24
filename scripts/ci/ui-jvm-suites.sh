@@ -23,7 +23,7 @@ if [ ! -x "$lyric_bin" ]; then
 fi
 bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/erased_receiver_jvm_self_test.l
 # Serialized against the job's other `make maven-resolver` callers
-# (see lyric-web-undertow-jvm-smoke.sh).
+# (see lyric-web-smoke.sh).
 flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
 export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
 "$lyric_bin" restore --manifest "$PWD/lyric-ui/lyric.toml"

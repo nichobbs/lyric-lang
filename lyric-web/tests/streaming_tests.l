@@ -44,26 +44,26 @@
 //! `serve_failure_tests.l` (8199)'s precedent; 8210 avoids every
 //! already-claimed single-file-example port.
 //!
-//! CI wiring: driven by the "Run single-file examples" step in
-//! `.github/workflows/ci.yml`, alongside the `serve_failure_tests.l`
-//! block: the step runs this program in the background via `lyric run`,
-//! polls `/health`, times a `/stream` request and asserts it takes at
-//! least the 400ms inter-chunk sleep (proving the bytes were not
-//! buffered and released all at once), asserts both chunk markers are in
-//! the body, asserts the response carries `Transfer-Encoding: chunked`
-//! and no `Content-Length` (unbounded-length body, no upfront size),
+//! CI wiring: driven by `scripts/ci/lyric-web-smoke.sh <dotnet|jvm>` (and,
+//! on dotnet, also by the "Run single-file examples" step): the script runs
+//! this program in the background, polls `/health`, times a `/stream` request
+//! and asserts it takes at least the 400ms inter-chunk sleep (proving the
+//! bytes were not buffered and released all at once), asserts both chunk
+//! markers are in the body, asserts the response carries `Transfer-Encoding:
+//! chunked` and no `Content-Length` (unbounded-length body, no upfront size),
 //! asserts `/empty` returns a well-formed empty chunked body, asserts
 //! `/created` returns 201, and asserts `/blocked` returns 403 from the
-//! middleware without ever running the panicking handler.
+//! middleware without ever running the panicking handler.  Streaming works on
+//! every target since docs/73 S6 (the JVM served through Undertow, which had
+//! no streaming path, before).
 package Web.StreamingTest
 
 import Std.Core
+import Std.Time as Time
 import Web
 
-extern type ThreadSleep = "System.Threading.Thread"
-
 func sleepMs(ms: in Int): Unit {
-  ThreadSleep.Sleep(ms)
+  Time.sleepMillis(ms)
 }
 
 record HealthHandler {

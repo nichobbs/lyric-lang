@@ -7,13 +7,14 @@
 #
 #   scripts/ci/http-server-benchmark.sh <target> [scenario...]
 #
-#   target    dotnet | jvm | native | undertow
+#   target    dotnet | jvm | native | web-dotnet | web-jvm | web-native
 #               dotnet     benchmarks/http_server/server.l on --target dotnet  (pure-Lyric Std.HttpEngine kernel)
 #               jvm        benchmarks/http_server/server.l on --target jvm     (the shared driver over Std.TcpHost; the JDK
 #                          com.sun.net.httpserver kernel it replaced in D789 is gone)
 #               native     benchmarks/http_server/server.l on --target native  (the shared driver, h1 and h2)
-#               undertow   benchmarks/http_server/server_web.l through lyric-web on --target jvm (Undertow,
-#                          restores lyric-web's Maven dependencies, so it needs Maven Central)
+#               web-<t>    benchmarks/http_server/server_web.l through lyric-web on --target <t> (the same shared
+#                          driver, plus lyric-web's job dispatch). Before docs/73 S6 (D791) web-jvm was Undertow and
+#                          restored lyric-web's Maven dependencies, so it needed Maven Central.
 #   scenario  b1 b2 b3 b4 b5 b6 (default: b1 b2 b3 b4 b5), and the same load driven by wrk and h2load when
 #             they are on PATH: b1w b2w b3w (wrk) and b4h (h2load). The Lyric generator needs no tools
 #             but is slower than wrk; the wrk/h2load rows show whether it was the limit.
@@ -36,7 +37,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-target="${1:?usage: http-server-benchmark.sh <dotnet|jvm|native|undertow> [b1 b2 b3 b4 b5 b6]}"
+target="${1:?usage: http-server-benchmark.sh <dotnet|jvm|native|web-dotnet|web-jvm|web-native> [b1 b2 b3 b4 b5 b6]}"
 shift || true
 scenarios=("$@")
 [ "${#scenarios[@]}" -gt 0 ] || scenarios=(b1 b2 b3 b4 b5)
@@ -89,21 +90,44 @@ build_server() {
       "$LYRIC" build --target native benchmarks/http_server/server.l -o "$OUT/server-native" >"$OUT/build-server.log" 2>&1 \
         || { cat "$OUT/build-server.log" >&2; exit 1; }
       server_cmd=("$OUT/server-native") ;;
-    undertow)
-      if [ -z "${LYRIC_MAVEN_RESOLVER:-}" ] && [ -f "$(dirname "$LYRIC")/lyric-resolver.jar" ]; then
+    web-dotnet|web-jvm|web-native)
+      local wt="${target#web-}"
+      if [ "$wt" = jvm ] && [ -z "${LYRIC_MAVEN_RESOLVER:-}" ] && [ -f "$(dirname "$LYRIC")/lyric-resolver.jar" ]; then
         export LYRIC_MAVEN_RESOLVER="$(dirname "$LYRIC")/lyric-resolver.jar"
       fi
-      "$LYRIC" restore --manifest "$REPO_ROOT/lyric-web/lyric.toml" >"$OUT/restore-web.log" 2>&1 \
-        || { cat "$OUT/restore-web.log" >&2; exit 1; }
-      # The file must sit inside the manifest's directory to resolve lyric-web's dependencies (a path outside it
-      # fails with T0211), so it is copied in for the build and removed again.
-      trap 'rm -f lyric-web/tests/zz_bench_server_web.l' EXIT
-      cp benchmarks/http_server/server_web.l lyric-web/tests/zz_bench_server_web.l
-      (cd lyric-web && "$LYRIC" build --target jvm tests/zz_bench_server_web.l -o "$OUT/server-web.jar") \
-        >"$OUT/build-server.log" 2>&1; rc=$?
-      rm -f lyric-web/tests/zz_bench_server_web.l
+      # Restoring is needed only while a lyric-web dependency still declares a [maven] table (lyric-ws until S7b).
+      if [ "$wt" = jvm ]; then
+        "$LYRIC" restore --manifest "$REPO_ROOT/lyric-web/lyric.toml" >"$OUT/restore-web.log" 2>&1 \
+          || { cat "$OUT/restore-web.log" >&2; exit 1; }
+      fi
+      local out="$OUT/server-web.jar"
+      [ "$wt" = dotnet ] && out="$OUT/server-web.dll"
+      [ "$wt" = native ] && out="$OUT/server-web-native"
+      local rc=0
+      if [ "$wt" = native ]; then
+        # A native build needs an application manifest that depends on lyric-web (a file inside the library's own
+        # manifest does not resolve `Web` on native, T0215), so a throwaway one is generated beside the examples.
+        mkdir -p examples/zz_bench_web_native/src
+        cp benchmarks/http_server/server_web.l examples/zz_bench_web_native/src/main.l
+        sed -e 's/Lyric.NativeWeb/Lyric.BenchWebNative/g' -e 's/"NativeWeb"/"Web.BenchServer"/' -e 's/NativeWeb.dll/BenchWebNative.dll/' \
+          examples/native-web/lyric.toml > examples/zz_bench_web_native/lyric.toml
+        "$LYRIC" build --manifest examples/zz_bench_web_native/lyric.toml --target native -o "$out" \
+          >"$OUT/build-server.log" 2>&1 || rc=$?
+        rm -rf examples/zz_bench_web_native
+      else
+        # The file must sit inside the manifest's directory to resolve lyric-web's dependencies (a path outside it
+        # fails with T0211), so it is copied in for the build and removed again.
+        cp benchmarks/http_server/server_web.l lyric-web/tests/zz_bench_server_web.l
+        (cd lyric-web && "$LYRIC" build --target "$wt" tests/zz_bench_server_web.l -o "$out") \
+          >"$OUT/build-server.log" 2>&1 || rc=$?
+        rm -f lyric-web/tests/zz_bench_server_web.l
+      fi
       [ "$rc" = 0 ] || { cat "$OUT/build-server.log" >&2; exit 1; }
-      server_cmd=(java -jar "$OUT/server-web.jar") ;;
+      case "$wt" in
+        dotnet) server_cmd=(dotnet "$out") ;;
+        jvm) server_cmd=(java -jar "$out") ;;
+        native) server_cmd=("$out") ;;
+      esac ;;
     *) echo "unknown target $target" >&2; exit 1 ;;
   esac
 }
@@ -116,7 +140,7 @@ stop_server() {
   [ -n "$server_pid" ] && { kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; }
   server_pid=""; sampler_pid=""
 }
-trap 'stop_server; rm -f lyric-web/tests/zz_bench_server_web.l' EXIT
+trap 'stop_server; rm -f lyric-web/tests/zz_bench_server_web.l; rm -rf examples/zz_bench_web_native' EXIT
 
 start_server() { # [env assignments...]
   stop_server

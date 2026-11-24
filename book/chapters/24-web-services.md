@@ -73,15 +73,16 @@ func main(): Unit {
 
 `Web.start` reads `LYRIC_CONFIG_WEB_SERVER_*`/`LYRIC_CONFIG_WEB_CORS_*`
 from the environment, starts the HTTP listener (built on
-`Std.HttpServer`), and blocks until the process is killed. On
-`--target dotnet` `Std.HttpServer` now runs on a pure-Lyric sans-IO HTTP/1.1
-engine over a `System.Net.Sockets` + `SslStream` transport — the
-`System.Net.HttpListener` server was retired (docs/61 §6, TLS phase 3.3) — so
-connections are accepted and read concurrently. `lyric-web` dispatches each
-parsed request on its own thread-pool task, so a slow or streaming handler
+`Std.HttpServer`), and blocks until the process is killed. On every target
+(`dotnet`, `jvm` and `native`) `Std.HttpServer` is the same pure-Lyric driver
+over the sans-IO HTTP engine and a socket transport — `System.Net.Sockets` +
+`SslStream` on dotnet, `java.net` sockets on the JVM; the `HttpListener`,
+JDK `com.sun.net.httpserver` and Undertow servers were retired (docs/61 §6,
+docs/73) — so connections are accepted and read concurrently. `lyric-web`
+dispatches each parsed request on its own task, so a slow or streaming handler
 does not stall other requests; in-flight handlers are bounded by the
-`LYRIC_HTTP_MAX_CONNECTIONS` connection cap (default 1000). Shared state used
-by handlers must therefore be thread-safe.
+`LYRIC_HTTP_MAX_CONNECTIONS` connection cap (default 1000 on dotnet, 10 000 on
+the JVM). Shared state used by handlers must therefore be thread-safe.
 
 Compose multiple packages' routers with `Web.merge` and scope them
 with `Web.prefix`.
@@ -108,21 +109,19 @@ match Identity.fromPemFiles("server.pem", "server.key") {
 }
 ```
 
-- **`--target dotnet`** terminates real TLS over the pure-Lyric sans-IO
-  `Std.HttpServer`, advertising `h2` then `http/1.1` via ALPN. A client that
+- **`--target dotnet` and `--target jvm`** terminate real TLS over the
+  pure-Lyric sans-IO `Std.HttpServer` (one server on both, since docs/73 S6),
+  advertising `h2` then `http/1.1` via ALPN. A client that
   offers HTTP/2 (browsers, `curl --http2`, and the Lyric HTTPS client's default
   h2-or-lower mode) is served over **HTTP/2** end-to-end through the pure-Lyric
   `Std.HttpEngine.H2Conn` state machine; a client that only offers `http/1.1`
   (or plaintext, which has no ALPN) falls back to HTTP/1.1 automatically — the
   same router and handlers serve both with no code change. **Mutual TLS is fully
   supported** here — set `clientCa` and `requireClientCert` on the config.
-- **`--target jvm`** terminates real TLS over an Undertow HTTPS listener with
-  HTTP/2 enabled (via ALPN, TLS-only). **Mutual TLS is fully supported** here
-  too (issue #6017) — `clientCa` pins a client-CA `TrustManager` onto the
-  listener's `SSLContext`, and `requireClientCert` drives Undertow's XNIO
-  `SSL_CLIENT_AUTH_MODE` socket option (required vs. optional client cert).
   The only rejected configuration is `requireClientCert` set with no
-  `clientCa` to pin trust to, which returns a typed `ServerTlsUnsupported`.
+  `clientCa` to pin trust to, which returns a typed `ServerTlsUnsupported`, as
+  does a port that is already bound. (`--target native` serves the same
+  `Std.HttpServer` over HTTP/1.1.)
 
 To keep cert/key paths configurable per environment without a rebuild, use the
 `Web.WebTls` config template (`certPath`/`keyPath`/`clientCaPath`/
@@ -221,10 +220,7 @@ a connection whose reads or writes make no progress for
 connections and stalled uploads. A slow handler is not affected: the
 connection waits on the handler, not the socket, while a request is in
 flight. Both accept 1 to 86400000 (one day); a missing, non-numeric or
-out-of-range value falls back to the default. On `--target jvm`
-the JDK's own HTTP server runs handshakes off its dispatcher thread and
-applies its own idle limit (`-Dsun.net.httpserver.idleInterval`, in
-seconds, default 30).
+out-of-range value falls back to the default, on dotnet and the JVM alike.
 
 ## Background workers
 
@@ -244,9 +240,8 @@ impl Web.Worker for PollWorker {
 router = Web.addWorker(router, "poller", 2000, PollWorker())
 ```
 
-On `--target dotnet` this runs on a real background thread-pool task,
-independent of the accept loop. `--target jvm` registers a worker but does
-not yet fire it (`lyric-web/README.md`'s "Known gaps").
+The worker runs on a real background task, independent of the accept loop, on
+every target (a thread-pool task on dotnet, a virtual thread on the JVM).
 
 A `tick()` that panics is isolated to that tick — logged, and the loop
 keeps running on its next interval rather than dying silently.
