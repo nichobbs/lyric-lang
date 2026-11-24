@@ -168,7 +168,7 @@ func tyKey(c: in MCtx, t: in Ty): String {
       val parts: List[String] = newList()
       for p in ps {
         parts.add(modeName(p.mode) + " " + tyKey(c, p.ty))
-      }
+      };
       (if asy { "async " } else { "" }) + "func(" + joinStrings(parts, ",") + "):" + tyKey(c, r)
     }
     case TArray(len, e) -> match len {
@@ -186,7 +186,11 @@ func tyKey(c: in MCtx, t: in Ty): String {
     case TLen(n) -> toString(n)
     case TNever -> "Never"
     case TException -> "Exception"
-    case TExtern(h) -> if h.args.count == 0 { "extern " + h.name } else { "extern " + h.name + "[" + tyKeys(c, h.args) + "]" }
+    case TExtern(h) -> if h.args.count == 0 {
+      "extern " + h.name
+    } else {
+      "extern " + h.name + "[" + tyKeys(c, h.args) + "]"
+    }
   }
 }
 
@@ -516,10 +520,7 @@ func instFn(c: in MCtx, d: in TFnDecl, args: in List[Ty]): Option[SymbolId] {
   for p in d.params {
     ps.add(TParamTy(mode = p.mode, ty = mTy(c, sub, p.local.ty)))
   }
-  val kind: TSymKind = match mapGet(c.entries, d.sym.id) {
-    case Some(e) -> e.kind
-    case None -> TSkFunc
-  }
+  val kind: TSymKind = match mapGet(c.entries, d.sym.id) { case Some(e) -> e.kind; case None -> TSkFunc }
   c.outSyms.add(
     TSymEntry(
       sym = inst,
@@ -548,7 +549,8 @@ func instCallee(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolI
           c,
           "I0007",
           "a call of " + symKey(c, sym) + " has " + toString(args.count) + " type arguments for " +
-            toString(d.typeParams.count) + " parameters",
+            toString(d.typeParams.count) +
+            " parameters",
           Some(value = sym)
         )
         return None

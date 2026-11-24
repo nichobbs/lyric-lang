@@ -39,10 +39,7 @@ func mEntry(c: in MCtx, en: in TSymEntry): TSymEntry {
     )
     case None -> None
   }
-  val ty: Option[Ty] = match en.ty {
-    case Some(t) -> Some(value = mTy(c, s, t))
-    case None -> None
-  }
+  val ty: Option[Ty] = match en.ty { case Some(t) -> Some(value = mTy(c, s, t)); case None -> None }
   TSymEntry(
     sym = en.sym,
     kind = en.kind,

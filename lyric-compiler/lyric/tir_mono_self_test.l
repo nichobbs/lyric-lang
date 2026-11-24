@@ -102,7 +102,11 @@ func assertClean(m: in Mono, what: in String): Unit {
   assertEqualInt(m.diagnostics, 0, what + ": the source checks")
   assertTrue(m.total > 0, what + ": the source has bodies")
   assertEqualInt(m.built, m.total, what + ": every body builds")
-  assertEqualInt(m.r.diags.count, 0, what + ": no mono diagnostic" + (if m.r.diags.count > 0 { " " + m.r.diags[0].message } else { "" }))
+  assertEqualInt(
+    m.r.diags.count,
+    0,
+    what + ": no mono diagnostic" + (if m.r.diags.count > 0 { " " + m.r.diags[0].message } else { "" })
+  )
   val bad = verifyMonoBundle(m.r).failures
   assertEqualInt(bad.count, 0, what + ": verifies" + (if bad.count > 0 { " " + bad[0] } else { "" }))
   for pb in m.r.pkgs {
@@ -123,10 +127,7 @@ func firstFnNamed(pb: in PackageBuild, m: in Mono, name: in String): Option[TFnD
 
 func tailOf(f: in TFnDecl): Option[TExpr] {
   match f.body {
-    case Some(b) -> match b.kind {
-      case XBlock(_, t) -> t
-      case _ -> Some(value = b)
-    }
+    case Some(b) -> match b.kind { case XBlock(_, t) -> t; case _ -> Some(value = b) }
     case None -> None
   }
 }
@@ -164,7 +165,9 @@ test "the call names the instance and has no type arguments" {
 }
 
 test "two calls at one type share an instance and a second type makes another" {
-  val m = monoOf("package App\nfunc id[T](x: in T): T { x }\nfunc a(): Int { id(3) + id(4) }\nfunc b(): String { id(\"s\") }\n")
+  val m = monoOf(
+    "package App\nfunc id[T](x: in T): T { x }\nfunc a(): Int { id(3) + id(4) }\nfunc b(): String { id(\"s\") }\n"
+  )
   assertClean(m, "sharing")
   assertEqualInt(m.r.instances.count, 2, "Int and String")
   assertTrue(hasKey(m, "App::id[Int](T)"), "Int")
@@ -173,7 +176,9 @@ test "two calls at one type share an instance and a second type makes another" {
 }
 
 test "a generic function that calls another instantiates it at its own arguments" {
-  val m = monoOf("package App\nfunc id[T](x: in T): T { x }\nfunc twice[T](x: in T): T { id(id(x)) }\nfunc main(): Int { twice(5) }\n")
+  val m = monoOf(
+    "package App\nfunc id[T](x: in T): T { x }\nfunc twice[T](x: in T): T { id(id(x)) }\nfunc main(): Int { twice(5) }\n"
+  )
   assertClean(m, "transitive")
   assertTrue(hasKey(m, "App::twice[Int](T)"), "twice at Int")
   assertTrue(hasKey(m, "App::id[Int](T)"), "id at Int, asked for by twice's body")
@@ -181,7 +186,9 @@ test "a generic function that calls another instantiates it at its own arguments
 }
 
 test "a generic record applied to arguments is an instance with concrete fields" {
-  val m = monoOf("package App\nrecord Box[T] { v: T }\nfunc mk(): Box[Int] { Box(v = 3) }\nfunc get(b: in Box[Int]): Int { b.v }\n")
+  val m = monoOf(
+    "package App\nrecord Box[T] { v: T }\nfunc mk(): Box[Int] { Box(v = 3) }\nfunc get(b: in Box[Int]): Int { b.v }\n"
+  )
   assertClean(m, "record")
   assertTrue(hasKey(m, "App::Box[Int]"), "the record instance")
   var found = false
@@ -224,7 +231,11 @@ test "a generic member of a generic record is instantiated at the receiver's arg
     "package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\nfunc fetch(b: in Box[Int]): Int { b.get() }\n"
   )
   assertClean(m, "member")
-  assertTrue(hasKey(m, "App::Box[Int]"), "the record: " + joinStrings(instanceKeys(m), ";") + " funcs " + joinStrings(fnKeys(m), ";") + " ents " + joinStrings(entKeys(m), ";"))
+  assertTrue(
+    hasKey(m, "App::Box[Int]"),
+    "the record: " + joinStrings(instanceKeys(m), ";") + " funcs " + joinStrings(fnKeys(m), ";") + " ents " +
+      joinStrings(entKeys(m), ";")
+  )
   var member = false
   for k in instanceKeys(m) {
     if k.startsWith("App::Box::get[Int]") {
@@ -239,7 +250,10 @@ test "a value-generic parameter becomes the length" {
     "package App\nfunc size[N: Nat](a: in array[N, Int]): Int {\n  N\n}\nfunc main(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  size(a)\n}\n"
   )
   assertClean(m, "value origin")
-  assertTrue(hasKey(m, "App::size[3](array[N,Int])") or hasKey(m, "App::size[3](array[N, Int])"), "the length is the argument")
+  assertTrue(
+    hasKey(m, "App::size[3](array[N,Int])") or hasKey(m, "App::size[3](array[N, Int])"),
+    "the length is the argument"
+  )
 }
 
 test "a generic function nothing calls leaves no instance" {

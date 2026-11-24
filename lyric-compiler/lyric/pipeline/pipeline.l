@@ -2363,7 +2363,10 @@ func pipeReportMonoCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild
   val bad = verdict.failures
   Console.error(
     "I0003 mono census [" + label + "]: " + toString(bad.count) + " diagnostic(s), " + toString(r.instances.count) +
-      " instance(s), " + toString(r.diags.count) + " pass diagnostic(s), " + toString(verdict.tolerated) +
+      " instance(s), " +
+      toString(r.diags.count) +
+      " pass diagnostic(s), " +
+      toString(verdict.tolerated) +
       " tolerated (calls of a generic with no declaration in the bundle)"
   )
   var shown = 0

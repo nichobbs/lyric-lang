@@ -62,10 +62,7 @@ func instCtorSym(c: in MCtx, s: in Subst, sym: in SymbolId, ty: in Ty): SymbolId
       val a = iTys(c, targs)
       match mapGet(c.caseParent, sym.id) {
         case Some(parent) -> instCase(c, parent, sym, a)
-        case None -> match instType(c, tsym, a) {
-          case Some(i) -> i
-          case None -> sym
-        }
+        case None -> match instType(c, tsym, a) { case Some(i) -> i; case None -> sym }
       }
     }
     case _ -> sym
@@ -181,7 +178,10 @@ func mPat(c: in MCtx, s: in Subst, p: in TPat): TPat {
     case TpWild -> p.kind
     case TpBind(d, inner) -> TpBind(
       decl = mLocal(c, s, d),
-      inner = match inner { case Some(i) -> Some(value = mPat(c, s, i)); case None -> None }
+      inner = match inner {
+        case Some(i) -> Some(value = mPat(c, s, i))
+        case None -> None
+      }
     )
     case TpLit(_) -> p.kind
     case TpRange(_, _, _) -> p.kind
@@ -243,7 +243,10 @@ func mStmt(c: in MCtx, s: in Subst, st: in TStmt): TStmt {
     }
     case TsDefer(b) -> TsDefer(body = mExpr(c, s, b))
     case TsScope(b, body) -> TsScope(
-      binding = match b { case Some(d) -> Some(value = mLocal(c, s, d)); case None -> None },
+      binding = match b {
+        case Some(d) -> Some(value = mLocal(c, s, d))
+        case None -> None
+      },
       body = mExpr(c, s, body)
     )
     case TsFor(label, pat, iter, body) -> TsFor(
@@ -252,7 +255,11 @@ func mStmt(c: in MCtx, s: in Subst, st: in TStmt): TStmt {
       iter = mExpr(c, s, iter),
       body = mExpr(c, s, body)
     )
-    case TsWhile(label, cond, body) -> TsWhile(label = label, cond = mExpr(c, s, cond), body = mExpr(c, s, body))
+    case TsWhile(label, cond, body) -> TsWhile(
+      label = label,
+      cond = mExpr(c, s, cond),
+      body = mExpr(c, s, body)
+    )
     case TsLoop(label, body) -> TsLoop(label = label, body = mExpr(c, s, body))
     case TsInvariant(e) -> TsInvariant(expr = mExpr(c, s, e))
   }
@@ -278,7 +285,10 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
       }
       XCall(callee = mCallee(c, s, callee), args = argList)
     }
-    case XConstruct(sym, fields) -> XConstruct(sym = instCtorSym(c, s, sym, e.ty), fields = mExprs(c, s, fields))
+    case XConstruct(sym, fields) -> XConstruct(
+      sym = instCtorSym(c, s, sym, e.ty),
+      fields = mExprs(c, s, fields)
+    )
     case XField(recv, f) -> XField(recv = mExpr(c, s, recv), field = mField(c, s, recv.ty, f))
     case XCopy(base, updates) -> {
       val us: List[TFieldUpdate] = newList()
@@ -300,8 +310,16 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
     case XInterp(parts) -> XInterp(parts = mExprs(c, s, parts))
     case XRange(lo, hi, inc) -> XRange(lo = mExpr(c, s, lo), hi = mExpr(c, s, hi), inclusive = inc)
     case XShort(op, l, r) -> XShort(op = op, lhs = mExpr(c, s, l), rhs = mExpr(c, s, r))
-    case XIf(cond, t, f) -> XIf(cond = mExpr(c, s, cond), thenBranch = mExpr(c, s, t), elseBranch = mOptExpr(c, s, f))
-    case XMatch(scrut, arms, exh) -> XMatch(scrutinee = mExpr(c, s, scrut), arms = mArms(c, s, arms), exhaustive = exh)
+    case XIf(cond, t, f) -> XIf(
+      cond = mExpr(c, s, cond),
+      thenBranch = mExpr(c, s, t),
+      elseBranch = mOptExpr(c, s, f)
+    )
+    case XMatch(scrut, arms, exh) -> XMatch(
+      scrutinee = mExpr(c, s, scrut),
+      arms = mArms(c, s, arms),
+      exhaustive = exh
+    )
     case XBlock(stmts, tail) -> {
       val ss: List[TStmt] = newList()
       for st in stmts {
@@ -310,15 +328,27 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
       XBlock(stmts = ss, tail = mOptExpr(c, s, tail))
     }
     case XUnsafe(b) -> XUnsafe(body = mExpr(c, s, b))
-    case XLambda(ps, caps, body) -> XLambda(params = mLocals(c, s, ps), captures = caps, body = mExpr(c, s, body))
+    case XLambda(ps, caps, body) -> XLambda(
+      params = mLocals(c, s, ps),
+      captures = caps,
+      body = mExpr(c, s, body)
+    )
     case XAwait(i) -> XAwait(inner = mExpr(c, s, i))
     case XSpawn(i) -> XSpawn(inner = mExpr(c, s, i))
     case XYield(i) -> XYield(inner = mExpr(c, s, i))
     case XPropagate(i) -> XPropagate(inner = mExpr(c, s, i))
     case XOld(i) -> XOld(inner = mExpr(c, s, i))
     case XResult -> e.kind
-    case XForall(bs, w, body) -> XForall(binders = mLocals(c, s, bs), whereExpr = mOptExpr(c, s, w), body = mExpr(c, s, body))
-    case XExists(bs, w, body) -> XExists(binders = mLocals(c, s, bs), whereExpr = mOptExpr(c, s, w), body = mExpr(c, s, body))
+    case XForall(bs, w, body) -> XForall(
+      binders = mLocals(c, s, bs),
+      whereExpr = mOptExpr(c, s, w),
+      body = mExpr(c, s, body)
+    )
+    case XExists(bs, w, body) -> XExists(
+      binders = mLocals(c, s, bs),
+      whereExpr = mOptExpr(c, s, w),
+      body = mExpr(c, s, body)
+    )
     case XAssign(p, op, v) -> XAssign(place = mPlace(c, s, p), op = op, value = mExpr(c, s, v))
   }
   TExpr(id = nid(c, s, e.id), ty = mTy(c, s, e.ty), span = e.span, kind = k)
