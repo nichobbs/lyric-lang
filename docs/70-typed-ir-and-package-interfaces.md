@@ -1013,6 +1013,9 @@ bare-name resolution) read each file's own or receive resolved symbols
   checks come in phase 6), propagation, typed lowerings, monomorphisation on
   TIR, await hoisting.
 
+  Status (one bullet per change, appended in order; keep both sides when a rebase conflicts here):
+  - Monomorphisation on TIR (`Lyric.Tir.Mono`, D500): generic functions, members, records, protected types and unions are replaced by instances (DefPath key with the arguments in brackets) in one synthetic package, value-generic parameters become lengths, the output verifies, and `lyric build --verify-ir` prints a mono census; generic interfaces and distinct types stay counted as unresolved.
+
 3b can run in parallel with 3a; 3c needs 3a.
 
 ### Phase 4: backends on TIR
