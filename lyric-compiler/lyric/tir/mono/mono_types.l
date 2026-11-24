@@ -33,7 +33,7 @@ pub record MonoDiag {
 
 /// One instantiation: the generic's symbol, the concrete arguments, the instance's symbol.
 pub record InstanceInfo {
-  generic: SymbolId
+  origin: SymbolId
   args: List[Ty]
   inst: SymbolId
 }
@@ -51,7 +51,7 @@ pub record MonoResult {
 }
 
 record Pending {
-  generic: TFnDecl
+  origin: TFnDecl
   args: List[Ty]
   inst: SymbolId
 }
@@ -368,7 +368,7 @@ func instType(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolId]
   val inst = internDefPathKey(c.interner, key)
   c.insts.add(key, inst)
   c.outNames.add(inst.id, key)
-  c.instList.add(InstanceInfo(generic = sym, args = args, inst = inst))
+  c.instList.add(InstanceInfo(origin = sym, args = args, inst = inst))
   val sub = Subst(owner = sym, args = args, fresh = false)
   match mapGet(c.cases, sym.id) {
     case Some(cs) -> {
@@ -501,8 +501,9 @@ func instFn(c: in MCtx, d: in TFnDecl, args: in List[Ty]): Option[SymbolId] {
   val inst = internDefPathKey(c.interner, key)
   c.insts.add(key, inst)
   c.outNames.add(inst.id, key)
-  c.instList.add(InstanceInfo(generic = d.sym, args = args, inst = inst))
-  c.work.add(Pending(generic = d, args = args, inst = inst))
+  c.instList.add(InstanceInfo(origin = d.sym, args = args, inst = inst))
+  val pend = Pending(origin = d, args = args, inst = inst)
+  c.work.add(pend)
   val sub = Subst(owner = d.sym, args = args, fresh = false)
   val ps: List[TParamTy] = newList()
   for p in d.params {
@@ -552,7 +553,7 @@ func instCallee(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolI
       instFn(c, d, args)
     }
     case None -> {
-      noteUnresolved(c, "generic callee without a declaration")
+      noteUnresolved(c, "origin callee without a declaration")
       None
     }
   }

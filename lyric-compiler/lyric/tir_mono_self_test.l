@@ -78,7 +78,7 @@ func assertClean(m: in Mono, what: in String): Unit {
   assertEqualInt(bad.count, 0, what + ": verifies" + (if bad.count > 0 { " " + bad[0] } else { "" }))
   for pb in m.r.pkgs {
     for f in pb.pkg.funcs {
-      assertEqualInt(f.typeParams.count, 0, what + ": no generic function is left")
+      assertEqualInt(f.typeParams.count, 0, what + ": no origin function is left")
     }
   }
 }
@@ -102,7 +102,7 @@ func tailOf(f: in TFnDecl): Option[TExpr] {
   }
 }
 
-test "a generic function called at Int has one instance named by its key" {
+test "a origin function called at Int has one instance named by its key" {
   val m = monoOf("package App\nfunc id[T](x: in T): T { x }\nfunc main(): Int { id(3) }\n")
   assertClean(m, "id")
   assertEqualInt(m.r.instances.count, 1, "one instance")
@@ -143,7 +143,7 @@ test "two calls at one type share an instance and a second type makes another" {
   assertEqualInt(instancesOf(m).pkg.funcs.count, 2, "two bodies")
 }
 
-test "a generic function that calls another instantiates it at its own arguments" {
+test "a origin function that calls another instantiates it at its own arguments" {
   val m = monoOf("package App\nfunc id[T](x: in T): T { x }\nfunc twice[T](x: in T): T { id(id(x)) }\nfunc main(): Int { twice(5) }\n")
   assertClean(m, "transitive")
   assertTrue(hasKey(m, "App::twice[Int](T)"), "twice at Int")
@@ -151,7 +151,7 @@ test "a generic function that calls another instantiates it at its own arguments
   assertEqualInt(m.r.instances.count, 2, "no other instance")
 }
 
-test "a generic record applied to arguments is an instance with concrete fields" {
+test "a origin record applied to arguments is an instance with concrete fields" {
   val m = monoOf("package App\nrecord Box[T] { v: T }\nfunc mk(): Box[Int] { Box(v = 3) }\nfunc get(b: in Box[Int]): Int { b.v }\n")
   assertClean(m, "record")
   assertTrue(hasKey(m, "App::Box[Int]"), "the record instance")
@@ -161,13 +161,13 @@ test "a generic record applied to arguments is an instance with concrete fields"
       found = true
       assertEqualInt(en.fields.count, 1, "one field")
       assertTrue(tyEq(en.fields[0].ty, tyInt()), "the field is an Int")
-      assertEqualInt(en.typeParamCount, 0, "not generic")
+      assertEqualInt(en.typeParamCount, 0, "not origin")
     }
   }
   assertTrue(found, "the instance has an entry")
 }
 
-test "a generic union is an instance whose cases are instances in declaration order" {
+test "a origin union is an instance whose cases are instances in declaration order" {
   val m = monoOf(
     "package App\nunion Opt[T] { case Nope\n case Has(v: T) }\nfunc some(): Opt[Int] { Has(v = 3) }\nfunc none(): Opt[Int] { Nope }\nfunc get(o: in Opt[Int]): Int {\n  match o {\n    case Has(v) -> v\n    case Nope -> 0\n  }\n}\n"
   )
@@ -190,7 +190,7 @@ test "a generic union is an instance whose cases are instances in declaration or
   }
 }
 
-test "a generic member of a generic record is instantiated at the receiver's arguments" {
+test "a origin member of a origin record is instantiated at the receiver's arguments" {
   val m = monoOf(
     "package App\nrecord Box[T] {\n  v: T\n  func get(self: in Box[T]): T { self.v }\n}\nfunc use(b: in Box[Int]): Int { b.get() }\n"
   )
@@ -209,11 +209,11 @@ test "a value-generic parameter becomes the length" {
   val m = monoOf(
     "package App\nfunc size[N: Nat](a: in array[N, Int]): Int {\n  N\n}\nfunc main(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  size(a)\n}\n"
   )
-  assertClean(m, "value generic")
+  assertClean(m, "value origin")
   assertTrue(hasKey(m, "App::size[3](array[N,Int])") or hasKey(m, "App::size[3](array[N, Int])"), "the length is the argument")
 }
 
-test "a generic function nothing calls leaves no instance" {
+test "a origin function nothing calls leaves no instance" {
   val m = monoOf("package App\nfunc id[T](x: in T): T { x }\nfunc main(): Int { 1 }\n")
   assertClean(m, "uncalled")
   assertEqualInt(m.r.instances.count, 0, "none")

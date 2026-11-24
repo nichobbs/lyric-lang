@@ -123,8 +123,8 @@ func drainWork(c: in MCtx): Unit {
   var i = 0
   while i < c.work.count {
     val p = c.work[i]
-    val s = Subst(owner = p.generic.sym, args = p.args, fresh = true)
-    c.outFns.add(mFnDecl(c, s, p.inst, p.generic))
+    val s = Subst(owner = p.origin.sym, args = p.args, fresh = true)
+    c.outFns.add(mFnDecl(c, s, p.inst, p.origin))
     i = i + 1
   }
 }
@@ -135,7 +135,7 @@ func drainWork(c: in MCtx): Unit {
 /// not build) stays as written and is counted in `unresolved`.
 pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild]): MonoResult {
   val c = newMCtx(interner, bundle)
-  val out: List[PackageBuild] = newList()
+  val res: List[PackageBuild] = newList()
   for pb in bundle {
     val fns: List[TFnDecl] = newList()
     for f in pb.pkg.funcs {
@@ -151,15 +151,15 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
     }
     val cases: Map[Int, List[SymbolId]] = newMap()
     for pk in mapKeys(pb.cases) {
-      val generic = match mapGet(c.entries, pk) { case Some(pe) -> isGenericTypeEntry(pe); case None -> false }
-      if not generic {
+      val origin = match mapGet(c.entries, pk) { case Some(pe) -> isGenericTypeEntry(pe); case None -> false }
+      if not origin {
         match mapGet(pb.cases, pk) {
           case Some(cs) -> cases.add(pk, cs)
           case None -> ()
         }
       }
     }
-    out.add(
+    res.add(
       PackageBuild(
         pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns),
         failed = pb.failed,
@@ -173,7 +173,7 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
     )
   }
   drainWork(c)
-  out.add(
+  res.add(
     PackageBuild(
       pkg = TPackage(name = instancesPackageName(), symbols = c.outSyms, funcs = c.outFns),
       failed = newList(),
@@ -185,14 +185,14 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
       sites = newMap()
     )
   )
-  MonoResult(pkgs = out, instances = c.instList, diags = c.diags, unresolved = c.unresolved)
+  MonoResult(pkgs = res, instances = c.instList, diags = c.diags, unresolved = c.unresolved)
 }
 
 /// The instance of `generic` at `args` in `r`, if the pass made one: the table the code generator
 /// maps between a generic and its instances with.
-pub func instanceOf(r: in MonoResult, generic: in SymbolId, args: in List[Ty]): Option[SymbolId] {
+pub func instanceOf(r: in MonoResult, origin: in SymbolId, args: in List[Ty]): Option[SymbolId] {
   for i in r.instances {
-    if symbolIdEq(i.generic, generic) and tyListEq(i.args, args) {
+    if symbolIdEq(i.origin, origin) and tyListEq(i.args, args) {
       return Some(value = i.inst)
     }
   }
