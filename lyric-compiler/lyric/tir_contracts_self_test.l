@@ -276,3 +276,56 @@ test "two functions with clauses in one package keep node ids unique" {
   assertEqualInt(messagesOf(e, "f").count, 2, "f")
   assertEqualInt(messagesOf(e, "g").count, 2, "g")
 }
+
+test "several ensures clauses each reading old(..) read their own snapshots" {
+  val e = elabOf(
+    "package App\nfunc f(x: Int, y: Int): Int\n  ensures: result > old(x)\n  ensures: result > old(y)\n{ x + y + 1 }\n"
+  )
+  assertVerifies(e, "two olds")
+  val oldIds: Map[Int, Bool] = newMap()
+  val readIds: Map[Int, Bool] = newMap()
+  match fnNamed(e, "f") {
+    case Some(f) -> match f.body {
+      case Some(b) -> match b.kind {
+        case XBlock(stmts, _) -> {
+          for st in stmts {
+            match st.kind {
+              case TsLet(pat, _) -> match pat.kind {
+                case TpBind(d, _) -> if d.name.startsWith("__old_") { oldIds.add(d.id.id, true) }
+                case _ -> ()
+              }
+              case TsExpr(x) -> collectLocalReads(x, readIds)
+              case _ -> ()
+            }
+          }
+        }
+        case _ -> assertTrue(false, "a block")
+      }
+      case None -> assertTrue(false, "a body")
+    }
+    case None -> assertTrue(false, "f")
+  }
+  assertEqualInt(oldIds.count, 2, "one snapshot per old(..)")
+  var read = 0
+  for k in mapKeys(oldIds) {
+    if readIds.containsKey(k) {
+      read = read + 1
+    }
+  }
+  assertEqualInt(read, 2, "the two assertions read the two different snapshots")
+}
+
+func collectLocalReads(e: in TExpr, seen: in Map[Int, Bool]): Unit {
+  match e.kind {
+    case XLocal(l) -> if not seen.containsKey(l.id) { seen.add(l.id, true) }
+    case XCall(_, args) -> {
+      for a in args {
+        match a {
+          case TArgIn(v) -> collectLocalReads(v, seen)
+          case _ -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}

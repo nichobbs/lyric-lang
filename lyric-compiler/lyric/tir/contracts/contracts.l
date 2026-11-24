@@ -370,6 +370,8 @@ func assertStmt(c: in CCtx, cond: in TExpr, message: in String, sp: in Span): TS
 /// the snapshots.
 func postAsserts(c: in CCtx, plan: in ExitPlan, result: in Option[LocalDecl]): List[TStmt] {
   val res: List[TStmt] = newList()
+  // The snapshots were collected across all the clauses in order, so one index runs through the clauses of an exit.
+  val oldIdx = newOldIdx()
   var i = 0
   while i < plan.posts.count {
     val sub = CCtx(
@@ -379,7 +381,7 @@ func postAsserts(c: in CCtx, plan: in ExitPlan, result: in Option[LocalDecl]): L
       collectOld = false,
       olds = newList(),
       oldLocals = plan.oldLocals,
-      oldIdx = newOldIdx(),
+      oldIdx = oldIdx,
       resultLocal = result,
       exits = None
     )
