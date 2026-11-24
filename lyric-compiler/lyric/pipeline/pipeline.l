@@ -2352,6 +2352,27 @@ pub func pipeMonoTir(interner: in DefPathInterner, bundle: in List[TirBuild.Pack
   TirMono.monoBundle(interner, bundle)
 }
 
+/// The contract-elaboration census of one built package (docs/70 §12.2, D502): every function's contracts lowered
+/// into its body, then verified.
+func pipeReportContractsCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild.PackageBuild): Unit {
+  val bundle: List[TirBuild.PackageBuild] = newList()
+  bundle.add(pb)
+  val done = TirContracts.elaborateBundle(tbl.interner, bundle, true)
+  val diags = TirVerify.verifyPackage(done[0].pkg, newList())
+  Console.error(
+    "I0003 contracts census [" + label + "]: " + toString(diags.count) + " diagnostic(s) over " +
+      toString(done[0].pkg.funcs.count) +
+      " function(s)"
+  )
+  var shown = 0
+  for d in diags {
+    if shown < 3 {
+      Console.error("    e.g. " + TirVerify.renderVerifyDiag("contracts", d))
+      shown = shown + 1
+    }
+  }
+}
+
 /// The monomorphisation census of one built package (docs/70 §12.2, D500): the package alone is the
 /// bundle, so a generic of a dependency counts as unresolved, and the output is verified.  `I0003 mono
 /// census` counts the verifier's diagnostics over the output, `M census` the instances made and the
@@ -2550,6 +2571,7 @@ pub func pipeCheckFront(
     }
     if verifyIr {
       pipeReportMonoCensus(opts.pkgLabel, tcRes.symbols, pb)
+      pipeReportContractsCensus(opts.pkgLabel, tcRes.symbols, pb)
     }
     if gateTo(sink, opts.pkgLabel, opts.filePaths, pipeTirDiagnostics(tcRes.symbols, pb)) {
       return None
