@@ -1,0 +1,7 @@
+[package]
+name = "reject-inout-self-through-interface"
+version = "0.1.0"
+[project]
+name = "RejectInoutSelfThroughInterface"
+[project.packages]
+"App" = "app"
