@@ -267,3 +267,12 @@ test "contracts disabled leaves the body alone" {
   }
   assertEqualInt(asserts, 0, "no assertion")
 }
+
+test "two functions with clauses in one package keep node ids unique" {
+  val e = elabOf(
+    "package App\nfunc f(x: Int): Int\n  requires: x > 0\n  ensures: result > 0\n{ x }\nfunc g(y: Int): Int\n  requires: y > 1\n  ensures: result > 1\n{ y }\n"
+  )
+  assertVerifies(e, "two functions")
+  assertEqualInt(messagesOf(e, "f").count, 2, "f")
+  assertEqualInt(messagesOf(e, "g").count, 2, "g")
+}

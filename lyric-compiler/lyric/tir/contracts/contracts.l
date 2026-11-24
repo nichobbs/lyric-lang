@@ -47,9 +47,7 @@ func firstContractLocalId(): Int {
   1500000000
 }
 
-func newCCtx(): CCtx {
-  val nn: List[Int] = newList()
-  nn.add(firstContractNodeId())
+func newCCtx(nn: in List[Int]): CCtx {
   val nl: List[Int] = newList()
   nl.add(firstContractLocalId())
   val oi: List[Int] = newList()
@@ -441,11 +439,19 @@ func clauseText(texts: in List[String], i: in Int): String {
 /// returned as it is; `enabled` is false when the build turns contracts off (docs/63 Q-BP-009), which leaves the
 /// body alone.  `owner` names the function in violation messages (`ownerNameOf` of its DefPath key).
 pub func elaborateFn(d: in TFnDecl, owner: in String, enabled: in Bool): TFnDecl {
+  val nn: List[Int] = newList()
+  nn.add(firstContractNodeId())
+  elaborateFnWith(d, owner, enabled, nn)
+}
+
+/// `elaborateFn` drawing its made-up node ids from `nextNode`, shared by every function of a package: node ids
+/// are unique within a package.
+pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, nextNode: in List[Int]): TFnDecl {
   val body = match d.body { case Some(b) -> b; case None -> return d }
   if not enabled or d.isGenerator or (d.preconds.count == 0 and d.postconds.count == 0) {
     return d
   }
-  val c = newCCtx()
+  val c = newCCtx(nextNode)
   val sp = body.span
   val stmts: List[TStmt] = newList()
   // `old(e)` snapshots come first, so they hold the state the call began with even when a precondition fails.
@@ -578,9 +584,11 @@ pub func elaborateBundle(
   val res: List[PackageBuild] = newList()
   for pb in bundle {
     val fns: List[TFnDecl] = newList()
+    val nextNode: List[Int] = newList()
+    nextNode.add(firstContractNodeId())
     for f in pb.pkg.funcs {
       val key = match defPathKeyOf(interner, f.sym) { case Some(k) -> k; case None -> "" }
-      fns.add(elaborateFn(f, ownerNameOf(key), enabled))
+      fns.add(elaborateFnWith(f, ownerNameOf(key), enabled, nextNode))
     }
     res.add(
       PackageBuild(
