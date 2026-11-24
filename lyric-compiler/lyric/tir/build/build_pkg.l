@@ -274,6 +274,21 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
       )
     }
   }
+  // Every case of every union and enum the table holds is described, not only the ones a body reaches:
+  // a pass that instantiates a generic union (`Lyric.Tir.Mono`) needs all of its cases.
+  val caseEnv = newBuildEnvSharing(ctx, counter)
+  val caseParents = caseSymbolsByParent(tbl)
+  for pk in mapKeys(caseParents) {
+    match mapGet(caseParents, pk) {
+      case Some(cl) -> {
+        for cs in cl {
+          noteCaseSym(caseEnv, cs)
+        }
+      }
+      case None -> ()
+    }
+  }
+  absorbEnv(caseEnv, syms, sums, sites)
   val all: Map[Int, TSymEntry] = newMap()
   for sk in mapKeys(syms) {
     match mapGet(syms, sk) {

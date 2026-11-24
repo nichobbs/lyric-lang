@@ -594,6 +594,10 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             } else {
               res.add(typeEntry(sid, 0, newList()))
             }
+            case DKUnion(_, _) -> {
+              val n = match parentUnionDeclOf(tbl, sid) { case Some(d) -> unionDeclGenericNames(d).count; case None -> 0 }
+              res.add(typeEntry(sid, n, newList()))
+            }
             case _ -> res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
           }
         }

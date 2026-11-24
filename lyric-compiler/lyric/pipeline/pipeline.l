@@ -82,6 +82,7 @@ import Lyric.PackageMerge as PM
 import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
 import Lyric.Tir.Build as TirBuild
+import Lyric.Tir.Mono as TirMono
 import Lyric.Resolve as Resolve
 import Lyric.IfaceBuild as IfaceBuild
 
@@ -2345,6 +2346,11 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
 }
 
 /// An empty store of carried defaults for a build to share among its packages' options.
+/// The monomorphised TIR of a bundle of built packages (docs/70 §7.2, D500).
+pub func pipeMonoTir(interner: in DefPathInterner, bundle: in List[TirBuild.PackageBuild]): TirMono.MonoResult {
+  TirMono.monoBundle(interner, bundle)
+}
+
 pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
   TirBuild.newDepDefaults()
 }
