@@ -254,3 +254,7 @@ and still holds generics and un-elaborated contracts.
 ## Slice 32: protected-type field initializers
 
 - Measured, not changed: the initializers lower from TIR through `constructProtected` (D531); only a generic-union initializer falls back until 3c. `protected.l` pins it under AddressSanitizer.
+
+## Slice 33: numeric conversions and bitwise methods
+
+- The conversion family, the checked `toNat` and `toChar` and `.and/.or/.xor/.shl/.shr` lower from TIR (D532); `ULong.toLong/toDouble/toFloat` and unsigned to floating point stay on the AST path.
