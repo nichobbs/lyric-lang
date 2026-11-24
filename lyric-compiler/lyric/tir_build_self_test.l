@@ -3844,3 +3844,12 @@ test "an extern type name without brackets stands as written" {
   assertEqual(h.name, "System.Text.StringBuilder", "the name")
   assertEqualInt(h.args.count, 0, "no arguments")
 }
+
+test "an unsuffixed literal too large for Int passes for a UInt parameter as the same literal retyped (D501)" {
+  val c = censusOf(
+    "package App\nfunc f(b: in Byte, u: in UInt): Long { u.toLong() }\nfunc main(): Long { f(200u8, 3000000000) }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
