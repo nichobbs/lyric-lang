@@ -27,8 +27,6 @@ output_assembly = "Ws.dll"
   "src/_kernel/jvm/ws_prims.l",
   "src/_kernel/native/ws_prims.l",
 ]
-# The Undertow endpoint `Web.addWebSocket` mounts on the JVM until docs/73 S7b.
-"Ws.Kernel.Jvm" = "src/_kernel/jvm/ws_kernel.l"
 
 [project.tests]
 "Ws.WsTests"                       = "tests/ws_tests.l"
@@ -41,7 +39,7 @@ output_assembly = "Ws.dll"
 [features]
 default = ["dotnet"]
 dotnet = []   # pure-Lyric RFC 6455 over Std.TcpHost (Ws.Kernel.Net, #778)
-jvm    = []   # the same server on the JVM (docs/73 S7a); Undertow only for Web.addWebSocket endpoints
+jvm    = []   # the same server on the JVM (docs/73 S7a)
 native = []   # the same pure-Lyric RFC 6455 over Std.TcpHost, on --target native
 
 [dependencies]
@@ -52,9 +50,3 @@ native = []   # the same pure-Lyric RFC 6455 over Std.TcpHost, on --target nativ
 # implementation: Ws.Kernel.Net is pure-Lyric RFC 6455 over Std.TcpHost
 # (System.Net.Sockets), not ASP.NET Core WebSockets — see Ws.Kernel.Net's
 # module header (docs/62-jsonrpc-mcp.md §6, #778).
-
-[maven]
-# Ws.Kernel.Jvm, the Undertow endpoint lyric-web's JVM HTTP kernel mounts for
-# `Web.addWebSocket`.  Same coordinate/version as lyric-web's Undertow kernel.
-# Removed with Ws.Kernel.Jvm in docs/73 S7b; `Ws.startServer` does not use it.
-"io.undertow:undertow-core" = "2.3.13.Final"

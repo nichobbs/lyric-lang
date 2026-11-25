@@ -897,8 +897,8 @@ pub func extractMavenJarPaths(jsonOutput: in String): List[String] {
 // The `[maven]` artifacts a JVM build of `manifest` needs: its own entries
 // plus those of every workspace and path dependency it reaches, transitively
 // (docs/38 §4, D073).  A library declares its native boundary once and its
-// consumers need not repeat it: `lyric-ui` gets Undertow through `lyric-web`
-// and `lyric-ws` (#7378).  The nearest declaration of a `group:artifact`
+// consumers need not repeat it: an application gets grpc-java through
+// `lyric-grpc` (#7378).  The nearest declaration of a `group:artifact`
 // wins (the manifest itself, then its direct dependencies, and so on,
 // breadth first, as Maven mediates versions); a farther one naming another
 // version is reported and ignored.  Repositories are the union of every

@@ -1,11 +1,9 @@
 //! benchmarks/http_server/server_web.l - the benchmark server over `lyric-web` (docs/73 S0).
 //!
-//! The same three routes as `server.l`, served through `Web.serve`. On `--target jvm` that is the
-//! Undertow kernel (`Web.Kernel.Runtime`, io.undertow); on dotnet and native it is `Web.serve` over
-//! `Std.HttpServer`. This is the file that gives the Undertow baseline cells, and it has to be built
-//! inside the lyric-web manifest so its Maven dependencies resolve (the driver script does this):
+//! The same three routes as `server.l`, served through `Web.serve` over `Std.HttpServer` on every
+//! target (docs/73 S6, D791). It has to be built inside the lyric-web manifest so the `Lyric.Web`
+//! package resolves (the driver script does this):
 //!
-//!   lyric restore --manifest lyric-web/lyric.toml            # JVM: needs Maven Central
 //!   cp benchmarks/http_server/server_web.l lyric-web/tests/zz_bench_server_web.l   # must sit inside the manifest directory
 //!   (cd lyric-web && lyric build --target jvm tests/zz_bench_server_web.l -o web.jar); rm lyric-web/tests/zz_bench_server_web.l
 //!

@@ -4425,12 +4425,12 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
 // Used to resolve `impl Y for X` interface from the AST.  A single-segment
 // name first checks `externTypes` (populated from the file's `extern type`
 // declarations) so `impl JHandler for MyHandler` with
-// `extern type JHandler = "io.undertow.server.HttpHandler"` resolves to the
+// `extern type JHandler = "io.grpc.ServerCallHandler"` resolves to the
 // real JDK interface instead of a same-package `<pkg>/JHandler` guess — the
 // same resolution `typeExprToJvmExtern` already applies to ordinary type
 // positions (#3334).  Without this, the `implements` clause for an extern
 // interface silently pointed at a nonexistent in-package class, so the JDK
-// caller (e.g. Undertow's `Undertow.builder().setHandler(...)`) could never
+// caller (e.g. grpc-java's `ServerCalls.asyncUnaryCall(...)`) could never
 // dispatch into the Lyric impl (confirmed via `javap`: emits `implements
 // <pkg>/JRunnable` instead of `implements java/lang/Runnable`).
 func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String, externTypes: in Map[String, String]): String {

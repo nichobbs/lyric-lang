@@ -56,7 +56,7 @@ cd "$REPO_ROOT"
 
 # A JVM build resolves the calls of its `[maven]` dependencies from the jars `lyric restore`
 # downloads (docs/70 phase 3a, D695): the builder types a host call from the host's metadata, and
-# without the jars the metadata cannot name an Undertow, Jakarta Mail or gRPC class.  The census
+# without the jars the metadata cannot name a Jakarta Mail or gRPC class.  The census
 # judges a library as a real build does, so each JVM build restores first.
 resolver="${LYRIC_MAVEN_RESOLVER:-$REPO_ROOT/resolver/target/lyric-resolver.jar}"
 if [[ ! -f "$resolver" ]]; then

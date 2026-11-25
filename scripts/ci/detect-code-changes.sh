@@ -215,7 +215,7 @@ fi
 #            tests-jvm is the only CI exercise of those four
 #            libraries' JVM kernels/manifests — Storage.Kernel.Jvm,
 #            Resilience.Kernel.Jvm, Auth.Kernel.Jvm feature
-#            resolution, the lyric-web Undertow end-to-end smoke —
+#            resolution, the lyric-web end-to-end smoke —
 #            none of which the ecosystem-tests matrix duplicates, so
 #            folding them into the plain backend-tree pattern instead
 #            would silently drop that coverage on a PR confined to

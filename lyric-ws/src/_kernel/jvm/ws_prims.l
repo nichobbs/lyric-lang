@@ -1,7 +1,7 @@
 //! Ws.Kernel.Net primitives (JVM) — `ReentrantLock` locks, virtual-thread
 //! background tasks, sleep and handler crash isolation for the RFC 6455
 //! server in `_kernel/net/ws_kernel.l` that `dotnet`, `jvm` and `native`
-//! share (docs/73 slice S7a, replacing the Undertow `Ws.startServer` kernel).
+//! share (docs/73 slice S7a, replacing the earlier JVM `Ws.startServer` kernel).
 //! The dotnet and native twins (`_kernel/net/ws_prims.l`,
 //! `_kernel/native/ws_prims.l`) declare the same names in the same package.
 //!

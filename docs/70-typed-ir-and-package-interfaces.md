@@ -1004,7 +1004,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A read of a `config` block field (`Settings.port`) is a module value named `Pkg::Settings::port`, and a shared enum case written `Enum.Case` (`LogLevel.Info` of two packages' enums) is the case of the enum its node settled at; builder only (D419).
   - An open element of a bracket literal (`None` in `[Some(1), None]`) takes the literal's element type, an untyped literal of `Some`/`None` or `Ok`/`Err` is typed from its payloads, and an open left operand of `==` takes the right one's type (D377).
   - The field defaults of a generic record that mention none of its parameters are carried in its interface (D740); `Alias.Type.f(x)` resolves through an import alias and a `pub use` chain (D741).
-  - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
+  - The self-tests census restores `lyric-grpc`'s Maven dependencies first, so its grpc-java bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 

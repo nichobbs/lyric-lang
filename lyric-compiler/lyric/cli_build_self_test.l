@@ -1078,7 +1078,7 @@ test "buildOneNative: a manifest with [maven] entries near a single file compile
   writeManifestOrPanic(
     Path.join(appDir, "lyric.toml"),
     "[package]\n" + "name = \"AppSfJvmMaven\"\n" + "version = \"0.1.0\"\n" + "\n" + "[maven]\n" +
-      "\"io.undertow:undertow-core\" = \"2.3.13.Final\"\n"
+      "\"io.grpc:grpc-stub\" = \"1.65.0\"\n"
   )
   val looseSrcPath = Path.join(appDir, "loose.l")
   writeFileOrPanic(looseSrcPath, "package AppSfJvmMaven.Loose\n\npub func run(): Int {\n  1\n}\n")

@@ -6,7 +6,7 @@ WebSocket server with pluggable backends and aspect-based security.
 
 ## Platform parity
 
-`Ws.startServer` is one pure-Lyric RFC 6455 server, `Ws.Kernel.Net`, on every target. It sits on the `Std.TcpHost` transport kernel, the seam `Std.HttpServer` and `Std.HttpEngine` use (docs/61 phase 3.3, docs/62 section 6, docs/73 slice S7a, D787). No new NuGet or Maven dependency; not ASP.NET Core WebSockets and not Undertow.
+`Ws.startServer` is one pure-Lyric RFC 6455 server, `Ws.Kernel.Net`, on every target. It sits on the `Std.TcpHost` transport kernel, the seam `Std.HttpServer` and `Std.HttpEngine` use (docs/61 phase 3.3, docs/62 section 6, docs/73 slice S7a, D787). No new NuGet or Maven dependency; not ASP.NET Core WebSockets.
 
 | Feature flag | `Ws.startServer` | Per-target primitives (`src/_kernel/<dir>/ws_prims.l`) | Tested in CI |
 |--------------|------------------|--------------------------------------------------------|--------------|
@@ -17,10 +17,6 @@ WebSocket server with pluggable backends and aspect-based security.
 All three targets share the handshake parser and `Sec-WebSocket-Accept` derivation (`Ws.Handshake`), the frame codec (`Ws.Frame`: masking, control frames, **fragmented multi-frame message reassembly**, UTF-8 validation, size cap), **automatic ping-interval keepalive**, the Origin check, and the `onError` isolation of a failing handler. Concurrency: a background task runs the accept loop, and each connection gets a read-loop task plus a maintenance task (keepalive pings, the idle timeout and the write watchdog, docs/73 S8) and, while frames are waiting to be written, a short-lived drain task; `pingIntervalMs` is read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` rather than threaded through `startServer`'s parameters (see `Ws.Kernel.Net`'s module header).
 
 The loopback suite (`tests/ws_e2e_tests.l`, `Ws.WsE2eTests`) dials the real server over `Std.TcpHost` with a hand-written RFC 6455 client: handshake, text and binary echo, a fragmented message, ping and pong, close handshake, registry state, `send` and `broadcast` from outside callbacks, the Origin policy (same-origin, cross-origin, `allowedOrigins`), a throwing handler, 250 simultaneous connections, and the routing of endpoint and server registries. A throwing handler cannot be caught on native (no unwinding, D-N-003), so that one check is a no-op there.
-
-### What is still Undertow, and when it goes
-
-`Web.addWebSocket` on the JVM mounts a listener-less endpoint (`Ws.createEndpoint`) on `lyric-web`'s Undertow listener, through `Ws.Kernel.Jvm.endpointHandler`. That is all `Ws.Kernel.Jvm` does now, and it is why `lyric.toml` still has a `[maven]` table (`io.undertow:undertow-core` 2.3.13.Final, the same coordinate as `lyric-web`). It keeps the gaps of the old JVM kernel for those endpoints: fragmented messages are not reassembled, no ping keepalive is sent, and text decoding is lenient UTF-8. docs/73 slice S7b moves `Web.addWebSocket` to `Ws.Kernel.Net.adoptConnection` (as on dotnet and native) once `lyric-web` serves HTTP through the shared pure-Lyric server (S4, S6), and then deletes `Ws.Kernel.Jvm` and the `[maven]` table. Until then a `Ws.startServer` registry and a `createEndpoint` registry are told apart by their handle, so every `Ws` call reaches the right kernel.
 
 ### Limits, slow consumers and wss (docs/73 S8, D792 to D794)
 
@@ -67,8 +63,7 @@ val router = Web.addWebSocket(Web.create(), endpoint)
 
 `endpoint.registry` is a `NativeRegistry` like `startServer`'s. On dotnet
 the HTTP server hands the connection to `Ws.Kernel.Net.adoptConnection`; on
-the JVM `Ws.Kernel.Jvm.endpointHandler` is mounted on the Undertow listener
-(until docs/73 S7b).
+the JVM and native it does so through `Std.HttpServer.takeConnection`.
 Both apply the same `WsServerOptions` Origin check as `startServer`.
 
 ## Quick start
@@ -97,7 +92,7 @@ Ws.register(registry, "/chat", func(ctx: in WsContext): Unit {
 
 ## Backends
 
-`Ws.startServer` is the pure-Lyric RFC 6455 server over `Std.TcpHost` (`Ws.Kernel.Net`) on dotnet, the JVM and native. Undertow (`Ws.Kernel.Jvm`) remains only for `Web.addWebSocket` endpoints on the JVM until docs/73 S7b. See "Platform parity" above.
+`Ws.startServer` is the pure-Lyric RFC 6455 server over `Std.TcpHost` (`Ws.Kernel.Net`) on dotnet, the JVM and native. See "Platform parity" above.
 
 ## Core types and functions
 

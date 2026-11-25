@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # jvm-ecosystem-suites.sh — run the pure-Lyric ecosystem library suites on
-# --target jvm, one `lyric test --manifest` each.  Every one of these except
-# `web` needs no Maven restore; `web` depends on `io.undertow:undertow-core`
-# (see lyric-web/lyric.toml's `[maven]` table) and is restored first.
+# --target jvm, one `lyric test --manifest` each.  Only the libraries with a
+# `[maven]` table (mail, grpc, db) are restored first.
 #
 #   bash scripts/ci/jvm-ecosystem-suites.sh
 #
@@ -15,7 +14,7 @@
 #   health      runCheckIsolated's bounded-wait timeout enforcement + panic
 #               isolation, both real on jvm now via Std.Task.runWithin (#7461)
 #   generator-sdk  slice `.toArray()`, literal `String.split` (#7480, #7511)
-#   web         Web.Kernel.Runtime's Undertow server, dispatch, aspects,
+#   web         Web.Kernel.Runtime over the shared Std.HttpServer driver, dispatch, aspects,
 #               worker loop, TLS/mTLS round trip (#7578)
 #   i18n        I18n.Kernel handle-based translation store, cross-package
 #               bare-name resolution between the `I18n` and `I18n.Kernel`
@@ -95,15 +94,14 @@ trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web`, `mail` (Jakarta Mail, #7462), `grpc` (grpc-java),
-  # `ws` (Undertow, for the `Web.addWebSocket` endpoint until docs/73 S7b) and `db`
+  # `mail` (Jakarta Mail, #7462), `grpc` (grpc-java) and `db`
   # (sqlite-jdbc, PostgreSQL JDBC) need
   # their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
   case "$lib" in
-    web|mail|grpc|ws|db)
+    mail|grpc|db)
       runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
       ;;
   esac

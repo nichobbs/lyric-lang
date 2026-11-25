@@ -5,8 +5,8 @@
 //! docs/62-jsonrpc-mcp.md §6, #778, docs/73 S7a) on dotnet, the JVM and
 //! native, with fragmented multi-frame message reassembly and automatic ping
 //! keepalive (see `Ws.Kernel.Net`'s header).  A `createEndpoint` endpoint
-//! served by `lyric-web` on the JVM is still Undertow-backed until docs/73 S7b
-//! (see `Ws.Kernel.Jvm`'s header for the gaps that carries).
+//! served by `lyric-web` is the same kernel, handed each upgraded connection
+//! by `Std.HttpServer.takeConnection`.
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
@@ -50,19 +50,13 @@ import Std.Collections
 import Std.Tls as Tls
 import Ws.Frame
 import Ws.Kernel.Net as WsKernelNet
-import Ws.Kernel.Jvm as WsKernelJvm
 
 // Kernel boundary: every BCL / JDK interaction goes through a platform
 // kernel.  `Ws.Kernel.Net` is the pure-Lyric RFC 6455 server over
-// `Std.TcpHost` and runs on every target; it serves `startServer` and the
-// rate limiter everywhere.  Endpoints (`createEndpoint`, used by
-// `Web.addWebSocket`) are `Ws.Kernel.Net` registries on every target since
-// docs/73 S6: `lyric-web` on the JVM serves through `Std.HttpServer` and hands
-// an upgrade over with `takeConnection`.  `Ws.Kernel.Jvm`'s Undertow endpoint
-// handler is therefore no longer reachable; its `ownsHandle` routing below
-// stays until docs/73 S7b deletes the package.  A registry handle says which
-// kernel owns it (`WsKernelJvm.ownsHandle`), so the `kernelXxx` wrappers
-// route by handle on the JVM.  This file is the
+// `Std.TcpHost` and runs on every target; it serves `startServer`, the
+// rate limiter and the endpoints (`createEndpoint`, used by
+// `Web.addWebSocket`, which hands an upgrade over with `takeConnection`).
+// This file is the
 // public surface of the library; it must not declare its own `@axiom`
 // stubs (doing so previously shadowed the kernel boundary and broke
 // the trust-boundary audit — see lyric-lang #739).  The kernels only ever
@@ -124,92 +118,30 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
   WsKernelNet.checkRateLimit(key, messagesPerMinute, burstSize)
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
   WsKernelNet.stopServer(registryHandle)
 }
 
-@cfg(feature = "jvm")
-func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.stopServer(registryHandle)
-  } else {
-    WsKernelNet.stopServer(registryHandle)
-  }
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelSend(
   registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
 ): Result[Unit, String] {
   WsKernelNet.send(registryHandle, connectionId, messageType, data)
 }
 
-@cfg(feature = "jvm")
-func kernelSend(
-  registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
-): Result[Unit, String] {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.send(registryHandle, connectionId, messageType, data)
-  } else {
-    WsKernelNet.send(registryHandle, connectionId, messageType, data)
-  }
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
   WsKernelNet.broadcast(registryHandle, messageType, data)
 }
 
-@cfg(feature = "jvm")
-func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.broadcast(registryHandle, messageType, data)
-  } else {
-    WsKernelNet.broadcast(registryHandle, messageType, data)
-  }
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
   WsKernelNet.close(registryHandle, connectionId, code, reason)
 }
 
-@cfg(feature = "jvm")
-func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.close(registryHandle, connectionId, code, reason)
-  } else {
-    WsKernelNet.close(registryHandle, connectionId, code, reason)
-  }
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelConnectionCount(registryHandle: in Int): Int {
   WsKernelNet.connectionCount(registryHandle)
 }
 
-@cfg(feature = "jvm")
-func kernelConnectionCount(registryHandle: in Int): Int {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.connectionCount(registryHandle)
-  } else {
-    WsKernelNet.connectionCount(registryHandle)
-  }
-}
-
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
   WsKernelNet.isConnected(registryHandle, connectionId)
-}
-
-@cfg(feature = "jvm")
-func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
-  if WsKernelJvm.ownsHandle(registryHandle) {
-    WsKernelJvm.isConnected(registryHandle, connectionId)
-  } else {
-    WsKernelNet.isConnected(registryHandle, connectionId)
-  }
 }
 
 // ─── Connection identity ──────────────────────────────────────────────────────

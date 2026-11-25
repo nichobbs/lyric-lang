@@ -291,8 +291,8 @@ func buildServerSslContext(identity: in Identity, minVersion: in TlsVersion): JS
 /// Exposed so another JVM server kernel in this project can reuse the
 /// `KeyManagerFactory`/`TrustManagerFactory`/`KeyStore`/`java.lang.reflect`
 /// extern wiring above (module header) instead of re-declaring the whole
-/// boundary a second time; today only `Std.TcpHost` does (lyric-web's Undertow
-/// kernel, the other user until docs/73 S6, is gone). A context built by the
+/// boundary a second time; today only `Std.TcpHost` does (lyric-web's former
+/// Maven-backed kernel, the other user until docs/73 S6, is gone). A context built by the
 /// non-mTLS `serverSslContextFromConfig` carries no client-cert trust
 /// configuration, which is inert on its own: the per-server client-auth wiring
 /// (`SSLSocket.setNeedClientAuth`) is each caller's own responsibility to set.
@@ -370,7 +370,7 @@ pub func serverSslContextFromConfigMtls(
 /// with: `Std.TcpHost` is another package and binds the returned value to its
 /// own `extern type = "javax.net.ssl.SSLContext"`, which `internal` would hide
 /// from it (D437). Not part of the stable surface. Its other user, lyric-web's
-/// Undertow kernel, was deleted in docs/73 S6.
+/// former Maven-backed kernel, was deleted in docs/73 S6.
 @experimental
 pub func ServerSslContext.rawContext(s: in ServerSslContext): JSSLContext {
   s.ctx
