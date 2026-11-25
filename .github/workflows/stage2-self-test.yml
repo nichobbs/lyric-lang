@@ -230,6 +230,26 @@ jobs:
           done
           echo "Stage-2 JVM self-tests ran (representative subset; see workflow comments for what is excluded)." >> "$GITHUB_STEP_SUMMARY"
 
+      # docs/72 slice 2 (D801): the HTTP/2 engine's seeded property and fuzz
+      # suite, long run. The PR gate (scripts/ci/h2conn-tests.sh) runs it at 40
+      # iterations per property from fixed seeds; here each night runs 3000 per
+      # property from a base seed derived from the date, so the seed space
+      # explored grows without ever making a PR run flaky. A failure names its
+      # seed; replay with LYRIC_H2_FUZZ_ITERS=1 LYRIC_H2_FUZZ_SEED=<seed>.
+      - name: HTTP/2 engine fuzz long run against stage 2 (dotnet and jvm)
+        id: selftest_h2fuzz
+        working-directory: ${{ github.workspace }}
+        env:
+          LYRIC_STDLIB_BIN: ${{ github.workspace }}/.bootstrap/stage2/lib
+        run: |
+          set -euo pipefail
+          lyric_bin="$PWD/.bootstrap/stage2/bin/lyric"
+          export LYRIC_H2_FUZZ_ITERS=3000
+          export LYRIC_H2_FUZZ_SEED="$(( $(date -u +%j | sed 's/^0*//') * 100000 ))"
+          echo "H2 fuzz base seed: ${LYRIC_H2_FUZZ_SEED}" >> "$GITHUB_STEP_SUMMARY"
+          "$lyric_bin" test lyric-stdlib/tests/http_h2fuzz_tests.l
+          "$lyric_bin" test --target jvm lyric-stdlib/tests/http_h2fuzz_tests.l
+
       # Mirrors seed-candidacy.yml's failure-issue-filing step (#5161): a
       # nightly red Actions run alone is easy to miss (nobody watches a
       # schedule the way they watch an open PR). Scoped to the steps that
@@ -243,7 +263,8 @@ jobs:
             steps.verify_stage2_runnable.outcome == 'failure' ||
             steps.stage_selfhosted_bundle.outcome == 'failure' ||
             steps.selftest_dotnet.outcome == 'failure' ||
-            steps.selftest_jvm.outcome == 'failure'
+            steps.selftest_jvm.outcome == 'failure' ||
+            steps.selftest_h2fuzz.outcome == 'failure'
           )
         shell: bash
         env:
