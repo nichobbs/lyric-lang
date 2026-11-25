@@ -19258,6 +19258,18 @@ func registerTirInstances(
   }
 }
 
+/// The type arguments of each monomorphised instance, by the instance's symbol.
+func instArgsOf(infos: in Map[Int, TirMono.InstanceInfo]): Map[Int, List[Tir.Ty]] {
+  val out: Map[Int, List[Tir.Ty]] = newMap()
+  for id in mapKeys(infos) {
+    match mapGet(infos, id) {
+      case Some(ii) -> out.add(id, ii.args)
+      case None -> ()
+    }
+  }
+  out
+}
+
 /// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR
 /// name of the AST copy stands for the instance, so a call from TIR reaches it, and the copy is lowered
 /// from the instance's TIR body (`tirTry` finds it by `instFns`).  An instance whose AST copy is not
@@ -19883,6 +19895,7 @@ func lowerWithTuples(
       enumCases = maps.enumCases,
       distincts = maps.distincts,
       distinctInfos = maps.distinctInfos,
+      instArgs = instArgsOf(maps.instInfos),
       tuples = maps.tuples,
       funcs = maps.funcs,
       lists = maps.lists,
