@@ -17,7 +17,12 @@ pub record Walker {
   post: (TExpr) -> TExpr
   /// Offered each statement of a block before it is walked: `Some(stmts)` replaces it with those statements (which
   /// the walk does not visit again), `None` walks it as usual.
-  preStmt: (TStmt) -> Option[List[TStmt]] = { s: TStmt -> None }
+  preStmt: (TStmt) -> Option[List[TStmt]]
+}
+
+/// A walker with the two expression hooks and no statement hook.
+pub func newWalker(pre: in (TExpr) -> Option[TExpr], post: in (TExpr) -> TExpr): Walker {
+  Walker(pre = pre, post = post, preStmt = { s: TStmt -> None })
 }
 
 func wOptExpr(w: in Walker, o: in Option[TExpr]): Option[TExpr] {

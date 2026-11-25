@@ -51,7 +51,7 @@ func hLocal(c: in HCtx, ty: in Ty): LocalDecl {
 func hasAwait(e: in TExpr): Bool {
   val found: List[Bool] = newList()
   found.add(false)
-  val w = Walker(pre = { x: TExpr -> awaitPre(x) }, post = { x: TExpr -> awaitPost(found, x) })
+  val w = newWalker(pre = { x: TExpr -> awaitPre(x) }, post = { x: TExpr -> awaitPost(found, x) })
   walkExpr(w, e)
   found[0]
 }

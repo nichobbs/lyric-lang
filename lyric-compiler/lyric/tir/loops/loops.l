@@ -169,7 +169,7 @@ func patLocals(p: in TPat, acc: in List[Int]): Unit {
 func readsAnyLocal(e: in TExpr, ids: in List[Int]): Bool {
   val found: List[Bool] = newList()
   found.add(false)
-  val w = Walker(pre = { x: TExpr -> None }, post = { x: TExpr -> noteLocal(found, ids, x) })
+  val w = newWalker(pre = { x: TExpr -> None }, post = { x: TExpr -> noteLocal(found, ids, x) })
   walkExpr(w, e)
   found[0]
 }

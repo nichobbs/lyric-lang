@@ -57,7 +57,7 @@ func assertLowered(l: in Lowered, what: in String): Unit {
 func countProps(pb: in PackageBuild): Int {
   val acc: List[Int] = newList()
   acc.add(0)
-  val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> countIfProp(acc, e) })
+  val w = newWalker(pre = { e: TExpr -> None }, post = { e: TExpr -> countIfProp(acc, e) })
   for f in pb.pkg.funcs {
     match f.body {
       case Some(b) -> {
