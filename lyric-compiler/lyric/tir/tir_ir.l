@@ -392,6 +392,11 @@ pub record TFnDecl {
   /// An `async func` whose body yields: `ret` is the type of each yielded value and the body is the
   /// generator's code, a `Unit` block, not a value of `ret`.
   isGenerator: Bool = false
+  /// The source text of each `requires:` and `ensures:` clause as the formatter renders it, parallel to `preconds` and
+  /// `postconds`: what a contract violation message prints (`PreconditionViolated: Owner.f requires x > 0`).  TIR has no
+  /// source text of its own; the builder records it from the clause.  Empty for a declaration read from an interface.
+  precondTexts: List[String] = newList()
+  postcondTexts: List[String] = newList()
 }
 
 /// A callable's signature, as a call checks against it.

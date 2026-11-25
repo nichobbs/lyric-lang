@@ -22,6 +22,7 @@ import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Iface
+import Lyric.Fmt as Fmt
 
 /// The builder's state for one function: the lexical scopes of locals, the
 /// next local number, the I0002 messages, and the kinds it has no case for.
@@ -4096,6 +4097,8 @@ record FnCore {
   post: List[TExpr]
   body: Option[TExpr]
   barrier: Option[TExpr] = None
+  preTexts: List[String] = newList()
+  postTexts: List[String] = newList()
 }
 
 /// `mode` 1 builds the signature half alone (symbol, type parameters, parameters, return type),
@@ -4237,12 +4240,30 @@ func buildFnCore(
   }
   val pre: List[TExpr] = newList()
   val post: List[TExpr] = newList()
+  val preTexts: List[String] = newList()
+  val postTexts: List[String] = newList()
   var barrier: Option[TExpr] = None
   if ok and not sigOnly {
     for c in fn.contracts {
       match c {
-        case CCRequires(x, _) -> match buildExpr(env, x) { case Some(t) -> pre.add(t); case None -> { ok = false } }
-        case CCEnsures(x, _) -> match buildExpr(env, x) { case Some(t) -> post.add(t); case None -> { ok = false } }
+        case CCRequires(x, _) -> match buildExpr(env, x) {
+          case Some(t) -> {
+            pre.add(t)
+            preTexts.add(Fmt.exprInline(0, x))
+          }
+          case None -> {
+            ok = false
+          }
+        }
+        case CCEnsures(x, _) -> match buildExpr(env, x) {
+          case Some(t) -> {
+            post.add(t)
+            postTexts.add(Fmt.exprInline(0, x))
+          }
+          case None -> {
+            ok = false
+          }
+        }
         case CCWhen(x, _) -> match buildExpr(env, x) {
           case Some(t) -> {
             barrier = Some(value = t)
@@ -4330,7 +4351,9 @@ func buildFnCore(
         pre = pre,
         post = post,
         body = None,
-        barrier = None
+        barrier = None,
+        preTexts = preTexts,
+        postTexts = postTexts
       )
     )
   }
@@ -4344,7 +4367,9 @@ func buildFnCore(
         pre = pre,
         post = post,
         body = Some(value = b),
-        barrier = barrier
+        barrier = barrier,
+        preTexts = preTexts,
+        postTexts = postTexts
       )
     )
     case None -> None
@@ -4434,7 +4459,9 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           span = fn.span,
           barrier = c.barrier,
           ownerParamCount = ownerCount,
-          isGenerator = functionIsGenerator(fn)
+          isGenerator = functionIsGenerator(fn),
+          precondTexts = c.preTexts,
+          postcondTexts = c.postTexts
         )
       )
     }
