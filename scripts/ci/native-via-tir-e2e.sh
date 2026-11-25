@@ -684,6 +684,22 @@ test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
 
+# `List.set`, wrapping integer methods and `default()` (docs/70 phase 4a part 8, D855): every function from TIR, the
+# same output.
+wsrc=scripts/ci/native-via-tir/wrapping.l
+"$lyric_bin" build --target native "$wsrc" -o "$work/w_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$wsrc" -o "$work/w_tir" 2> "$work/w_census.txt" >/dev/null
+cat "$work/w_census.txt"
+"$work/w_ast" > "$work/w_ast.out"
+"$work/w_tir" > "$work/w_tir.out"
+diff -u "$work/w_ast.out" "$work/w_tir.out"
+printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n' | diff -u - "$work/w_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/w_census.txt" || {
+  echo "::error::expected every function of wrapping.l to be lowered from TIR"
+  exit 1
+}
+echo "wrapping: ok"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l

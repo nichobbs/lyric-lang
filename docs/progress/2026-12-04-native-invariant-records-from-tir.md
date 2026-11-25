@@ -10,3 +10,7 @@ Decision: D854.
 ## Remaining
 
 Generic and protected invariant records, then the other items on #8613's inventory.
+
+## Also (D855)
+
+`List.set`, the wrapping integer methods and `default()` lower from TIR; `scripts/ci/native-via-tir/wrapping.l` and a `wrapping` section in `native-via-tir-e2e.sh` pin them.
