@@ -557,8 +557,6 @@ func unitVal(): Val {
   Val(ty = NVoid, value = NUndef(ty = NVoid))
 }
 
-/// Record why the function cannot be lowered and hand back a placeholder so
-/// lowering can continue to the end; the function is discarded afterwards.
 func listContainsInt(xs: in List[Int], x: in Int): Bool {
   for y in xs {
     if y == x {
@@ -594,6 +592,8 @@ func renderTyIn(env: in TirLowerEnv, t: in Ty): String {
   }
 }
 
+/// Record why the function cannot be lowered and hand back a placeholder so
+/// lowering can continue to the end; the function is discarded afterwards.
 func unsupported(c: in LCtx, why: in String): Val {
   c.problems.add(why)
   Val(ty = NI32, value = NUndef(ty = NI32))
@@ -1221,6 +1221,16 @@ func tyLowers(env: in TirLowerEnv, t: in Ty): Bool {
 /// Elements the list kernels store in a 64-bit slot: scalars and reference-counted values
 /// (the container retains the latter).  By-value aggregates are boxed by the AST path and
 /// stay there.
+/// Whether a list or map holds `nt` as an element or value, as `listType` and `mapType` decide it.
+pub func tirListElemOk(nt: in NType): Bool {
+  listElemOk(nt)
+}
+
+/// Whether `nt` is a map key the lowering supports.
+pub func tirMapKeyOk(nt: in NType): Bool {
+  isStringN(nt) or isScalarN(nt)
+}
+
 func listElemOk(nt: in NType): Bool {
   match nt {
     case NVoid -> false

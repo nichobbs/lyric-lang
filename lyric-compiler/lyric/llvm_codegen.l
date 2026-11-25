@@ -19052,42 +19052,12 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
   )
 }
 
-/// Register the layouts of the generic records and unions the monomorphiser instantiated (docs/70
-/// section 7.2, D500).  The layout is the one the AST path gives the same instantiation: the code
-/// generator instantiates the generic over the argument types (`instantiateGenericUnionOpt`), so a
-/// function lowered from TIR and one lowered from the AST agree on the LLVM type of `Option[Int]`.
-/// An instance with an argument the registration does not cover stays unregistered.
-/// A type argument of a generic instance as the code generator lays it out: `LlvmTir.tirInstArgN`'s
-/// scalars and known types, and the tuples and slices of those.
-func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NType] {
-  match t {
-    case Tir.TTuple(es) -> {
-      val tys: List[NType] = newList()
-      for e in es {
-        match tirInstArg(ctx, known, e) {
-          case Some(n) -> tys.add(n)
-          case None -> return None
-        }
-      }
-      Some(value = recPtrType(tupleRecInfo(ctx, tys)))
-    }
-    case Tir.TSlice(e) -> match tirInstArg(ctx, known, e) {
-      case Some(n) -> Some(value = listNType(ctx, n))
-      case None -> None
-    }
-    case _ -> LlvmTir.tirInstArgN(known, t)
-  }
-}
-
-func registerTirInstances(
-  ctx: in Ctx,
-  inst: in LlvmTir.TirUnitInput,
-  invariantRecs: in Map[String, Bool],
+/// The LLVM type of each record, union and enum laid out so far, by symbol.
+func tirKnownTypes(
   recs: in Map[Int, LlvmTir.TirRecLayout],
   unions: in Map[Int, LlvmTir.TirUnionLayout],
   enums: in Map[Int, Bool],
-  cases: in Map[Int, LlvmTir.TirCaseRef],
-): Unit {
+): Map[Int, NType] {
   val known: Map[Int, NType] = newMap()
   for id in mapKeys(recs) {
     match mapGet(recs, id) {
@@ -19104,6 +19074,66 @@ func registerTirInstances(
   for id in mapKeys(enums) {
     known.add(id, NI32)
   }
+  known
+}
+
+/// A type argument of a generic instance as the code generator lays it out: `LlvmTir.tirInstArgN`'s
+/// scalars and known types, and the tuples, slices, lists and maps of those.
+func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NType] {
+  match t {
+    case Tir.TTuple(es) -> {
+      val tys: List[NType] = newList()
+      for e in es {
+        match tirInstArg(ctx, known, e) {
+          case Some(n) -> tys.add(n)
+          case None -> return None
+        }
+      }
+      Some(value = recPtrType(tupleRecInfo(ctx, tys)))
+    }
+    case Tir.TSlice(e) -> match tirInstArg(ctx, known, e) {
+      case Some(n) -> Some(value = listNType(ctx, n))
+      case None -> None
+    }
+    case Tir.TExtern(h) -> if h.name == "System.Collections.Generic.List`1" and h.args.count == 1 {
+      match tirInstArg(ctx, known, h.args[0]) {
+        case Some(n) -> if LlvmTir.tirListElemOk(n) { Some(value = listNType(ctx, n)) } else { None }
+        case None -> None
+      }
+    } else if h.name == "System.Collections.Generic.Dictionary`2" and h.args.count == 2 {
+      match tirInstArg(ctx, known, h.args[0]) {
+        case Some(kn) -> match tirInstArg(ctx, known, h.args[1]) {
+          case Some(vn) -> if LlvmTir.tirMapKeyOk(kn) and LlvmTir.tirListElemOk(vn) {
+            Some(value = mapNType(ctx, kn, vn))
+          } else {
+            None
+          }
+          case None -> None
+        }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> LlvmTir.tirInstArgN(known, t)
+  }
+}
+
+/// Register the layouts of the generic records and unions the monomorphiser instantiated (docs/70
+/// section 7.2, D500).  The layout is the one the AST path gives the same instantiation: the code
+/// generator instantiates the generic over the argument types (`instantiateGenericUnionOpt`), so a
+/// function lowered from TIR and one lowered from the AST agree on the LLVM type of `Option[Int]`.
+/// An instance with an argument the registration does not cover stays unregistered.
+func registerTirInstances(
+  ctx: in Ctx,
+  inst: in LlvmTir.TirUnitInput,
+  invariantRecs: in Map[String, Bool],
+  recs: in Map[Int, LlvmTir.TirRecLayout],
+  unions: in Map[Int, LlvmTir.TirUnionLayout],
+  enums: in Map[Int, Bool],
+  cases: in Map[Int, LlvmTir.TirCaseRef],
+): Unit {
+  val known = tirKnownTypes(recs, unions, enums)
   var progress = true
   var rounds = 0
   while progress and rounds < 32 {
@@ -19669,22 +19699,7 @@ func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool
   val gkey = ipkg + "." + bare + "/" + decl.params.count.toString()
   val fd = match mapGet(ctx.genericFnDefs, gkey) { case Some(x) -> x; case None -> return false }
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(x) -> x; case None -> return false }
-  val known: Map[Int, NType] = newMap()
-  for id in mapKeys(maps.recs) {
-    match mapGet(maps.recs, id) {
-      case Some(l) -> known.add(id, l.ty)
-      case None -> ()
-    }
-  }
-  for id in mapKeys(maps.unions) {
-    match mapGet(maps.unions, id) {
-      case Some(l) -> known.add(id, l.ty)
-      case None -> ()
-    }
-  }
-  for id in mapKeys(maps.enums) {
-    known.add(id, NI32)
-  }
+  val known = tirKnownTypes(maps.recs, maps.unions, maps.enums)
   val envTys: List[NType] = newList()
   for a in ii.args {
     match tirInstArg(ctx, known, a) {
