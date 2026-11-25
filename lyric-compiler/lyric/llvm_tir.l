@@ -1412,7 +1412,7 @@ func funcType(env: in TirLowerEnv, t: in Ty): Option[NType] {
       case _ -> return None
     }
     match tyToN(env, p.ty) {
-      case Some(nt) -> match nt { case NVoid -> return None; case _ -> ptys.add(nt) }
+      case Some(nt) -> ptys.add(nt)
       case None -> return None
     }
   }
