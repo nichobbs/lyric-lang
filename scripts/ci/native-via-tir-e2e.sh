@@ -268,6 +268,27 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/un_tir.ll" lyric-rt/
 diff -u "$work/un_tir.out" "$work/un_asan.out"
 echo "unit under AddressSanitizer: clean"
 
+# Range-checked distinct types (docs/70 phase 4a, D538): `T.from`, derived arithmetic and a final
+# out-of-range panic with the managed targets' message.
+rgsrc=scripts/ci/native-via-tir/ranged.l
+"$lyric_bin" build --target native "$rgsrc" -o "$work/rg_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$rgsrc" -o "$work/rg_tir" 2> "$work/rg_census.txt" >/dev/null
+cat "$work/rg_census.txt"
+"$work/rg_ast" > "$work/rg_ast.out" 2> "$work/rg_ast.err" || true
+"$work/rg_tir" > "$work/rg_tir.out" 2> "$work/rg_tir.err" || true
+diff -u "$work/rg_ast.out" "$work/rg_tir.out"
+printf '1000\n750\n150\ntrue\ntrue\n5\n1\n' | diff -u - "$work/rg_tir.out"
+grep -q 'Cents.from: value out of range \[0, 1000\]' "$work/rg_tir.err" || { echo "::error::the TIR build did not panic with the range message"; cat "$work/rg_tir.err"; exit 1; }
+grep -q 'Cents.from: value out of range \[0, 1000\]' "$work/rg_ast.err" || { echo "::error::the AST build did not panic with the range message"; exit 1; }
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/rg_census.txt" || {
+  echo "::error::expected every function of ranged.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/rg_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/rg_asan"
+"$work/rg_asan" > "$work/rg_asan.out" 2> /dev/null || true
+diff -u "$work/rg_tir.out" "$work/rg_asan.out"
+echo "ranged distinct types under AddressSanitizer: clean"
+
 # String methods that are one runtime call, numeric conversions and `panic`.
 bsrc=scripts/ci/native-via-tir/builtins.l
 "$lyric_bin" build --target native "$bsrc" -o "$work/b_ast" >/dev/null

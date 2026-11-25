@@ -1199,7 +1199,14 @@ func compoundElem(
     return None
   }
   match assignOp(op) {
-    case Some(iop) -> Some(value = rangeCheckedResult(c, placeTy, lowerBinary(c, iop, opTy(c, placeTy), nt, cur.value, rhs.value, line), line))
+    case Some(iop) -> Some(
+      value = rangeCheckedResult(
+        c,
+        placeTy,
+        lowerBinary(c, iop, opTy(c, placeTy), nt, cur.value, rhs.value, line),
+        line
+      )
+    )
     case None -> None
   }
 }
@@ -1579,9 +1586,7 @@ func rangeCheckedResult(c: in LCtx, resultTy: in Ty, v: in Val, line: in Int): V
   match resultTy {
     case TNamed(sym, args) -> if args.count == 0 {
       match mapGet(c.env.distinctInfos, sym.id) {
-        case Some(d) -> if d.hasRange {
-          trapIf(c, distinctOutOfRange(c, d, v), distinctRangeMessage(d), line)
-        }
+        case Some(d) -> if d.hasRange { trapIf(c, distinctOutOfRange(c, d, v), distinctRangeMessage(d), line) }
         case None -> ()
       }
     }
@@ -1603,7 +1608,13 @@ func distinctOutOfRange(c: in LCtx, d: in TirDistinct, v: in Val): NValue {
     c.insns.add(NFCmp(dest = geLo, pred = FOge, ty = d.ty, a = v.value, b = NLitFloat(v = d.loF, ty = d.ty)))
     val inHi = tmp(c)
     c.insns.add(
-      NFCmp(dest = inHi, pred = if d.hiExclusive { FOlt } else { FOle }, ty = d.ty, a = v.value, b = NLitFloat(v = d.hiF, ty = d.ty))
+      NFCmp(
+        dest = inHi,
+        pred = if d.hiExclusive { FOlt } else { FOle },
+        ty = d.ty,
+        a = v.value,
+        b = NLitFloat(v = d.hiF, ty = d.ty)
+      )
     )
     val inRange = tmp(c)
     c.insns.add(NAnd(dest = inRange, ty = NI1, a = NLocal(name = geLo), b = NLocal(name = inHi)))
@@ -5230,7 +5241,12 @@ func assignSlot(c: in LCtx, slot: in Slot, placeTy: in Ty, op: in AssignKind, va
       val cur = tmp(c)
       c.insns.add(NLoad(dest = cur, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
       val line = value.span.startPos.line
-      val res = rangeCheckedResult(c, placeTy, lowerBinary(c, iop, opTy(c, placeTy), slot.ty, NLocal(name = cur), rhs.value, line), line)
+      val res = rangeCheckedResult(
+        c,
+        placeTy,
+        lowerBinary(c, iop, opTy(c, placeTy), slot.ty, NLocal(name = cur), rhs.value, line),
+        line
+      )
       c.insns.add(NStore(ty = slot.ty, value = res.value, ptr = NLocal(name = slot.ptr)))
     }
   }
