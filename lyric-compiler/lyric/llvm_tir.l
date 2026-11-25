@@ -670,28 +670,6 @@ func opTy(c: in LCtx, t: in Ty): Ty {
 }
 
 /// Whether the type of an expression lowers to `nt`.
-/// The type an operator on `t` follows: the primitive a distinct type wraps, else `t`.
-func opTy(c: in LCtx, t: in Ty): Ty {
-  match t {
-    case TNamed(sym, args) -> if args.count == 0 {
-      match mapGet(c.env.distinctInfos, sym.id) {
-        case Some(d) -> match d.ty {
-          case NI8 -> TPrim(kind = TPByte)
-          case NI32 -> TPrim(kind = if d.unsigned { TPUInt } else { TPInt })
-          case NI64 -> TPrim(kind = if d.unsigned { TPULong } else { TPLong })
-          case NFloat -> TPrim(kind = TPFloat)
-          case NDouble -> TPrim(kind = TPDouble)
-          case _ -> t
-        }
-        case None -> t
-      }
-    } else {
-      t
-    }
-    case _ -> t
-  }
-}
-
 func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
   match tyToN(c.env, ty) {
     case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
