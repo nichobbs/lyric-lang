@@ -1,13 +1,13 @@
 //! tests/server_tests.l — `Grpc.startHandleAt` / `stop` against the library's
-//! own client, on both targets (#8642, D287).
+//! own client, on both targets (#8642, D287, D804).
 //!
 //! Every test registers real handlers, starts a server on an ephemeral
 //! loopback port, and calls it through `Grpc.callUnary` / `Grpc.openServerStream`.
-//! The client under test is the platform's own gRPC stack (`Grpc.Net.Client` on
-//! dotnet, grpc-java on the JVM), so this also checks the server against an
-//! implementation it does not share code with on dotnet, where the server is
-//! pure Lyric over `Std.HttpEngine.H2Conn`.
-@cfg(not(feature = "native"))
+//! The client is `Grpc.Client` (pure Lyric, D802), or the SDK kernels under the
+//! `legacy-client` feature. The server is `Grpc.Server`, pure Lyric over
+//! `Std.HttpEngine.H2Conn` on both targets. Independent clients are in
+//! `server_interop_dotnet_tests.l` and `server_interop_jvm_tests.l`; TLS,
+//! compression, deadlines and panics in `server_h2_tests.l`.
 @test_module
 package Grpc.ServerTests
 
@@ -330,7 +330,7 @@ test "stop: calls after a stop are UNAVAILABLE, and a second stop is a no-op" {
   Grpc.stop(server, 1000)
   match Grpc.callUnary(ch, "test.Echo", "Echo", bytesOf([1]), Grpc.defaultOptions()) {
     case Std.Core.Ok(_) -> panic("expected the stopped server to refuse the call")
-    case Std.Core.Err(st) -> assertTrue(st.code == GrpcStatusCode.Unavailable, "code is Unavailable")
+    case Std.Core.Err(st) -> assertTrue(st.code == GrpcStatusCode.Unavailable, "code is Unavailable: " + st.message)
   }
   Grpc.closeChannel(ch)
 }

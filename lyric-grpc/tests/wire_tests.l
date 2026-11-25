@@ -208,6 +208,39 @@ test "encodeTimeout: milliseconds, then coarser units rounded up, never over 8 d
   assertEqual(encodeTimeout(2147483647), "2147484S", "the largest Int")
 }
 
+func timeoutMs(v: in String): Long {
+  match parseTimeout(v) {
+    case Some(ms) -> ms
+    case None -> -1i64
+  }
+}
+
+test "parseTimeout: every unit, rounded up to a millisecond, and round-trips encodeTimeout" {
+  assertEqualLong(timeoutMs("1H"), 3600000i64, "hours")
+  assertEqualLong(timeoutMs("2M"), 120000i64, "minutes")
+  assertEqualLong(timeoutMs("3S"), 3000i64, "seconds")
+  assertEqualLong(timeoutMs("250m"), 250i64, "milliseconds")
+  assertEqualLong(timeoutMs("1500u"), 2i64, "microseconds round up")
+  assertEqualLong(timeoutMs("1000u"), 1i64, "an exact microsecond multiple")
+  assertEqualLong(timeoutMs("1n"), 1i64, "a nanosecond is one millisecond")
+  assertEqualLong(timeoutMs("0m"), 0i64, "zero")
+  assertEqualLong(timeoutMs("99999999H"), 99999999i64 * 3600000i64, "eight digits of hours does not overflow")
+  assertEqualLong(timeoutMs(encodeTimeout(2500)), 2500i64, "round trip ms")
+  assertEqualLong(timeoutMs(encodeTimeout(100000001)), 100001000i64, "round trip rounds up with the encoder")
+}
+
+test "parseTimeout: anything that is not digits and a unit is None" {
+  assertTrue(parseTimeout("").isNone(), "empty")
+  assertTrue(parseTimeout("m").isNone(), "no digits")
+  assertTrue(parseTimeout("10").isNone(), "no unit")
+  assertTrue(parseTimeout("10x").isNone(), "unknown unit")
+  assertTrue(parseTimeout("-1S").isNone(), "sign")
+  assertTrue(parseTimeout("+1S").isNone(), "plus sign")
+  assertTrue(parseTimeout("1 S").isNone(), "space")
+  assertTrue(parseTimeout("123456789S").isNone(), "nine digits")
+  assertTrue(parseTimeout("1s").isNone(), "lowercase seconds is not a unit")
+}
+
 // ─── Content type ────────────────────────────────────────────────────────────
 test "isGrpcContentType: application/grpc and its suffixed forms only" {
   assertTrue(isGrpcContentType("application/grpc"), "bare")

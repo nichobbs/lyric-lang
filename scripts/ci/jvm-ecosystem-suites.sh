@@ -64,8 +64,9 @@
 #   grpc        the client against an in-process grpc-java server (unary,
 #               server streaming, metadata, deadlines, status mapping,
 #               early stream cancel, #8527 / #5409) and the Resilience-backed
-#               rate limiter; grpc-java is Maven-restored first. Server hosting
-#               is #8642.
+#               rate limiter; grpc-java is Maven-restored first. The pure-Lyric
+#               server (Grpc.Server, docs/72 slice 8) runs h2c and TLS tests
+#               and is driven by grpc-java as an independent client.
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;

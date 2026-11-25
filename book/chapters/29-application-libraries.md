@@ -69,10 +69,13 @@ unary calls (`callUnary`), server streaming (`openServerStream`/`nextMessage`/
 `closeStream`), call metadata, deadlines, and the in-process rate limiter
 (`checkRateLimit`). A failed call is `Err(GrpcStatus)` carrying the server's
 status code and message. Payloads are raw protobuf bytes: compose with
-`lyric-proto`. Server hosting works on both targets for unary and
-server-streaming methods over plaintext HTTP/2: register Lyric handlers with
-`addUnary` / `addServerStreaming`, then `start` (blocking) or `startHandle` /
-`stop` (graceful drain). A handler that panics fails its call with `Internal`.
+`lyric-proto`. Server hosting is pure Lyric on both targets (`Grpc.Server`,
+docs/72 slice 8) for unary and server-streaming methods over HTTP/2, plaintext
+or TLS: register Lyric handlers with `addUnary` / `addServerStreaming`, then
+`start` (blocking) or `startHandle` / `stop` (graceful drain), or `startTls` /
+`startHandleTlsAt` with a `TlsServerConfig`. The server decodes gzip requests,
+enforces `grpc-timeout` (`DeadlineExceeded`; handlers read the time left with
+`requestTimeoutMs`) and ends a call whose handler panics with `Internal`.
 
 ```toml
 [dependencies]
@@ -523,7 +526,7 @@ This matrix summarises which backends are real on which target; each library's R
 | Library | Stability | .NET | JVM | Status |
 |---|---|---|---|---|
 | lyric-proto | stable | stable | stable (suite in the JVM ecosystem CI job) | D067 |
-| lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
+| lyric-grpc | experimental | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287, D802, D804 |
 | lyric-otel | experimental | recording + OTLP/HTTP export (traces, metrics) real | recording + OTLP/HTTP export (traces, metrics) real | D055, D069 |
 | lyric-mq | experimental | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | in-process broker (pure Lyric); ActiveMQ, RabbitMQ and SQS in `lyric-ecosystem` | D056, D552 |
 | lyric-mail | stable | `smtp`, `ses`, `sendgrid` real | `smtp`, `ses`, `sendgrid` real | D062; `targets = ["dotnet", "jvm"]` |

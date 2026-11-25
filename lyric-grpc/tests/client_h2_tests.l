@@ -9,8 +9,8 @@
 //! wrong content type, a RST_STREAM with a chosen code, a GOAWAY with a chosen
 //! last-stream-id, a limit of two concurrent streams), which is the point.
 //! Interop with independent servers is in `client_dotnet_tests.l`,
-//! `client_jvm_tests.l` and `server_tests.l` (grpc-java on the JVM, the D287
-//! server on dotnet).
+//! `client_jvm_tests.l` (grpc-java on the JVM) and `server_tests.l` (the
+//! pure-Lyric `Grpc.Server`, both targets).
 //!
 //! Every wait is bounded, so a misbehaving peer fails the suite instead of
 //! hanging it. Listeners bind port 0.

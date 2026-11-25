@@ -2,8 +2,8 @@
 //! Stability: @experimental. The client (openChannel/openChannelWith/closeChannel,
 //! callUnary, openServerStream/nextMessage/closeStream, checkRateLimit) is real
 //! on both targets and tested end to end against in-process gRPC servers. Server hosting
-//! (start/startHandle/stop) is not implemented on either target and panics
-//! naming #8642; see README.md's platform-parity table.
+//! (start/startTls/startHandle/startHandleAt/startHandleTlsAt/stop) is pure Lyric on
+//! both targets (`Grpc.Server`, docs/72 slice 8).
 //!
 //! Client (outbound calls):
 //!   val ch = Grpc.openChannel("https://host:4317").unwrap()
@@ -33,8 +33,8 @@
 //! The client functions call `Grpc.Client` (pure Lyric over
 //! `Std.HttpEngine.H2Client`) unless the `legacy-client` feature selects the
 //! SDK kernels: a `dotnet`-feature body calling `Grpc.Kernel.Net` or a
-//! `jvm`-feature body calling `Grpc.Kernel.Jvm`. The server functions still
-//! have a body per kernel.
+//! `jvm`-feature body calling `Grpc.Kernel.Jvm`. The server functions
+//! are one implementation for both targets (`Grpc.Server`).
 @runtime_checked
 @io
 package Grpc
@@ -43,6 +43,9 @@ pub use Grpc.Types
 import Grpc.Kernel.Net
 import Grpc.Kernel.Jvm
 import Grpc.Client
+import Grpc.Server
+import Grpc.Wire
+import Std.Tls
 import Std.Core
 import Std.Collections
 import Std.Iter
@@ -381,6 +384,19 @@ pub func metadataGet(entries: in slice[GrpcMetadataEntry], metaKey: in String): 
   return None
 }
 
+/// The time a handler has left, in milliseconds, when the caller set a
+/// deadline: the `grpc-timeout` the server passes in the handler's metadata,
+/// as it stood when the handler was dispatched. `None` when the call has no
+/// deadline. The server ends the call with `DeadlineExceeded` when the deadline
+/// passes, whether or not the handler has returned.
+@stable(since = "0.2")
+pub func requestTimeoutMs(entries: in slice[GrpcMetadataEntry]): Option[Long] {
+  match metadataGet(entries, "grpc-timeout") {
+    case Some(v) -> Grpc.Wire.parseTimeout(v)
+    case None -> None
+  }
+}
+
 // ─── Server: GrpcStatus constructors ─────────────────────────────────────────
 /// 3 INVALID_ARGUMENT — the caller sent a malformed or out-of-range value.
 @stable(since = "0.1")
@@ -519,12 +535,12 @@ func checkServerConfig(): Unit {
 
 /// Start the gRPC server and block serving it until the process exits.
 /// Panics before binding when `GrpcServer` is misconfigured
-/// (`serverConfigProblem`) or when the address cannot be bound.
+/// (`serverConfigProblem`) or when the address cannot be bound. Plaintext
+/// HTTP/2; `startTls` serves TLS.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
   checkServerConfig()
-  Grpc.Kernel.Net.serve(
+  Grpc.Server.serve(
     GrpcServer.host,
     GrpcServer.port,
     GrpcServer.reflectionEnabled,
@@ -533,16 +549,19 @@ pub func start(registry: in ServiceRegistry): Unit {
   )
 }
 
-@stable(since = "0.1")
-@cfg(feature = "jvm")
-pub func start(registry: in ServiceRegistry): Unit {
+/// `start` over TLS: ALPN `h2`, the certificate chain and key in `tls`, and
+/// mutual TLS when `tls.requireClientCert` is set (it must then name a
+/// `clientCa`). Panics when the TLS configuration cannot be used.
+@stable(since = "0.2")
+pub func startTls(registry: in ServiceRegistry, tls: in TlsServerConfig): Unit {
   checkServerConfig()
-  Grpc.Kernel.Jvm.serve(
+  Grpc.Server.serveTls(
     GrpcServer.host,
     GrpcServer.port,
     GrpcServer.reflectionEnabled,
     GrpcServer.maxConnectionIdleMs,
-    registry
+    registry,
+    tls
   )
 }
 
@@ -562,60 +581,41 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 /// `serverPort`. `host` is an IP literal. Panics when the address cannot be
 /// bound.
 @stable(since = "0.2")
-@cfg(feature = "dotnet")
 pub func startHandleAt(registry: in ServiceRegistry, host: in String, port: in Int): GrpcServerHandle
   requires: port >= 0 and port <= 65535
 {
-  return Grpc.Kernel.Net.netStartHandle(
+  return Grpc.Server.startServer(host, port, GrpcServer.reflectionEnabled, GrpcServer.maxConnectionIdleMs, registry)
+}
+
+/// `startHandleAt` over TLS (see `startTls`). A client reaches it at
+/// `https://host:port`, over ALPN `h2`.
+@stable(since = "0.2")
+pub func startHandleTlsAt(
+  registry: in ServiceRegistry, host: in String, port: in Int, tls: in TlsServerConfig
+): GrpcServerHandle
+  requires: port >= 0 and port <= 65535
+{
+  return Grpc.Server.startServerTls(
     host,
     port,
     GrpcServer.reflectionEnabled,
     GrpcServer.maxConnectionIdleMs,
-    registry
+    registry,
+    tls
   )
 }
 
+/// The port a running server is bound to; `0` once it has been stopped.
 @stable(since = "0.2")
-@cfg(feature = "jvm")
-pub func startHandleAt(registry: in ServiceRegistry, host: in String, port: in Int): GrpcServerHandle
-  requires: port >= 0 and port <= 65535
-{
-  return Grpc.Kernel.Jvm.netStartHandle(
-    host,
-    port,
-    GrpcServer.reflectionEnabled,
-    GrpcServer.maxConnectionIdleMs,
-    registry
-  )
-}
-
-/// The port a running server is bound to.
-@stable(since = "0.2")
-@cfg(feature = "dotnet")
 pub func serverPort(handle: in GrpcServerHandle): Int {
-  Grpc.Kernel.Net.netServerPort(handle)
-}
-
-@stable(since = "0.2")
-@cfg(feature = "jvm")
-pub func serverPort(handle: in GrpcServerHandle): Int {
-  Grpc.Kernel.Jvm.netServerPort(handle)
+  Grpc.Server.serverPort(handle)
 }
 
 /// Stop the gRPC server, waiting up to `drainTimeoutMs` milliseconds for
 /// in-flight RPCs to complete before forcibly closing connections.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
 pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
 {
-  Grpc.Kernel.Net.netStopHandle(handle, drainTimeoutMs)
-}
-
-@stable(since = "0.1")
-@cfg(feature = "jvm")
-pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
-  requires: drainTimeoutMs >= 0
-{
-  Grpc.Kernel.Jvm.netStopHandle(handle, drainTimeoutMs)
+  Grpc.Server.stopServer(handle, drainTimeoutMs)
 }

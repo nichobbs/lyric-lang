@@ -22,10 +22,9 @@
 //! generic method (`BlockingUnaryCall<TReq,TResp>`) whose type arguments the
 //! wrapper's array types pin (#6581 and its follow-ups).
 //!
-//! Server hosting (`serve` / `netStartHandle` / `netStopHandle` /
-//! `netServerPort`) delegates to `Grpc.Kernel.Net.Server`, a pure-Lyric h2c gRPC
-//! server: `Grpc.AspNetCore` registers an RPC through `BindableService` /
-//! `ServiceBinderBase`, abstract classes a Lyric record cannot extend (D287).
+//! Server hosting is not here: `Grpc.Server` is pure Lyric on every target
+//! (docs/72 slice 8, D804). `Grpc.Net.Client` stays as a client and as the
+//! independent peer the server tests drive.
 //!
 //! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!
@@ -36,7 +35,6 @@
 package Grpc.Kernel.Net
 
 import Grpc.Types
-import Grpc.Kernel.Net.Server
 import Std.Core
 
 // ─── Opaque .NET types ────────────────────────────────────────────────────────
@@ -433,39 +431,6 @@ pub func netCloseStream(stream: in GrpcStream): Unit {
   if streamDictTryRemove(streamRegistry, Types.streamHandleId(stream), call) {
     streamingCallDispose(call)
   }
-}
-
-// ─── Server: hosting ────────────────────────────────────────────────────────────
-// The pure-Lyric h2c server lives in `Grpc.Kernel.Net.Server`; these are the
-// entry points `Grpc` calls.
-pub func serve(
-  host: in String,
-  port: in Int,
-  reflectionEnabled: in Bool,
-  maxConnectionIdleMs: in Int,
-  registry: in ServiceRegistry,
-): Unit {
-  Grpc.Kernel.Net.Server.serve(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
-}
-
-pub func netStartHandle(
-  host: in String,
-  port: in Int,
-  reflectionEnabled: in Bool,
-  maxConnectionIdleMs: in Int,
-  registry: in ServiceRegistry,
-): GrpcServerHandle {
-  Grpc.Kernel.Net.Server.startServer(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
-}
-
-pub func netServerPort(handle: in GrpcServerHandle): Int {
-  Grpc.Kernel.Net.Server.serverPort(handle)
-}
-
-pub func netStopHandle(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
-  requires: drainTimeoutMs >= 0
-{
-  Grpc.Kernel.Net.Server.stopServer(handle, drainTimeoutMs)
 }
 
 // ─── Server: rate limiting (System.Threading.RateLimiting) ────────────────────

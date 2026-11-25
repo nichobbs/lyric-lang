@@ -9,7 +9,7 @@
 //!   - length-prefixed messages (`frameMessage`, and `MessageReader`, which
 //!     reassembles messages that span DATA frames or share one and refuses a
 //!     message over a size limit as soon as its prefix is read),
-//!   - `grpc-timeout` encoding (`encodeTimeout`),
+//!   - `grpc-timeout` encoding and parsing (`encodeTimeout`, `parseTimeout`),
 //!   - `grpc-encoding: gzip` over `Std.Zip` with bounded output
 //!     (`compressMessage`, `decompressMessage`),
 //!   - the status mapping tables: an HTTP status without `grpc-status`
@@ -21,6 +21,7 @@ package Grpc.Wire
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Char as Ch
 import Std.Parse
 import Std.Zip as Zip
 import Std.HttpEngine
@@ -262,6 +263,43 @@ pub func encodeTimeout(ms: in Int): String
     return mins.toString() + "M"
   };
   (mins / 60 + (if mins % 60 > 0 { 1 } else { 0 })).toString() + "H"
+}
+
+/// The milliseconds a `grpc-timeout` header value stands for: one to eight
+/// ASCII digits and a unit (`H`, `M`, `S`, `m`, `u`, `n`), rounded up to a whole
+/// millisecond. `None` for anything else (a sign, a space, no digits, nine
+/// digits, an unknown unit).
+pub func parseTimeout(value: in String): Option[Long] {
+  val n = value.length
+  if n < 2 or n > 9 {
+    return None
+  }
+  var amount = 0i64
+  var i = 0
+  while i < n - 1 {
+    val c = Ch.toInt(Str.charAtOrReplacement(value, i))
+    if c < 48 or c > 57 {
+      return None
+    }
+    amount = amount * 10i64 + (c - 48).toLong()
+    i = i + 1
+  }
+  val unit = Str.substring(value, n - 1)
+  if unit == "H" {
+    Some(value = amount * 3600000i64)
+  } else if unit == "M" {
+    Some(value = amount * 60000i64)
+  } else if unit == "S" {
+    Some(value = amount * 1000i64)
+  } else if unit == "m" {
+    Some(value = amount)
+  } else if unit == "u" {
+    Some(value = (amount + 999i64) / 1000i64)
+  } else if unit == "n" {
+    Some(value = (amount + 999999i64) / 1000000i64)
+  } else {
+    None
+  }
 }
 
 // ─── Content type ────────────────────────────────────────────────────────────

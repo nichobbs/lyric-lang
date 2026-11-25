@@ -1,8 +1,8 @@
-//! tests/server_dotnet_tests.l — dotnet-only server checks that read the
-//! `Grpc.Kernel.Net.Server` bookkeeping (#8659).
-@cfg(target = "dotnet")
+//! tests/server_connection_tests.l — server checks that read the `Grpc.Server`
+//! connection bookkeeping (#8659), on both targets since the server is one
+//! pure-Lyric implementation (docs/72 slice 8).
 @test_module
-package Grpc.ServerDotnetTests
+package Grpc.ServerConnectionTests
 
 import Std.Core
 import Std.Collections
@@ -10,7 +10,7 @@ import Std.Testing
 import Std.Time
 import Grpc
 import Grpc.Types
-import Grpc.Kernel.Net.Server
+import Grpc.Server
 
 func echo(req: in slice[Byte], meta: in slice[GrpcMetadataEntry]): Result[slice[Byte], GrpcStatus] {
   Std.Core.Ok(req)
