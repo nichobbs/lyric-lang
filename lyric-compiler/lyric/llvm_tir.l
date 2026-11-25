@@ -5148,6 +5148,7 @@ func lowerIfaceCall(c: in LCtx, e: in TExpr, method: in SymbolId, args: in List[
 func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): Val {
   match kind {
     case CvUnrefine -> lowerExpr(c, inner)
+    case CvReinterpret -> lowerExpr(c, inner)
     case CvFromNever -> {
       val _ = lowerExpr(c, inner)
       match tyToN(c.env, e.ty) {
