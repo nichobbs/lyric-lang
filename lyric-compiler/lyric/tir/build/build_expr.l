@@ -814,6 +814,24 @@ func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TE
   )
 }
 
+/// Two values compared by the `EqShape` the checker recorded (D167): plainly, with the `NaN` rule, as an array, as a
+/// structural record, or through a distinct type's `value`.  None for a tuple or union shape, which have no step yet.
+func shapeEqCore(env: in BuildEnv, e: in Expr, shape: in EqShape, a: in TExpr, b: in TExpr): Option[TExpr] {
+  match shape {
+    case ESPlain -> Some(value = eqIntrinsic(env, e, a, b))
+    case ESFloat(_) -> Some(value = floatEqCore(env, e, a, b))
+    case ESArray(site) -> arrayEqCore(env, e, site, a, b)
+    case ESRecord(site) -> recordEqCore(env, e, site, a, b)
+    case ESDistinct(inner) -> {
+      val av = match recordEqStep(env, e, a, "value") { case Some(x) -> x; case None -> return None }
+      val bv = match recordEqStep(env, e, b, "value") { case Some(x) -> x; case None -> return None }
+      shapeEqCore(env, e, inner, av, bv)
+    }
+    case ESTuple(_) -> None
+    case ESUnion(_) -> None
+  }
+}
+
 /// Two arrays of `site.len` elements compared element by element (D167): each operand is bound once, then
 /// `while ok and i < len { if not (l[i] == r[i]) { ok = false }; i = i + 1 }`, an element that is a structural
 /// record compared field by field, a nested array in turn, a `Float` with its `NaN` rule.  None for an element
@@ -866,7 +884,10 @@ func arrayEqCore(env: in BuildEnv, e: in Expr, site: in ArrayEqSite, lt: in TExp
       case Some(x) -> x
       case None -> return None
     }
-    case AEShape(_) -> return None
+    case AEShape(sh) -> match shapeEqCore(env, e, sh, le, re) {
+      case Some(x) -> x
+      case None -> return None
+    }
   }
   val okPlace = TPlace(ty = tyBool(), kind = PlLocal(local = okd.id))
   val setFalse = TExpr(
