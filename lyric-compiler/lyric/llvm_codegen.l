@@ -18985,6 +18985,8 @@ record TirUnitMaps {
   intrinsics: Map[Int, String] = newMap()
   /// D163: this unit's integer arithmetic panics on overflow.
   checkedArith: Bool = false
+  /// `LlvmTir.TirUnitInput.contractsElaborated`.
+  contractsElaborated: Bool = false
 }
 
 /// An interface as the TIR lowering reads it: the box and vtable types the code generator chose
@@ -19361,7 +19363,13 @@ func withInstanceNames(unit: in LlvmTir.TirUnitInput, inst: in LlvmTir.TirUnitIn
       case None -> ()
     }
   }
-  LlvmTir.TirUnitInput(pkg = unit.pkg, names = names, census = unit.census, checkedArith = unit.checkedArith)
+  LlvmTir.TirUnitInput(
+    pkg = unit.pkg,
+    names = names,
+    census = unit.census,
+    checkedArith = unit.checkedArith,
+    contractsElaborated = unit.contractsElaborated
+  )
 }
 
 func tirUnitMaps(
@@ -19678,7 +19686,8 @@ func tirUnitMaps(
     instDecls = instDecls,
     instKeys = instKeys,
     symNames = input.names,
-    checkedArith = input.checkedArith
+    checkedArith = input.checkedArith,
+    contractsElaborated = input.contractsElaborated
   )
 }
 
@@ -19766,7 +19775,8 @@ func lowerWithTuples(
       ifaceVts = maps.ifaceVts,
       intrinsics = maps.intrinsics,
       symNames = maps.symNames,
-      checkedArith = maps.checkedArith
+      checkedArith = maps.checkedArith,
+      contractsElaborated = maps.contractsElaborated
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)

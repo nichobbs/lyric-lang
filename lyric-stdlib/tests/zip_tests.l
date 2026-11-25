@@ -1,6 +1,8 @@
 //! Std.Zip tests: raw DEFLATE streams and archives written by Python's zlib and
 //! zipfile (generated fixtures), CRC-32 vectors, round trips through the writer,
-//! and the hostile-input checks (limits, duplicates, corruption, truncation).
+//! and the hostile-input checks (limits, duplicates, corruption, truncation),
+//! plus the gzip container (RFC 1952): gzip(1) and Python vectors, round trips,
+//! the output cap, and truncated and corrupt members.
 package Std.Zip.Tests
 
 import Std.Core
@@ -670,6 +672,265 @@ func testWriteZipRoundTrip(): Unit {
   }
 }
 
+// ---- Gzip (RFC 1952) --------------------------------------------------------
+func vEmptyGzip(): slice[Byte] = hex("1F8B080000000000000303000000000000000000")
+
+func vOneGzip(): slice[Byte] = hex("1F8B08000000000000034B040043BEB7E801000000")
+
+func vTextGzip(): slice[Byte] = hex("1F8B0800000000000203B5CBD10180101446E1F7A6F827304B0F16501115378498BEBB44CFE73BD26AC4E2D6134BA216" + "60E8C551FC9D4155273C9C2F353A36DA05E46F7856EC7CC7C2A8B9C7C2B8AA390D1D70B95828F1BB67317D541814C1B0" + "000000")
+
+func vTextNamedGzip(): slice[Byte] = hex("1F8B080800F153650003746578742E74787400B5CBD10180101446E1F7A6F827304B0F16501115378498BEBB44CFE73B" + "D26AC4E2D6134BA21660E8C551FC9D4155273C9C2F353A36DA05E46F7856EC7CC7C2A8B9C7C2B8AA390D1D70B95828F1" + "BB67317D541814C1B0000000")
+
+func vTextPy(): slice[Byte] = hex("1F8B08000000000002FFB5CBD10180101446E1F7A6F827304B0F16501115378498BEBB44CFE73BD26AC4E2D6134BA216" + "60E8C551FC9D4155273C9C2F353A36DA05E46F7856EC7CC7C2A8B9C7C2B8AA390D1D70B95828F1BB67317D541814C1B0" + "000000")
+
+func vAllFields(): slice[Byte] = hex("1F8B081E00000000000307004142030078797A746578742E747874006120636F6D6D656E74008551B5CBD10180101446" + "E1F7A6F827304B0F16501115378498BEBB44CFE73BD26AC4E2D6134BA21660E8C551FC9D4155273C9C2F353A36DA05E4" + "6F7856EC7CC7C2A8B9C7C2B8AA390D1D70B95828F1BB67317D541814C1B0000000")
+
+func vBadHcrc(): slice[Byte] = hex("1F8B0802000000000003A677B5CBD10180101446E1F7A6F827304B0F16501115378498BEBB44CFE73BD26AC4E2D6134B" + "A21660E8C551FC9D4155273C9C2F353A36DA05E46F7856EC7CC7C2A8B9C7C2B8AA390D1D70B95828F1BB67317D541814" + "C1B0000000")
+
+func vMulti(): slice[Byte] = hex("1F8B08000000000002FFCB48CDC9C9570000F6F981ED060000001F8B08000000000002FF030000000000000000001F8B" + "08000000000002FF2BCF2FCA4901004311773A05000000")
+
+func vBomb(): slice[Byte] = hex("1F8B08000000000002FFEDC101010000008220FFAF6E4840010000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" + "000000000000000000000000000000000000000000000000000000000000000000AF069ECB791240420F00")
+
+func gzText(): slice[Byte] {
+  val s = "The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. " +
+    "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.\n"
+  encodeUtf8(s)
+}
+
+// A deterministic pseudo-random byte string (an LCG), for data deflate cannot
+// shrink and for hostile-input sweeps.
+func lcgBytes(n: in Int, seed: in Long): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var x = seed
+  var i = 0
+  while i < n {
+    x = (x * 1103515245i64 + 12345i64).and(0x7FFFFFFFi64)
+    acc.add(x.shr(16).and(255i64).toByte())
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+// Compressible but not trivially so: a repeating text with a counter.
+func gzLarge(n: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  val text = encodeUtf8("line of log output with some words in it, number ")
+  var i = 0
+  while acc.count < n {
+    var k = 0
+    while k < text.length {
+      acc.add(text[k])
+      k = k + 1
+    }
+    val num = encodeUtf8((i * 7919 % 10007).toString())
+    k = 0
+    while k < num.length {
+      acc.add(num[k])
+      k = k + 1
+    }
+    acc.add(10.toByte())
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+func gzDecodeOk(data: in slice[Byte], label: in String): slice[Byte] {
+  match gzipDecode(data, 100000000) {
+    case Ok(b) -> b
+    case Err(e) -> panic(label + ": " + zipErrorMessage(e))
+  }
+}
+
+func gzIsErr(data: in slice[Byte], maxOutput: in Int): Bool {
+  match gzipDecode(data, maxOutput) {
+    case Ok(b) -> false
+    case Err(e) -> true
+  }
+}
+
+func gzErrKind(data: in slice[Byte], maxOutput: in Int): String {
+  match gzipDecode(data, maxOutput) {
+    case Ok(b) -> "ok"
+    case Err(e) -> match e {
+      case Malformed(r) -> "malformed"
+      case Unsupported(r) -> "unsupported"
+      case LimitExceeded(r) -> "limit"
+      case CorruptEntry(n, r) -> "corrupt"
+    }
+  }
+}
+
+func gzWithByte(data: in slice[Byte], at: in Int, v: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < data.length {
+    acc.add(if i == at { v.toByte() } else { data[i] })
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+func gzConcat(a: in slice[Byte], b: in slice[Byte]): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < a.length {
+    acc.add(a[i])
+    i = i + 1
+  }
+  i = 0
+  while i < b.length {
+    acc.add(b[i])
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+func testGzipVectors(): Unit {
+  val text = gzText()
+  assertTrue(bytesEq(gzDecodeOk(vEmptyGzip(), "empty"), hex("")), "gzip(1) empty")
+  assertTrue(bytesEq(gzDecodeOk(vOneGzip(), "one"), hex("61")), "gzip(1) one byte")
+  assertTrue(bytesEq(gzDecodeOk(vTextGzip(), "text"), text), "gzip -9 text")
+  assertTrue(bytesEq(gzDecodeOk(vTextNamedGzip(), "named"), text), "gzip(1) with FNAME and MTIME")
+  assertTrue(bytesEq(gzDecodeOk(vTextPy(), "py"), text), "python gzip.compress text")
+  assertTrue(bytesEq(gzDecodeOk(vAllFields(), "fields"), text), "FHCRC, FEXTRA, FNAME and FCOMMENT are all skipped")
+  assertTrue(
+    bytesEq(gzDecodeOk(vMulti(), "multi"), hex("68656C6C6F20776F726C64")),
+    "three concatenated members, one of them empty"
+  )
+  assertEqualInt(gzDecodeOk(vBomb(), "bomb at its exact size").length, 1000000, "the bomb inflates to a megabyte")
+}
+
+func testGzipRoundTrips(): Unit {
+  val cases: List[slice[Byte]] = newList()
+  cases.add(hex(""))
+  cases.add(hex("2A"))
+  cases.add(gzText())
+  cases.add(lcgBytes(5000, 7i64))
+  cases.add(lcgBytes(70000, 11i64))
+  cases.add(gzLarge(300000))
+  var i = 0
+  while i < cases.count {
+    val packed = gzipEncode(cases[i])
+    assertTrue(bytesEq(gzDecodeOk(packed, "case " + i.toString()), cases[i]), "round trip " + i.toString())
+    assertTrue(bytesEq(packed, gzipEncode(cases[i])), "encoding is deterministic " + i.toString())
+    i = i + 1
+  }
+  val big = gzLarge(300000)
+  val packed = gzipEncode(big)
+  assertTrue(packed.length * 3 < big.length, "repetitive text shrinks at least threefold")
+  assertTrue(gzipEncode(lcgBytes(70000, 11i64)).length < 70000 + 100, "random data costs only framing")
+  val joined = gzConcat(gzipEncode(gzText()), gzipEncode(hex("0102")))
+  assertTrue(bytesEq(gzDecodeOk(joined, "joined"), gzConcat(gzText(), hex("0102"))), "encoded members concatenate")
+  val e = gzipEncode(hex(""))
+  assertEqualInt(e.length, 20, "an empty member is 20 bytes")
+  assertEqualInt(e[0].toInt(), 31, "ID1")
+  assertEqualInt(e[1].toInt(), 139, "ID2")
+  assertEqualInt(e[2].toInt(), 8, "CM")
+}
+
+func testGzipBombGuard(): Unit {
+  assertEqual(gzErrKind(vBomb(), 999999), "limit", "one byte under the size is refused")
+  assertEqual(gzErrKind(vBomb(), 1000000), "ok", "exactly the size is accepted")
+  assertEqual(gzErrKind(vBomb(), 0), "limit", "a zero cap refuses any output")
+  assertEqual(gzErrKind(vEmptyGzip(), 0), "ok", "a zero cap accepts empty output")
+  assertEqual(gzErrKind(vOneGzip(), 0), "limit", "one byte over a zero cap")
+  // The cap covers all members together, not each one.
+  val two = gzConcat(gzipEncode(lcgBytes(600, 3i64)), gzipEncode(lcgBytes(600, 4i64)))
+  assertEqual(gzErrKind(two, 1199), "limit", "the cap is a total across members")
+  assertEqual(gzErrKind(two, 1200), "ok", "the total fits")
+  val stored = gzipEncode(lcgBytes(70000, 5i64))
+  assertEqual(gzErrKind(stored, 69999), "limit", "stored blocks are bounded too")
+}
+
+func testGzipTruncated(): Unit {
+  val vectors: List[slice[Byte]] = newList()
+  vectors.add(vTextGzip())
+  vectors.add(vTextNamedGzip())
+  vectors.add(vAllFields())
+  vectors.add(vOneGzip())
+  vectors.add(gzipEncode(lcgBytes(300, 2i64)))
+  var v = 0
+  while v < vectors.count {
+    val full = vectors[v]
+    var cut = 0
+    while cut < full.length {
+      assertTrue(gzIsErr(full.slice(0, cut), 100000000), "vector " + v.toString() + " cut at " + cut.toString())
+      cut = cut + 1
+    }
+    v = v + 1
+  }
+  assertEqual(gzErrKind(hex(""), 10), "malformed", "no data at all")
+}
+
+func testGzipCorrupt(): Unit {
+  val good = vTextGzip()
+  // Every byte after the fixed header (the stream and the trailer) is covered
+  // by the stream's own checks, the CRC-32 or the length.
+  var i = 10
+  while i < good.length {
+    assertTrue(gzIsErr(gzWithByte(good, i, good[i].toInt().xor(255)), 100000000), "flipped byte " + i.toString())
+    i = i + 1
+  }
+  assertEqual(gzErrKind(gzWithByte(good, 0, 0), 1000), "malformed", "bad ID1")
+  assertEqual(gzErrKind(gzWithByte(good, 1, 0), 1000), "malformed", "bad ID2")
+  assertEqual(gzErrKind(gzWithByte(good, 2, 0), 1000), "unsupported", "a method other than deflate")
+  assertEqual(gzErrKind(gzWithByte(good, 3, 32), 1000), "malformed", "a reserved flag bit")
+  assertEqual(gzErrKind(gzWithByte(good, 3, 128), 1000), "malformed", "another reserved flag bit")
+  // FTEXT is advisory and the MTIME, XFL and OS bytes are not checked.
+  assertTrue(not gzIsErr(gzWithByte(good, 3, 1), 1000), "FTEXT is accepted")
+  assertTrue(not gzIsErr(gzWithByte(good, 4, 99), 1000), "MTIME is not checked")
+  assertTrue(not gzIsErr(gzWithByte(good, 9, 7), 1000), "OS is not checked")
+  assertEqual(gzErrKind(vBadHcrc(), 1000), "corrupt", "a wrong header CRC-16")
+  val n = good.length
+  assertEqual(gzErrKind(gzWithByte(good, n - 8, good[n - 8].toInt().xor(1)), 1000), "corrupt", "wrong CRC-32")
+  assertEqual(gzErrKind(gzWithByte(good, n - 4, good[n - 4].toInt().xor(1)), 1000), "corrupt", "wrong ISIZE")
+  assertEqual(gzErrKind(gzWithByte(good, n - 1, 1), 1000), "corrupt", "ISIZE with a high byte set")
+  assertEqual(gzErrKind(gzConcat(good, hex("00")), 1000), "malformed", "one byte after the member")
+  assertEqual(
+    gzErrKind(gzConcat(good, hex("0000000000000000000000")), 1000),
+    "malformed",
+    "zero padding after the member"
+  )
+  assertEqual(gzErrKind(gzConcat(good, hex("1F8B")), 1000), "malformed", "a second member cut at its magic")
+  assertEqual(gzErrKind(gzConcat(good, gzWithByte(good, 20, 0)), 1000), "malformed", "a corrupt second member")
+  // Optional fields that run past the end.
+  assertEqual(gzErrKind(hex("1F8B0800000000000003" + "FFFF"), 1000), "malformed", "FLG clear, no stream")
+  assertEqual(gzErrKind(hex("1F8B0804000000000003" + "FFFF0102"), 1000), "malformed", "FEXTRA longer than the data")
+  assertEqual(gzErrKind(hex("1F8B0804000000000003" + "01"), 1000), "malformed", "FEXTRA length cut")
+  assertEqual(gzErrKind(hex("1F8B0808000000000003" + "616263"), 1000), "malformed", "FNAME without a terminator")
+  assertEqual(gzErrKind(hex("1F8B0810000000000003" + "616263"), 1000), "malformed", "FCOMMENT without a terminator")
+  assertEqual(gzErrKind(hex("1F8B0802000000000003" + "00"), 1000), "malformed", "FHCRC cut")
+}
+
+// Hostile input must come back as an error (or, rarely, a valid result),
+// never a panic or a hang.
+func testGzipArbitraryBytes(): Unit {
+  var n = 0
+  while n < 120 {
+    gzipDecode(lcgBytes(n, (n + 1).toLong()), 1000)
+    val body = lcgBytes(n, (n + 500).toLong())
+    gzipDecode(gzConcat(hex("1F8B0800000000000003"), body), 1000)
+    gzipDecode(gzConcat(hex("1F8B080E000000000003"), body), 1000)
+    n = n + 1
+  }
+  // Dynamic-Huffman and stored streams cut or mangled mid-block.
+  val big = gzipEncode(gzLarge(3000))
+  var at = 10
+  while at < big.length - 8 {
+    gzipDecode(gzWithByte(big, at, (at * 31).and(255)), 100000)
+    at = at + 7
+  }
+  assertTrue(true, "no panics")
+}
+
+func testGzipCompressionRatio(): Unit {
+  val big = gzLarge(300000)
+  val packed = gzipEncode(big)
+  println("gzip ratio: " + big.length.toString() + " -> " + packed.length.toString() + " bytes for repetitive log text")
+  val txt = gzipEncode(gzText())
+  println("gzip ratio: " + gzText().length.toString() + " -> " + txt.length.toString() + " bytes for the short text")
+}
+
 func main(): Int {
   testCrc32()
   testInflateVectors()
@@ -679,6 +940,13 @@ func main(): Int {
   testHostileArchives()
   testWriteZipRoundTrip()
   testPrefixedArchive()
+  testGzipVectors()
+  testGzipRoundTrips()
+  testGzipBombGuard()
+  testGzipTruncated()
+  testGzipCorrupt()
+  testGzipArbitraryBytes()
+  testGzipCompressionRatio()
   println("zip tests: ok")
   return 0
 }

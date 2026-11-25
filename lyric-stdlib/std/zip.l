@@ -1,4 +1,4 @@
-//! std/zip.l - Zip archives and raw DEFLATE (RFC 1951), in pure Lyric.
+//! std/zip.l - Zip archives, raw DEFLATE (RFC 1951) and gzip (RFC 1952), in pure Lyric.
 //!
 //! Reads and writes the zip subset plugin artifacts travel in (D248 Decision
 //! 9): stored and deflate entries, no encryption, no ZIP64, no multi-disk
@@ -438,14 +438,14 @@ func dynamicTables(s: in BitIn, lencode: in Huffman, distcode: in Huffman): Opti
   None
 }
 
-/// Inflates the raw DEFLATE stream in `data[start, start + length)`,
-/// refusing to produce more than `maxOutput` bytes.
-@experimental
-pub func inflateRange(
-  data: in slice[Byte], start: in Int, length: in Int, maxOutput: in Int
-): Result[slice[Byte], ZipError]
-  requires: start >= 0 and length >= 0 and start + length <= data.length and maxOutput >= 0
-{
+// An inflated stream and the offset just past its last byte, which the gzip
+// reader needs to find the trailer and the next member.
+record Inflated {
+  data: slice[Byte]
+  next: Int
+}
+
+func inflateStream(data: in slice[Byte], start: in Int, length: in Int, maxOutput: in Int): Result[Inflated, ZipError] {
   val s = BitIn(data = data, limit = start + length, pos = start, bitBuf = 0, bitCnt = 0, err = "")
   val dst: List[Byte] = newList()
   var last = 0
@@ -503,7 +503,23 @@ pub func inflateRange(
       return Err(error = Malformed(reason = "an invalid block type"))
     }
   }
-  Ok(value = dst.toArray())
+  // A reader holds fewer than 8 bits once a block ends, all of them padding
+  // in the stream's last byte, so `pos` is the first byte after the stream.
+  Ok(value = Inflated(data = dst.toArray(), next = s.pos))
+}
+
+/// Inflates the raw DEFLATE stream in `data[start, start + length)`,
+/// refusing to produce more than `maxOutput` bytes.
+@experimental
+pub func inflateRange(
+  data: in slice[Byte], start: in Int, length: in Int, maxOutput: in Int
+): Result[slice[Byte], ZipError]
+  requires: start >= 0 and length >= 0 and start + length <= data.length and maxOutput >= 0
+{
+  match inflateStream(data, start, length, maxOutput) {
+    case Ok(r) -> Ok(value = r.data)
+    case Err(e) -> Err(error = e)
+  }
 }
 
 /// Inflates a whole raw DEFLATE stream, refusing to produce more than
@@ -685,6 +701,140 @@ pub func deflate(data: in slice[Byte]): slice[Byte] {
   } else {
     o.bytes.toArray()
   }
+}
+
+// ---- Gzip (RFC 1952) ---------------------------------------------------------
+// The member header's fixed part: ID1, ID2, CM = 8 (deflate), FLG = 0, MTIME
+// = 0 (so the output is deterministic), XFL = 0, OS = 255 (unknown).
+func gzipHeaderBytes(): List[Byte] {
+  val h: List[Byte] = newList()
+  h.add(31.toByte())
+  h.add(139.toByte())
+  h.add(8.toByte())
+  var i = 0
+  while i < 6 {
+    h.add(0.toByte())
+    i = i + 1
+  }
+  h.add(255.toByte())
+  h
+}
+
+/// `data` as one gzip member: a 10-byte header, the `deflate` stream, then
+/// the CRC-32 and the length of `data` modulo 2^32.
+@experimental
+pub func gzipEncode(data: in slice[Byte]): slice[Byte] {
+  val acc = gzipHeaderBytes()
+  val body = deflate(data)
+  var i = 0
+  while i < body.length {
+    acc.add(body[i])
+    i = i + 1
+  }
+  putU32(acc, crc32(data))
+  putU32(acc, data.length.toLong().and(0xFFFFFFFFi64))
+  acc.toArray()
+}
+
+// The offset of the first byte after the member header that starts at `at`,
+// with every optional field (FEXTRA, FNAME, FCOMMENT, FHCRC) validated or
+// skipped.
+func gzipHeaderEnd(data: in slice[Byte], at: in Int): Result[Int, ZipError] {
+  if at + 10 > data.length {
+    return Err(error = Malformed(reason = "the gzip header is truncated"))
+  }
+  if data[at].toInt() != 31 or data[at + 1].toInt() != 139 {
+    return Err(error = Malformed(reason = "the data does not start with the gzip magic number"))
+  }
+  if data[at + 2].toInt() != 8 {
+    return Err(error = Unsupported(reason = "the gzip compression method is not deflate"))
+  }
+  val flags = data[at + 3].toInt()
+  if flags.and(224) != 0 {
+    return Err(error = Malformed(reason = "a reserved gzip flag bit is set"))
+  }
+  var p = at + 10
+  if flags.and(4) != 0 {
+    if p + 2 > data.length {
+      return Err(error = Malformed(reason = "the gzip extra field is truncated"))
+    }
+    p = p + 2 + u16(data, p)
+    if p > data.length {
+      return Err(error = Malformed(reason = "the gzip extra field runs past the end"))
+    }
+  }
+  var text = 0
+  while text < 2 {
+    // FNAME (bit 3), then FCOMMENT (bit 4): zero-terminated.
+    if flags.and(if text == 0 { 8 } else { 16 }) != 0 {
+      while p < data.length and data[p].toInt() != 0 {
+        p = p + 1
+      }
+      if p >= data.length {
+        return Err(error = Malformed(reason = "a gzip name or comment is not terminated"))
+      }
+      p = p + 1
+    }
+    text = text + 1
+  }
+  if flags.and(2) != 0 {
+    if p + 2 > data.length {
+      return Err(error = Malformed(reason = "the gzip header checksum is truncated"))
+    }
+    if u16(data, p).toLong() != crc32(data.slice(at, p)).and(65535i64) {
+      return Err(error = CorruptEntry(name = "gzip", reason = "its header CRC-16 does not match"))
+    }
+    p = p + 2
+  }
+  Ok(value = p)
+}
+
+/// The contents of the gzip data `data`: one or more concatenated members
+/// (RFC 1952), each with its header checked, its stream inflated, and its
+/// CRC-32 and length verified. Refuses to produce more than `maxOutput`
+/// bytes in total, so a decompression bomb fails with `LimitExceeded`
+/// before it is expanded. Bytes after the last member are `Malformed`.
+@experimental
+pub func gzipDecode(data: in slice[Byte], maxOutput: in Int): Result[slice[Byte], ZipError]
+  requires: maxOutput >= 0
+{
+  val members: List[slice[Byte]] = newList()
+  var total = 0
+  var at = 0
+  while at < data.length or members.count == 0 {
+    val bodyAt = match gzipHeaderEnd(data, at) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
+    val r = match inflateStream(data, bodyAt, data.length - bodyAt, maxOutput - total) {
+      case Ok(x) -> x
+      case Err(e) -> return Err(error = e)
+    }
+    if r.next + 8 > data.length {
+      return Err(error = Malformed(reason = "the gzip trailer is truncated"))
+    }
+    if crc32(r.data) != u32(data, r.next) {
+      return Err(error = CorruptEntry(name = "gzip", reason = "its CRC-32 does not match"))
+    }
+    if r.data.length.toLong().and(0xFFFFFFFFi64) != u32(data, r.next + 4) {
+      return Err(error = CorruptEntry(name = "gzip", reason = "its length does not match"))
+    }
+    members.add(r.data)
+    total = total + r.data.length
+    at = r.next + 8
+  }
+  if members.count == 1 {
+    return Ok(value = members[0])
+  }
+  val acc: List[Byte] = newList()
+  var m = 0
+  while m < members.count {
+    val part = members[m]
+    var k = 0
+    while k < part.length {
+      acc.add(part[k])
+      k = k + 1
+    }
+    m = m + 1
+  }
+  Ok(value = acc.toArray())
 }
 
 // ---- Archives ---------------------------------------------------------------
