@@ -207,7 +207,10 @@ pub func clrIsValueType(typeFqn: in String): Bool {
     typeFqn == "System.Net.Security.SslPolicyErrors" or
     typeFqn == "System.Security.Authentication.SslProtocols" or
     typeFqn == "System.Security.Cryptography.X509Certificates.X509ChainTrustMode" or
-    typeFqn == "System.Security.Cryptography.X509Certificates.X509RevocationMode"
+    typeFqn == "System.Security.Cryptography.X509Certificates.X509RevocationMode" or
+    typeFqn == "System.Security.Cryptography.X509Certificates.StoreLocation" or
+    typeFqn == "System.Security.Cryptography.X509Certificates.OpenFlags" or
+    typeFqn == "System.Security.Cryptography.X509Certificates.X509VerificationFlags"
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────

@@ -155,6 +155,34 @@ pub record TlsServerConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Client trust decision for the transport kernels (docs/72 §3.2, OQ-8).
+// ---------------------------------------------------------------------------
+/// A fully-resolved client trust decision for a raw TLS client connection
+/// (`Std.TcpHost.hostConnectTls` / `hostUpgradeClientTls`), the same union on
+/// every target. The CA precedence policy (docs/61 §3.2: an exclusive CA beats
+/// an additive one, which beats none) and the dual-key insecure policy
+/// (docs/61 §4: `withInsecureSkipVerify()` AND `LYRIC_TLS_ALLOW_INSECURE=1`) are
+/// the caller's concern and are resolved BEFORE the union is built; the kernel
+/// executes the decision it is given and does not re-check the environment.
+/// `TlsTrustAdditive`/`TlsTrustExclusive` carry PEM text (every `CERTIFICATE`
+/// block is a trust anchor, as in `Certificate.fromPem`), so a caller needs no
+/// kernel handle to build one.
+@experimental
+pub union TlsClientTrust {
+  // The platform trust store only (on native `SSL_CERT_FILE`/`SSL_CERT_DIR`
+  // are honoured as OpenSSL does; the JVM's default `cacerts`/
+  // `javax.net.ssl.trustStore`; the operating system store on dotnet).
+  case TlsTrustSystemDefault
+  // The platform trust store PLUS `caPem`: a chain valid against either set
+  // verifies.
+  case TlsTrustAdditive(caPem: String)
+  // ONLY `caPem`; the platform trust store is never consulted.
+  case TlsTrustExclusive(caPem: String)
+  // No certificate and no hostname verification at all.
+  case TlsTrustInsecure
+}
+
+// ---------------------------------------------------------------------------
 // Shared loading helpers.
 // ---------------------------------------------------------------------------
 func readBytesOrTls(path: in String): Result[slice[Byte], TlsError] {

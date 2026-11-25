@@ -940,13 +940,10 @@ test "wss: a peer that never finishes the TLS handshake is closed by the handsha
   val _ = stopServer(started.registry)
 }
 
-// `Std.TcpHost` has a client TLS connect on native only, so the frames of a
-// wss connection are exchanged there; on dotnet and the JVM the tests above
-// reach the same server through `Std.Http`'s TLS client.
-@cfg(target = "native")
-test "wss (native): a WebSocket echo over TLS, then a clean close" {
+// The frames of a wss connection are exchanged over `Std.TcpHost`'s client TLS connect.
+test "wss: a WebSocket echo over TLS, then a clean close" {
   val started = startSecure(19625, TlsServerConfig(identity = serverIdentity()), WsServerOptions())
-  val conn = match hostConnectTls("localhost", 19625, TlsTrustExclusive(caPem = caCertPem), None, Tls12, "http/1.1") {
+  val conn = match hostConnectTls("localhost", 19625, TlsTrustExclusive(caPem = caCertPem), None, Tls12, "http/1.1", 0) {
     case Ok(c) -> c
     case Err(e) -> panic("TLS connect failed: " + TcpError.message(e))
   }
