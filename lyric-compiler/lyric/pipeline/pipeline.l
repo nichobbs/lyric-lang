@@ -84,6 +84,7 @@ import Lyric.Tir.Verify as TirVerify
 import Lyric.Tir.Build as TirBuild
 import Lyric.Tir.Mono as TirMono
 import Lyric.Tir.Propagate as TirPropagate
+import Lyric.Tir.AwaitHoist as TirAwaitHoist
 import Lyric.Tir.Contracts as TirContracts
 import Lyric.Resolve as Resolve
 import Lyric.IfaceBuild as IfaceBuild
@@ -2440,6 +2441,28 @@ pub func pipeContractsTir(
   TirContracts.elaborateBundle(interner, bundle, enabled)
 }
 
+/// `bundle` with every `await` evaluating on an empty stack (docs/70 §7.2, D504): the TIR counterpart of
+/// `Lyric.AwaitHoist`, the last middle-end pass.
+pub func pipeHoistAwaitsTir(bundle: in List[TirBuild.PackageBuild]): List[TirBuild.PackageBuild] {
+  TirAwaitHoist.hoistAwaitsBundle(bundle)
+}
+
+/// The await-hoisting census of one built package (docs/70 §12.2, D504): hoisted, then verified.
+func pipeReportHoistCensus(label: in String, pb: in TirBuild.PackageBuild): Unit {
+  val bundle: List[TirBuild.PackageBuild] = newList()
+  bundle.add(pb)
+  val done = TirAwaitHoist.hoistAwaitsBundle(bundle)
+  val diags = TirVerify.verifyPackage(done[0].pkg, newList())
+  Console.error("I0003 hoist census [" + label + "]: " + toString(diags.count) + " diagnostic(s)")
+  var shown = 0
+  for d in diags {
+    if shown < 3 {
+      Console.error("    e.g. " + TirVerify.renderVerifyDiag("hoist", d))
+      shown = shown + 1
+    }
+  }
+}
+
 pub func pipeNewDepDefaults(): TirBuild.DepDefaults {
   TirBuild.newDepDefaults()
 }
@@ -2598,6 +2621,7 @@ pub func pipeCheckFront(
     if verifyIr {
       pipeReportMonoCensus(opts.pkgLabel, tcRes.symbols, pb)
       pipeReportPropagateCensus(opts.pkgLabel, tcRes.symbols, pb)
+      pipeReportHoistCensus(opts.pkgLabel, pb)
       pipeReportContractsCensus(opts.pkgLabel, tcRes.symbols, pb)
     }
     if gateTo(sink, opts.pkgLabel, opts.filePaths, pipeTirDiagnostics(tcRes.symbols, pb)) {

@@ -192,7 +192,7 @@ absorb_log() {
   while IFS= read -r l; do
     n="$(sed -E 's/.*: ([0-9]+) diagnostic.*/\1/' <<<"$l")"
     d=$((d + n))
-  done < <(grep -E '^I0003 (mono |propagate |contracts )?census' "$log" || true)
+  done < <(grep -E '^I0003 (mono |propagate |contracts |hoist )?census' "$log" || true)
   if [[ "$d" -gt 0 ]]; then
     echo "I0003 in $name: $d"
     grep -E '^  I0003 rule: |^    e\.g\. ' "$log" | head -8
