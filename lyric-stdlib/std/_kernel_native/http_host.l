@@ -46,14 +46,22 @@
 //!
 //! ## Deliberate scope decisions (real, disclosed divergences — not silent gaps)
 //!
-//! 1. **HTTP/1.1 only, never h2.** ALPN advertises only `"http/1.1"` (never
-//!    `"h2,http/1.1"`). This is within `Std.Http.HttpVersion.Http2`'s own
-//!    documented contract ("falls back to HTTP/1.1 automatically" when the
-//!    peer doesn't negotiate h2 — see `std/http.l`'s `HttpVersion` doc
-//!    comment) — a peer this client talks to simply never gets offered h2,
-//!    which is a subset of already-documented behaviour, not new undefined
-//!    behaviour. `hostResponseVersionMajor` always returns `1`.
-//! 2. **One TCP/TLS connection per request; always `Connection: close`.**
+//! 1. **HTTP/1.1 on cleartext, h2 or HTTP/1.1 over TLS (docs/72 slice 7,
+//!    D803).** An `https` connection offers ALPN `h2,http/1.1` (only
+//!    `http/1.1` for `HttpVersion.Http11`). When the server selects `h2` the
+//!    same connection is handed to `Std.HttpEngine.H2Client`
+//!    (`h2ConnectOn`): the request becomes one call, the response is
+//!    buffered under the same caps as HTTP/1.1 (`maxResponseBodyBytes`,
+//!    `maxHeaderCount`, `maxInterimResponses`), and
+//!    `hostResponseVersionMajor` answers `2`. When it selects `http/1.1`, or
+//!    nothing, the hand-rolled HTTP/1.1 client below runs on that same
+//!    connection (no second dial). A cleartext `http` URL is always
+//!    HTTP/1.1: there is no prior-knowledge h2c on any `Std.Http` target.
+//!    The h2 path drops the connection-specific request headers (RFC 9113
+//!    section 8.2.2) and lowercases names; a request with a header that is
+//!    still not valid on h2 fails with an `Err` naming that.
+//! 2. **One TCP/TLS connection per request; always `Connection: close`
+//!    (HTTP/1.1) or one call on a connection that is then closed (h2).**
 //!    No keep-alive/connection-pooling in this slice (the dotnet/JVM
 //!    kernels get pooling for free from their platform `HttpClient`).
 //!    Correctness is unaffected; only per-request connection-setup latency
@@ -131,6 +139,14 @@
 //!    already cancelled. The send blocks its thread (it is not a reactor
 //!    task), like every send of this kernel.
 //!
+//!    Over h2 the same contract holds, by different means: the connect and
+//!    the handshake are bounded as above; the call carries the token's
+//!    deadline (rounded up, so it never fires early), which the driver's reader
+//!    enforces within its 20 ms poll with RST_STREAM CANCEL; the write timeout
+//!    is the time left; and `cancelSource` is noticed by a watcher task that
+//!    checks the token every 5 ms (an h2 call waits on the connection's
+//!    mailbox, which a wake pipe cannot interrupt) rather than "at once".
+//!
 //! Every failure of a send is an `Err`: no entry point of this kernel panics
 //! on a transport failure, a malformed URL or response, or an unsupported
 //! client, so a caller never needs `try` (which native does not have).
@@ -188,6 +204,11 @@ import Std.Collections
 import Std.Encoding
 import Std.String as Str
 import Std.Task
+import Std.Time as Time
+import Std.HttpEngine as Eng
+import Std.HttpEngine.H2Conn as H2
+import Std.HttpEngine.H2Client as H2C
+import Std.HttpServerHost as Host
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
 import Std.TcpHost as Tcp
@@ -204,6 +225,9 @@ pub record HttpClientHandle {
   trust: Tls.TlsClientTrust
   clientIdentity: Option[Tls.Identity]
   minVersion: Tls.TlsVersion
+  // Whether a TLS connection offers ALPN `h2,http/1.1` (the default) or only
+  // `http/1.1` (`HttpVersion.Http11`).
+  allowH2: Bool
   // Why every request through this client fails (module header item 3),
   // or `None` for a usable client.
   unsupportedReason: Option[String]
@@ -224,11 +248,11 @@ pub record HttpRequestMessage {
 }
 
 /// Response, fully buffered at send time (matches both other kernels'
-/// buffering contract). No `version` field: `hostResponseVersionMajor`
-/// always answers `1` (module header item 1), so there is nothing to
-/// store per-response.
+/// buffering contract). `versionMajor` is the protocol the response arrived
+/// over: 2 for an h2 connection, 1 otherwise.
 pub record HttpResponseMessage {
   status: Int
+  versionMajor: Int
   headerNames: List[String]
   headerValues: List[String]
   bodyBytes: slice[Byte]
@@ -590,10 +614,11 @@ record Limits {
   deadlineNanos: Long
   wake: Option[Tcp.WakePipe]
   source: Option[CancellationTokenSource]
+  token: CancellationToken
 }
 
 func noLimits(): Limits {
-  Limits(deadlineNanos = 0i64, wake = None, source = None)
+  Limits(deadlineNanos = 0i64, wake = None, source = None, token = noCancellation())
 }
 
 func wakeFdOf(limits: in Limits): Int {
@@ -627,7 +652,12 @@ func openLimits(token: in CancellationToken): Result[Limits, String] {
     case Some(src) -> {
       val pipe = match Tcp.hostWakePipeNew() { case Ok(p) -> p; case Err(e) -> return Err(error = Tcp.TcpError.message(e)) }
       rtCancelWakeRegister(src, Tcp.hostWakePipeWriteFd(pipe))
-      val limits = Limits(deadlineNanos = src.deadlineNanos, wake = Some(value = pipe), source = Some(value = src))
+      val limits = Limits(
+        deadlineNanos = src.deadlineNanos,
+        wake = Some(value = pipe),
+        source = Some(value = src),
+        token = token
+      )
       if isCancelled(token) {
         closeLimits(limits)
         return Err(error = cancelCause(token))
@@ -990,6 +1020,7 @@ func defaultClientHandle(trust: in Tls.TlsClientTrust): HttpClientHandle {
     trust = trust,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
+    allowH2 = true,
     unsupportedReason = None
   )
 }
@@ -1005,6 +1036,7 @@ pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
     trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
+    allowH2 = true,
     unsupportedReason = None
   )
 }
@@ -1016,24 +1048,37 @@ pub func hostClientNoRedirects(): HttpClientHandle {
     trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
+    allowH2 = true,
     unsupportedReason = None
   )
 }
 
 // ---------------------------------------------------------------------------
-// HTTP/1.1 exact-pin variants: identical to their non-`Http11` siblings
-// (module header item 1 — this target never speaks anything else).
+// HTTP/1.1 exact-pin variants: their non-`Http11` siblings with ALPN
+// offering only `http/1.1` (`HttpVersion.Http11`).
 // ---------------------------------------------------------------------------
+func pinnedHttp11(client: in HttpClientHandle): HttpClientHandle {
+  HttpClientHandle(
+    followRedirects = client.followRedirects,
+    maxRedirects = client.maxRedirects,
+    trust = client.trust,
+    clientIdentity = client.clientIdentity,
+    minVersion = client.minVersion,
+    allowH2 = false,
+    unsupportedReason = client.unsupportedReason
+  )
+}
+
 pub func hostClientHttp11(): HttpClientHandle {
-  hostDefaultClient()
+  pinnedHttp11(hostDefaultClient())
 }
 
 pub func hostClientWithRedirectsHttp11(maxRedirects: in Int): HttpClientHandle {
-  hostClientWithRedirects(maxRedirects)
+  pinnedHttp11(hostClientWithRedirects(maxRedirects))
 }
 
 pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
-  hostClientNoRedirects()
+  pinnedHttp11(hostClientNoRedirects())
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,6 +1095,7 @@ func unixSocketUnsupported(): HttpClientHandle {
     trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
+    allowH2 = false,
     unsupportedReason = Some(
       value = "Unix domain socket clients are not supported on --target native " +
         "(the native socket layer has no Unix-socket transport)"
@@ -1117,8 +1163,7 @@ func resolveTrust(
   }
 }
 
-/// `pinHttp11` is accepted for signature parity with the other kernels but
-/// has no effect (module header item 1).
+/// `pinHttp11` offers only `http/1.1` in ALPN, as the `Http11` variants above.
 pub func hostClientWithTls(
   maxRedirects: in Option[Int],
   noRedirects: in Bool,
@@ -1146,6 +1191,7 @@ pub func hostClientWithTls(
     trust = trust,
     clientIdentity = clientIdentity,
     minVersion = minVersion,
+    allowH2 = not pinHttp11,
     unsupportedReason = None
   )
 }
@@ -1319,19 +1365,29 @@ func buildRequestBytes(request: in HttpRequestMessage, parsed: in ParsedUrl): Re
   Ok(value = acc.toArray())
 }
 
+/// A connection and the protocol it carries: `isH2` when the TLS handshake
+/// selected ALPN `h2`. Cleartext connections are always HTTP/1.1 (no prior
+/// knowledge h2c, as on the dotnet and JVM clients).
+record Connected {
+  conn: Tcp.Conn
+  isH2: Bool
+}
+
 /// Connect within the limits: name lookup, TCP connect and, for `https`,
-/// the whole TLS handshake.
-func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl, limits: in Limits): Result[Tcp.Conn, String] {
+/// the whole TLS handshake, offering `h2,http/1.1` unless the client pins
+/// HTTP/1.1.
+func connectForUrl(client: in HttpClientHandle, parsed: in ParsedUrl, limits: in Limits): Result[Connected, String] {
   val wakeFd = wakeFdOf(limits)
   val plain = match Tcp.hostConnectBounded(parsed.host, parsed.port, limits.deadlineNanos, wakeFd) {
     case Ok(c) -> c
     case Err(e) -> return Err(error = boundedCause(e))
   }
   if not parsed.isHttps {
-    return Ok(value = plain)
+    return Ok(value = Connected(conn = plain, isH2 = false))
   }
-  match Tcp.hostUpgradeClientTlsBounded(plain, parsed.host, client.trust, client.clientIdentity, client.minVersion, "http/1.1", limits.deadlineNanos, wakeFd) {
-    case Ok(conn) -> Ok(value = conn)
+  val offered = if client.allowH2 { "h2,http/1.1" } else { "http/1.1" }
+  match Tcp.hostUpgradeClientTlsBounded(plain, parsed.host, client.trust, client.clientIdentity, client.minVersion, offered, limits.deadlineNanos, wakeFd) {
+    case Ok(conn) -> Ok(value = Connected(conn = conn, isH2 = client.allowH2 and Tcp.hostAlpn(conn) == "h2"))
     case Err(e) -> Err(error = boundedCause(e))
   }
 }
@@ -1474,6 +1530,7 @@ func readResponse(wire: in Wire, method: in String): Result[HttpResponseMessage,
       return Ok(
         value = HttpResponseMessage(
           status = headers.status,
+          versionMajor = 1,
           headerNames = headers.names,
           headerValues = headers.values,
           bodyBytes = bodyBytes
@@ -1485,6 +1542,267 @@ func readResponse(wire: in Wire, method: in String): Result[HttpResponseMessage,
   }
 }
 
+// =====================================================================
+// HTTP/2 (ALPN `h2`): `Std.HttpEngine.H2Client` over the connection the
+// handshake produced. One connection and one call per request, like the
+// HTTP/1.1 path (module header item 2).
+// =====================================================================
+/// Header names a client must not send on h2 (RFC 9113 section 8.2.2): the
+/// connection-specific fields, and `host` (`:authority` carries it).
+func isH2ConnectionSpecific(lower: in String): Bool {
+  lower == "connection" or lower == "keep-alive" or lower == "proxy-connection" or lower == "transfer-encoding" or
+    lower == "upgrade" or
+    lower == "host"
+}
+
+func lowerAscii(s: in String): String {
+  var lowered = ""
+  var i = 0
+  while i < s.length {
+    lowered = lowered + toLowerAsciiChar(s.substring(i, 1))
+    i = i + 1
+  }
+  lowered
+}
+
+/// The request as h2 header fields. Names are lowercased, the connection-
+/// specific ones dropped (a `te` other than `trailers` too), and
+/// `content-type`/`content-length` come from the body, as in
+/// `buildRequestBytes`.
+func buildH2Headers(request: in HttpRequestMessage, parsed: in ParsedUrl): Result[List[Eng.HeaderField], String] {
+  match validateRequestForWire(request, parsed) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> {
+    }
+  }
+  val fields: List[Eng.HeaderField] = newList()
+  fields.add(Eng.HeaderField(name = ":method", value = request.method))
+  fields.add(Eng.HeaderField(name = ":scheme", value = "https"))
+  fields.add(Eng.HeaderField(name = ":path", value = parsed.target))
+  fields.add(Eng.HeaderField(name = ":authority", value = hostHeaderValue(parsed)))
+  var i = 0
+  while i < request.headerNames.count {
+    val name = lowerAscii(request.headerNames[i])
+    val value = request.headerValues[i]
+    val dropped = isH2ConnectionSpecific(name) or (name == "te" and trimSpaces(value) != "trailers")
+    if not dropped {
+      fields.add(Eng.HeaderField(name = name, value = value))
+    }
+    i = i + 1
+  }
+  if request.hasBody {
+    fields.add(Eng.HeaderField(name = "content-type", value = request.contentType))
+    fields.add(Eng.HeaderField(name = "content-length", value = request.body.length.toString()))
+  }
+  if not H2.isH2RequestHeaderListSafe(fields) {
+    return Err(error = "request headers are not valid over HTTP/2")
+  }
+  Ok(value = fields)
+}
+
+/// How often a send under a cancellable token checks it while its call is in
+/// flight: an h2 call blocks on the connection's mailbox, which a wake pipe
+/// cannot interrupt, so `cancelSource` ends it within this many milliseconds.
+val h2CancelPollMs: Int = 5
+
+/// Why an h2 call or connection failed, as the send's cause: a token that
+/// reads as cancelled names its deadline or `cancelSource` (the call ended
+/// because of it), anything else keeps the driver's own message.
+func h2Cause(limits: in Limits, message: in String): String {
+  if isCancelled(limits.token) {
+    cancelCause(limits.token)
+  } else {
+    message
+  }
+}
+
+/// Ends `call` when the send's token is cancelled. Exits when the connection
+/// is closed, which `sendH2` does once the call has ended.
+func watchH2Cancel(call: in H2C.H2Call, conn: in H2C.H2ClientConnection, token: in CancellationToken): Unit {
+  var watching = true
+  while watching {
+    match H2C.h2ClientStatus(conn) {
+      case H2ClientClosed -> {
+        watching = false
+      }
+      case _ -> {
+        if isCancelled(token) {
+          H2C.h2Cancel(call)
+          watching = false
+        } else {
+          Time.sleepMillis(h2CancelPollMs)
+        }
+      }
+    }
+  }
+}
+
+/// Collect one response: interim responses are counted and dropped, the final
+/// headers and every data frame are buffered under the same caps as the
+/// HTTP/1.1 path, trailers are ignored.
+func collectH2Response(call: in H2C.H2Call, limits: in Limits): Result[HttpResponseMessage, String] {
+  val names: List[String] = newList()
+  val values: List[String] = newList()
+  val body: List[Byte] = newList()
+  var status = 0
+  var interim = 0
+  while true {
+    match H2C.h2NextEvent(call) {
+      case H2CallInformational(_, _) -> {
+        interim = interim + 1
+        if interim > maxInterimResponses {
+          H2C.h2Cancel(call)
+          return Err(error = "response exceeds the maximum allowed number of interim (1xx) responses")
+        }
+      }
+      case H2CallHeaders(st, hs) -> {
+        if hs.count > maxHeaderCount {
+          H2C.h2Cancel(call)
+          return Err(error = "response exceeds the maximum allowed number of header fields")
+        }
+        status = st
+        var i = 0
+        while i < hs.count {
+          names.add(hs[i].name)
+          values.add(hs[i].value)
+          i = i + 1
+        }
+      }
+      case H2CallData(data) -> {
+        if body.count + data.length > maxResponseBodyBytes {
+          H2C.h2Cancel(call)
+          return Err(error = "response body exceeds the maximum allowed size")
+        }
+        var j = 0
+        while j < data.length {
+          body.add(data[j])
+          j = j + 1
+        }
+      }
+      case H2CallTrailers(_) -> ()
+      case H2CallEnded -> {
+        return Ok(
+          value = HttpResponseMessage(
+            status = status,
+            versionMajor = 2,
+            headerNames = names,
+            headerValues = values,
+            bodyBytes = body.toArray()
+          )
+        )
+      }
+      case H2CallFailed(f) -> return Err(error = h2Cause(limits, H2C.H2CallFailure.message(f)))
+    }
+  }
+}
+
+/// Milliseconds left until `limits`' deadline, rounded up so the call's own
+/// deadline never fires before the token's (`0` for no deadline, `-1` once it
+/// has passed).
+func h2RemainingMs(limits: in Limits): Int {
+  if limits.deadlineNanos == 0i64 {
+    return 0
+  }
+  val left = limits.deadlineNanos - rtMonotonicNanos()
+  if left <= 0i64 {
+    return 0 - 1
+  };
+  ((left + 999999i64) / 1000000i64).toInt()
+}
+
+/// Send `request` on `conn`, which the handshake negotiated to `h2`. The
+/// connection is closed before returning.
+func sendH2(
+  request: in HttpRequestMessage, parsed: in ParsedUrl, conn: in Tcp.Conn, limits: in Limits
+): Result[HttpResponseMessage, String] {
+  val headers = match buildH2Headers(request, parsed) {
+    case Ok(h) -> h
+    case Err(e) -> {
+      Tcp.hostClose(conn)
+      return Err(error = e)
+    }
+  }
+  val remaining = h2RemainingMs(limits)
+  if remaining < 0 {
+    Tcp.hostClose(conn)
+    return Err(error = h2Cause(limits, timedOutMessage))
+  }
+  val defaults = H2C.h2ClientDefaults()
+  val opts = H2C.H2ClientOptions(
+    connectTimeoutMs = defaults.connectTimeoutMs,
+    handshakeTimeoutMs = defaults.handshakeTimeoutMs,
+    writeTimeoutMs = if remaining > 0 { remaining } else { defaults.writeTimeoutMs },
+    pollIntervalMs = h2CancelPollMs * 4,
+    keepAliveIntervalMs = 0,
+    keepAliveTimeoutMs = defaults.keepAliveTimeoutMs,
+    keepAliveWithoutCalls = false,
+    streamWindow = defaults.streamWindow,
+    connectionWindow = defaults.connectionWindow
+  )
+  val h2 = match H2C.h2ConnectOn(conn, opts) {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = h2Cause(limits, H2C.H2DialError.message(e)))
+  }
+  val result = runH2Call(request, headers, h2, limits, remaining)
+  H2C.h2Close(h2)
+  result
+}
+
+func runH2Call(
+  request: in HttpRequestMessage,
+  headers: in List[Eng.HeaderField],
+  h2: in H2C.H2ClientConnection,
+  limits: in Limits,
+  deadlineMs: in Int,
+): Result[HttpResponseMessage, String] {
+  val call = match H2C.h2StartCall(h2, headers, not request.hasBody, deadlineMs) {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = h2Cause(limits, h2StartMessage(e)))
+  }
+  match limits.source {
+    case Some(_) -> {
+      val token = limits.token
+      Host.startTask({ -> watchH2Cancel(call, h2, token) })
+    }
+    case None -> ()
+  }
+  if request.hasBody {
+    match H2C.h2SendBody(call, request.body, true) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        H2C.h2Cancel(call)
+        return Err(error = h2Cause(limits, h2BodyMessage(e)))
+      }
+    }
+  }
+  collectH2Response(call, limits)
+}
+
+func h2StartMessage(e: in H2C.H2StartError): String {
+  match e {
+    case H2StartClosed -> "HTTP/2 connection closed"
+    case H2StartDraining -> "HTTP/2 connection is draining"
+    case H2StartStreamLimit(active, limit) -> "HTTP/2 stream limit reached (" + active.toString() + " of " +
+      limit.toString() +
+      ")"
+    case H2StartIdsExhausted -> "HTTP/2 stream ids exhausted"
+    case H2StartHeaderListTooLarge(size, limit) -> "request headers too large for the server (" + size.toString() +
+      " of " +
+      limit.toString() +
+      ")"
+    case H2StartEncodingFailed(m) -> "request headers cannot be encoded for HTTP/2: " + m
+    case H2StartWriteFailed(m) -> "HTTP/2 request write failed: " + m
+  }
+}
+
+func h2BodyMessage(e: in H2C.H2BodyError): String {
+  match e {
+    case H2BodyCallFailed(f) -> H2C.H2CallFailure.message(f)
+    case H2BodyStreamClosed -> "HTTP/2 stream closed before the request body was sent"
+    case H2BodyWriteFailed(m) -> "HTTP/2 request body write failed: " + m
+  }
+}
+
 func doSendOnce(
   client: in HttpClientHandle, request: in HttpRequestMessage, limits: in Limits
 ): Result[HttpResponseMessage, String] {
@@ -1492,7 +1810,11 @@ func doSendOnce(
   // Serialized before connecting, so a request that cannot go on the wire
   // costs no connection.
   val bytes = match buildRequestBytes(request, parsed) { case Ok(b) -> b; case Err(e) -> return Err(error = e) }
-  val conn = match connectForUrl(client, parsed, limits) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
+  val connected = match connectForUrl(client, parsed, limits) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
+  if connected.isH2 {
+    return sendH2(request, parsed, connected.conn, limits)
+  }
+  val conn = connected.conn
   val wire = Wire(conn = conn, deadlineNanos = limits.deadlineNanos, wakeFd = wakeFdOf(limits))
   match Tcp.hostWriteBounded(conn, bytes, wire.deadlineNanos, wire.wakeFd) {
     case Err(e) -> {
@@ -1686,10 +2008,9 @@ pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): 
   }
 }
 
-/// Always `1` on this target (module header item 1 — HTTP/1.1 only, no h2
-/// client).
+/// `2` for a response that arrived over an h2 connection, `1` otherwise.
 pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
-  1
+  response.versionMajor
 }
 
 func readBodyTextOf(response: in HttpResponseMessage): Result[String, String] {

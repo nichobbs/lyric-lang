@@ -551,6 +551,7 @@ pub func start(registry: in ServiceRegistry): Unit {
 /// Unlike `start`, this function returns immediately; the server runs in the
 /// background.  Call `stop` to drain in-flight RPCs and shut it down.
 @stable(since = "0.1")
+@cfg(not(feature = "native"))
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
   checkServerConfig()
   return startHandleAt(registry, GrpcServer.host, GrpcServer.port)

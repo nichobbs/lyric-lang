@@ -261,7 +261,7 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 3\n" +
     "  }\n" +
-    "  val client = hostClientWithTls(None, false, false, None, Some(value = cert), None, None, false)\n" +
+    "  val client = hostClientWithTls(None, false, true, None, Some(value = cert), None, None, false)\n" +
     "  val url = \"https://localhost:\" + port.toString() + \"/redirect\"\n" +
     "  val request = hostMakeRequest(\"GET\", url)\n" +
     "  var finalStatus = 0\n" +
@@ -680,7 +680,7 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 3\n" +
     "  }\n" +
-    "  val client = hostClientWithTls(None, false, false, None, Some(value = cert), None, None, false)\n" +
+    "  val client = hostClientWithTls(None, false, true, None, Some(value = cert), None, None, false)\n" +
     // Same host string ("127.0.0.1") as the redirect target below — the
     // whole point of this test is isolating the SCHEME change alone; a
     // different host string (e.g. "localhost" here vs "127.0.0.1" there)
