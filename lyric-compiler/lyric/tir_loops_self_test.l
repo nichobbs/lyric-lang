@@ -149,7 +149,7 @@ test "a for loop's invariant is checked after the loop through a flag a break se
   assertLowered(l, "for with break")
   val c = count(l.pb)
   assertEqualInt(c.asserts, 2, "the iteration check and the guarded exit check")
-  assertEqualInt(c.vars, 1, "the break flag")
+  assertEqualInt(c.vars, 2, "the accumulator and the break flag")
   assertEqualInt(c.fors, 1, "the for keeps its form")
 }
 
@@ -163,10 +163,12 @@ test "a for loop with no break needs no flag, and a clause naming the loop varia
   assertEqualInt(c.vars, 1, "only the accumulator")
 }
 
-test "a loop with no condition is checked each iteration only" {
+test "a break of an inner loop leaves the outer for loop's flag alone" {
   val l = lowerOf(
-    "package App\nfunc f(n: Int): Int {\n  var i = 0\n  loop\n    invariant: i >= 0\n  {\n    i = i + 1\n    if i > n { break }\n  }\n  i\n}\n"
+    "package App\nfunc f(n: Int): Int {\n  var s = 0\n  for i in 0 ..< n\n    invariant: s >= 0\n  {\n    var j = 0\n    while j < 3\n      invariant: j <= 3\n    {\n      if j == 2 { break }\n      j = j + 1\n    }\n    s = s + j\n  }\n  s\n}\n"
   )
-  assertLowered(l, "loop")
-  assertEqualInt(count(l.pb).asserts, 1, "the iteration check")
+  assertLowered(l, "nested")
+  val c = count(l.pb)
+  assertEqualInt(c.asserts, 4, "the for's iteration and exit checks and the while's")
+  assertEqualInt(c.vars, 2, "the accumulator and the inner counter: no flag, the break is the inner loop's")
 }
