@@ -637,7 +637,7 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
           }
           case None -> return None
         }
-        val uty = match tyOfType(env.ctx, under) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+        val uty = match tyOfType(env.ctx, under) { case Ok(t) -> t; case Err(_) -> return None }
         return Some(
           value = TExpr(
             id = freshNodeId(env),
@@ -651,13 +651,7 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
       var i = 0
       while i < fields.count {
         if fields[i].name == seg {
-          val ft = match tyOfType(env.ctx, fields[i].ty) {
-            case Ok(t) -> t
-            case Err(msg) -> {
-              env.errors.add(msg)
-              return None
-            }
-          }
+          val ft = match tyOfType(env.ctx, fields[i].ty) { case Ok(t) -> t; case Err(_) -> return None }
           return Some(
             value = TExpr(
               id = freshNodeId(env),
@@ -691,6 +685,7 @@ func buildRecordEq(
 ): Option[TExpr] {
   val lt = match buildExpr(env, lhs) { case Some(t) -> t; case None -> return None }
   val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
+  // Every fallback below reuses the operands built above, so nothing is built or evaluated twice.
   val iop = if site.negate { IoNeq } else { IoEq }
   if site.arrayLeaves.count > 0 or site.wrapLeaves.count > 0 or site.floatLeaves.count > 0 {
     return buildDeclaredBinary(env, e, ty, iop, lt, rt0)

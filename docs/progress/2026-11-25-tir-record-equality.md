@@ -11,7 +11,8 @@ The builder now handles the sites the checker recorded in `SymbolTable.recordEqS
 compared with `IoEq`; the comparisons are joined with the short-circuit `and`, and the conjunction is negated
 with `IoNot` for `!=`. The result is a block, so `Lyric.Tir.Verify` accepts it as any other.
 
-Not in this slice: a site with an array leaf, a tuple or union holding an array, or a `Float`/`Double` leaf
-(the D172 NaN rule) stays counted as an uncovered body (the AST path still lowers it), with the reason
-"record equality over an array, a tuple or union holding one, or a Float leaf". Covered by three cases in
-`tir_build_self_test.l` (nested record, `!=`, the Float fallback).
+Not in this slice: a site with an array leaf, a tuple or union holding an array, a `Float`/`Double` leaf
+(the D172 NaN rule), or a leaf path the builder cannot read (through a generic record) keeps the single
+`IoEq`/`IoNeq` on the record type that the builder produced before, with no error recorded (`lyric prove`
+builds TIR and fails on an I0002, so an inexpressible case must not become one). Covered by four cases in
+`tir_build_self_test.l` (nested record, `!=`, the Float fallback, a record holding a generic record).
