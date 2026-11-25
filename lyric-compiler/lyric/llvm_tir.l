@@ -3527,7 +3527,7 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     )
     return unitVal()
   }
-  // `default()` is the zero value of the expected type: 0, false, NaN-free 0.0, or null for a reference (the
+  // `default()` is the zero value of the expected type: 0, false, 0.0, or null for a reference (the
   // placeholder a later `out` argument or assignment replaces, releasing nothing).
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
@@ -4791,10 +4791,6 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
   None
 }
 
-/// The numeric conversions between `Int`, `Long`, `Byte` and `Double` whose semantics do not depend
-/// on more than the source type (`UInt`, `ULong`, `Nat`, `Char` and `Float` sources stay on the AST
-/// path): widening is sign- or zero-extending by the source's signedness, narrowing truncates,
-/// `Double` to an integer is `fptosi`.
 /// `a.wrappingAdd(b)`, `.wrappingSub`, `.wrappingMul` and `.wrappingNeg()` on an integer: the plain two's
 /// complement operation whatever the build profile (D163), so none of the overflow checks `lowerBinary` adds.
 func lowerWrapping(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
@@ -4826,6 +4822,10 @@ func lowerWrapping(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val
   Some(value = Val(ty = nty, value = NLocal(name = d)))
 }
 
+/// The numeric conversions between `Int`, `Long`, `Byte` and `Double` whose semantics do not depend
+/// on more than the source type (`UInt`, `ULong`, `Nat`, `Char` and `Float` sources stay on the AST
+/// path): widening is sign- or zero-extending by the source's signedness, narrowing truncates,
+/// `Double` to an integer is `fptosi`.
 func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int): Option[Val] {
   val dot = match Str.indexOf(name, ".") { case Some(i) -> i; case None -> return None }
   val from = Str.substring(name, 0, dot)
