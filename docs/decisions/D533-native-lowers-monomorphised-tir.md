@@ -12,12 +12,14 @@ Status: accepted (docs/70 phase 4a, part 6; D520 slice 34; consumes D500).
 5. **Project builds monomorphise too.** Every own package and every bundled package of a multi-package build is checked with the one interner and monomorphised together; each own unit receives its own TIR plus the instances package.
 6. **A generic function of another package is instantiated on demand.** The AST path has no mangled copy of such a function; the code generator instantiates it at a call (`ensureFnInst`). A TIR call to an instance with no IR name is recorded by the lowering (`TirLowerEnv.needFns`), the code generator instantiates the generic over the instance's argument types (`instantiateTirFnInst`), registers the IR name under the instance's symbol and the lowering is tried again, as it is for tuple and list layouts. Functions the AST lowering of a call replaces by name (`mapGet`, `dictGetKeys`, `dictGetValues`, `newList`, `newListWithCapacity`, `newMap`, `panic`, `print`, `println`) and the `Std.Collections`/`Std.CollectionsHost` packages are never instantiated this way: their Lyric bodies are not what the AST path runs (a census run caught `mapGet` reading `None` otherwise). The instantiated body is still the AST's; lowering it from TIR follows.
 7. **A function whose AST copy is found by name is looked for in every package** (the AST path puts the copy of another package's generic in the package that asks for it), the unit's own copy first, since a copy in a pruned package is not reachable.
+8. **Distinct types without a range** lay out as their underlying type: `tirUnitMaps` registers each one from `ctx.distinctDefs` (`TirLowerEnv.distincts`), `CvWrapDistinct`/`CvUnwrapDistinct` change the type only, and the type is a valid instance argument (`Option[Meters]`). A range-checked distinct type, which panics on a value outside its range, stays on the AST path, as does arithmetic on a distinct type (the operator lowering reads the signedness of the primitive kind, which a distinct type hides).
+9. **Host collections as instance arguments.** `List[T]` and `Map[K, V]` host types (and tuples and slices) are laid out by the code generator's own `listNType`/`mapNType`/`tupleRecInfo`, under the same element and key restrictions the lowering applies to a list or map type.
 
 ## Not done
 
 Tracked in #9370:
 
-- Instance arguments that are `List`/`Map` host types, functions, arrays, value-generic lengths or distinct types (scalars, `Unit`, records, unions, enums, tuples and slices are covered); generic interfaces and impls (3c mono slice 2); `async` instance functions; lowering the on-demand instances' bodies from TIR.
+- Instance arguments that are functions, arrays, value-generic lengths or range-checked distinct types (scalars, `Unit`, records, unions, enums, range-free distinct types, tuples, slices, lists and maps are covered); module-level `val`/`const` reads (`XGlobal`, 43 of the 1744 census functions); generic interfaces and impls (3c mono slice 2); `async` instance functions; lowering the on-demand instances' bodies from TIR.
 
 ## Verification
 
