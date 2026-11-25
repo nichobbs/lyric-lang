@@ -3312,7 +3312,7 @@ func heapFieldPlace(c: in LCtx, recv: in TExpr, field: in FieldRef): Option[Val]
 /// `toString` of a scalar: the runtime's formatter, a fresh owned string.
 func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
   val sTy = lyricStringNType()
-  val uns = isUnsignedTy(ty)
+  val uns = isUnsignedTy(opTy(c, ty))
   val isChar = match ty { case TPrim(k) -> match k { case TPChar -> true; case _ -> false }; case _ -> false }
   val r = match v.ty {
     case NI32 -> {
@@ -3346,6 +3346,7 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
     }
     case NDouble -> callRt(c, "lyric_string_from_float", sTy, arg1(NDouble, v.value))
     case NFloat -> callRt(c, "lyric_string_from_float32", sTy, arg1(NFloat, v.value))
+    case NVoid -> return stringLiteral(c, "()")
     case _ -> {
       c.problems.add("toString of " + renderTy(ty))
       NUndef(ty = sTy)
@@ -3432,6 +3433,14 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   match lowerNumericConversion(c, name, ins, line) {
     case Some(v) -> return v
     case None -> ()
+  }
+  if name == "println" and ins.count == 0 {
+    callRtVoid(
+      c,
+      "lyric_console_write_line",
+      arg2(NI32, NLitInt(v = 1i64, ty = NI32), lyricStringNType(), stringLiteral(c, "").value)
+    )
+    return unitVal()
   }
   if ins.count != 1 {
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")

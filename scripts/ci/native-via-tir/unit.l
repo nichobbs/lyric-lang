@@ -23,4 +23,6 @@ func passes(n: in Int): Int {
 func main(): Unit {
   println(toString(passes(1)))
   println(toString(takes(note(7), 3)))
+  println()
+  println(toString(note(2)))
 }
