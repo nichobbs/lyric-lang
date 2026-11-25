@@ -1017,6 +1017,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Monomorphisation on TIR (`Lyric.Tir.Mono`, D500): generic functions, members, records, protected types and unions are replaced by instances (DefPath key with the arguments in brackets) in one synthetic package, value-generic parameters become lengths, the output verifies, and `lyric build --verify-ir` prints a mono census; generic interfaces and distinct types stay counted as unresolved.
   - Contract elaboration on TIR, the declaration step (`Lyric.Tir.Contracts`, D502): `requires:`/`ensures:` become `assert` calls in the body with `old(..)` snapshots and the AST pass's messages (the builder records each clause's text on `TFnDecl`); invariants, range checks, loop invariants, protected entries and aspect contracts are later slices.
   - `?` lowered on TIR (`Lyric.Tir.Propagate`, D503) over a shared rewriting walker (`Lyric.Tir.Walk`): each `XPropagate` becomes a bind, a match and an early `return` of the failure rebuilt at the function's type; hoisting and nullable propagation are later slices.
+  - Await hoisting on TIR, the last middle-end pass (`Lyric.Tir.AwaitHoist`, D504): every operand up to and including an awaiting one is bound to a fresh local ahead of the statement so each `await` evaluates on an empty stack; conditional parts keep their preludes inside them and a `while` condition with an `await` becomes a `loop`.
 
 3b can run in parallel with 3a; 3c needs 3a.
 
