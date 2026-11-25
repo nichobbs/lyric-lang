@@ -3264,6 +3264,7 @@ func monoTirInputs(
   val prop = pipePropagateTir(interner, builds)
   val ownPkgs: List[TirBuild.PackageBuild] = newList()
   val stdPkgs: List[TirBuild.PackageBuild] = newList()
+  // `checkedArith` has an entry for exactly the own packages (the bundled standard library's have none).
   for pb in prop.pkgs {
     if checkedArith.containsKey(pb.pkg.name) {
       ownPkgs.add(pb)
@@ -3273,6 +3274,9 @@ func monoTirInputs(
   }
   val ownDone = pipeContractsTir(interner, ownPkgs, ownContracts)
   val stdDone = pipeContractsTir(interner, stdPkgs, true)
+  if ownDone.count != ownPkgs.count or stdDone.count != stdPkgs.count {
+    panic("Lyric.LlvmBridge: the contract pass changed the number of packages of the bundle")
+  }
   val elaborated: List[TirBuild.PackageBuild] = newList()
   var oi = 0
   var si = 0
