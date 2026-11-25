@@ -246,6 +246,28 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/b
 diff -u "$work/f_tir.out" "$work/f_asan.out"
 echo "generic fallback under AddressSanitizer: clean"
 
+# Unit parameters, locals and arguments (docs/70 phase 4a, D536).
+unsrc=scripts/ci/native-via-tir/unit.l
+"$lyric_bin" build --target native "$unsrc" -o "$work/un_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$unsrc" -o "$work/un_tir" 2> "$work/un_census.txt" >/dev/null
+cat "$work/un_census.txt"
+"$work/un_ast" > "$work/un_ast.out"
+"$work/un_tir" > "$work/un_tir.out"
+diff -u "$work/un_ast.out" "$work/un_tir.out"
+printf 'note 1\n2\nnote 7\n4\n' | diff -u - "$work/un_tir.out"
+grep -q '^native via-TIR: 4 of 4 functions lowered from TIR' "$work/un_census.txt" || {
+  echo "::error::expected every function of unit.l to be lowered from TIR"
+  exit 1
+}
+if grep -q '^  fallback: ' "$work/un_census.txt"; then
+  echo "::error::unit.l has a TIR fallback"
+  exit 1
+fi
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/un_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/un_asan"
+"$work/un_asan" > "$work/un_asan.out"
+diff -u "$work/un_tir.out" "$work/un_asan.out"
+echo "unit under AddressSanitizer: clean"
+
 # String methods that are one runtime call, numeric conversions and `panic`.
 bsrc=scripts/ci/native-via-tir/builtins.l
 "$lyric_bin" build --target native "$bsrc" -o "$work/b_ast" >/dev/null
