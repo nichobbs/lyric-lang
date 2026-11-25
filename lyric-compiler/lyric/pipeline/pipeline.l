@@ -83,6 +83,7 @@ import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
 import Lyric.Tir.Build as TirBuild
 import Lyric.Tir.Mono as TirMono
+import Lyric.Tir.Propagate as TirPropagate
 import Lyric.Tir.Contracts as TirContracts
 import Lyric.Resolve as Resolve
 import Lyric.IfaceBuild as IfaceBuild
@@ -2406,6 +2407,31 @@ func pipeReportMonoCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild
   }
 }
 
+/// `bundle` with every `?` lowered into a match and an early return (docs/70 §7.2, D503): the TIR counterpart of
+/// `Lyric.Propagate`, run before `pipeMonoTir`.
+pub func pipePropagateTir(interner: in DefPathInterner, bundle: in List[TirBuild.PackageBuild]): TirPropagate.PropResult {
+  TirPropagate.lowerPropagateBundle(interner, bundle)
+}
+
+/// The `?`-lowering census of one built package (docs/70 §12.2, D503): lowered, then verified.
+func pipeReportPropagateCensus(label: in String, tbl: in SymbolTable, pb: in TirBuild.PackageBuild): Unit {
+  val bundle: List[TirBuild.PackageBuild] = newList()
+  bundle.add(pb)
+  val r = TirPropagate.lowerPropagateBundle(tbl.interner, bundle)
+  val diags = TirVerify.verifyPackage(r.pkgs[0].pkg, newList())
+  Console.error(
+    "I0003 propagate census [" + label + "]: " + toString(diags.count) + " diagnostic(s), " + toString(r.diags.count) +
+      " unlowered"
+  )
+  var shown = 0
+  for d in diags {
+    if shown < 3 {
+      Console.error("    e.g. " + TirVerify.renderVerifyDiag("propagate", d))
+      shown = shown + 1
+    }
+  }
+}
+
 /// `bundle` with every function's contracts lowered into its body (docs/70 §7.2, D502): the TIR counterpart of
 /// `ContractElaborator.elaborateFile`, run on the output of `pipeMonoTir` or on a built package directly.
 pub func pipeContractsTir(
@@ -2571,6 +2597,7 @@ pub func pipeCheckFront(
     }
     if verifyIr {
       pipeReportMonoCensus(opts.pkgLabel, tcRes.symbols, pb)
+      pipeReportPropagateCensus(opts.pkgLabel, tcRes.symbols, pb)
       pipeReportContractsCensus(opts.pkgLabel, tcRes.symbols, pb)
     }
     if gateTo(sink, opts.pkgLabel, opts.filePaths, pipeTirDiagnostics(tcRes.symbols, pb)) {
