@@ -71,6 +71,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmTir as LlvmTir
 import Lyric.Tir as Tir
+import Lyric.Tir.Mono as TirMono
 import Lyric.SelfFields as SelfFields
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18959,6 +18960,8 @@ record TirUnitMaps {
   cases: Map[Int, LlvmTir.TirCaseRef]
   enums: Map[Int, Bool]
   enumCases: Map[Int, Int]
+  /// The distinct types without a range, by symbol, as their underlying types.
+  distincts: Map[Int, NType] = newMap()
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
@@ -18968,6 +18971,14 @@ record TirUnitMaps {
   scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
   protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  /// The instance functions the AST copy of which exists, keyed `pkg.name__Args/arity` as `sigs` is.
+  instFns: Map[String, Tir.TFnDecl] = newMap()
+  /// Every instance of a generic function: its symbol's table row, declaration and DefPath key, for
+  /// the instantiation a call asks for (`instantiateTirFnInst`).
+  instInfos: Map[Int, TirMono.InstanceInfo] = newMap()
+  instDecls: Map[Int, Tir.TFnDecl] = newMap()
+  instKeys: Map[Int, String] = newMap()
+  symNames: Map[Int, String] = newMap()
   ifaces: Map[Int, LlvmTir.TirIfaceLayout] = newMap()
   ifaceMethods: Map[Int, LlvmTir.TirIfaceMethodRef] = newMap()
   ifaceVts: Map[String, String] = newMap()
@@ -19043,12 +19054,324 @@ func tirUnionLayout(ui: in NUnionInfo): LlvmTir.TirUnionLayout {
   )
 }
 
+/// The LLVM type of each record, union and enum laid out so far, by symbol.
+func tirKnownTypes(
+  recs: in Map[Int, LlvmTir.TirRecLayout],
+  unions: in Map[Int, LlvmTir.TirUnionLayout],
+  enums: in Map[Int, Bool],
+  distincts: in Map[Int, NType],
+): Map[Int, NType] {
+  val known: Map[Int, NType] = newMap()
+  for id in mapKeys(recs) {
+    match mapGet(recs, id) {
+      case Some(l) -> known.add(id, l.ty)
+      case None -> ()
+    }
+  }
+  for id in mapKeys(unions) {
+    match mapGet(unions, id) {
+      case Some(l) -> known.add(id, l.ty)
+      case None -> ()
+    }
+  }
+  for id in mapKeys(enums) {
+    known.add(id, NI32)
+  }
+  for id in mapKeys(distincts) {
+    match mapGet(distincts, id) {
+      case Some(t) -> known.add(id, t)
+      case None -> ()
+    }
+  }
+  known
+}
+
+/// A type argument of a generic instance as the code generator lays it out: `LlvmTir.tirInstArgN`'s
+/// scalars and known types, and the tuples, slices, lists and maps of those.
+func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NType] {
+  match t {
+    case Tir.TTuple(es) -> {
+      val tys: List[NType] = newList()
+      for e in es {
+        match tirInstArg(ctx, known, e) {
+          case Some(n) -> tys.add(n)
+          case None -> return None
+        }
+      }
+      Some(value = recPtrType(tupleRecInfo(ctx, tys)))
+    }
+    case Tir.TSlice(e) -> match tirInstArg(ctx, known, e) {
+      case Some(n) -> Some(value = listNType(ctx, n))
+      case None -> None
+    }
+    case Tir.TExtern(h) -> if h.name == "System.Collections.Generic.List`1" and h.args.count == 1 {
+      match tirInstArg(ctx, known, h.args[0]) {
+        case Some(n) -> if LlvmTir.tirListElemOk(n) { Some(value = listNType(ctx, n)) } else { None }
+        case None -> None
+      }
+    } else if h.name == "System.Collections.Generic.Dictionary`2" and h.args.count == 2 {
+      match tirInstArg(ctx, known, h.args[0]) {
+        case Some(kn) -> match tirInstArg(ctx, known, h.args[1]) {
+          case Some(vn) -> if LlvmTir.tirMapKeyOk(kn) and LlvmTir.tirListElemOk(vn) {
+            Some(value = mapNType(ctx, kn, vn))
+          } else {
+            None
+          }
+          case None -> None
+        }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> LlvmTir.tirInstArgN(known, t)
+  }
+}
+
+/// Register the layouts of the generic records and unions the monomorphiser instantiated (docs/70
+/// section 7.2, D500).  The layout is the one the AST path gives the same instantiation: the code
+/// generator instantiates the generic over the argument types (`instantiateGenericUnionOpt`), so a
+/// function lowered from TIR and one lowered from the AST agree on the LLVM type of `Option[Int]`.
+/// An instance with an argument the registration does not cover stays unregistered.
+func registerTirInstances(
+  ctx: in Ctx,
+  inst: in LlvmTir.TirUnitInput,
+  invariantRecs: in Map[String, Bool],
+  recs: in Map[Int, LlvmTir.TirRecLayout],
+  unions: in Map[Int, LlvmTir.TirUnionLayout],
+  enums: in Map[Int, Bool],
+  distincts: in Map[Int, NType],
+  cases: in Map[Int, LlvmTir.TirCaseRef],
+): Unit {
+  val known = tirKnownTypes(recs, unions, enums, distincts)
+  var progress = true
+  var rounds = 0
+  while progress and rounds < 32 {
+    progress = false
+    rounds = rounds + 1
+    for ii in inst.instances {
+      if known.containsKey(ii.inst.id) {
+        continue
+      }
+      val key = match mapGet(inst.names, ii.inst.id) { case Some(k) -> k; case None -> "" }
+      val head = match Str.indexOf(key, "[") { case Some(b) -> Str.substring(key, 0, b); case None -> "" }
+      val gkey = match Str.indexOf(head, "::") {
+        case Some(sep) -> Str.substring(head, 0, sep) + "." + Str.substring(head, sep + 2)
+        case None -> ""
+      }
+      if gkey.length == 0 {
+        continue
+      }
+      val argTys: List[NType] = newList()
+      var ok = true
+      for a in ii.args {
+        match tirInstArg(ctx, known, a) {
+          case Some(n) -> argTys.add(n)
+          case None -> {
+            ok = false
+          }
+        }
+      }
+      if not ok {
+        continue
+      }
+      if ctx.genericUnionDefs.containsKey(gkey) {
+        match instantiateGenericUnionOpt(ctx, gkey, argTys) {
+          case Some(ui) -> {
+            val lay = tirUnionLayout(ui)
+            unions.add(ii.inst.id, lay)
+            known.add(ii.inst.id, lay.ty)
+            match mapGet(inst.instCases, ii.inst.id) {
+              case Some(cs) -> {
+                var ci = 0
+                while ci < cs.count {
+                  cases.add(cs[ci].id, LlvmTir.TirCaseRef(unionId = ii.inst.id, index = ci))
+                  ci = ci + 1
+                }
+              }
+              case None -> ()
+            }
+            progress = true
+          }
+          case None -> ()
+        }
+      } else if ctx.genericRecordDefs.containsKey(gkey) {
+        match instantiateGenericRecordOpt(ctx, gkey, argTys) {
+          case Some(ri) -> {
+            if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
+              val lay = LlvmTir.TirRecLayout(
+                ty = recPtrType(ri),
+                fieldTys = ri.fieldTys,
+                byValue = ri.byValue,
+                dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" },
+                zeroBits = ri.byValue and recHasNoDefaults(ri)
+              )
+              recs.add(ii.inst.id, lay)
+              known.add(ii.inst.id, lay.ty)
+              progress = true
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
+}
+
+/// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR
+/// name of the AST copy stands for the instance, so a call from TIR reaches it, and the copy is lowered
+/// from the instance's TIR body (`tirTry` finds it by `instFns`).  An instance whose AST copy is not
+/// found by that name stays unnamed, and a caller of it stays on the AST path.
+func registerTirInstanceFns(
+  sigs: in Map[String, NFuncSig],
+  inputs: in List[LlvmTir.TirUnitInput],
+  fnNames: in Map[Int, String],
+  intrinsics: in Map[Int, String],
+  instFns: in Map[String, Tir.TFnDecl],
+  unitPkg: in String,
+): Unit {
+  val inst = inputs[1]
+  // `sigs` keys (`pkg.name/arity`) by the part after the package: a specialisation's name has no dot.
+  val copies: Map[String, List[String]] = newMap()
+  for sk in mapKeys(sigs) {
+    match Str.lastIndexOf(sk, ".") {
+      case Some(d) -> {
+        val sfx = Str.substring(sk, d + 1)
+        match mapGet(copies, sfx) {
+          case Some(l) -> l.add(sk)
+          case None -> {
+            val l: List[String] = newList()
+            l.add(sk)
+            copies.add(sfx, l)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  val names: Map[Int, String] = newMap()
+  for id in mapKeys(inputs[0].names) {
+    match mapGet(inputs[0].names, id) {
+      case Some(k) -> names.add(id, k)
+      case None -> ()
+    }
+  }
+  for id in mapKeys(inst.names) {
+    match mapGet(inst.names, id) {
+      case Some(k) -> if not names.containsKey(id) { names.add(id, k) }
+      case None -> ()
+    }
+  }
+  val byInst: Map[Int, TirMono.InstanceInfo] = newMap()
+  for ii in inst.instances {
+    byInst.add(ii.inst.id, ii)
+  }
+  for f in inst.pkg.funcs {
+    match mapGet(byInst, f.sym.id) {
+      case None -> ()
+      case Some(ii) -> match mapGet(inst.names, f.sym.id) {
+        case None -> ()
+        case Some(key) -> match Str.indexOf(key, "::") {
+          case None -> ()
+          case Some(sep) -> match Str.indexOf(key, "[") {
+            case None -> ()
+            case Some(b) -> if b > sep + 2 {
+              val bare = Str.substring(key, sep + 2, b - sep - 2)
+              val ipkg = Str.substring(key, 0, sep)
+              if ipkg == "Std.CollectionsHost" and (bare == "newList" or bare == "newListWithCapacity" or bare == "newMap") {
+                intrinsics.add(f.sym.id, bare)
+              }
+              if ipkg == "Std.Collections" and (bare == "mapKeys" or bare == "mapValues") {
+                intrinsics.add(f.sym.id, bare)
+              }
+              if not Str.contains(bare, "::") and not f.isAsync {
+                var astName = bare
+                var ok = true
+                for a in ii.args {
+                  match LlvmTir.tirAstTypeKey(names, byInst, a) {
+                    case Some(k) -> {
+                      astName = astName + "__" + k
+                    }
+                    case None -> {
+                      ok = false
+                    }
+                  }
+                }
+                if ok {
+                  val suffix = astName + "/" + f.params.count.toString()
+                  val originKey = Str.substring(key, 0, sep) + "." + suffix
+                  val unitKey = unitPkg + "." + suffix
+                  // The AST path puts the copy of another package's generic in the package that
+                  // asks for it, so the copy is looked for by name in every package.  The unit's
+                  // own copy is the one named first: it is reachable from the unit's code, which
+                  // a copy in a pruned package may not be.
+                  val order: List[String] = newList()
+                  if sigs.containsKey(unitKey) {
+                    order.add(unitKey)
+                  }
+                  if originKey != unitKey and sigs.containsKey(originKey) {
+                    order.add(originKey)
+                  }
+                  match mapGet(copies, suffix) {
+                    case Some(ks) -> {
+                      for k2 in ks {
+                        if k2 != unitKey and k2 != originKey {
+                          order.add(k2)
+                        }
+                      }
+                    }
+                    case None -> ()
+                  }
+                  for sk in order {
+                    match mapGet(sigs, sk) {
+                      case Some(sg) -> if not sg.isAsync {
+                        if not fnNames.containsKey(f.sym.id) {
+                          fnNames.add(f.sym.id, sg.irName)
+                        }
+                        if not instFns.containsKey(sk) {
+                          instFns.add(sk, f)
+                        }
+                      }
+                      case None -> ()
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// `unit` with the names of the instances unit added (every package's names, `monoTirInputs`): a type an
+/// instance's arguments mention is laid out like the unit's own types.
+func withInstanceNames(unit: in LlvmTir.TirUnitInput, inst: in LlvmTir.TirUnitInput): LlvmTir.TirUnitInput {
+  val names: Map[Int, String] = newMap()
+  for id in mapKeys(unit.names) {
+    match mapGet(unit.names, id) {
+      case Some(k) -> names.add(id, k)
+      case None -> ()
+    }
+  }
+  for id in mapKeys(inst.names) {
+    match mapGet(inst.names, id) {
+      case Some(k) -> if not names.containsKey(id) { names.add(id, k) }
+      case None -> ()
+    }
+  }
+  LlvmTir.TirUnitInput(pkg = unit.pkg, names = names, census = unit.census, checkedArith = unit.checkedArith)
+}
+
 func tirUnitMaps(
   ctx: in Ctx,
   sigs: in Map[String, NFuncSig],
-  input: in LlvmTir.TirUnitInput,
+  inputs: in List[LlvmTir.TirUnitInput],
   invariantRecs: in Map[String, Bool],
+  unitPkg: in String,
 ): TirUnitMaps {
+  val input = if inputs.count > 1 { withInstanceNames(inputs[0], inputs[1]) } else { inputs[0] }
   val fnNames: Map[Int, String] = newMap()
   // A type's DefPath key is `Pkg::Name` and a union case's `Pkg::Union::Case`: the code
   // generator keeps the layout and the lowering only reads it.  Heap records come with their
@@ -19057,6 +19380,7 @@ func tirUnitMaps(
   val unions: Map[Int, LlvmTir.TirUnionLayout] = newMap()
   val unionIds: Map[String, Int] = newMap()
   val enums: Map[Int, Bool] = newMap()
+  val distincts: Map[Int, NType] = newMap()
   val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
@@ -19172,7 +19496,12 @@ func tirUnitMaps(
                     unions.add(id, tirUnionLayout(ui))
                     unionIds.add(pkg + "." + rest, id)
                   }
-                  case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") { enums.add(id, true) }
+                  case None -> match mapGet(ctx.distinctDefs, pkg + "." + rest) {
+                    case Some(di) -> if not di.hasRange { distincts.add(id, di.underlying) }
+                    case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") {
+                      enums.add(id, true)
+                    }
+                  }
                 }
               }
             } else {
@@ -19310,6 +19639,26 @@ func tirUnitMaps(
       }
     }
   }
+  val instFns: Map[String, Tir.TFnDecl] = newMap()
+  val instInfos: Map[Int, TirMono.InstanceInfo] = newMap()
+  val instDecls: Map[Int, Tir.TFnDecl] = newMap()
+  val instKeys: Map[Int, String] = newMap()
+  if inputs.count > 1 {
+    registerTirInstances(ctx, inputs[1], invariantRecs, recs, unions, enums, distincts, cases)
+    registerTirInstanceFns(sigs, inputs, fnNames, intrinsics, instFns, unitPkg)
+    for ii in inputs[1].instances {
+      instInfos.add(ii.inst.id, ii)
+    }
+    for fd in inputs[1].pkg.funcs {
+      instDecls.add(fd.sym.id, fd)
+    }
+    for id in mapKeys(inputs[1].names) {
+      match mapGet(inputs[1].names, id) {
+        case Some(k) -> instKeys.add(id, k)
+        case None -> ()
+      }
+    }
+  }
   TirUnitMaps(
     fnNames = fnNames,
     recs = recs,
@@ -19317,14 +19666,74 @@ func tirUnitMaps(
     cases = cases,
     enums = enums,
     enumCases = enumCases,
+    distincts = distincts,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
     protRecs = protRecs,
     ifaces = ifaces,
     ifaceMethods = ifaceMethods,
     ifaceVts = ifaceVts,
+    instFns = instFns,
+    instInfos = instInfos,
+    instDecls = instDecls,
+    instKeys = instKeys,
+    symNames = input.names,
     checkedArith = input.checkedArith
   )
+}
+
+/// The IR name of the instance of a generic function a TIR call names, which the AST path instantiates
+/// on demand (`ensureFnInst`): `fsym` is looked up among the bundle's instances, its type arguments are
+/// laid out as the AST path would lay them out, and the instantiation is registered under the
+/// symbol.  False when `fsym` is no instance of a generic function the code generator holds, or an
+/// argument is outside what `LlvmTir.tirInstArgN` covers.
+func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
+  val ii = match mapGet(maps.instInfos, fsym) { case Some(x) -> x; case None -> return false }
+  val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
+  val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
+  if decl.isAsync {
+    return false
+  }
+  val sep = match Str.indexOf(key, "::") { case Some(i) -> i; case None -> return false }
+  val br = match Str.indexOf(key, "[") { case Some(i) -> i; case None -> return false }
+  if br <= sep + 2 {
+    return false
+  }
+  val bare = Str.substring(key, sep + 2, br - sep - 2)
+  if Str.contains(bare, "::") {
+    return false
+  }
+  // The functions the AST lowering of a call replaces by name (`lowerCall`: the reserved map and
+  // list accessors, whose Lyric bodies the native backend does not lower) and the collection
+  // packages that define them have no instantiation to ask for.
+  val ipkg = Str.substring(key, 0, sep)
+  if ipkg == "Std.Collections" or ipkg == "Std.CollectionsHost" {
+    return false
+  }
+  if bare == "mapGet" or bare == "dictGetKeys" or bare == "dictGetValues" or bare == "newList" or bare == "newListWithCapacity" or bare == "newMap" or bare == "panic" or bare == "print" or bare == "println" {
+    return false
+  }
+  val gkey = ipkg + "." + bare + "/" + decl.params.count.toString()
+  val fd = match mapGet(ctx.genericFnDefs, gkey) { case Some(x) -> x; case None -> return false }
+  val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(x) -> x; case None -> return false }
+  val known = tirKnownTypes(maps.recs, maps.unions, maps.enums, maps.distincts)
+  val envTys: List[NType] = newList()
+  for a in ii.args {
+    match tirInstArg(ctx, known, a) {
+      case Some(n) -> envTys.add(n)
+      case None -> return false
+    }
+  }
+  val paramNames = genericParamNamesOf(fd.generics)
+  if paramNames.count != envTys.count {
+    return false
+  }
+  val inst = ensureFnInst(ctx, pkg, fd, paramNames, envTys, 0)
+  if maps.fnNames.containsKey(fsym) {
+    return false
+  }
+  maps.fnNames.add(fsym, inst.irName)
+  true
 }
 
 /// Lower `d`; tuples are synthesised records, so a lowering that finds a tuple layout missing
@@ -19343,6 +19752,7 @@ func lowerWithTuples(
       cases = maps.cases,
       enums = maps.enums,
       enumCases = maps.enumCases,
+      distincts = maps.distincts,
       tuples = maps.tuples,
       funcs = maps.funcs,
       lists = maps.lists,
@@ -19355,12 +19765,19 @@ func lowerWithTuples(
       ifaceMethods = maps.ifaceMethods,
       ifaceVts = maps.ifaceVts,
       intrinsics = maps.intrinsics,
+      symNames = maps.symNames,
       checkedArith = maps.checkedArith
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
-        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0 and f.needScans.count == 0) or attempt >= 8 {
+        var instantiated = 0
+        for fsym in f.needFns {
+          if instantiateTirFnInst(ctx, maps, fsym) {
+            instantiated = instantiated + 1
+          }
+        }
+        if (f.needTuples.count == 0 and f.needFuncs.count == 0 and f.needLists.count == 0 and f.needMaps.count == 0 and f.needTasks.count == 0 and f.needScans.count == 0 and instantiated == 0) or attempt >= 8 {
           return Err(error = f)
         }
         for n in f.needTuples {
@@ -19402,6 +19819,13 @@ func lowerWithTuples(
     }
   }
   panic("unreachable")
+}
+
+func isSomeDecl(o: in Option[Tir.TFnDecl]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
@@ -19462,6 +19886,14 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
   if LlvmTir.tirSkipped(fn.name) {
     census.fallbacks.add(fn.name + ": skipped by LYRIC_NATIVE_TIR_SKIP")
     return None
+  }
+  if not isSomeDecl(decl) {
+    match mapGet(maps.instFns, u.pkgName + "." + fn.name + "/" + arity.toString()) {
+      case Some(inst) -> {
+        decl = Some(value = inst)
+      }
+      case None -> ()
+    }
   }
   match decl {
     case None -> {
@@ -19797,7 +20229,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       ei = ei + 1
     }
     val tirMaps = if u.tir.count > 0 {
-      tirUnitMaps(ctx, sigs, u.tir[0], invariantRecs)
+      tirUnitMaps(ctx, sigs, u.tir, invariantRecs, u.pkgName)
     } else {
       TirUnitMaps(
         fnNames = newMap(),

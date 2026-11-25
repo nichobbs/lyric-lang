@@ -130,6 +130,10 @@ pub record MiddleEndOptions {
   /// check has no errors.
   wantTir: Bool = false
   tirOut: List[TirBuild.PackageBuild] = newList()
+  /// Zero or one DefPath interner every package of the bundle is checked with (docs/70 section 4.2),
+  /// so a declaration is one `SymbolId` across the packages' TIR and `pipeMonoTir` can read them
+  /// as one program.  Empty: the check mints its own.
+  sharedInterner: List[DefPathInterner] = newList()
   /// The interfaces of the packages this build was checked against (docs/70 section 6.3, D482): each
   /// package that builds an interface registers it here, and a package checked after it reads
   /// the defaults it carries for a call that leaves out an argument the first declares; a build
@@ -2573,14 +2577,26 @@ pub func pipeCheckFront(
   // interface (docs/70 §9.2, D460) read.
   val file0 = Resolve.renumberNodeIds(file00).file
   val noIterElems: Map[String, ExternIterInfo] = newMap()
-  val tcRes = checkWithImportedPackagesForTargetIter(
-    file0,
-    importedPkgs,
-    opts.nativeIntrinsics,
-    opts.stringSurface,
-    noIterElems,
-    opts.externIterResolver
-  )
+  val tcRes = if opts.sharedInterner.count > 0 {
+    checkWithImportedPackagesForTargetIterShared(
+      file0,
+      importedPkgs,
+      opts.nativeIntrinsics,
+      opts.stringSurface,
+      noIterElems,
+      opts.externIterResolver,
+      opts.sharedInterner[0]
+    )
+  } else {
+    checkWithImportedPackagesForTargetIter(
+      file0,
+      importedPkgs,
+      opts.nativeIntrinsics,
+      opts.stringSurface,
+      noIterElems,
+      opts.externIterResolver
+    )
+  }
   if verifyIr and errorCount(tcRes.diagnostics) == 0 {
     pipeReportTirCensus(opts.pkgLabel, file0, tcRes, opts.depDefaults)
   }

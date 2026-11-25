@@ -61,6 +61,8 @@ import Lyric.LlvmLowering
 import Lyric.LlvmTir as LlvmTir
 import Lyric.Tir.Build as TirBuild
 import Lyric.Resolve as Resolve
+import Lyric.Symbols
+import Lyric.Tir.Mono as TirMono
 import Lyric.WasmGlue
 import Lyric.ComponentGlue
 import Lyric.Version as Ver
@@ -1604,6 +1606,10 @@ pub func compileToNativeWithFeatures(
   val optsCallArities: Map[String, Int] = newMap()
   val optsCallees: Map[String, String] = newMap()
   val optsTirOut: List[TirBuild.PackageBuild] = newList()
+  val tirInterner: List[DefPathInterner] = newList()
+  if LlvmTir.viaTirRequested() {
+    tirInterner.add(newDefPathInterner())
+  }
   val opts = nativeMiddleEndOptions(
     path,
     noSingleFileFiles,
@@ -1618,7 +1624,8 @@ pub func compileToNativeWithFeatures(
     newList(),
     optsCallees,
     LlvmTir.viaTirRequested(),
-    optsTirOut
+    optsTirOut,
+    sharedInterner = tirInterner
   )
   val userFileChecked = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -1629,7 +1636,7 @@ pub func compileToNativeWithFeatures(
 
   // Transitive stdlib import closure, in deterministic worklist order.
   val toBundle: List[SourceFile] = newList()
-  val tirByPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
+  val stdBuilds: List[TirBuild.PackageBuild] = newList()
   val seen: Map[String, Bool] = newMap()
   val worklist: List[String] = newList()
   var ui = 0
@@ -1682,7 +1689,10 @@ pub func compileToNativeWithFeatures(
           }
           toBundle.add(stdFormatted)
           if LlvmTir.viaTirRequested() {
-            tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
+            match bundledTirOf(pkg, f, stdlib, tirInterner[0]) {
+              case Some(pb) -> stdBuilds.add(pb)
+              case None -> ()
+            }
           }
           var fi = 0
           while fi < f.imports.count {
@@ -1767,16 +1777,24 @@ pub func compileToNativeWithFeatures(
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
-  val tirInputs: List[LlvmTir.TirUnitInput] = newList()
+  var tirInputs: List[LlvmTir.TirUnitInput] = newList()
+  val tirByPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
   if optsTirOut.count > 0 {
-    tirInputs.add(
-      LlvmTir.TirUnitInput(
-        pkg = optsTirOut[0].pkg,
-        names = optsTirOut[0].names,
-        census = LlvmTir.newTirCensus(),
-        checkedArith = not hasWrappingArith(userFile)
-      )
-    )
+    val builds: List[TirBuild.PackageBuild] = newList()
+    builds.add(optsTirOut[0])
+    for pb in stdBuilds {
+      builds.add(pb)
+    }
+    val arith: Map[String, Bool] = newMap()
+    arith.add(optsTirOut[0].pkg.name, not hasWrappingArith(userFile))
+    val monoInputs = monoTirInputs(tirInterner[0], builds, arith)
+    tirInputs = match mapGet(monoInputs, optsTirOut[0].pkg.name) { case Some(t) -> t; case None -> newList() }
+    for pb in stdBuilds {
+      match mapGet(monoInputs, pb.pkg.name) {
+        case Some(t) -> tirByPkg.add(pb.pkg.name, t)
+        case None -> ()
+      }
+    }
   }
   units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees, tirInputs))
   appendBundledUnits(toBundle, reachable, units, tirByPkg)
@@ -2023,6 +2041,17 @@ pub func compileProjectToNativeWithShape(
   // Each own file's `calleeSitesOut` (docs/70 phase 2d), parallel to `ownFiles`.
   val ownCallees: List[Map[String, String]] = newList()
   val ownTir: List[List[LlvmTir.TirUnitInput]] = newList()
+  // The built TIR of each own package, with the index of its entry in `ownTir`, and the bundled
+  // packages' (`stdBuilds`): all are checked with `projInterner` so `pipeMonoTir` reads the project as
+  // one program.
+  val projInterner: List[DefPathInterner] = newList()
+  if LlvmTir.viaTirRequested() {
+    projInterner.add(newDefPathInterner())
+  }
+  val ownBuilds: List[TirBuild.PackageBuild] = newList()
+  val ownBuildIdx: List[Int] = newList()
+  val ownArith: Map[String, Bool] = newMap()
+  val stdBuilds: List[TirBuild.PackageBuild] = newList()
   // Each own file's `memberRecvClassesOut` (#8413), parallel to `ownFiles`.
   val ownRecvClasses: List[Map[String, String]] = newList()
   val noDeriveImports: List[Item] = newList()
@@ -2069,7 +2098,8 @@ pub func compileProjectToNativeWithShape(
       optsCallees,
       LlvmTir.viaTirRequested(),
       optsTirOut,
-      projDepDefaults
+      projDepDefaults,
+      projInterner
     )
     val siblingGenerics = siblingGenericFuncs(
       importedPkgs,
@@ -2098,14 +2128,9 @@ pub func compileProjectToNativeWithShape(
     ownCallees.add(optsCallees)
     val ownTirInputs: List[LlvmTir.TirUnitInput] = newList()
     if optsTirOut.count > 0 {
-      ownTirInputs.add(
-        LlvmTir.TirUnitInput(
-          pkg = optsTirOut[0].pkg,
-          names = optsTirOut[0].names,
-          census = LlvmTir.newTirCensus(),
-          checkedArith = not hasWrappingArith(checked)
-        )
-      )
+      ownBuilds.add(optsTirOut[0])
+      ownBuildIdx.add(ownTir.count)
+      ownArith.add(optsTirOut[0].pkg.name, not hasWrappingArith(checked))
     }
     ownTir.add(ownTirInputs)
     ownRecvClasses.add(optsRecvOut)
@@ -2168,7 +2193,10 @@ pub func compileProjectToNativeWithShape(
           }
           toBundle.add(stdFormatted)
           if LlvmTir.viaTirRequested() {
-            tirByPkg.add(pkg, bundledTirOf(pkg, f, stdlib))
+            match bundledTirOf(pkg, f, stdlib, projInterner[0]) {
+              case Some(pb) -> stdBuilds.add(pb)
+              case None -> ()
+            }
           }
           var fi = 0
           while fi < f.imports.count {
@@ -2312,6 +2340,32 @@ pub func compileProjectToNativeWithShape(
       mainOwnIdx = moi
     }
     moi = moi + 1
+  }
+  if ownBuilds.count > 0 {
+    val builds: List[TirBuild.PackageBuild] = newList()
+    for pb in ownBuilds {
+      builds.add(pb)
+    }
+    for pb in stdBuilds {
+      builds.add(pb)
+    }
+    val monoInputs = monoTirInputs(projInterner[0], builds, ownArith)
+    var obi = 0
+    while obi < ownBuilds.count {
+      match mapGet(monoInputs, ownBuilds[obi].pkg.name) {
+        case Some(t) -> {
+          ownTir[ownBuildIdx[obi]] = t
+        }
+        case None -> ()
+      }
+      obi = obi + 1
+    }
+    for pb in stdBuilds {
+      match mapGet(monoInputs, pb.pkg.name) {
+        case Some(t) -> tirByPkg.add(pb.pkg.name, t)
+        case None -> ()
+      }
+    }
   }
   val noSites: Map[String, String] = newMap()
   val noTir: List[LlvmTir.TirUnitInput] = newList()
@@ -2669,11 +2723,13 @@ func nativeMiddleEndOptions(
   wantTir: in Bool = false,
   tirOut: in List[TirBuild.PackageBuild] = newList(),
   depDefaults: in TirBuild.DepDefaults = pipeNewDepDefaults(),
+  sharedInterner: in List[DefPathInterner] = newList(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
     wantTir = wantTir,
     tirOut = tirOut,
+    sharedInterner = sharedInterner,
     tcFatal = true,
     tcReport = false,
     pkgLabel = pkgLabel,
@@ -3165,20 +3221,83 @@ func appendBundledUnits(
 /// are lowered from it instead of from the AST.  Empty when the package does not check or build
 /// (it then stays on the AST path whole, silently: the census does not report it, so a package
 /// missing from the bundled line is the place to look).
-func bundledTirOf(pkg: in String, f: in SourceFile, stdlib: in NativeStdlib): List[LlvmTir.TirUnitInput] {
-  val none: List[LlvmTir.TirUnitInput] = newList()
+func bundledTirOf(
+  pkg: in String, f: in SourceFile, stdlib: in NativeStdlib, interner: in DefPathInterner
+): Option[TirBuild.PackageBuild] {
   val visible = stdlibImportClosure(pkg, stdlib)
   val file0 = Resolve.renumberNodeIds(f).file
-  val tcRes = checkWithImportedPackagesForNative(file0, visible)
+  val noIterElems: Map[String, ExternIterInfo] = newMap()
+  val noResolvers: List[ExternIterResolver] = newList()
+  val tcRes = checkWithImportedPackagesForTargetIterShared(
+    file0,
+    visible,
+    true,
+    SMSUnchecked,
+    noIterElems,
+    noResolvers,
+    interner
+  )
   for d in tcRes.diagnostics {
     if d.severity == DiagError {
-      return none
+      if LlvmTir.tirTraceRequested() {
+        Console.error("native via-TIR: bundled package " + pkg + " does not check, so it stays on the AST path")
+      }
+      return None
     }
   }
   val pb = TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, pkg)
-  val tirList: List[LlvmTir.TirUnitInput] = newList()
-  tirList.add(LlvmTir.TirUnitInput(pkg = pb.pkg, names = pb.names, census = LlvmTir.newTirCensus()))
-  tirList
+  Some(value = pb)
+}
+
+/// The TIR of a bundle monomorphised (docs/70 section 7.2, D500) as the code generator receives it,
+/// keyed by package: each package's own TIR, then the instances package every unit shares (`tir[1]`).
+/// `checkedArith` is the user packages' overflow policy by package name.
+func monoTirInputs(
+  interner: in DefPathInterner,
+  builds: in List[TirBuild.PackageBuild],
+  checkedArith: in Map[String, Bool],
+): Map[String, List[LlvmTir.TirUnitInput]] {
+  val r = pipeMonoTir(interner, builds)
+  val byPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
+  if r.pkgs.count == 0 {
+    return byPkg
+  }
+  val last = r.pkgs[r.pkgs.count - 1]
+  // The names of every package, so a type that only an instance's arguments mention (`IOError` in
+  // `Result[Unit, IOError]`) is found by its DefPath key.
+  val allNames: Map[Int, String] = newMap()
+  for pb in r.pkgs {
+    for id in mapKeys(pb.names) {
+      match mapGet(pb.names, id) {
+        case Some(k) -> if not allNames.containsKey(id) { allNames.add(id, k) }
+        case None -> ()
+      }
+    }
+  }
+  val instIn = LlvmTir.TirUnitInput(
+    pkg = last.pkg,
+    names = allNames,
+    census = LlvmTir.newTirCensus(),
+    instances = r.instances,
+    instCases = last.cases
+  )
+  var i = 0
+  while i < r.pkgs.count - 1 {
+    val pb = r.pkgs[i]
+    val l: List[LlvmTir.TirUnitInput] = newList()
+    l.add(
+      LlvmTir.TirUnitInput(
+        pkg = pb.pkg,
+        names = pb.names,
+        census = LlvmTir.newTirCensus(),
+        checkedArith = match mapGet(checkedArith, pb.pkg.name) { case Some(b) -> b; case None -> false }
+      )
+    )
+    l.add(instIn)
+    byPkg.add(pb.pkg.name, l)
+    i = i + 1
+  }
+  byPkg
 }
 
 /// Each bundled/own file's OWN direct import package names, keyed by its

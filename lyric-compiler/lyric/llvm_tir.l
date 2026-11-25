@@ -27,6 +27,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.Symbols
 import Lyric.Tir
+import Lyric.Tir.Mono as TirMono
 
 /// Whether the TIR lowering is requested: `lyric build --target native
 /// --via-tir` sets `LYRIC_NATIVE_VIA_TIR=1` for the build, and CI sets it
@@ -65,6 +66,12 @@ pub record TirUnitInput {
   /// Whether `+`, `-`, `*` and unary `-` on `Int`, `Long`, `UInt`, `ULong` and `Byte` panic on
   /// overflow (D163: a debug build of a user package); false wraps (release, the standard library).
   checkedArith: Bool = false
+  /// On the instances unit of a monomorphised bundle (docs/70 section 7.2, D500; `Lyric.Mono.Instances`
+  /// is the last package of `MonoResult.pkgs`): the table `(generic, arguments) -> instance` and each
+  /// instance union's case symbols in declaration order.  Every unit of the bundle is given the one
+  /// instances unit after its own, as `tir[1]`.
+  instances: List[TirMono.InstanceInfo] = newList()
+  instCases: Map[Int, List[SymbolId]] = newMap()
 }
 
 /// The package, name and parameter count of a top-level function.
@@ -263,6 +270,9 @@ pub record TirLowerEnv {
   /// by the case's symbol.
   unions: Map[Int, TirUnionLayout] = newMap()
   cases: Map[Int, TirCaseRef] = newMap()
+  /// The distinct types without a range, keyed by symbol: each is its underlying type's representation, so
+  /// wrapping and unwrapping one changes the type only.  A range-checked distinct type stays on the AST path.
+  distincts: Map[Int, NType] = newMap()
   /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
   /// case's symbol).  An enum value is its `i32` ordinal.
   /// A set: the value is always `true`.
@@ -294,6 +304,12 @@ pub record TirLowerEnv {
   /// found missing.
   scans: Map[String, String] = newMap()
   needScans: List[TirScanNeed] = newList()
+  /// The symbols of the functions a call named that have no IR name (`fnNames`): the code generator
+  /// instantiates a generic function of another package on demand, so the name of one of its
+  /// instances exists only once it has been asked for.
+  needFns: List[Int] = newList()
+  /// The DefPath key of each symbol, for naming a type in a fallback reason.
+  symNames: Map[Int, String] = newMap()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
   /// one gets a task back that the call site unwraps.
   asyncFns: Map[Int, String] = newMap()
@@ -448,6 +464,7 @@ pub record TirFallback {
   needMaps: List[TirMapNeed] = newList()
   needTasks: List[TirListNeed] = newList()
   needScans: List[TirScanNeed] = newList()
+  needFns: List[Int] = newList()
 }
 
 pub record TirLowered {
@@ -541,6 +558,41 @@ func curBlock(c: in LCtx): String {
 
 func unitVal(): Val {
   Val(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+func listContainsInt(xs: in List[Int], x: in Int): Bool {
+  for y in xs {
+    if y == x {
+      return true
+    }
+  }
+  false
+}
+
+/// `renderTy` with each declared type shown by its DefPath key instead of its symbol number.
+func renderTyIn(env: in TirLowerEnv, t: in Ty): String {
+  match t {
+    case TNamed(sym, args) -> {
+      val name = match mapGet(env.symNames, sym.id) { case Some(k) -> k; case None -> "#" + toString(sym.id) }
+      if args.count == 0 {
+        name
+      } else {
+        var acc = name + "["
+        var i = 0
+        while i < args.count {
+          if i > 0 {
+            acc = acc + ", "
+          }
+          acc = acc + renderTyIn(env, args[i])
+          i = i + 1
+        }
+        acc + "]"
+      }
+    }
+    case TSlice(e) -> "slice[" + renderTyIn(env, e) + "]"
+    case TNullable(i) -> renderTyIn(env, i) + "?"
+    case _ -> renderTy(t)
+  }
 }
 
 /// Record why the function cannot be lowered and hand back a placeholder so
@@ -758,6 +810,58 @@ func branchValue(c: in LCtx, x: in TExpr, wantRef: in Bool): Val {
   r
 }
 
+/// The spelling of `t` in the name the AST monomorphiser (`Lyric.Mono.specFuncName`) gives a
+/// specialised function: a scalar or declared type by its bare name, a generic instance as its
+/// head, `_` and its arguments.  The AST path names a specialisation after how the source spelled
+/// the argument, so this is a guess that the caller checks against the names that exist; None for a
+/// shape it does not cover.
+pub func tirAstTypeKey(names: in Map[Int, String], byInst: in Map[Int, TirMono.InstanceInfo], t: in Ty): Option[String] {
+  match t {
+    case TPrim(k) -> Some(value = primKindName(k))
+    case TRefined(u, _, _, _) -> tirAstTypeKey(names, byInst, u)
+    case TNamed(sym, args) -> if args.count > 0 {
+      None
+    } else {
+      match mapGet(names, sym.id) {
+        case None -> None
+        case Some(key) -> {
+          val head = match Str.indexOf(key, "[") { case Some(b) -> Str.substring(key, 0, b); case None -> key }
+          val bare = match Str.lastIndexOf(head, "::") { case Some(i) -> Str.substring(head, i + 2); case None -> head }
+          match mapGet(byInst, sym.id) {
+            case None -> Some(value = bare)
+            case Some(ii) -> {
+              var acc = bare
+              for a in ii.args {
+                match tirAstTypeKey(names, byInst, a) {
+                  case Some(k) -> {
+                    acc = acc + "_" + k
+                  }
+                  case None -> return None
+                }
+              }
+              Some(value = acc)
+            }
+          }
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// The type argument `t` of a generic instance as the code generator instantiates the generic with
+/// it: a scalar, or a type already laid out (`known`, the type of each record, union and enum by
+/// symbol).  None for a shape the instance registration does not cover; the instance is then left
+/// unregistered and its users stay on the AST path.
+pub func tirInstArgN(known: in Map[Int, NType], t: in Ty): Option[NType] {
+  match t {
+    case TPrim(k) -> Some(value = primN(k))
+    case TRefined(u, _, _, _) -> tirInstArgN(known, u)
+    case TNamed(sym, args) -> if args.count == 0 { mapGet(known, sym.id) } else { None }
+    case _ -> None
+  }
+}
+
 func primN(k: in TPrimKind): NType {
   match k {
     case TPBool -> NI1
@@ -790,6 +894,8 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
           case Some(u) -> Some(value = u.ty)
           case None -> if env.enums.containsKey(sym.id) {
             Some(value = NI32)
+          } else if env.distincts.containsKey(sym.id) {
+            mapGet(env.distincts, sym.id)
           } else {
             match mapGet(env.ifaces, sym.id) {
               case Some(il) -> Some(value = il.boxTy)
@@ -1120,6 +1226,16 @@ func tyLowers(env: in TirLowerEnv, t: in Ty): Bool {
 /// Elements the list kernels store in a 64-bit slot: scalars and reference-counted values
 /// (the container retains the latter).  By-value aggregates are boxed by the AST path and
 /// stay there.
+/// Whether a list or map holds `nt` as an element or value, as `listType` and `mapType` decide it.
+pub func tirListElemOk(nt: in NType): Bool {
+  listElemOk(nt)
+}
+
+/// Whether `nt` is a map key the lowering supports.
+pub func tirMapKeyOk(nt: in NType): Bool {
+  isStringN(nt) or isScalarN(nt)
+}
+
 func listElemOk(nt: in NType): Bool {
   match nt {
     case NVoid -> false
@@ -1667,12 +1783,12 @@ func assignOp(k: in AssignKind): Option[IntrinsicOp] {
 func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
   match tyToN(c.env, d.ty) {
     case None -> {
-      c.problems.add("a local of type " + renderTy(d.ty))
+      c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
       None
     }
     case Some(nt) -> match nt {
       case NVoid -> {
-        c.problems.add("a local of type " + renderTy(d.ty))
+        c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
         None
       }
       case _ -> {
@@ -2582,7 +2698,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         return unsupported(c, "a generic call")
       }
       match mapGet(c.env.fnNames, sym.id) {
-        case None -> unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+        case None -> {
+          if not listContainsInt(c.env.needFns, sym.id) {
+            c.env.needFns.add(sym.id)
+          }
+          unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+        }
         case Some(irName) -> {
           if c.coro {
             match lowerCoroLeaf(c, irName, args) {
@@ -2626,7 +2747,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
             }
           }
           val result = match tyToN(c.env, e.ty) {
-            case None -> unsupported(c, "a call returning " + renderTy(e.ty))
+            case None -> unsupported(c, "a call returning " + renderTyIn(c.env, e.ty))
             case Some(rt) -> match rt {
               case NVoid -> {
                 c.insns.add(NCallVoid(fn = NGlobal(name = irName), args = nargs))
@@ -2679,7 +2800,7 @@ func lowerIndirect(c: in LCtx, e: in TExpr, fnValue: in TExpr, args: in List[TAr
   }
   val rt = match tyToN(c.env, e.ty) {
     case Some(r) -> r
-    case None -> return unsupported(c, "a call returning " + renderTy(e.ty))
+    case None -> return unsupported(c, "a call returning " + renderTyIn(c.env, e.ty))
   }
   if not okSig {
     return unsupported(c, "a call through " + renderTy(fnValue.ty))
@@ -4715,6 +4836,16 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
       }
     }
     case CvUpcast(iface) -> lowerUpcast(c, e, iface, inner)
+    case CvWrapDistinct(sym) -> if c.env.distincts.containsKey(sym.id) {
+      lowerExpr(c, inner)
+    } else {
+      unsupported(c, "a conversion to the distinct type " + renderTyIn(c.env, e.ty))
+    }
+    case CvUnwrapDistinct(sym) -> if c.env.distincts.containsKey(sym.id) {
+      lowerExpr(c, inner)
+    } else {
+      unsupported(c, "a conversion from the distinct type " + renderTyIn(c.env, inner.ty))
+    }
     case CvWiden(_) -> {
       val v = lowerExpr(c, inner)
       match tyToN(c.env, e.ty) {
@@ -5754,7 +5885,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         needLists = env.needLists,
         needMaps = env.needMaps,
         needTasks = env.needTasks,
-        needScans = env.needScans
+        needScans = env.needScans,
+        needFns = env.needFns
       )
     )
   }
@@ -5777,7 +5909,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   val body = match fn.body { case Some(b) -> b; case None -> return fallback(fn.sym, "no body") }
   val retTy = match tyToN(env, fn.ret) {
     case Some(t) -> t
-    case None -> return fallback(fn.sym, "return type " + renderTy(fn.ret))
+    case None -> return fallback(fn.sym, "return type " + renderTyIn(env, fn.ret))
   }
   val c = LCtx(
     env = env,
@@ -5806,7 +5938,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
     val byRef = match p.mode { case TMIn -> false; case _ -> true }
     val pt = match tyToN(env, p.local.ty) {
       case Some(t) -> t
-      case None -> return fallback(fn.sym, "parameter type " + renderTy(p.local.ty))
+      case None -> return fallback(fn.sym, "parameter type " + renderTyIn(env, p.local.ty))
     }
     match pt {
       case NVoid -> return fallback(fn.sym, "a Unit parameter")

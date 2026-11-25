@@ -13,6 +13,14 @@ pub union Op {
   case Mul(by: Int)
 }
 
+pub record Box[T] {
+  value: T
+}
+
+pub func unwrap[T](b: in Box[T]): T {
+  b.value
+}
+
 pub func scale(x: in Int, k: in Int): Int {
   x * k
 }

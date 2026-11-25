@@ -207,7 +207,7 @@ diff -u "$work/i_tir.out" "$work/i_asan.out"
 echo "inout under AddressSanitizer: clean"
 
 # Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
-# record and a union that cross the package boundary.
+# record, a union and a generic function (D533) that cross the package boundary.
 pmf=scripts/ci/native-via-tir/project/lyric.toml
 "$lyric_bin" build --manifest "$pmf" --target native -o "$work/p_ast" >/dev/null
 "$lyric_bin" build --manifest "$pmf" --target native --via-tir -o "$work/p_tir" 2> "$work/p_census.txt" >/dev/null
@@ -215,17 +215,16 @@ cat "$work/p_census.txt"
 "$work/p_ast" > "$work/p_ast.out"
 "$work/p_tir" > "$work/p_tir.out"
 diff -u "$work/p_ast.out" "$work/p_tir.out"
-printf '35\n2\n42\n' | diff -u - "$work/p_tir.out"
+printf '35\n2\n42\n9\n' | diff -u - "$work/p_tir.out"
 grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/p_census.txt" || {
   echo "::error::expected every function of the two-package project to be lowered from TIR"
   exit 1
 }
 
-# Generic records, unions and functions (#9023): until phase 3c monomorphises them they stay on the
-# AST path with a census reason; the program still builds, prints what the AST path prints, and runs
-# clean under AddressSanitizer, with one function lowered from TIR beside them.
-# The five functions are unbox, pick, ident, plain and main: only `plain` lowers (the others take or
-# construct a generic type, or are generic).
+# Generic records, unions and functions (docs/70 phase 4a part 6): the bundle's TIR is monomorphised
+# (`Lyric.Tir.Mono`, D500), the instances of `Box[Int]`, `Maybe[Int]` and `ident[Int]` take the layouts
+# and names the AST path gives them, and every function lowers from TIR.  Output is the AST path's,
+# and the build runs clean under AddressSanitizer.
 fsrc=scripts/ci/native-via-tir/fallback.l
 "$lyric_bin" build --target native "$fsrc" -o "$work/f_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$fsrc" -o "$work/f_tir" 2> "$work/f_census.txt" >/dev/null
@@ -234,14 +233,14 @@ cat "$work/f_census.txt"
 "$work/f_tir" > "$work/f_tir.out"
 diff -u "$work/f_ast.out" "$work/f_tir.out"
 printf '42\n5\n7\n' | diff -u - "$work/f_tir.out"
-grep -q '^native via-TIR: 1 of 5 functions lowered from TIR' "$work/f_census.txt" || {
-  echo "::error::expected exactly the non-generic function of fallback.l to be lowered from TIR"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/f_census.txt" || {
+  echo "::error::expected every function of fallback.l to be lowered from TIR"
   exit 1
 }
-grep -q '^  fallback: ' "$work/f_census.txt" || {
-  echo "::error::expected the generic functions of fallback.l to be counted as fallbacks"
+if grep -q '^  fallback: ' "$work/f_census.txt"; then
+  echo "::error::fallback.l has a TIR fallback"
   exit 1
-}
+fi
 clang -O1 -g -fsanitize=address -Wno-override-module "$work/f_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/f_asan"
 "$work/f_asan" > "$work/f_asan.out"
 diff -u "$work/f_tir.out" "$work/f_asan.out"

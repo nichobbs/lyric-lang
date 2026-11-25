@@ -1241,6 +1241,11 @@ pub record MethodEntry {
 }
 
 pub func newSymbolTable(): SymbolTable {
+  newSymbolTableWith(newDefPathInterner())
+}
+
+/// A table whose DefPath interner is `interner`: shared by the tables of a bundle's packages.
+pub func newSymbolTableWith(interner: in DefPathInterner): SymbolTable {
   val stdCollectionsHostIndexed: List[Int] = newList()
   stdCollectionsHostIndexed.add(0)
   SymbolTable(
@@ -1375,7 +1380,7 @@ pub func newSymbolTable(): SymbolTable {
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap(),
-    interner = newDefPathInterner(),
+    interner = interner,
     resolveCtx = newList(),
     curItemSpan = newList(),
     symByDefId = newMap(),
