@@ -45,8 +45,10 @@ dotnet = []
 # Rate limiter and the grpc-java legacy client kernel.
 jvm    = []
 # --target native: the pure-Lyric client (docs/72 slice 7). The server surface
-# (`start`, `startHandle`, `stop`, `serverPort`, `checkRateLimit`) is not built
-# on native until the portable server of docs/72 slice 8 lands.
+# (`startHandle` and the server tests) is not enabled on native: `--target native`
+# has no exception unwinding (D-N-003), so the per-call handler panic isolation
+# that `Grpc.Server` provides on dotnet and the JVM cannot hold there, and
+# server_tests.l uses try/catch (N0007).
 native = []
 # Select the SDK client kernels (Grpc.Net.Client on dotnet, grpc-java on the JVM)
 # instead of the pure-Lyric client; removed with those kernels (docs/72 slice 10).

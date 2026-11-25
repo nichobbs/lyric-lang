@@ -12,6 +12,7 @@
 //!
 //! Every wait is bounded. Listeners bind port 0.
 @cfg(not(feature = "legacy-client"))
+@cfg(not(feature = "native"))
 @test_module
 package Grpc.ServerH2Tests
 

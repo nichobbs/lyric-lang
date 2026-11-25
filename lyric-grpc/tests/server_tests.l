@@ -8,6 +8,7 @@
 //! `Std.HttpEngine.H2Conn` on both targets. Independent clients are in
 //! `server_interop_dotnet_tests.l` and `server_interop_jvm_tests.l`; TLS,
 //! compression, deadlines and panics in `server_h2_tests.l`.
+@cfg(not(feature = "native"))
 @test_module
 package Grpc.ServerTests
 
