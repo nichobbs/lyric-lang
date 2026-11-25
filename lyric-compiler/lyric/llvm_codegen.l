@@ -19167,9 +19167,7 @@ func registerTirInstances(
   val known = tirKnownTypes(recs, unions, enums, distincts)
   for kid in mapKeys(known) {
     match mapGet(known, kid) {
-      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) {
-        ctx.tirKnownAll.add(kid, kt)
-      }
+      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) { ctx.tirKnownAll.add(kid, kt) }
       case None -> ()
     }
   }
@@ -19250,9 +19248,7 @@ func registerTirInstances(
   }
   for kid in mapKeys(known) {
     match mapGet(known, kid) {
-      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) {
-        ctx.tirKnownAll.add(kid, kt)
-      }
+      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) { ctx.tirKnownAll.add(kid, kt) }
       case None -> ()
     }
   }
@@ -19260,14 +19256,14 @@ func registerTirInstances(
 
 /// The type arguments of each monomorphised instance, by the instance's symbol.
 func instArgsOf(infos: in Map[Int, TirMono.InstanceInfo]): Map[Int, List[Tir.Ty]] {
-  val out: Map[Int, List[Tir.Ty]] = newMap()
+  val table: Map[Int, List[Tir.Ty]] = newMap()
   for id in mapKeys(infos) {
     match mapGet(infos, id) {
-      case Some(ii) -> out.add(id, ii.args)
+      case Some(ii) -> table.add(id, ii.args)
       case None -> ()
     }
   }
-  out
+  table
 }
 
 /// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR

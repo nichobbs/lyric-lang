@@ -1593,13 +1593,29 @@ func lowerTryFrom(c: in LCtx, e: in TExpr, ins: in List[TExpr], line: in Int): V
   if ins.count != 1 {
     return unsupported(c, "tryFrom with " + toString(ins.count) + " arguments")
   }
-  val inst = match e.ty { case TNamed(sym, a) -> if a.count == 0 { sym } else { return unsupported(c, "tryFrom of " + renderTy(e.ty)) }; case _ -> return unsupported(c, "tryFrom of " + renderTy(e.ty)) }
-  val targs = match mapGet(c.env.instArgs, inst.id) { case Some(a) -> a; case None -> return unsupported(c, "tryFrom with no instance arguments") }
+  val inst = match e.ty {
+    case TNamed(sym, a) -> if a.count == 0 {
+      sym
+    } else {
+      return unsupported(c, "tryFrom of " + renderTy(e.ty))
+    }
+    case _ -> return unsupported(c, "tryFrom of " + renderTy(e.ty))
+  }
+  val targs = match mapGet(c.env.instArgs, inst.id) {
+    case Some(a) -> a
+    case None -> return unsupported(c, "tryFrom with no instance arguments")
+  }
   val d = match targs[0] {
-    case TNamed(sym, a) -> match mapGet(c.env.distinctInfos, sym.id) { case Some(x) -> x; case None -> return unsupported(c, "tryFrom on " + renderTy(targs[0])) }
+    case TNamed(sym, a) -> match mapGet(c.env.distinctInfos, sym.id) {
+      case Some(x) -> x
+      case None -> return unsupported(c, "tryFrom on " + renderTy(targs[0]))
+    }
     case _ -> return unsupported(c, "tryFrom on " + renderTy(targs[0]))
   }
-  val ul = match mapGet(c.env.unions, inst.id) { case Some(u) -> u; case None -> return unsupported(c, "tryFrom into an unregistered Result") }
+  val ul = match mapGet(c.env.unions, inst.id) {
+    case Some(u) -> u
+    case None -> return unsupported(c, "tryFrom into an unregistered Result")
+  }
   val okRef = TirCaseRef(unionId = inst.id, index = 0)
   val errRef = TirCaseRef(unionId = inst.id, index = 1)
   val v = borrow(c, lowerExpr(c, ins[0]))
@@ -1629,9 +1645,9 @@ func lowerTryFrom(c: in LCtx, e: in TExpr, ins: in List[TExpr], line: in Int): V
   c.insns.add(NStore(ty = ul.ty, value = okV.value, ptr = NLocal(name = slot)))
   c.insns.add(NBr(label = joinL))
   startBlock(c, joinL)
-  val out = tmp(c)
-  c.insns.add(NLoad(dest = out, ty = ul.ty, ptr = NLocal(name = slot)))
-  Val(ty = ul.ty, value = NLocal(name = out), owned = ul.inline == false)
+  val joined = tmp(c)
+  c.insns.add(NLoad(dest = joined, ty = ul.ty, ptr = NLocal(name = slot)))
+  Val(ty = ul.ty, value = NLocal(name = joined), owned = ul.inline == false)
 }
 
 /// The result of an operator whose result type is a range-checked distinct type: derived arithmetic goes
