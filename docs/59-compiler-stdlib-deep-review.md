@@ -138,10 +138,10 @@ logic; optimisations; non-idiomatic usage; stdlib API-surface consolidation;
 > cross-package enum types. Ecosystem publishing's five-release failure
 > streak root-caused from the first intact logs: the publish job lacked
 > Java 21 for the Maven resolver (fixed, with warm-up and tier fixes,
-> D-progress-662). The lyric-web Undertow smoke runs end-to-end on both
+> D-progress-662). The lyric-web smoke runs end-to-end on both
 > targets and is CI-gated (#5610/#5444/#5458 fixed, D-progress-663; since
 > docs/73 S6, D791, it is `scripts/ci/lyric-web-smoke.sh` and the server is
-> no longer Undertow).
+> the shared driver).
 
 ---
 

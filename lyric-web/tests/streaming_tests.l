@@ -54,8 +54,8 @@
 //! asserts `/empty` returns a well-formed empty chunked body, asserts
 //! `/created` returns 201, and asserts `/blocked` returns 403 from the
 //! middleware without ever running the panicking handler.  Streaming works on
-//! every target since docs/73 S6 (the JVM served through Undertow, which had
-//! no streaming path, before).
+//! every target since docs/73 S6 (the JVM kernel it replaced had
+//! no streaming path).
 package Web.StreamingTest
 
 import Std.Core

@@ -911,7 +911,7 @@ pub func merge(a: in Router, b: in Router): Router {
 /// The connection leaves the HTTP server (`Std.HttpServer.takeConnection`)
 /// and no longer counts against its connection cap.  An upgrade over HTTP/2,
 /// over HTTP/1.0, or with bytes pipelined after it is answered `400`.  This
-/// holds on every target (the JVM used an Undertow mount until docs/73 S6).
+/// holds on every target (the JVM used a separate listener mount until docs/73 S6).
 @stable(since = "0.4")
 pub func addWebSocket(router: in Router, endpoint: in Ws.WsEndpoint): Router
   requires: endpoint.path.startsWith("/")
@@ -1625,8 +1625,8 @@ pub func dispatch(router: in Router, req: in Request): Response {
 //
 // Available on every target: the streaming path writes through
 // `Std.HttpServer`'s chunked-response helpers, which the shared driver
-// provides on dotnet, the JVM and native (the JVM served through Undertow,
-// without a streaming path, until docs/73 S6).
+// provides on dotnet, the JVM and native (the JVM kernel it replaced had
+// no streaming path, until docs/73 S6).
 // `streamHandle`, not `handleStream`: the "handle" prefix collides with the
 // `matches: name like "handle*"` convention `Web.Aspects`' own doc comment
 // recommends for aspect-instantiation (RequiresAuth/RateLimit/…), which

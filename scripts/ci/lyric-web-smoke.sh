@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # lyric-web-smoke.sh <dotnet|jvm> -- lyric-web smoke on one target, over the
-# shared Std.HttpServer driver (docs/73 S6, D791).  Replaces the Undertow-only
-# lyric-web-undertow-jvm-smoke.sh.
+# shared Std.HttpServer driver (docs/73 S6, D791).
 #
 #   tests/web_smoke.l            builds the smoke server and exercises it end to
 #                                end: HeaderMap, request-body echo, 404, the
@@ -18,9 +17,7 @@
 #   tests/streaming_tests.l      chunked responses reach the client as they are
 #                                written (#5979), the middleware gate (#5985).
 #
-# The JVM build still restores lyric-web's Maven dependencies: lyric-ws, which
-# lyric-web depends on, carries the Undertow `[maven]` table until docs/73
-# S7b deletes `Ws.Kernel.Jvm`; lyric-web itself has none.  Extracted from
+# Neither target needs a Maven restore (docs/73 S7b, D796).  Extracted from
 # ci.yml (#6387/check-workflow-size.sh -- see scripts/ci/self-test.sh's header).
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -39,18 +36,6 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 lyric_bin="$(cd "$(dirname "$lyric_bin")" && pwd)/$(basename "$lyric_bin")"
-if [ "$target" = jvm ]; then
-  # Serialized against ci.yml's other `make maven-resolver` callers on the
-  # same runner (the ecosystem suites' `web`, the UI suites and the lyric-ws
-  # smoke): this step runs `background: true`, so without coordination two
-  # concurrent `mvn package` builds could race into the same resolver/target/
-  # output directory (#7108 follow-up).
-  if [ -z "${LYRIC_MAVEN_RESOLVER:-}" ]; then
-    flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
-    export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-  fi
-  "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
-fi
 
 work="$(mktemp -d)"
 srv_pid=""

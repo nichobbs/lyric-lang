@@ -1125,8 +1125,7 @@ was in the JVM backend or the build tooling, and each was fixed there
   `wsPort`. The shell derives the socket URL from the `Host` header.
   Resolved in D146: `Ws.createEndpoint` makes a listener-less endpoint and
   `Web.addWebSocket` serves it on the router's port (dotnet hands the
-  connection over with `Std.HttpServer.takeConnection`; JVM mounts it on the
-  Undertow listener), so `HostConfig.wsPort` is gone.
+  connection over with `Std.HttpServer.takeConnection`; the JVM did the same after docs/73 S6), so `HostConfig.wsPort` is gone.
 - **F-12: the only cross-target JSON value model was `JsonRpc.Json`** (#7832)
   (`Std.Json` is a read-only, .NET-only cursor), so `Ui.Protocol` depended
   on `lyric-jsonrpc` for it. Resolved in D145: the model moved into the

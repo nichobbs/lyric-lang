@@ -6273,19 +6273,12 @@ jobs:
       # reachable via the local-only `make test-emitter` target, which CI
       # never invokes (#6783).
       #
-      # Test 12 (the `lyric-web --manifest --target jvm` acceptance case)
-      # needs lyric-web's Maven deps restored first (the Undertow classpath
+      # Test 12 (the `lyric-grpc --manifest --target jvm` acceptance case)
+      # needs lyric-grpc's Maven deps restored first (the grpc-java classpath
       # its JVM auto-FFI resolution reads from
-      # `lyric-web/target/restore/jvm-classpath.txt`). The "lyric-web
-      # Undertow smoke on JVM" step (now in compiler-self-tests-jvm-c, on
-      # another runner) also restores it; when both ran in this job it was
-      # `background: true` with no ordering guarantee relative to this
-      # (non-background) step, and the race was lost on the first real CI run
-      # after this step landed, failing test 12 with "class
-      # 'io.undertow.util.HttpString' not found" (#6790). Restoring here
-      # keeps this step self-contained; `lyric restore` is idempotent
-      # so re-running it after (or concurrently with) the smoke step's own
-      # restore is harmless.
+      # `lyric-grpc/target/restore/jvm-classpath.txt`); without it the test
+      # fails with "class 'io.grpc.ManagedChannelBuilder' not found" (#6790).
+      # `lyric restore` is idempotent.
       - name: JVM auto-FFI bridge self-test (native lyric test)
         if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
@@ -6294,7 +6287,7 @@ jobs:
           flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
           export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/lyric"
-          "$lyric_bin" restore --manifest "$PWD/lyric-web/lyric.toml"
+          "$lyric_bin" restore --manifest "$PWD/lyric-grpc/lyric.toml"
           bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
 
       # Compiled-bundle stdlib-source fallback self-test (#4994, the JVM
@@ -6352,8 +6345,8 @@ jobs:
     needs: [build]
     permissions:
       contents: read
-    # The heavy ecosystem and library JVM suites (Maven-backed web, the
-    # Undertow smokes, the UI suites), split from
+    # The heavy ecosystem and library JVM suites (the web smoke, the
+    # UI suites), split from
     # compiler-self-tests-jvm-b's last batch, where running them together
     # on one 4-vCPU runner made each wait on CPU. Same has_jvm_changes gate
     # and setup as compiler-self-tests-jvm.
@@ -6369,8 +6362,7 @@ jobs:
           build-config: ${{ env.BUILD_CONFIG }}
 
       # Ecosystem suites on JVM: storage, resilience, mcp, health,
-      # generator-sdk, web (coverage notes in the script; web restores
-      # lyric-ws's Undertow Maven dependency first, until docs/73 S7b).
+      # generator-sdk, web (coverage notes in the script).
       - name: Ecosystem suites on JVM (scripts/ci/jvm-ecosystem-suites.sh)
         if: ${{ !cancelled() }}
         background: true
@@ -6445,8 +6437,7 @@ jobs:
 
       # lyric-web smoke on JVM (#5610, docs/73 S6): web_smoke.l (endpoints, body
       # cap, HTTPS/h2, mTLS), crash isolation, streaming; the script header has
-      # the detail.  Needs the Maven resolver jar and a lyric-web restore first
-      # while lyric-ws still declares its Undertow [maven] table (S7b).
+      # the detail.
       - name: lyric-web smoke on JVM (tests/web_smoke.l)
         if: ${{ !cancelled() }}
         background: true

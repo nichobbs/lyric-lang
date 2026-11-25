@@ -387,7 +387,7 @@ primitives differ). Components:
    `maxMessageSizeBytes` config), UTF-8 validation on text frames.
 3. **Kernel**: `Ws.Kernel.Net.startServer` accepts on `Std.TcpHost`,
    runs the handshake, then a per-connection read loop delivering the
-   same primitive callback contract the Undertow kernel uses
+   same primitive callback contract the earlier JVM kernel used
    (`onOpen(connId, path, query, remoteAddr)`, `onMessage(connId,
    type, data)`, `onClose(connId, code, reason)`, `onError`), plus
    send/broadcast/close/connectionCount/isConnected against the
@@ -395,12 +395,11 @@ primitives differ). Components:
    `lyric-ws/src/_kernel/net/ws_kernel.l`. Periodic ping keepalive per
    `pingIntervalMs`.
 
-Parity note: the Undertow JVM kernel's documented gaps (fragmented
+Parity note: the earlier Undertow-based JVM kernel's documented gaps (fragmented
 multi-frame messages, automatic pings) were not replicated in the dotnet
 kernel, and Q-WS-001 tracked closing them on the JVM. Closed in D787:
-`Ws.startServer` on the JVM is the same pure-Lyric server. Undertow
-remains only behind `Web.addWebSocket` on the JVM, with its old gaps,
-until docs/73 S7b moves that to `Ws.Kernel.Net.adoptConnection`.
+`Ws.startServer` on the JVM is the same pure-Lyric server, and since docs/73
+S6 and S7b (D791, D796) `Web.addWebSocket` is served by it too.
 
 Hardening (docs/73 S8, D792 to D795): each connection has a bounded outbound
 queue written by one drain task, so `send`/`broadcast` return once a frame is

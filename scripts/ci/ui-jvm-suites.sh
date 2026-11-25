@@ -6,8 +6,8 @@
 # plugin-widget review example (D272) suites on --target jvm, then the
 # browser end-to-end test and the desktop-window end-to-end test against the
 # JVM host.  lyric-ui's web
-# host reaches Undertow only through lyric-web and lyric-ws, so the restore
-# here also exercises transitive [maven] propagation (docs/38 §4).
+# host is served by lyric-web and lyric-ws over the shared Std.HttpServer
+# driver, so no Maven restore is needed (docs/73 S7b, D796).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -22,13 +22,6 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 bash scripts/ci/self-test.sh --target jvm lyric-compiler/jvm/erased_receiver_jvm_self_test.l
-# Serialized against the job's other `make maven-resolver` callers
-# (see lyric-web-smoke.sh).
-flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
-export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
-"$lyric_bin" restore --manifest "$PWD/lyric-ui/lyric.toml"
-"$lyric_bin" restore --manifest "$PWD/examples/ui-customers/lyric.toml"
-"$lyric_bin" restore --manifest "$PWD/examples/plugins/ui-widgets/review/lyric.toml"
 for manifest in lyric-forms lyric-ui lyric-ui/native lyric-ui/plugins/build lyric-access examples/ui-customers examples/plugins/ui-widgets/review; do
   "$lyric_bin" test --manifest "$manifest/lyric.toml" --target jvm
 done
