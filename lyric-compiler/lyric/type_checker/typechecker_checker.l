@@ -1231,12 +1231,18 @@ pub record DefaultThunkCallee {
 /// The default thunk `name` of package `pkg`, read from the declarations the table holds for
 /// it: None when the package declares no such non-generic function.
 pub func defaultThunkCallee(tbl: in SymbolTable, pkg: in String, name: in String): Option[DefaultThunkCallee] {
+  match functionCallee(tbl, pkg, name) {
+    case Some(c) -> if c.sig.generics.count > 0 { None } else { Some(value = c) }
+    case None -> None
+  }
+}
+
+/// The top-level function `name` of package `pkg` as a callee: its DefPath symbol and resolved signature, generic
+/// or not.  None when the table holds no such function.
+pub func functionCallee(tbl: in SymbolTable, pkg: in String, name: in String): Option[DefaultThunkCallee] {
   val s = match symTableTryFindInPackage(tbl, pkg, name) { case Some(x) -> x; case None -> return None }
   match s.kind {
     case DKFunc(decl) -> {
-      if decl.generics.isSome() {
-        return None
-      }
       val scratch: List[Diagnostic] = newList()
       val saved = enterDeclaringScope(tbl, s)
       val sig = resolveFunctionSig(tbl, scratch, pkg, decl)
