@@ -965,7 +965,11 @@ func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
   match tyToN(env, h.args[0]) {
     case Some(inner) -> match inner {
       case NVoid -> None
-      case NPtr(_) -> if isRefN(inner) and not isStringN(inner) { None } else { Some(value = NPtr(pointee = inner)) }
+      case NPtr(_) -> if isRefN(inner) and not isStringN(inner) {
+        None
+      } else {
+        Some(value = NPtr(pointee = inner))
+      }
       case _ -> if isScalarN(inner) { Some(value = NPtr(pointee = inner)) } else { None }
     }
     case None -> None
