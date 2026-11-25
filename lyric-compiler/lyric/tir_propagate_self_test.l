@@ -29,7 +29,7 @@ record Lowered {
 func lowerOf(src: in String): Lowered {
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
-  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "Std.Core")
   val bundle: List[PackageBuild] = newList()
   bundle.add(pb)
   val r = lowerPropagateBundle(cr.symbols.interner, bundle)
@@ -81,15 +81,29 @@ func countIfProp(acc: in List[Int], e: in TExpr): TExpr {
 
 test "the source has the ? the lowering removes" {
   val l = lowerOf(
-    "package App\nfunc half(x: Int): Result[Int, String] {\n  if x % 2 == 0 { Ok(value = x / 2) } else { Err(error = \"odd\") }\n}\nfunc f(x: Int): Result[Int, String] {\n  val h = half(x)?\n  Ok(value = h + 1)\n}\n"
+    "package Std.Core\nunion Result[T, E] { case Ok(value: T)\n case Err(error: E) }\nunion Option[T] { case Some(value: T)\n case None }\nfunc half(x: Int): Result[Int, String] {\n  if x % 2 == 0 { Ok(value = x / 2) } else { Err(error = \"odd\") }\n}\nfunc f(x: Int): Result[Int, String] {\n  val h = half(x)?\n  Ok(value = h + 1)\n}\n"
   )
-  assertEqualInt(countProps(l.before), 1, "one ? before")
+  assertEqualInt(
+    countProps(l.before),
+    1,
+    "one ? before: built " + toString(l.before.built) + "/" + toString(l.before.total) + " diag " +
+      toString(l.diagnostics) +
+      (
+        if l.before.failed.count > 0 and l.before.failed[0].messages.count > 0 {
+          l.before.failed[0].messages[0]
+        } else {
+          ""
+        }
+      )
+  )
   assertEqualInt(countProps(l.pb), 0, "none after")
   assertLowered(l, "result")
 }
 
 test "an Option operand in an Option function lowers" {
-  val l = lowerOf("package App\nfunc g(o: Option[Int]): Option[Int] {\n  val v = o?\n  Some(value = v + 1)\n}\n")
+  val l = lowerOf(
+    "package Std.Core\nunion Result[T, E] { case Ok(value: T)\n case Err(error: E) }\nunion Option[T] { case Some(value: T)\n case None }\nfunc g(o: Option[Int]): Option[Int] {\n  val v = o?\n  Some(value = v + 1)\n}\n"
+  )
   assertEqualInt(countProps(l.before), 1, "one ? before")
   assertEqualInt(countProps(l.pb), 0, "none after")
   assertLowered(l, "option")
@@ -97,7 +111,7 @@ test "an Option operand in an Option function lowers" {
 
 test "several ? in one function each lower" {
   val l = lowerOf(
-    "package App\nfunc half(x: Int): Result[Int, String] {\n  if x % 2 == 0 { Ok(value = x / 2) } else { Err(error = \"odd\") }\n}\nfunc f(x: Int): Result[Int, String] {\n  val a = half(x)?\n  val b = half(a)?\n  Ok(value = a + b)\n}\n"
+    "package Std.Core\nunion Result[T, E] { case Ok(value: T)\n case Err(error: E) }\nunion Option[T] { case Some(value: T)\n case None }\nfunc half(x: Int): Result[Int, String] {\n  if x % 2 == 0 { Ok(value = x / 2) } else { Err(error = \"odd\") }\n}\nfunc f(x: Int): Result[Int, String] {\n  val a = half(x)?\n  val b = half(a)?\n  Ok(value = a + b)\n}\n"
   )
   assertEqualInt(countProps(l.before), 2, "two ? before")
   assertEqualInt(countProps(l.pb), 0, "none after")
@@ -105,7 +119,9 @@ test "several ? in one function each lower" {
 }
 
 test "a function without ? is untouched" {
-  val l = lowerOf("package App\nfunc f(x: Int): Int { x + 1 }\n")
+  val l = lowerOf(
+    "package Std.Core\nunion Result[T, E] { case Ok(value: T)\n case Err(error: E) }\nunion Option[T] { case Some(value: T)\n case None }\nfunc f(x: Int): Int { x + 1 }\n"
+  )
   assertEqualInt(countProps(l.pb), 0, "none")
   assertLowered(l, "plain")
 }
