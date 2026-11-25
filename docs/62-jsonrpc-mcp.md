@@ -402,6 +402,15 @@ kernel, and Q-WS-001 tracked closing them on the JVM. Closed in D787:
 remains only behind `Web.addWebSocket` on the JVM, with its old gaps,
 until docs/73 S7b moves that to `Ws.Kernel.Net.adoptConnection`.
 
+Hardening (docs/73 S8, D792 to D795): each connection has a bounded outbound
+queue written by one drain task, so `send`/`broadcast` return once a frame is
+queued and a peer that stops reading is dropped (1008) instead of stalling the
+others; `WsServerOptions` gained `maxOutboundBytes`, `writeTimeoutMs`,
+`idleTimeoutMs` (tied to ping liveness: any received frame, a Pong included,
+resets it), `maxConnections` and `handshakeTimeoutMs`; `Ws.startServerTls`
+serves wss over `Std.TcpHost`'s TLS server path. permessage-deflate is out of
+scope and the Autobahn run is not yet in CI (D795).
+
 Tests: loopback integration (`startServer` + a minimal in-repo test
 client over `Std.TcpHost` — connect, handshake, exchange text/binary/
 fragmented/ping/close, assert callbacks and registry state), plus pure

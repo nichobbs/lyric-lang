@@ -7,7 +7,9 @@
 //! are cheap virtual threads there, but on dotnet each `Std.Task` worker is a threadpool thread and
 //! the pool grows slowly past its minimum.
 //!
-//! Environment: `WS_PORT` (8190), `WS_CONNS` (1000), `WS_SECONDS` (30 measured seconds after connecting).
+//! Environment: `WS_PORT` (8190), `WS_CONNS` (1000), `WS_SECONDS` (30 measured seconds after connecting),
+//! `WS_STALLED` (0): that many extra connections complete the upgrade and then never read, the slow-consumer
+//! scenario of docs/73 S8 (set `WS_BYTES` large on the server so their socket buffers fill).
 //! Output: `connected`, `failed`, `messages`, `drops` (messages short of connected x broadcasts seen by
 //! the fastest connection), `p50_ms`, `p99_ms`, `max_ms`. Not part of CI (see README.md).
 package Bench.WsClients
@@ -151,9 +153,26 @@ func reader(port: in Int, endAtMs: in Long, samples: in List[Long], connected: i
   hostClose(conn)
 }
 
+// Completes the upgrade and then reads nothing until `endAtMs`: a consumer that has stopped.
+func stalledReader(port: in Int, endAtMs: in Long): Unit {
+  val conn = match hostConnect("127.0.0.1", port, 10000) { case Ok(c) -> c; case Err(_) -> return }
+  match handshake(conn) {
+    case None -> {
+      hostClose(conn)
+      return
+    }
+    case Some(_) -> ()
+  }
+  while Time.nowEpochMillis() < endAtMs {
+    Time.sleepMillis(200)
+  }
+  hostClose(conn)
+}
+
 func main(): Int {
   val port = intVar("WS_PORT", 8190)
   val conns = intVar("WS_CONNS", 1000)
+  val stalled = intVar("WS_STALLED", 0)
   val seconds = intVar("WS_SECONDS", 30)
   val endAtMs = Time.nowEpochMillis() + seconds.toLong() * 1000
   val all: List[List[Long]] = newList()
@@ -165,6 +184,11 @@ func main(): Int {
     all.add(samples)
     Task.scopeSpawn(sc, { -> reader(port, endAtMs, samples, connected) })
     i = i + 1
+  }
+  var st = 0
+  while st < stalled {
+    Task.scopeSpawn(sc, { -> stalledReader(port, endAtMs) })
+    st = st + 1
   }
   val _ = await Task.awaitAll(sc)
   val merged: List[Long] = newList()
