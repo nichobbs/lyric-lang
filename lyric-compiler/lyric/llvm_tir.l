@@ -3091,7 +3091,10 @@ func byRefArg(c: in LCtx, place: in TPlace): NArg {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
       case Some(slot) -> match slot.ty {
         case NVoid -> NArg(ty = NVoid, value = NUndef(ty = NVoid))
-        case _ -> NArg(ty = NPtr(pointee = slot.ty), value = NLocal(name = slot.ptr))
+        case _ -> NArg(
+          ty = NPtr(pointee = slot.ty),
+          value = NLocal(name = slot.ptr)
+        )
       }
       case None -> {
         c.problems.add("a by-reference argument with no slot")
@@ -5766,10 +5769,7 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
     case TsExpr(x) -> discard(c, lowerExpr(c, x))
     case TsScope(_, body) -> discard(c, lowerExpr(c, body))
     case TsVar(decl, init) -> match declareSlot(c, decl) {
-      case None -> match init {
-        case Some(x) -> discard(c, lowerExpr(c, x))
-        case None -> ()
-      }
+      case None -> match init { case Some(x) -> discard(c, lowerExpr(c, x)); case None -> () }
       case Some(slot) -> {
         val v = match init {
           case Some(x) -> own(c, lowerExpr(c, x))
