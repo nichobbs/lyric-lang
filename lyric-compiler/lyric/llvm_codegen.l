@@ -19228,7 +19228,7 @@ func registerTirInstances(
       } else if ctx.genericRecordDefs.containsKey(gkey) {
         match instantiateGenericRecordOpt(ctx, gkey, argTys) {
           case Some(ri) -> {
-            if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
+            if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
               val lay = LlvmTir.TirRecLayout(
                 ty = recPtrType(ri),
                 fieldTys = ri.fieldTys,
@@ -19534,7 +19534,7 @@ func tirUnitMaps(
                       LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
                     )
                   }
-                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
+                } else if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(

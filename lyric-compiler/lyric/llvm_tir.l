@@ -277,6 +277,11 @@ pub func tirCensusLines(c: in TirCensus, label: in String = ""): List[String] {
     lines.add("  fallback: " + best + " x " + toString(bestN))
     round = round + 1
   }
+  if tirTraceRequested() {
+    for f in c.fallbacks {
+      lines.add("    fallback fn " + f)
+    }
+  }
   lines
 }
 
