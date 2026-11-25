@@ -32,13 +32,12 @@ Every limit is a field of `WsServerOptions` with a default, so existing callers 
 
 `broadcast` encodes the frame once and queues it for every connection without writing to any socket, so one slow consumer delays no one; it returns `Err` with the first failure (a connection that closed meanwhile, or a slow consumer it dropped) after attempting all of them. The same bounds apply to `Web.addWebSocket` endpoints (`createEndpoint`), where `handshakeTimeoutMs` is the HTTP server's.
 
-**wss.** `Ws.startServerTls(host, port, path, tls, options, handler)` takes a `Std.Tls.TlsServerConfig` (certificate chain and key, minimum TLS version, optional client CA and `requireClientCert` for mutual TLS). The configuration is validated before the port is bound, and each connection's handshake runs on its own task, so a stalled one costs only itself. It runs over `Std.TcpHost`'s TLS server path on dotnet (`SslStream`), the JVM (`SSLSocket`) and native (OpenSSL). Tests: `tests/ws_hardening_tests.l` drives it through `Std.Http`'s TLS client on every target (TLS terminates, the WebSocket server answers through it, mutual TLS refuses and admits, a bad configuration is refused, a silent peer is cut off) and exchanges WebSocket frames over TLS on native only, because `Std.TcpHost` has a client TLS connect only on native.
+**wss.** `Ws.startServerTls(host, port, path, tls, options, handler)` takes a `Std.Tls.TlsServerConfig` (certificate chain and key, minimum TLS version, optional client CA and `requireClientCert` for mutual TLS). The configuration is validated before the port is bound, and each connection's handshake runs on its own task, so a stalled one costs only itself. It runs over `Std.TcpHost`'s TLS server path on dotnet (`SslStream`), the JVM (`SSLSocket`) and native (OpenSSL). Tests: `tests/ws_hardening_tests.l` drives it through `Std.Http`'s TLS client on every target (TLS terminates, the WebSocket server answers through it, mutual TLS refuses and admits, a bad configuration is refused, a silent peer is cut off) and exchanges WebSocket frames over TLS with `Std.TcpHost`'s client TLS connect (`hostConnectTls`, on every target since D799; run on dotnet and native, not run on the JVM here because the package's JVM build needs the Undertow jars).
 
 ### Known gaps
 
 - Autobahn (RFC 6455 conformance) is not run in CI. It needs Docker, which the development container lacks, and the server answers a client Ping only through the handler (the kernel delivers `Ping` to `onMessage` and does not reply, so Autobahn's section 2 cases would fail). See D795.
 - No `permessage-deflate` (RFC 7692), by decision (D795), and no subprotocol negotiation.
-- A wss exchange of WebSocket frames is tested on native only; dotnet and the JVM are tested through an HTTPS client (see above), pending a client TLS connect in `Std.TcpHost` there.
 - `[package] targets` is not declared. Whether to claim native depends on the aspect-template limit above.
 
 ## Packages

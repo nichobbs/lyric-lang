@@ -312,6 +312,10 @@ pub record TirLowerEnv {
   /// instantiates a generic function of another package on demand, so the name of one of its
   /// instances exists only once it has been asked for.
   needFns: List[Int] = newList()
+  /// The module-level values `globals` lacks, resolved by the code generator like `needFns`.
+  needGlobals: List[Int] = newList()
+  /// The module-level `val`/`const`s, keyed by symbol.
+  globals: Map[Int, TirGlobalRef] = newMap()
   /// The DefPath key of each symbol, for naming a type in a fallback reason.
   symNames: Map[Int, String] = newMap()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
@@ -337,6 +341,18 @@ pub record TirLowerEnv {
   checkedArith: Bool = false
   /// See `TirUnitInput.contractsElaborated`.
   contractsElaborated: Bool = false
+}
+
+/// A module-level `val` or `const` as the code generator holds it: a constant its initialiser is (`initIr` empty,
+/// `lit` the value), or a global computed on first use (`initIr` the IR name of its hoisted initialiser,
+/// whose `mvensure.<initIr>` runs it and whose `mv.<initIr>` holds it).
+pub record TirGlobalRef {
+  ty: NType
+  initIr: String
+  lit: NValue
+  /// A string literal's text, for a value that needs instructions to build (`hasText`): lowered at each read.
+  hasText: Bool = false
+  text: String = ""
 }
 
 /// A function type the lowering needs a closure type for: its key in `TirLowerEnv.funcs` and
@@ -471,6 +487,7 @@ pub record TirFallback {
   needTasks: List[TirListNeed] = newList()
   needScans: List[TirScanNeed] = newList()
   needFns: List[Int] = newList()
+  needGlobals: List[Int] = newList()
 }
 
 pub record TirLowered {
@@ -956,8 +973,8 @@ func arrayType(env: in TirLowerEnv, len: in ArrayLen, el: in Ty): Option[NType] 
   }
 }
 
-/// `NativePtr[T]`: a raw pointer to `T`, not counted.  The pointee is a scalar or another raw
-/// pointer; a pointer to a record or union keeps its AST-path form.
+/// `NativePtr[T]`: a raw pointer to `T`, not counted.  The pointee is a scalar, a `String` (the
+/// slot a runtime call writes an owned string to) or another raw pointer; a pointer to a record or union keeps its AST-path form.
 func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
   if h.args.count != 1 {
     return None
@@ -965,7 +982,11 @@ func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
   match tyToN(env, h.args[0]) {
     case Some(inner) -> match inner {
       case NVoid -> None
-      case NPtr(_) -> if isRefN(inner) { None } else { Some(value = NPtr(pointee = inner)) }
+      case NPtr(_) -> if isRefN(inner) and not isStringN(inner) {
+        None
+      } else {
+        Some(value = NPtr(pointee = inner))
+      }
       case _ -> if isScalarN(inner) { Some(value = NPtr(pointee = inner)) } else { None }
     }
     case None -> None
@@ -1794,7 +1815,12 @@ func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
     }
     case Some(nt) -> match nt {
       case NVoid -> {
-        c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
+        // A Unit local owns no storage: its slot is a marker (empty pointer, `NVoid`) so a read yields
+        // Unit and an assignment only evaluates its right-hand side.
+        if c.slots.containsKey(d.id.id) {
+          c.slots.remove(d.id.id)
+        }
+        c.slots.add(d.id.id, Slot(ptr = "", ty = NVoid))
         None
       }
       case _ -> {
@@ -1816,10 +1842,13 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XLit(lit) -> lowerLit(c, e, lit)
     case XLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "a local with no slot")
-      case Some(slot) -> {
-        val d = tmp(c)
-        c.insns.add(NLoad(dest = d, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
-        Val(ty = slot.ty, value = NLocal(name = d))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> unitVal()
+        case _ -> {
+          val d = tmp(c)
+          c.insns.add(NLoad(dest = d, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
+          Val(ty = slot.ty, value = NLocal(name = d))
+        }
       }
     }
     case XCall(callee, args) -> lowerCall(c, e, callee, args)
@@ -1851,7 +1880,48 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XAwait(inner) -> lowerAwait(c, inner)
     case XSpawn(inner) -> lowerSpawn(c, inner)
     case XLambda(params, captures, body) -> lowerLambda(c, e, params, captures, body)
+    case XGlobal(sym, targs) -> lowerGlobal(c, e, sym, targs)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
+  }
+}
+
+/// A read of a module-level `val` or `const`: the constant inlined, or the global behind its hoisted
+/// initialiser, which `mvensure.<init>` runs on first use and the load then borrows from (the global owns
+/// the value for the life of the process, as on the AST path).
+func lowerGlobal(c: in LCtx, e: in TExpr, sym: in SymbolId, targs: in List[Ty]): Val {
+  if targs.count > 0 {
+    return unsupported(c, "a generic module-level value")
+  }
+  match mapGet(c.env.globals, sym.id) {
+    case None -> {
+      if not listContainsInt(c.env.needGlobals, sym.id) {
+        c.env.needGlobals.add(sym.id)
+      }
+      unsupported(c, "the module-level value " + renderGlobalName(c.env, sym))
+    }
+    case Some(g) -> {
+      if not sameResultType(c, e.ty, g.ty) {
+        return unsupported(c, "a module-level value whose type differs from its declaration's")
+      }
+      if g.hasText {
+        stringLiteral(c, g.text)
+      } else if g.initIr.length == 0 {
+        Val(ty = g.ty, value = g.lit)
+      } else {
+        val noArgs: List[NArg] = newList()
+        c.insns.add(NCallVoid(fn = NGlobal(name = "mvensure." + g.initIr), args = noArgs))
+        val d = tmp(c)
+        c.insns.add(NLoad(dest = d, ty = g.ty, ptr = NGlobal(name = "mv." + g.initIr)))
+        Val(ty = g.ty, value = NLocal(name = d))
+      }
+    }
+  }
+}
+
+func renderGlobalName(env: in TirLowerEnv, sym: in SymbolId): String {
+  match mapGet(env.symNames, sym.id) {
+    case Some(k) -> k
+    case None -> "#" + toString(sym.id)
   }
 }
 
@@ -2737,16 +2807,11 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
             match a {
               case TArgIn(v) -> {
                 val av = borrow(c, lowerExpr(c, v))
-                match av.ty {
-                  case NVoid -> c.problems.add("a Unit argument")
-                  case _ -> {
-                    if anyByRef and isRefN(av.ty) {
-                      retainRef(c, av.ty, av.value)
-                      held.add(av)
-                    }
-                    nargs.add(NArg(ty = av.ty, value = av.value))
-                  }
+                if anyByRef and isRefN(av.ty) {
+                  retainRef(c, av.ty, av.value)
+                  held.add(av)
                 }
+                nargs.add(NArg(ty = av.ty, value = av.value))
               }
               case TArgOut(place) -> nargs.add(byRefArg(c, place))
               case TArgInout(place) -> nargs.add(byRefArg(c, place))
@@ -2955,6 +3020,10 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     }
     match mapGet(c.slots, cap.local.id) {
       case Some(sl) -> {
+        match sl.ty {
+          case NVoid -> return unsupported(c, "a capture of a Unit local")
+          case _ -> ()
+        }
         capTys.add(sl.ty)
         capSlots.add(sl)
       }
@@ -3082,7 +3151,13 @@ func byRefArg(c: in LCtx, place: in TPlace): NArg {
   val none = NArg(ty = NI8, value = NLitInt(v = 0i64, ty = NI8))
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
-      case Some(slot) -> NArg(ty = NPtr(pointee = slot.ty), value = NLocal(name = slot.ptr))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> NArg(ty = NVoid, value = NUndef(ty = NVoid))
+        case _ -> NArg(
+          ty = NPtr(pointee = slot.ty),
+          value = NLocal(name = slot.ptr)
+        )
+      }
       case None -> {
         c.problems.add("a by-reference argument with no slot")
         none
@@ -3217,12 +3292,21 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     match ins[0].kind {
       case XLocal(id) -> match mapGet(c.slots, id.id) {
         case Some(slot) -> {
+          match slot.ty {
+            case NVoid -> return unsupported(c, "the address of a Unit local")
+            case _ -> ()
+          }
           val pt = NPtr(pointee = slot.ty)
           return match tyToN(c.env, rty) {
             case Some(want) -> if nTypeToIrString(want) == nTypeToIrString(pt) {
               Val(ty = pt, value = NLocal(name = slot.ptr))
             } else {
-              unsupported(c, "the address of a local whose pointer type is " + nTypeToIrString(want))
+              unsupported(
+                c,
+                "the address of a local that holds a " + renderTyIn(c.env, ins[0].ty) + " (the pointer type would be " +
+                  nTypeToIrString(want) +
+                  ")"
+              )
             }
             case None -> unsupported(c, "the address of a local of type " + renderTyIn(c.env, ins[0].ty))
           }
@@ -3589,10 +3673,7 @@ func lowerAsyncCall(c: in LCtx, e: in TExpr, irName: in String, args: in List[TA
     match a {
       case TArgIn(v) -> {
         val av = borrow(c, lowerExpr(c, v))
-        match av.ty {
-          case NVoid -> c.problems.add("a Unit argument")
-          case _ -> nargs.add(NArg(ty = av.ty, value = av.value))
-        }
+        nargs.add(NArg(ty = av.ty, value = av.value))
       }
       case _ -> {
         c.problems.add("an out argument of an async call")
@@ -4052,7 +4133,10 @@ func arrayElemPtr(c: in LCtx, arrTy: in NType, base: in NValue, idx: in NValue):
 func arrayPlaceAddr(c: in LCtx, e: in TExpr): Option[NValue] {
   match e.kind {
     case XLocal(id) -> match mapGet(c.slots, id.id) {
-      case Some(slot) -> Some(value = NLocal(name = slot.ptr))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> None
+        case _ -> Some(value = NLocal(name = slot.ptr))
+      }
       case None -> None
     }
     case XField(recv, field) -> match fieldOwnerLayout(c, field.owner) {
@@ -5095,7 +5179,13 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "an assignment to a local with no slot")
-      case Some(slot) -> assignSlot(c, slot, place.ty, op, value)
+      case Some(slot) -> match slot.ty {
+        case NVoid -> {
+          discard(c, lowerExpr(c, value))
+          unitVal()
+        }
+        case _ -> assignSlot(c, slot, place.ty, op, value)
+      }
     }
     case PlField(recv, field) -> match heapFieldPlace(c, recv, field) {
       case None -> unitVal()
@@ -5746,7 +5836,7 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
     case TsExpr(x) -> discard(c, lowerExpr(c, x))
     case TsScope(_, body) -> discard(c, lowerExpr(c, body))
     case TsVar(decl, init) -> match declareSlot(c, decl) {
-      case None -> ()
+      case None -> match init { case Some(x) -> discard(c, lowerExpr(c, x)); case None -> () }
       case Some(slot) -> {
         val v = match init {
           case Some(x) -> own(c, lowerExpr(c, x))
@@ -5777,7 +5867,7 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
           c.problems.add("a binding with a sub-pattern")
         }
         case None -> match declareSlot(c, decl) {
-          case None -> ()
+          case None -> discard(c, lowerExpr(c, init))
           case Some(slot) -> {
             val v = own(c, lowerExpr(c, init))
             c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
@@ -5935,7 +6025,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         needMaps = env.needMaps,
         needTasks = env.needTasks,
         needScans = env.needScans,
-        needFns = env.needFns
+        needFns = env.needFns,
+        needGlobals = env.needGlobals
       )
     )
   }
@@ -5989,15 +6080,16 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
       case Some(t) -> t
       case None -> return fallback(fn.sym, "parameter type " + renderTyIn(env, p.local.ty))
     }
-    match pt {
-      case NVoid -> return fallback(fn.sym, "a Unit parameter")
-      case _ -> ()
-    }
     val pname = "a" + toString(p.local.id.id)
     if byRef and fn.isAsync {
       return fallback(fn.sym, "an async function with an out or inout parameter")
     }
-    if byRef {
+    val ptUnit = match pt { case NVoid -> true; case _ -> false }
+    if ptUnit {
+      // A Unit parameter keeps its position (the callers pass a placeholder) and owns no storage.
+      params.add(NParam(name = pname, ty = NVoid))
+      c.slots.add(p.local.id.id, Slot(ptr = "", ty = NVoid))
+    } else if byRef {
       // An out or inout parameter is the address of the caller's cell: the local's slot is that
       // pointer, so every read and write reaches the caller's storage, and the callee owns
       // nothing (it is never tracked for release).

@@ -3073,6 +3073,18 @@ pub func mvInitFnName(name: in String): String {
 // from it, like a local slot. `lyric_init_module_globals` ensures them all
 // before `main`, so no thread sees one uninitialised.
 func loadModuleGlobal(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig): NVal {
+  val ty = registerModuleGlobal(ctx, sig)
+  val gname = "mv." + sig.irName
+  val noEnsureArgs: List[NArg] = newList()
+  insns.add(NCallVoid(fn = NGlobal(name = "mvensure." + sig.irName), args = noEnsureArgs))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = ty, ptr = NGlobal(name = gname)))
+  NVal(ty = ty, value = NLocal(name = dest))
+}
+
+/// Register the static global behind a non-literal module-level `val` (its zero-initialised storage, its
+/// "initialised" flag and its initialiser) on first reference, and give its type.
+func registerModuleGlobal(ctx: in Ctx, sig: in NFuncSig): NType {
   val ty = sigRetTypeToN(ctx, sig)
   val gname = "mv." + sig.irName
   var known = false
@@ -3103,11 +3115,7 @@ func loadModuleGlobal(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig): NVa
       )
     )
   }
-  val noEnsureArgs: List[NArg] = newList()
-  insns.add(NCallVoid(fn = NGlobal(name = "mvensure." + sig.irName), args = noEnsureArgs))
-  val dest = freshTmp(ctx)
-  insns.add(NLoad(dest = dest, ty = ty, ptr = NGlobal(name = gname)))
-  NVal(ty = ty, value = NLocal(name = dest))
+  ty
 }
 
 // The functions behind the module globals: one `mvensure.<init>` per global,
@@ -9184,9 +9192,9 @@ func registerUnionCaseRefs(ctx: in Ctx, pkg: in String, unionName: in String, ui
     if not ctx.caseRefs.containsKey(pkg + "." + unionName + "." + bare) {
       ctx.caseRefs.add(pkg + "." + unionName + "." + bare, cref)
     }
-    // A case qualified by its package alone (`Tcp.TlsTrustInsecure` under
-    // `import Std.TcpHost as Tcp`, which the alias rewrite makes
-    // `Std.TcpHost.TlsTrustInsecure`), as the type checker resolves it.
+    // A case qualified by its package alone (`Tls.TlsTrustInsecure` under
+    // `import Std.Tls as Tls`, which the alias rewrite makes
+    // `Std.Tls.TlsTrustInsecure`), as the type checker resolves it.
     if not ctx.caseRefs.containsKey(pkg + "." + bare) {
       ctx.caseRefs.add(pkg + "." + bare, cref)
     }
@@ -18987,6 +18995,8 @@ record TirUnitMaps {
   checkedArith: Bool = false
   /// `LlvmTir.TirUnitInput.contractsElaborated`.
   contractsElaborated: Bool = false
+  /// The module-level values resolved so far, by symbol (`resolveTirGlobal`).
+  globals: Map[Int, LlvmTir.TirGlobalRef] = newMap()
 }
 
 /// An interface as the TIR lowering reads it: the box and vtable types the code generator chose
@@ -19691,6 +19701,68 @@ func tirUnitMaps(
   )
 }
 
+/// The text of an initialiser that is a plain string literal, possibly parenthesised.
+func plainStringLiteral(e: in Expr): Option[String] {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LString(text) -> Some(value = text)
+      case LTripleString(text) -> Some(value = text)
+      case LRawString(text) -> Some(value = text)
+      case _ -> None
+    }
+    case EParen(inner) -> plainStringLiteral(inner)
+    case _ -> None
+  }
+}
+
+/// The module-level `val` or `const` a TIR read names, found by the symbol's DefPath key (`Pkg::name`): a
+/// literal initialiser that lowers to a constant is inlined, as the AST path inlines it; any other initialiser
+/// is the hoisted function whose global `registerModuleGlobal` sets up.  False when the symbol is no module
+/// value the code generator holds, or its initialiser is a literal that needs instructions to build (a
+/// string), which stays on the AST path.
+func resolveTirGlobal(ctx: in Ctx, maps: in TirUnitMaps, sym: in Int): Bool {
+  if maps.globals.containsKey(sym) {
+    return false
+  }
+  val key = match mapGet(maps.symNames, sym) { case Some(k) -> k; case None -> return false }
+  val sep = match Str.indexOf(key, "::") { case Some(i) -> i; case None -> return false }
+  val rest = Str.substring(key, sep + 2)
+  if Str.contains(rest, "(") or Str.contains(rest, "[") {
+    return false
+  }
+  val pkg = Str.substring(key, 0, sep)
+  val mv = match mapGet(ctx.moduleVals, pkg + "." + Str.replace(rest, "::", ".")) {
+    case Some(m) -> m
+    case None -> return false
+  }
+  if isLiteralInit(mv.init) {
+    match plainStringLiteral(mv.init) {
+      case Some(text) -> {
+        maps.globals.add(
+          sym,
+          LlvmTir.TirGlobalRef(ty = lyricStringNType(), initIr = "", lit = NUndef(ty = NVoid), hasText = true, text = text)
+        )
+        return true
+      }
+      case None -> ()
+    }
+    val scratch: List[NInsn] = newList()
+    val v = lowerModuleVal(ctx, scratch, mv)
+    if scratch.count > 0 or nTypeToIrString(v.ty) == "void" {
+      return false
+    }
+    maps.globals.add(sym, LlvmTir.TirGlobalRef(ty = v.ty, initIr = "", lit = v.value))
+    return true
+  }
+  val sig = match mapGet(ctx.sigs, mv.pkg + "." + mvInitFnName(mv.name) + "/0") {
+    case Some(sg) -> sg
+    case None -> return false
+  }
+  val ty = registerModuleGlobal(ctx, sig)
+  maps.globals.add(sym, LlvmTir.TirGlobalRef(ty = ty, initIr = sig.irName, lit = NUndef(ty = NVoid)))
+  true
+}
+
 /// The IR name of the instance of a generic function a TIR call names, which the AST path instantiates
 /// on demand (`ensureFnInst`): `fsym` is looked up among the bundle's instances, its type arguments are
 /// laid out as the AST path would lay them out, and the instantiation is registered under the
@@ -19776,12 +19848,18 @@ func lowerWithTuples(
       intrinsics = maps.intrinsics,
       symNames = maps.symNames,
       checkedArith = maps.checkedArith,
-      contractsElaborated = maps.contractsElaborated
+      contractsElaborated = maps.contractsElaborated,
+      globals = maps.globals
     )
     match LlvmTir.lowerTirFunction(env, d) {
       case Ok(l) -> return Ok(value = l)
       case Err(f) -> {
         var instantiated = 0
+        for gsym in f.needGlobals {
+          if resolveTirGlobal(ctx, maps, gsym) {
+            instantiated = instantiated + 1
+          }
+        }
         for fsym in f.needFns {
           if instantiateTirFnInst(ctx, maps, fsym) {
             instantiated = instantiated + 1

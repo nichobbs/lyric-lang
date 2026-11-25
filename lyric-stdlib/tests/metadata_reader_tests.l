@@ -964,6 +964,9 @@ func expectedClrValueTypes(): List[String] {
   xs.add("System.Security.Authentication.SslProtocols")
   xs.add("System.Security.Cryptography.X509Certificates.X509ChainTrustMode")
   xs.add("System.Security.Cryptography.X509Certificates.X509RevocationMode")
+  xs.add("System.Security.Cryptography.X509Certificates.StoreLocation")
+  xs.add("System.Security.Cryptography.X509Certificates.OpenFlags")
+  xs.add("System.Security.Cryptography.X509Certificates.X509VerificationFlags")
   xs
 }
 

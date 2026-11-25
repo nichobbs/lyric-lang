@@ -1,4 +1,4 @@
-//! std/_kernel/tcp_host.l - dotnet TCP + server-side TLS transport kernel
+//! std/_kernel/tcp_host.l - dotnet TCP + TLS (server and client) transport kernel
 //! for the sans-IO `Std.HttpEngine` (docs/61-https-tls-http-versions.md
 //! §6.1/§6.3, D128; phase 3.1 of epic #5874, issue #5882).
 //!
@@ -76,10 +76,12 @@
 package Std.TcpHost
 
 import Std.Core
+import Std.Collections
 import Std.String as Str
 import Std.Parse as Parse
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
+import Std.Time as Time
 
 // =====================================================================
 // Extern types.
@@ -105,6 +107,18 @@ extern type EndPoint = "System.Net.EndPoint"
 extern type SocketShutdownMode = "System.Net.Sockets.SocketShutdown"
 
 extern type SslServerAuthOptions = "System.Net.Security.SslServerAuthenticationOptions"
+
+extern type SslClientAuthOptions = "System.Net.Security.SslClientAuthenticationOptions"
+
+extern type X509CertificateCollection = "System.Security.Cryptography.X509Certificates.X509CertificateCollection"
+
+extern type X509Store = "System.Security.Cryptography.X509Certificates.X509Store"
+
+extern type X509StoreLocation = "System.Security.Cryptography.X509Certificates.StoreLocation"
+
+extern type X509OpenFlags = "System.Security.Cryptography.X509Certificates.OpenFlags"
+
+extern type X509VerificationFlags = "System.Security.Cryptography.X509Certificates.X509VerificationFlags"
 
 extern type SslApplicationProtocol = "System.Net.Security.SslApplicationProtocol"
 
@@ -236,6 +250,10 @@ func clientClose(c: in TcpClient): Unit = ()
 func clientSetReceiveTimeout(c: in TcpClient, ms: in Int): Unit = ()
 
 @externInstance
+@externTarget("System.Net.Sockets.TcpClient.get_ReceiveTimeout")
+func clientGetReceiveTimeout(c: in TcpClient): Int = ()
+
+@externInstance
 @externTarget("System.Net.Sockets.TcpClient.set_SendTimeout")
 func clientSetSendTimeout(c: in TcpClient, ms: in Int): Unit = ()
 
@@ -318,7 +336,7 @@ val readBufferSize: Int = 16384
 // member call) — every read/write/flush after the handshake is an ordinary
 // base-`Stream` operation.
 @externTarget("System.Net.Security.SslStream..ctor")
-func newServerSslStream(inner: in Stream, leaveInnerStreamOpen: in Bool): Stream = ()
+func newSslStream(inner: in Stream, leaveInnerStreamOpen: in Bool): Stream = ()
 
 @externTarget("System.Net.Security.SslServerAuthenticationOptions..ctor")
 func newServerOptions(): SslServerAuthOptions = ()
@@ -354,6 +372,47 @@ func optionsSetEnabledSslProtocols(o: in SslServerAuthOptions, p: in SslProtocol
 @externInstance
 @externTarget("System.Net.Security.SslServerAuthenticationOptions.set_CertificateChainPolicy")
 func optionsSetChainPolicy(o: in SslServerAuthOptions, p: in X509ChainPolicy): Unit = ()
+
+// --- TLS client externs ------------------------------------------------------
+// `SslClientAuthenticationOptions` mirrors the server options above: the same
+// callback-free trust path (`CertificateChainPolicy` over a `CustomRootTrust`
+// store), because `RemoteCertificateValidationCallback` is a delegate type the
+// FFI bridge cannot construct (#5947). `TargetHost` is both the SNI name and the
+// name the peer certificate is verified against (RFC 6125): the runtime keeps
+// that check on whatever chain policy is installed.
+@externTarget("System.Net.Security.SslClientAuthenticationOptions..ctor")
+func newClientOptions(): SslClientAuthOptions = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_TargetHost")
+func clientOptionsSetTargetHost(o: in SslClientAuthOptions, host: in String): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_EnabledSslProtocols")
+func clientOptionsSetEnabledSslProtocols(o: in SslClientAuthOptions, p: in SslProtocols): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_CertificateChainPolicy")
+func clientOptionsSetChainPolicy(o: in SslClientAuthOptions, p: in X509ChainPolicy): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_ApplicationProtocols")
+func clientOptionsSetApplicationProtocols(o: in SslClientAuthOptions, protocols: in ApplicationProtocolList): Unit = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_ClientCertificates")
+func clientOptionsSetClientCertificates(o: in SslClientAuthOptions, c: in X509CertificateCollection): Unit = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.X509CertificateCollection..ctor")
+func newClientCertCollection(): X509CertificateCollection = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509CertificateCollection.Add")
+func clientCertCollectionAdd(c: in X509CertificateCollection, cert: in TlsHost.CertHandle): Int = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslStream.AuthenticateAsClient")
+func sslAuthenticateAsClient(s: in Stream, options: in SslClientAuthOptions): Unit = ()
 
 // `SslProtocols.Tls13` — the only version this kernel ever pins explicitly.
 // The `Tls12` floor (and the unset case) leave `EnabledSslProtocols` at its
@@ -449,6 +508,41 @@ func chainPolicyCustomTrustStore(p: in X509ChainPolicy): X509Certificate2Collect
 @externInstance
 @externTarget("System.Security.Cryptography.X509Certificates.X509Certificate2Collection.Add")
 func trustStoreAdd(c: in X509Certificate2Collection, cert: in TlsHost.CertHandle): Int = ()
+
+// The platform's trusted roots, for an additive CA: `X509ChainPolicy` rejects a
+// custom store in `System` trust mode, so additive trust is `CustomRootTrust`
+// over the roots the platform would have trusted plus the extra CA.
+@externTarget("System.Security.Cryptography.X509Certificates.X509Store..ctor")
+func newRootStore(name: in String, location: in X509StoreLocation): X509Store = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.StoreLocation.LocalMachine")
+func storeLocationLocalMachine(): X509StoreLocation = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.OpenFlags.ReadOnly")
+func openFlagsReadOnly(): X509OpenFlags = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Store.Open")
+func rootStoreOpen(s: in X509Store, flags: in X509OpenFlags): Unit = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Store.get_Certificates")
+func rootStoreCertificates(s: in X509Store): X509Certificate2Collection = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Store.Close")
+func rootStoreClose(s: in X509Store): Unit = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509Certificate2Collection.AddRange")
+func trustStoreAddRange(c: in X509Certificate2Collection, other: in X509Certificate2Collection): Unit = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_VerificationFlags")
+func chainPolicySetVerificationFlags(p: in X509ChainPolicy, f: in X509VerificationFlags): Unit = ()
+
+@externTarget("System.Security.Cryptography.X509Certificates.X509VerificationFlags.AllFlags")
+func verificationFlagsAll(): X509VerificationFlags = ()
 
 @externInstance
 @externTarget("System.Security.Cryptography.X509Certificates.X509ChainPolicy.set_RevocationMode")
@@ -754,7 +848,7 @@ pub func hostUpgradeServerTlsPrepared(
   // maps to `TlsHandshakeFailed` like every other fallible BCL call in this
   // file instead of escaping as a raw host exception.
   val ssl = try {
-    newServerSslStream(conn.stream, false)
+    newSslStream(conn.stream, false)
   } catch Bug as b {
     return Err(error = TlsHandshakeFailed(message = b.message))
   }
@@ -804,6 +898,202 @@ pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Resul
   }
 }
 
+// =====================================================================
+// Client TLS (docs/72 slice 4).
+// =====================================================================
+// The ALPN protocols named by a comma-separated list, trimmed, empty names
+// dropped, most preferred first.
+func alpnNames(alpnCsv: in String): List[String] {
+  val names: List[String] = newList()
+  val parts = Str.split(alpnCsv, ",")
+  var i = 0
+  while i < parts.length {
+    val name = Str.trim(parts[i])
+    if name.length > 0 {
+      names.add(name)
+    }
+    i = i + 1
+  }
+  names
+}
+
+// The negotiated protocol as the offered name it matches, or `""` when the
+// peer selected none (or one this client did not offer).
+func negotiatedAmong(ssl: in Stream, offered: in List[String]): String {
+  val neg = sslNegotiatedProtocol(ssl)
+  var i = 0
+  while i < offered.count {
+    if sslAppEq(neg, sslAppProtoOf(offered[i])) {
+      return offered[i]
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// Trust anchors from PEM text; a PEM that does not parse is a rejected
+// configuration, not a handshake failure.
+func trustAnchors(caPem: in String): Result[List[TlsHost.CertHandle], TcpError] {
+  match Tls.Certificate.fromPem(caPem) {
+    case Err(e) -> Err(error = TlsConfigInvalid(message = "client trust CA: " + Tls.TlsError.message(e)))
+    case Ok(cert) -> Ok(value = cert.rawHandles())
+  }
+}
+
+// A chain policy that trusts exactly `anchors` and checks no revocation (the
+// server mTLS policy above; an online OCSP/CRL probe must not start as a side
+// effect of configuring trust, #5952).
+func customRootPolicy(anchors: in List[TlsHost.CertHandle]): X509ChainPolicy {
+  val policy = newChainPolicy()
+  chainPolicySetTrustMode(policy, chainTrustModeCustomRoot())
+  chainPolicySetRevocationMode(policy, revocationModeNoCheck())
+  val store = chainPolicyCustomTrustStore(policy)
+  var i = 0
+  while i < anchors.count {
+    val _ = trustStoreAdd(store, anchors[i])
+    i = i + 1
+  }
+  policy
+}
+
+func buildClientOptions(
+  sniHost: in String,
+  trust: in Tls.TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  offered: in List[String],
+): Result[SslClientAuthOptions, TcpError] {
+  val opts = newClientOptions()
+  clientOptionsSetTargetHost(opts, sniHost)
+  match minVersion {
+    case Tls13 -> clientOptionsSetEnabledSslProtocols(opts, sslProtocolsTls13())
+    case Tls12 -> ()
+  }
+  if offered.count > 0 {
+    val list = newApplicationProtocolList()
+    var i = 0
+    while i < offered.count {
+      applicationProtocolListAdd(list, sslAppProtoOf(offered[i]))
+      i = i + 1
+    }
+    clientOptionsSetApplicationProtocols(opts, list)
+  }
+  match clientIdentity {
+    case Some(id) -> {
+      val certs = newClientCertCollection()
+      val _ = clientCertCollectionAdd(certs, id.rawHandle())
+      clientOptionsSetClientCertificates(opts, certs)
+    }
+    case None -> ()
+  }
+  match trust {
+    case Tls.TlsTrustSystemDefault -> Ok(value = opts)
+    case Tls.TlsTrustExclusive(caPem) -> match trustAnchors(caPem) {
+      case Err(e) -> Err(error = e)
+      case Ok(anchors) -> {
+        clientOptionsSetChainPolicy(opts, customRootPolicy(anchors))
+        Ok(value = opts)
+      }
+    }
+    case Tls.TlsTrustAdditive(caPem) -> match trustAnchors(caPem) {
+      case Err(e) -> Err(error = e)
+      case Ok(anchors) -> {
+        val policy = customRootPolicy(anchors)
+        val roots = newRootStore("Root", storeLocationLocalMachine())
+        rootStoreOpen(roots, openFlagsReadOnly())
+        trustStoreAddRange(chainPolicyCustomTrustStore(policy), rootStoreCertificates(roots))
+        rootStoreClose(roots)
+        clientOptionsSetChainPolicy(opts, policy)
+        Ok(value = opts)
+      }
+    }
+    case Tls.TlsTrustInsecure -> {
+      val policy = customRootPolicy(newList())
+      chainPolicySetVerificationFlags(policy, verificationFlagsAll())
+      clientOptionsSetChainPolicy(opts, policy)
+      Ok(value = opts)
+    }
+  }
+}
+
+/// Terminate TLS on an already-connected plain connection, as a client (the
+/// connect/upgrade split mirrors `hostAcceptTls`/`hostUpgradeServerTls`).
+/// `sniHost` is the name sent as SNI and verified against the peer's
+/// certificate (RFC 6125). `trust` is the caller's resolved trust decision
+/// (`Std.Tls.TlsClientTrust`), `clientIdentity` the mTLS identity to present
+/// (`None` presents no certificate), `minVersion` the protocol floor, and
+/// `alpnCsv` the ALPN protocols to offer, most preferred first (`""` offers
+/// none); `hostAlpn` of the result is the one the peer selected, `""` when it
+/// selected none. The underlying socket is closed on every failure path so a
+/// rejected handshake never leaks a connection. A socket timeout set with
+/// `hostSetIoTimeout` bounds each socket operation of the handshake. A trust PEM that does
+/// not parse is `Err(TlsConfigInvalid(...))`; a handshake failure (an
+/// untrusted or expired certificate, a hostname mismatch, a rejected client
+/// identity) is `Err(TlsHandshakeFailed(...))`. The same signature as the JVM
+/// and native kernels.
+@experimental
+pub func hostUpgradeClientTls(
+  conn: in Conn,
+  sniHost: in String,
+  trust: in Tls.TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+): Result[Conn, TcpError] {
+  val offered = alpnNames(alpnCsv)
+  val opts = try {
+    match buildClientOptions(sniHost, trust, clientIdentity, minVersion, offered) {
+      case Ok(o) -> o
+      case Err(e) -> {
+        hostClose(conn)
+        return Err(error = e)
+      }
+    }
+  } catch Bug as b {
+    hostClose(conn)
+    return Err(error = TlsConfigInvalid(message = b.message))
+  }
+  val ssl = try {
+    newSslStream(conn.stream, false)
+  } catch Bug as b {
+    hostClose(conn)
+    return Err(error = TlsHandshakeFailed(message = b.message))
+  }
+  try {
+    sslAuthenticateAsClient(ssl, opts)
+    Ok(value = Conn(client = conn.client, stream = ssl, alpn = negotiatedAmong(ssl, offered), readBuf = conn.readBuf))
+  } catch Bug as b {
+    disposeQuietly(ssl)
+    hostClose(conn)
+    Err(error = TlsHandshakeFailed(message = b.message))
+  }
+}
+
+/// Dial `host`:`port` and terminate TLS on the connection as a client.
+/// `host` is used for BOTH the socket dial and SNI / hostname verification,
+/// the ordinary case where the URL authority names the peer. Everything else
+/// is as `hostUpgradeClientTls`; `connectTimeoutMs` bounds the connect as
+/// `hostConnect`'s does (`0` = the operating system's own limit). A connect
+/// failure is `Err(TransportFailed(...))`. The same signature as the JVM and
+/// native kernels.
+@experimental
+pub func hostConnectTls(
+  host: in String,
+  port: in Int,
+  trust: in Tls.TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+  connectTimeoutMs: in Int,
+): Result[Conn, TcpError]
+  requires: connectTimeoutMs >= 0
+{
+  match hostConnect(host, port, connectTimeoutMs) {
+    case Err(e) -> Err(error = e)
+    case Ok(plain) -> hostUpgradeClientTls(plain, host, trust, clientIdentity, minVersion, alpnCsv)
+  }
+}
+
 // Best-effort stream dispose: a redundant/double dispose is swallowed.
 func disposeQuietly(s: in Stream): Unit {
   try {
@@ -836,6 +1126,84 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
     Ok(value = memGetBuffer(c.readBuf).slice(0, n))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
+  }
+}
+
+/// Why a deadline-bounded read did not return bytes.
+@experimental
+pub union ReadDeadlineError {
+  // The deadline passed before a byte arrived. Nothing was consumed: the
+  // connection (plain or TLS) stays usable for further reads and writes.
+  case ReadDeadlinePassed
+  // The read itself failed, as `hostRead`'s would.
+  case ReadFailed(error: TcpError)
+}
+
+/// Human-readable message for a ReadDeadlineError.
+@pure
+@experimental
+pub func ReadDeadlineError.message(e: in ReadDeadlineError): String {
+  match e {
+    case ReadDeadlinePassed -> "read deadline passed"
+    case ReadFailed(error) -> TcpError.message(error)
+  }
+}
+
+// Milliseconds from now to `deadlineNanos`, rounded up and at least one (a
+// zero receive timeout means "wait forever"); an already-passed deadline still
+// lets one read collect what has arrived.
+func millisUntil(deadlineNanos: in Long): Int {
+  val left = deadlineNanos - Time.monotonicNanos()
+  if left <= 0i64 {
+    1
+  } else {
+    val ms = (left + 999999i64) / 1000000i64
+    if ms > 2147483647i64 {
+      2147483647
+    } else {
+      ms.toInt()
+    }
+  }
+}
+
+func isReadTimeout(message: in String): Bool {
+  Str.indexOfFromRaw(Str.toLower(message), "timed out", 0) >= 0
+}
+
+/// `hostRead` that gives up at `deadlineNanos`, an absolute point on the
+/// `Std.Time.monotonicNanos()` clock (`0i64` = no deadline, exactly
+/// `hostRead`). A deadline that has already passed still lets the read collect
+/// bytes that have arrived. On `ReadDeadlinePassed` nothing was consumed and the
+/// connection is intact, so a driver can poll with a short deadline to notice
+/// a per-call deadline or a close request and read again. The I/O timeout of
+/// `hostSetIoTimeout` is restored afterwards. Reads on one connection must not
+/// run concurrently. The same signature and contract on every target.
+@experimental
+pub func hostReadDeadline(c: in Conn, maxBytes: in Int, deadlineNanos: in Long): Result[slice[Byte], ReadDeadlineError]
+  requires: maxBytes > 0
+{
+  if deadlineNanos == 0i64 {
+    return match hostRead(c, maxBytes) { case Ok(b) -> Ok(value = b); case Err(e) -> Err(error = ReadFailed(error = e)) }
+  }
+  var previous = 0
+  try {
+    previous = clientGetReceiveTimeout(c.client)
+    clientSetReceiveTimeout(c.client, millisUntil(deadlineNanos))
+    val want = if maxBytes < readBufferSize { maxBytes } else { readBufferSize }
+    val n = streamReadInto(c.stream, memGetBuffer(c.readBuf), 0, want)
+    clientSetReceiveTimeout(c.client, previous)
+    Ok(value = memGetBuffer(c.readBuf).slice(0, n))
+  } catch Bug as b {
+    try {
+      clientSetReceiveTimeout(c.client, previous)
+    } catch Bug as _ {
+      ()
+    }
+    if isReadTimeout(b.message) {
+      Err(error = ReadDeadlinePassed)
+    } else {
+      Err(error = ReadFailed(error = TransportFailed(message = b.message)))
+    }
   }
 }
 
