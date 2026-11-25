@@ -647,7 +647,6 @@ func unsupported(c: in LCtx, why: in String): Val {
   Val(ty = NI32, value = NUndef(ty = NI32))
 }
 
-/// Whether the type of an expression lowers to `nt`.
 /// The type an operator on `t` follows: the primitive a distinct type wraps, else `t`.
 func opTy(c: in LCtx, t: in Ty): Ty {
   match t {
@@ -670,6 +669,7 @@ func opTy(c: in LCtx, t: in Ty): Ty {
   }
 }
 
+/// Whether the type of an expression lowers to `nt`.
 func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
   match tyToN(c.env, ty) {
     case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
