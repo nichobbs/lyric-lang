@@ -277,10 +277,10 @@ cat "$work/rg_census.txt"
 "$work/rg_ast" > "$work/rg_ast.out" 2> "$work/rg_ast.err" || true
 "$work/rg_tir" > "$work/rg_tir.out" 2> "$work/rg_tir.err" || true
 diff -u "$work/rg_ast.out" "$work/rg_tir.out"
-printf '1000\n750\n150\ntrue\ntrue\n5\n1\n' | diff -u - "$work/rg_tir.out"
+printf '1000\n750\n150\ntrue\ntrue\n5\n1\n5\nCents.tryFrom: value out of range [0, 1000]\nCents.tryFrom: value out of range [0, 1000]\nplain 7\n' | diff -u - "$work/rg_tir.out"
 grep -q 'Cents.from: value out of range \[0, 1000\]' "$work/rg_tir.err" || { echo "::error::the TIR build did not panic with the range message"; cat "$work/rg_tir.err"; exit 1; }
 grep -q 'Cents.from: value out of range \[0, 1000\]' "$work/rg_ast.err" || { echo "::error::the AST build did not panic with the range message"; exit 1; }
-grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/rg_census.txt" || {
+grep -q '^native via-TIR: 12 of 12 functions lowered from TIR' "$work/rg_census.txt" || {
   echo "::error::expected every function of ranged.l to be lowered from TIR"
   exit 1
 }
