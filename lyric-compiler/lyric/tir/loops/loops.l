@@ -66,7 +66,7 @@ func lNot(c: in LCtx, x: in TExpr): TExpr {
 
 /// `e` with every node renumbered, so a clause that stands at several places keeps node ids unique.
 func renumber(c: in LCtx, e: in TExpr): TExpr {
-  val w = Walker(
+  val w = newWalker(
     pre = { x: TExpr -> None },
     post = { x: TExpr -> TExpr(id = lNode(c), ty = x.ty, span = x.span, kind = x.kind) }
   )
