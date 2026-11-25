@@ -8301,6 +8301,52 @@ func isPlainArg(x: in Expr): Bool {
   }
 }
 
+/// Whether `t` reads a place without computing anything: a local, a global, a literal, or a field or element
+/// of one.  Binding such an operand to a temporary would copy a value-typed container the call must update in
+/// place, and has no effect to order.
+func isPlaceLike(t: in TExpr): Bool {
+  match t.kind {
+    case XLocal(_) -> true
+    case XGlobal(_, _) -> true
+    case XLit(_) -> true
+    case XField(r, _) -> isPlaceLike(r)
+    case XIndex(r, i, _) -> isPlaceLike(r) and isPlaceLike(i)
+    case _ -> false
+  }
+}
+
+/// `t` bound to a fresh local by a statement ordered at `order`, and the local read back.
+func hoistOperand(env: in BuildEnv, t: in TExpr, order: in Int, hoisted: in List[OrderedStmt]): TExpr {
+  val d = declareLocal(env, "__arg" + toString(env.nextLocal[0] + 1), t.ty, false)
+  val bindPat = TPat(id = freshNodeId(env), ty = t.ty, span = t.span, kind = TpBind(decl = d, inner = None))
+  hoisted.add(
+    OrderedStmt(
+      order = order,
+      stmt = TStmt(id = freshNodeId(env), span = t.span, kind = TsLet(pat = bindPat, init = t))
+    )
+  )
+  TExpr(id = freshNodeId(env), ty = t.ty, span = t.span, kind = XLocal(local = d.id))
+}
+
+/// An `out` or `inout` argument's place with the operands that compute something (a call in an index or in
+/// the receiver) bound to temporaries at the argument's source position, the receiver before the index, so
+/// they run in the order the arguments are written like the plain `in` arguments do (D171, D575).
+func placeInSourceOrder(env: in BuildEnv, pl: in TPlace, order: in Int, hoisted: in List[OrderedStmt]): TPlace {
+  match pl.kind {
+    case PlField(recv, f) -> if isPlaceLike(recv) {
+      pl
+    } else {
+      TPlace(ty = pl.ty, kind = PlField(recv = hoistOperand(env, recv, order, hoisted), field = f))
+    }
+    case PlIndex(recv, idx, how) -> {
+      val r = if isPlaceLike(recv) { recv } else { hoistOperand(env, recv, order, hoisted) }
+      val i = if isPlaceLike(idx) { idx } else { hoistOperand(env, idx, order, hoisted) }
+      TPlace(ty = pl.ty, kind = PlIndex(recv = r, idx = i, how = how))
+    }
+    case _ -> pl
+  }
+}
+
 /// Whether argument `i`, a name, is read before an argument written after it that is not a literal
 /// or a name (a call, which may change the local the name reads: `f(b = x, a = zero(x))` with
 /// `zero(x: inout Int)`).  When names reorder the arguments, such a name is bound to a temporary in
@@ -9581,13 +9627,29 @@ func buildCallArgs(
           }
         }
         case PMOut -> match buildPlace(env, x) {
-          case Some(pl) -> targs.add(TArgOut(place = pl))
+          case Some(pl) -> targs.add(
+            TArgOut(
+              place = if reordered {
+                placeInSourceOrder(env, pl, srcIdx[i], hoisted)
+              } else {
+                pl
+              }
+            )
+          )
           case None -> {
             ok = false
           }
         }
         case PMInout -> match buildPlace(env, x) {
-          case Some(pl) -> targs.add(TArgInout(place = pl))
+          case Some(pl) -> targs.add(
+            TArgInout(
+              place = if reordered {
+                placeInSourceOrder(env, pl, srcIdx[i], hoisted)
+              } else {
+                pl
+              }
+            )
+          )
           case None -> {
             ok = false
           }
