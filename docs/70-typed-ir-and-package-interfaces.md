@@ -1021,6 +1021,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Type invariants on TIR, constructions (D505): the builder wraps each construction of a type that declares `invariant:` in a direct call of the type's synthesized `__lyric_checked_T`, as the AST pass does (record, opaque type, `.copy`, generic records); the public-boundary and `inout` re-checks and protected-type invariants are the next slices.
   - Public-boundary invariant checks on TIR (D507): a `pub` function's `in`/`inout` parameters of another package's invariant type are checked on entry and its `inout`/`out` parameters and result at every exit through the types' `__lyric_checked_T`, ungated by the contracts switch; methods, generic types and protected-type invariants are the next slices.
   - Record `==`/`!=` on TIR, array and Float leaves (D506): an array leaf is compared element by element in a loop (D167) and a Float/Double leaf with the NaN rule (D172); records holding a tuple or union that holds an array still keep one `IoEq`.
+  - `ULong.toLong`/`toDouble`/`toFloat` on TIR (`Lyric.Tir.Unsigned`, D508): one general same-width signed/unsigned reinterpretation `ConvKind` (`CvReinterpret`) with its Verify rule and native lowering, and D278's checked and corrected blocks over it.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

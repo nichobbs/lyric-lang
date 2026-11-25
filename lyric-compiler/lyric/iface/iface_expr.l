@@ -258,6 +258,7 @@ func putConv(w: in IfaceWriter, it: in DefPathInterner, k: in ConvKind) {
     case CvLongToNat -> putU(w, 15)
     case CvNeverFn -> putU(w, 16)
     case CvUserdataSlot -> putU(w, 17)
+    case CvReinterpret -> putU(w, 18)
   }
 }
 
@@ -291,6 +292,7 @@ func readConv(r: in IfaceReader, it: in DefPathInterner): ConvKind {
     case 15 -> CvLongToNat
     case 16 -> CvNeverFn
     case 17 -> CvUserdataSlot
+    case 18 -> CvReinterpret
     case _ -> {
       readFail(r, "unknown conversion tag " + toString(tag))
       CvRangeCheck
