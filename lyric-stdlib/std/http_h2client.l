@@ -786,6 +786,29 @@ pub func h2Connect(target: in H2Target, opts: in H2ClientOptions): Result[H2Clie
       secured
     }
   }
+  h2cStart(transport, opts)
+}
+
+/// Run HTTP/2 on a connection the caller has already established: write the
+/// client preface and start the reader. For TLS the caller has completed the
+/// handshake and checked that ALPN selected `h2` (`Std.TcpHost.hostAlpn`); a
+/// cleartext connection is prior knowledge. This is how a client that offers
+/// `h2,http/1.1` (`Std.Http` on native) keeps one connection whichever
+/// protocol the server picks: it speaks HTTP/1.1 itself on `http/1.1` and
+/// hands the connection here on `h2`.
+///
+/// Ownership of `transport` passes to the driver on success (`h2Close`
+/// releases it) and on failure (it is closed here), so the caller never
+/// closes it after calling this. `opts.connectTimeoutMs` and
+/// `opts.handshakeTimeoutMs` are not used: the connection already exists.
+@experimental
+pub func h2ConnectOn(transport: in Conn, opts: in H2ClientOptions): Result[H2ClientConnection, H2DialError]
+  requires: h2ClientOptionsValid(opts)
+{
+  h2cStart(transport, opts)
+}
+
+func h2cStart(transport: in Conn, opts: in H2ClientOptions): Result[H2ClientConnection, H2DialError] {
   hostSetIoTimeout(transport, opts.writeTimeoutMs)
   val settings = H2.h2DefaultClientSettings()
   settings.initialWindowSize = opts.streamWindow

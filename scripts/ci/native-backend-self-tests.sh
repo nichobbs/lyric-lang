@@ -198,6 +198,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh native
 for t in \
   lyric-stdlib/tests/task_native_tests.l \
   lyric-stdlib/tests/http_timeout_native_tests.l \
+  lyric-stdlib/tests/http_client_h2_native_tests.l \
+  lyric-stdlib/tests/http_h2client_tests.l \
   lyric-stdlib/tests/tls_tests.l \
   lyric-stdlib/tests/tcp_host_bounded_native_tests.l \
   lyric-stdlib/tests/http_server_host_tests.l \
@@ -220,6 +222,10 @@ for t in \
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
+# docs/72 slice 7 (D803): native Std.Http negotiates h2 (nghttpd) and falls back to HTTP/1.x (openssl s_server).
+LYRIC="$lyric_bin" bash scripts/ci/native-h2-client-interop.sh
+# docs/72 slice 7 (D803): the pure-Lyric gRPC client on native.
+"$lyric_bin" test --manifest lyric-grpc/lyric.toml --target native --no-default-features --features native
 # docs/73 S5 (D790): the shared HTTP server driver on native serves h2 over TLS (curl --http2, h2load, the scheduler checks).
 LYRIC="$lyric_bin" bash scripts/ci/h2-smoke.sh native
 # D207, D231, D272: the plugin runs with a native host or plugin (native and
