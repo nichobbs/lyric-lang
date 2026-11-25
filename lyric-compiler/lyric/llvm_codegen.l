@@ -65,6 +65,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Encoding as Encoding
+import Std.Console as Console
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.LlvmTypes
@@ -19182,6 +19183,9 @@ func registerTirInstances(
           case Some(n) -> argTys.add(n)
           case None -> {
             ok = false
+            if rounds == 1 and LlvmTir.tirTraceRequested() {
+              Console.error("native via-TIR: instance " + key + " has an unregistered argument " + Tir.renderTy(a))
+            }
           }
         }
       }
