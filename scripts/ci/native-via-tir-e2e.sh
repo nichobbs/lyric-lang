@@ -268,6 +268,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/un_tir.ll" lyric-rt/
 diff -u "$work/un_tir.out" "$work/un_asan.out"
 echo "unit under AddressSanitizer: clean"
 
+# `==` on records with array and Float leaves (docs/70 phase 3c, D506): elementwise arrays, NaN equal to itself.
+reqsrc=scripts/ci/native-via-tir/recordeq.l
+"$lyric_bin" build --target native "$reqsrc" -o "$work/req_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$reqsrc" -o "$work/req_tir" 2> "$work/req_census.txt" >/dev/null
+cat "$work/req_census.txt"
+"$work/req_ast" > "$work/req_ast.out"
+"$work/req_tir" > "$work/req_tir.out"
+diff -u "$work/req_ast.out" "$work/req_tir.out"
+printf 'yes\nno\nyes\nno\nyes\nno\nyes\nno\nyes\n' | diff -u - "$work/req_tir.out"
+grep -q '^native via-TIR: 4 of 4 functions lowered from TIR' "$work/req_census.txt" || {
+  echo "::error::expected every function of recordeq.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/req_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/req_asan"
+"$work/req_asan" > "$work/req_asan.out"
+diff -u "$work/req_tir.out" "$work/req_asan.out"
+echo "record equality under AddressSanitizer: clean"
+
 # Range-checked distinct types (docs/70 phase 4a, D538): `T.from`, derived arithmetic and a final
 # out-of-range panic with the managed targets' message.
 rgsrc=scripts/ci/native-via-tir/ranged.l
