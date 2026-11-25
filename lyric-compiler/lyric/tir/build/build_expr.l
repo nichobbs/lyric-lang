@@ -2909,10 +2909,78 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
           case _ -> ()
         }
       }
-      Some(value = t)
+      wrapInvariantConstruction(env, e, t)
     }
     case None -> None
   }
+}
+
+/// A construction of a record or opaque type that declares `invariant:` clauses, as the checker recorded it
+/// (`invariantCtorSites`, keyed by the call's span), is the type's construction checker called on the built value:
+/// the form `Lyric.ContractElaborator.wrapInvariantConstructions` gives it on the AST (#7222, D505).  The checker
+/// is an ordinary function of the declaring package, so the wrap is a direct call.
+func wrapInvariantConstruction(env: in BuildEnv, e: in Expr, built: in TExpr): Option[TExpr] {
+  match e.kind {
+    case ECall(_, _) -> ()
+    case _ -> return Some(value = built)
+  }
+  val tbl = env.ctx.tbl
+  val path = match mapGet(tbl.invariantCtorSites, recordCopySiteKey(e.span)) {
+    case Some(p) -> p
+    case None -> return Some(value = built)
+  }
+  var dot = -1
+  var i = 0
+  while i < path.length {
+    if path.substring(i, 1) == "." {
+      dot = i
+    }
+    i = i + 1
+  }
+  var pkg = ""
+  var name = path
+  if dot >= 0 {
+    pkg = path.substring(0, dot)
+    name = path.substring(dot + 1, path.length - dot - 1)
+  } else {
+    for s in tbl.symbols {
+      if s.name == path and not s.isImported {
+        match s.kind {
+          case DKFunc(_) -> {
+            pkg = s.originPackage
+          }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  val tc = match functionCallee(tbl, pkg, name) {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, e, "a construction whose invariant checker the table does not hold")
+  }
+  val targs: List[Ty] = newList()
+  match built.ty {
+    case TNamed(_, xs) -> {
+      for x in xs {
+        targs.add(x)
+      }
+    }
+    case _ -> ()
+  }
+  if targs.count != tc.sig.generics.count {
+    return uncoveredExpr(env, e, "a construction whose invariant checker's type parameters differ from the type's")
+  }
+  noteFuncSym(env, tc.sym, tc.sig, None, None, TSkFunc)
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = built))
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = built.ty,
+      span = built.span,
+      kind = XCall(callee = Direct(sym = tc.sym, typeArgs = targs), args = args)
+    )
+  )
 }
 
 /// The condition `cond` of an `if` or `while`, built.  One that never yields (`if Err(e)? { ... }`) is
