@@ -146,6 +146,8 @@
 package Std.TcpHost
 
 import Std.Core
+import Std.Collections
+import Std.String as Str
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
 import Std.IoWait as IoWait
@@ -235,31 +237,6 @@ pub record Conn {
   fd: Int
   tlsConnHandle: Long
   alpn: String
-}
-
-/// A fully-resolved client trust decision (N9.4, issue #6105): the CA
-/// precedence policy (docs/61 §3.2 — `withExclusiveCaCertificate` beats
-/// `withCaCertificate`, which beats "no CA configured") is a `Std.Http`
-/// concern and is resolved BEFORE calling `hostConnectTls`/
-/// `hostUpgradeClientTls`; this union is the fully-decided instruction the
-/// seam executes. `TlsTrustAdditive`/`TlsTrustExclusive` carry the PEM text
-/// directly (not a `Tls.Certificate`) so this file never depends on
-/// `Std.HttpHost`'s builder-level `Option[Certificate]` shape.
-@experimental
-pub union TlsClientTrust {
-  // Verify against the platform's default trust store only
-  // (`SSL_CTX_set_default_verify_paths` + `SSL_CERT_FILE`/`SSL_CERT_DIR`).
-  case TlsTrustSystemDefault
-  // Platform trust store PLUS `caPem` (`lyric_tls_client_new_additive`) — a
-  // chain valid against either set verifies.
-  case TlsTrustAdditive(caPem: String)
-  // ONLY `caPem` (`lyric_tls_client_new`'s exclusive case) — the platform
-  // trust store is never consulted.
-  case TlsTrustExclusive(caPem: String)
-  // Disable certificate AND hostname verification outright (docs/61 §4's
-  // dual-key policy — the caller has already resolved that policy before
-  // this union is constructed).
-  case TlsTrustInsecure
 }
 
 // =====================================================================
@@ -1037,10 +1014,24 @@ pub func hostShutdown(c: in Conn): Unit {
 // =====================================================================
 // Client TLS (N9.4, issue #6105).
 // =====================================================================
+// A trust PEM that does not parse is a rejected configuration, not a handshake
+// failure (the same check, and the same error, as the dotnet and JVM kernels).
+func trustPemProblem(trust: in Tls.TlsClientTrust): Option[TcpError] {
+  val caPem = match trust {
+    case Tls.TlsTrustExclusive(pem) -> pem
+    case Tls.TlsTrustAdditive(pem) -> pem
+    case _ -> return None
+  }
+  match Tls.Certificate.fromPem(caPem) {
+    case Err(e) -> Some(value = TlsConfigInvalid(message = "client trust CA: " + Tls.TlsError.message(e)))
+    case Ok(_) -> None
+  }
+}
+
 @unsafe_ffi
-func buildClientCtx(trust: in TlsClientTrust, minVersionNum: in Int): Result[Long, TcpError] {
+func buildClientCtx(trust: in Tls.TlsClientTrust, minVersionNum: in Int): Result[Long, TcpError] {
   match trust {
-    case TlsTrustInsecure -> {
+    case Tls.TlsTrustInsecure -> {
       val emptyC = toC("")
       val ctx = rtTlsClientNew(emptyC, minVersionNum, 1)
       freeC(emptyC)
@@ -1050,7 +1041,7 @@ func buildClientCtx(trust: in TlsClientTrust, minVersionNum: in Int): Result[Lon
         Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
       }
     }
-    case TlsTrustSystemDefault -> {
+    case Tls.TlsTrustSystemDefault -> {
       val emptyC = toC("")
       val ctx = rtTlsClientNew(emptyC, minVersionNum, 0)
       freeC(emptyC)
@@ -1060,7 +1051,7 @@ func buildClientCtx(trust: in TlsClientTrust, minVersionNum: in Int): Result[Lon
         Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
       }
     }
-    case TlsTrustExclusive(caPem) -> {
+    case Tls.TlsTrustExclusive(caPem) -> {
       val caC = toC(caPem)
       val ctx = rtTlsClientNew(caC, minVersionNum, 0)
       freeC(caC)
@@ -1070,7 +1061,7 @@ func buildClientCtx(trust: in TlsClientTrust, minVersionNum: in Int): Result[Lon
         Err(error = TlsHandshakeFailed(message = rtLastErrorString()))
       }
     }
-    case TlsTrustAdditive(caPem) -> {
+    case Tls.TlsTrustAdditive(caPem) -> {
       val caC = toC(caPem)
       val ctx = rtTlsClientNewAdditive(caC, minVersionNum, 0)
       freeC(caC)
@@ -1116,23 +1107,32 @@ func applyClientIdentity(ctx: in Long, clientIdentity: in Option[Tls.Identity]):
 /// using `trust` for certificate verification, `clientIdentity` for mTLS
 /// (`None` presents no client certificate), `minVersion` for the minimum
 /// negotiated TLS protocol version, and `alpnCsv` to advertise ALPN
-/// protocols (e.g. `"http/1.1"`; `""` disables ALPN). `host` is used for
-/// BOTH the socket dial (`hostConnect`'s `getaddrinfo` resolution) and SNI
-/// / RFC 6125 hostname verification — the ordinary case where the URL
-/// authority names the peer directly. A connect failure is
+/// protocols (e.g. `"h2,http/1.1"`, most preferred first; `""` disables
+/// ALPN). `host` is used for BOTH the socket dial (`hostConnect`'s
+/// `getaddrinfo` resolution) and SNI / RFC 6125 hostname verification — the
+/// ordinary case where the URL authority names the peer directly.
+/// `connectTimeoutMs` bounds the connect as `hostConnect`'s does (`0` = the
+/// operating system's own limit); the handshake itself is bounded by
+/// `hostSetIoTimeout` once the plain connection exists, so a caller that
+/// needs a handshake limit dials with `hostConnect`, sets the timeout and
+/// calls `hostUpgradeClientTls`. A connect failure is
 /// `Err(TransportFailed(...))`; a handshake failure (including hostname
 /// mismatch, or `TlsTrustInsecure` misuse — see the seam's own fail-closed
-/// guard) is `Err(TlsHandshakeFailed(...))`.
+/// guard) is `Err(TlsHandshakeFailed(...))`. The signature is the same on
+/// every target.
 @experimental
 pub func hostConnectTls(
   host: in String,
   port: in Int,
-  trust: in TlsClientTrust,
+  trust: in Tls.TlsClientTrust,
   clientIdentity: in Option[Tls.Identity],
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
-): Result[Conn, TcpError] {
-  match hostConnect(host, port, 0) {
+  connectTimeoutMs: in Int,
+): Result[Conn, TcpError]
+  requires: connectTimeoutMs >= 0
+{
+  match hostConnect(host, port, connectTimeoutMs) {
     case Err(e) -> Err(error = e)
     case Ok(plain) -> hostUpgradeClientTls(plain, host, trust, clientIdentity, minVersion, alpnCsv)
   }
@@ -1150,7 +1150,7 @@ pub func hostConnectTls(
 pub func hostUpgradeClientTls(
   conn: in Conn,
   sniHost: in String,
-  trust: in TlsClientTrust,
+  trust: in Tls.TlsClientTrust,
   clientIdentity: in Option[Tls.Identity],
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
@@ -1312,7 +1312,7 @@ pub func hostConnectBounded(
 pub func hostUpgradeClientTlsBounded(
   conn: in Conn,
   sniHost: in String,
-  trust: in TlsClientTrust,
+  trust: in Tls.TlsClientTrust,
   clientIdentity: in Option[Tls.Identity],
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
@@ -1322,11 +1322,27 @@ pub func hostUpgradeClientTlsBounded(
   upgradeClientTls(conn, sniHost, trust, clientIdentity, minVersion, alpnCsv, true, deadlineNanos, wakeFd)
 }
 
+// The offer list as the seam receives it: names trimmed, empty names dropped,
+// most preferred first, so every target treats `" h2, ,http/1.1"` the same.
+func normalizedAlpn(alpnCsv: in String): String {
+  val names: List[String] = newList()
+  val parts = Str.split(alpnCsv, ",")
+  var i = 0
+  while i < parts.length {
+    val name = Str.trim(parts[i])
+    if name.length > 0 {
+      names.add(name)
+    }
+    i = i + 1
+  }
+  Str.joinList(",", names)
+}
+
 @unsafe_ffi
 func upgradeClientTls(
   conn: in Conn,
   sniHost: in String,
-  trust: in TlsClientTrust,
+  trust: in Tls.TlsClientTrust,
   clientIdentity: in Option[Tls.Identity],
   minVersion: in Tls.TlsVersion,
   alpnCsv: in String,
@@ -1335,6 +1351,13 @@ func upgradeClientTls(
   wakeFd: in Int,
 ): Result[Conn, BoundedError] {
   val minVersionNum = tlsVersionNumber(minVersion)
+  match trustPemProblem(trust) {
+    case Some(e) -> {
+      val _ = rtSockClose(conn.fd)
+      return Err(error = BoundFailed(error = e))
+    }
+    case None -> ()
+  }
   match buildClientCtx(trust, minVersionNum) {
     case Err(e) -> {
       val _ = rtSockClose(conn.fd)
@@ -1348,7 +1371,7 @@ func upgradeClientTls(
       }
       case Ok(_) -> {
         val sniC = toC(sniHost)
-        val alpnC = toC(alpnCsv)
+        val alpnC = toC(normalizedAlpn(alpnCsv))
         var status: Int = 0
         val tlsConn = if bounded {
           rtPtrToLong(
@@ -1398,6 +1421,48 @@ pub func hostReadBounded(
     Ok(value = bytes)
   } else {
     Err(error = boundedFailure(status, TransportFailed(message = rtLastErrorString())))
+  }
+}
+
+/// Why a deadline-bounded read did not return bytes.
+@experimental
+pub union ReadDeadlineError {
+  // The deadline passed before a byte arrived. Nothing was consumed: the
+  // connection (plain or TLS) stays usable for further reads and writes.
+  case ReadDeadlinePassed
+  // The read itself failed, as `hostRead`'s would.
+  case ReadFailed(error: TcpError)
+}
+
+/// Human-readable message for a ReadDeadlineError.
+@pure
+@experimental
+pub func ReadDeadlineError.message(e: in ReadDeadlineError): String {
+  match e {
+    case ReadDeadlinePassed -> "read deadline passed"
+    case ReadFailed(error) -> TcpError.message(error)
+  }
+}
+
+/// `hostRead` that gives up at `deadlineNanos`, an absolute point on the
+/// `Std.Time.monotonicNanos()` clock (`0i64` = no deadline, exactly
+/// `hostRead`). The portable form of `hostReadBounded` without a wake pipe:
+/// the same signature and contract on every target. A deadline that has
+/// already passed still lets the read collect bytes that have arrived. On
+/// `ReadDeadlinePassed` nothing was consumed and the connection is intact, so a
+/// driver can poll with a short deadline to notice a per-call deadline or a
+/// close request and read again.
+@experimental
+pub func hostReadDeadline(c: in Conn, maxBytes: in Int, deadlineNanos: in Long): Result[slice[Byte], ReadDeadlineError]
+  requires: maxBytes > 0
+{
+  match hostReadBounded(c, maxBytes, deadlineNanos, 0 - 1) {
+    case Ok(b) -> Ok(value = b)
+    case Err(e) -> match e {
+      case BoundDeadlinePassed -> Err(error = ReadDeadlinePassed)
+      case BoundInterrupted -> Err(error = ReadFailed(error = TransportFailed(message = "interrupted")))
+      case BoundFailed(error) -> Err(error = ReadFailed(error = error))
+    }
   }
 }
 

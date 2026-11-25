@@ -176,7 +176,7 @@ test "hostUpgradeClientTlsBounded ends at its deadline when the peer never answe
   val r = hostUpgradeClientTlsBounded(
     pair.client,
     "localhost",
-    TlsTrustSystemDefault,
+    Tls.TlsTrustSystemDefault,
     None,
     Tls.TlsVersion.Tls12,
     "",

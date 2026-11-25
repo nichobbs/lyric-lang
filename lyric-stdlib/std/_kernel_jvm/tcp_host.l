@@ -1,4 +1,4 @@
-//! std/_kernel_jvm/tcp_host.l - JVM TCP + server-side TLS transport kernel.
+//! std/_kernel_jvm/tcp_host.l - JVM TCP + TLS (server and client) transport kernel.
 //!
 //! The JVM twin of `_kernel/tcp_host.l`: the same public `host*` surface
 //! (`hostListen`/`hostLocalPort`/`hostConnect`/`hostAccept`/`hostAcceptTls`/
@@ -100,8 +100,11 @@
 package Std.TcpHost
 
 import Std.Core
+import Std.Collections
+import Std.String as Str
 import Std.Tls as Tls
 import Std.TlsServerContext as Ctx
+import Std.TlsClientContext as Cli
 
 extern type JSocket = "java.net.Socket"
 
@@ -641,6 +644,181 @@ pub func hostUpgradeServerTls(conn: in Conn, cfg: in Tls.TlsServerConfig): Resul
   }
 }
 
+// =====================================================================
+// Client TLS (docs/72 slice 4).
+// =====================================================================
+// The ALPN protocols named by a comma-separated list, trimmed, empty names
+// dropped, most preferred first.
+func alpnNames(alpnCsv: in String): List[String] {
+  val names: List[String] = newList()
+  val parts = Str.split(alpnCsv, ",")
+  var i = 0
+  while i < parts.length {
+    val name = Str.trim(parts[i])
+    if name.length > 0 {
+      names.add(name)
+    }
+    i = i + 1
+  }
+  names
+}
+
+func stringArrayOf(values: in List[String]): JObject {
+  val stringClass: JClass = JClass.forName("java.lang.String")
+  val array: JObject = JReflectArray.newInstance(stringClass, values.count)
+  var i = 0
+  while i < values.count {
+    JReflectArray.set(array, i, values[i])
+    i = i + 1
+  }
+  array
+}
+
+// A trust PEM that does not parse is a rejected configuration, not a handshake
+// failure.
+func trustSource(trust: in Tls.TlsClientTrust): Result[Cli.ClientTrustSource, TcpError] {
+  match trust {
+    case Tls.TlsTrustSystemDefault -> Ok(value = Cli.PlatformTrust)
+    case Tls.TlsTrustInsecure -> Ok(value = Cli.NoVerification)
+    case Tls.TlsTrustExclusive(caPem) -> match Tls.Certificate.fromPem(caPem) {
+      case Err(e) -> Err(
+        error = TlsConfigInvalid(
+          message = "client trust CA: " +
+            Tls.TlsError.message(e)
+        )
+      )
+      case Ok(cert) -> Ok(value = Cli.ExclusiveTrust(anchors = cert.rawHandles()))
+    }
+    case Tls.TlsTrustAdditive(caPem) -> match Tls.Certificate.fromPem(caPem) {
+      case Err(e) -> Err(
+        error = TlsConfigInvalid(
+          message = "client trust CA: " +
+            Tls.TlsError.message(e)
+        )
+      )
+      case Ok(cert) -> Ok(value = Cli.AdditiveTrust(anchors = cert.rawHandles()))
+    }
+  }
+}
+
+func isInsecure(trust: in Tls.TlsClientTrust): Bool {
+  match trust {
+    case Tls.TlsTrustInsecure -> true
+    case _ -> false
+  }
+}
+
+// The socket is created for `sniHost`, which is both the SNI name and the name
+// the endpoint identification algorithm checks the certificate against; the
+// plain socket was dialled by whatever address the caller used.
+func layerClientTls(ctx: in JSSLContext, plain: in JSocket, sniHost: in String): JSSLSocket {
+  val factory: JSSLSocketFactory = ctx.getSocketFactory()
+  val layered: JSocket = factory.createSocket(plain, sniHost, plain.getPort(), true)
+  val sslClass: JClass = JClass.forName("javax.net.ssl.SSLSocket")
+  val ssl: JSSLSocket = sslClass.cast(layered)
+  ssl
+}
+
+func configureClientSocket(
+  ssl: in JSSLSocket,
+  ctx: in JSSLContext,
+  minVersion: in Tls.TlsVersion,
+  verify: in Bool,
+  offered: in List[String],
+): Unit {
+  ssl.setUseClientMode(true)
+  val params: JSSLParameters = Cli.clientSslParameters(ctx, Some(value = minVersion), verify)
+  if offered.count > 0 {
+    invokeWithArray(params, "setApplicationProtocols", stringArrayOf(offered))
+  }
+  ssl.setSSLParameters(params)
+}
+
+/// Terminate TLS on an already-connected plain connection, as a client (the
+/// connect/upgrade split mirrors `hostAcceptTls`/`hostUpgradeServerTls`).
+/// `sniHost` is the name sent as SNI and verified against the peer's
+/// certificate (RFC 6125): a raw `SSLSocket` verifies no name by default, so the
+/// endpoint identification algorithm is set to `HTTPS` on every trust decision
+/// except `TlsTrustInsecure`. `trust` is the caller's resolved trust decision
+/// (`Std.Tls.TlsClientTrust`), `clientIdentity` the mTLS identity to present
+/// (`None` presents no certificate), `minVersion` the protocol floor, and
+/// `alpnCsv` the ALPN protocols to offer, most preferred first (`""` offers
+/// none); `hostAlpn` of the result is the one the peer selected, `""` when it
+/// selected none. The underlying socket is closed on every failure path so a
+/// rejected handshake never leaks a connection. A socket timeout set with
+/// `hostSetIoTimeout` bounds each socket operation of the handshake. A trust PEM that does
+/// not parse is `Err(TlsConfigInvalid(...))`; a handshake failure (an
+/// untrusted or expired certificate, a hostname mismatch, a rejected client
+/// identity) is `Err(TlsHandshakeFailed(...))`. The same signature as the
+/// dotnet and native kernels.
+@experimental
+pub func hostUpgradeClientTls(
+  conn: in Conn,
+  sniHost: in String,
+  trust: in Tls.TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+): Result[Conn, TcpError] {
+  val offered = alpnNames(alpnCsv)
+  val source = match trustSource(trust) {
+    case Ok(src) -> src
+    case Err(e) -> {
+      hostClose(conn)
+      return Err(error = e)
+    }
+  }
+  val built = try {
+    Cli.clientSslContext(source, clientIdentity)
+  } catch Bug as b {
+    hostClose(conn)
+    return Err(error = TlsConfigInvalid(message = failureText(b.typeName, b.message)))
+  }
+  val ctx: JSSLContext = Cli.ClientSslContext.rawContext(built)
+  try {
+    val ssl = layerClientTls(ctx, conn.socket, sniHost)
+    try {
+      configureClientSocket(ssl, ctx, minVersion, not isInsecure(trust), offered)
+      ssl.startHandshake()
+      val layered: JSocket = ssl
+      val negotiated: String = ssl.getApplicationProtocol()
+      Ok(value = wrapSocket(layered, conn.raw, negotiated, conn.timeoutMs, conn.guard))
+    } catch Bug as b {
+      closeQuietly(ssl)
+      hostClose(conn)
+      Err(error = TlsHandshakeFailed(message = failureText(b.typeName, b.message)))
+    }
+  } catch Bug as b {
+    hostClose(conn)
+    Err(error = TlsHandshakeFailed(message = failureText(b.typeName, b.message)))
+  }
+}
+
+/// Dial `host`:`port` and terminate TLS on the connection as a client.
+/// `host` is used for BOTH the socket dial and SNI / hostname verification,
+/// the ordinary case where the URL authority names the peer. Everything else
+/// is as `hostUpgradeClientTls`; `connectTimeoutMs` bounds the connect as
+/// `hostConnect`'s does (`0` = the operating system's own limit). A connect
+/// failure is `Err(TransportFailed(...))`. The same signature as the dotnet and
+/// native kernels.
+@experimental
+pub func hostConnectTls(
+  host: in String,
+  port: in Int,
+  trust: in Tls.TlsClientTrust,
+  clientIdentity: in Option[Tls.Identity],
+  minVersion: in Tls.TlsVersion,
+  alpnCsv: in String,
+  connectTimeoutMs: in Int,
+): Result[Conn, TcpError]
+  requires: connectTimeoutMs >= 0
+{
+  match hostConnect(host, port, connectTimeoutMs) {
+    case Err(e) -> Err(error = e)
+    case Ok(plain) -> hostUpgradeClientTls(plain, host, trust, clientIdentity, minVersion, alpnCsv)
+  }
+}
+
 /// Bound every subsequent blocking read and write on `conn` to `timeoutMs`
 /// milliseconds of inactivity (`0` = no limit). A read or write that times
 /// out returns `Err(TransportFailed(...))`. Best-effort: a socket that is
@@ -704,6 +882,77 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
       Err(error = TransportFailed(message = "read timed out"))
     } else {
       Err(error = TransportFailed(message = failureText(b.typeName, b.message)))
+    }
+  }
+}
+
+/// Why a deadline-bounded read did not return bytes.
+@experimental
+pub union ReadDeadlineError {
+  // The deadline passed before a byte arrived. Nothing was consumed: the
+  // connection (plain or TLS) stays usable for further reads and writes.
+  case ReadDeadlinePassed
+  // The read itself failed, as `hostRead`'s would.
+  case ReadFailed(error: TcpError)
+}
+
+/// Human-readable message for a ReadDeadlineError.
+@pure
+@experimental
+pub func ReadDeadlineError.message(e: in ReadDeadlineError): String {
+  match e {
+    case ReadDeadlinePassed -> "read deadline passed"
+    case ReadFailed(error) -> TcpError.message(error)
+  }
+}
+
+// Milliseconds from now to `deadlineNanos`, rounded up and at least one (a zero
+// socket timeout means "wait forever"); an already-passed deadline still lets
+// one read collect what has arrived.
+func millisUntil(deadlineNanos: in Long): Int {
+  val left = deadlineNanos - JSystem.nanoTime()
+  if left <= 0i64 {
+    1
+  } else {
+    val ms = (left + 999999i64) / 1000000i64
+    if ms > 2147483647i64 {
+      2147483647
+    } else {
+      ms.toInt()
+    }
+  }
+}
+
+/// `hostRead` that gives up at `deadlineNanos`, an absolute point on the
+/// `Std.Time.monotonicNanos()` clock (`0i64` = no deadline, exactly
+/// `hostRead`). A deadline that has already passed still lets the read collect
+/// bytes that have arrived. On `ReadDeadlinePassed` nothing was consumed and the
+/// connection is intact, so a driver can poll with a short deadline to notice
+/// a per-call deadline or a close request and read again. The I/O timeout of
+/// `hostSetIoTimeout` is restored afterwards. Reads on one connection must not
+/// run concurrently. The same signature and contract on every target.
+@experimental
+pub func hostReadDeadline(c: in Conn, maxBytes: in Int, deadlineNanos: in Long): Result[slice[Byte], ReadDeadlineError]
+  requires: maxBytes > 0
+{
+  if deadlineNanos == 0i64 {
+    return match hostRead(c, maxBytes) { case Ok(b) -> Ok(value = b); case Err(e) -> Err(error = ReadFailed(error = e)) }
+  }
+  try {
+    c.socket.setSoTimeout(millisUntil(deadlineNanos))
+    val chunk = readChunk(c, maxBytes)
+    c.socket.setSoTimeout(c.timeoutMs.get().toInt())
+    Ok(value = chunk)
+  } catch Bug as b {
+    try {
+      c.socket.setSoTimeout(c.timeoutMs.get().toInt())
+    } catch Bug as _ {
+      ()
+    }
+    if isTimeout(b.typeName) {
+      Err(error = ReadDeadlinePassed)
+    } else {
+      Err(error = ReadFailed(error = TransportFailed(message = failureText(b.typeName, b.message))))
     }
   }
 }

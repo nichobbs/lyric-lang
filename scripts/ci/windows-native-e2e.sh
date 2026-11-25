@@ -555,7 +555,7 @@ func plainRoundTrip(): Int {
 
 @unsafe_ffi
 func httpsClient(port: in Int, caPem: in String): NativePtr[Byte] {
-  val conn = match hostConnectTls("localhost", port, TlsTrustExclusive(caPem = caPem), None, TlsVersion.Tls12, "http/1.1") {
+  val conn = match hostConnectTls("localhost", port, TlsTrustExclusive(caPem = caPem), None, TlsVersion.Tls12, "http/1.1", 0) {
     case Ok(c) -> c
     case Err(e) -> return toC("handshake: " + e.message())
   }
@@ -642,7 +642,7 @@ func httpsRoundTrip(port: in Int, caPem: in String, certPem: in String, keyPem: 
   freeC(reply)
   // The same server, trusted only through the system store, is refused:
   // its root is not one the system trusts.
-  match hostConnectTls("localhost", port, TlsTrustSystemDefault, None, TlsVersion.Tls12, "") {
+  match hostConnectTls("localhost", port, TlsTrustSystemDefault, None, TlsVersion.Tls12, "", 0) {
     case Ok(c) -> {
       hostClose(c)
       code = 16
