@@ -75,6 +75,8 @@ pub record BuildEnv {
   /// number declared before it began.  A local numbered above it was declared by the default itself (a
   /// lambda's parameter), so the refresh keeps a read of it; a read of any other local is the caller's.
   defaultFloor: List[Int] = newList()
+  /// The `invariant:` clauses of the protected type the member being built belongs to (D509).
+  memberInvs: List[InvariantClause] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -4345,6 +4347,8 @@ record FnCore {
   barrier: Option[TExpr] = None
   preTexts: List[String] = newList()
   postTexts: List[String] = newList()
+  invs: List[TExpr] = newList()
+  invTexts: List[String] = newList()
 }
 
 /// `mode` 1 builds the signature half alone (symbol, type parameters, parameters, return type),
@@ -4488,6 +4492,8 @@ func buildFnCore(
   val post: List[TExpr] = newList()
   val preTexts: List[String] = newList()
   val postTexts: List[String] = newList()
+  val invs: List[TExpr] = newList()
+  val invTexts: List[String] = newList()
   var barrier: Option[TExpr] = None
   if ok and not sigOnly {
     for c in fn.contracts {
@@ -4519,6 +4525,18 @@ func buildFnCore(
           }
         }
         case _ -> ()
+      }
+    }
+    // The protected type's invariants, in the member's scope (D509).
+    for inv in env.memberInvs {
+      match buildExpr(env, inv.expr) {
+        case Some(t) -> {
+          invs.add(t)
+          invTexts.add(Fmt.exprInline(0, inv.expr))
+        }
+        case None -> {
+          ok = false
+        }
       }
     }
   }
@@ -4615,7 +4633,9 @@ func buildFnCore(
         body = Some(value = b),
         barrier = barrier,
         preTexts = preTexts,
-        postTexts = postTexts
+        postTexts = postTexts,
+        invs = invs,
+        invTexts = invTexts
       )
     )
     case None -> None
@@ -4708,7 +4728,9 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           isGenerator = functionIsGenerator(fn),
           precondTexts = c.preTexts,
           postcondTexts = c.postTexts,
-          isPublic = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          isPublic = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false },
+          invariants = c.invs,
+          invariantTexts = c.invTexts
         )
       )
     }

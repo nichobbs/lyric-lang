@@ -1251,6 +1251,10 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
     visitExpr(c, r)
     expectTy(c, r.id, r.ty, tyBool(), "condition-type", "postcondition")
   }
+  for r in f.invariants {
+    visitExpr(c, r)
+    expectTy(c, r.id, r.ty, tyBool(), "condition-type", "type invariant")
+  }
   match f.barrier {
     case Some(g) -> {
       visitExpr(c, g)
