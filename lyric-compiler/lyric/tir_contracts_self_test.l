@@ -11,6 +11,7 @@ import Std.Collections
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.ContractElaborator
 import Lyric.TypeChecker
 import Lyric.Resolve
 import Lyric.Symbols
@@ -328,4 +329,112 @@ func collectLocalReads(e: in TExpr, seen: in Map[Int, Bool]): Unit {
     }
     case _ -> ()
   }
+}
+
+val invSrc: String = "package App\nrecord Span {\n  lo: Int\n  hi: Int\n  invariant: lo <= hi\n}\npub func mk(a: Int): Span { Span(lo = a, hi = a + 1) }\npub func bump(s: inout Span): Unit { s = Span(lo = 0, hi = 1) }\nfunc hidden(): Span { Span(lo = 0, hi = 1) }\npub func take(s: in Span): Int { s.lo }\n"
+
+func invBuild(): (PackageBuild, DefPathInterner) {
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(invSrc).file)).file
+  val cr = check(file);
+  (buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App"), cr.symbols.interner)
+}
+
+func firstStmtIsDirectCall(d: in TFnDecl): Bool {
+  match d.body {
+    case Some(b) -> match b.kind {
+      case XBlock(stmts, _) -> if stmts.count > 0 {
+        match stmts[0].kind {
+          case TsExpr(x) -> match x.kind { case XCall(Direct(_, _), _) -> true; case _ -> false }
+          case _ -> false
+        }
+      } else {
+        false
+      }
+      case _ -> false
+    }
+    case None -> false
+  }
+}
+
+func funcOf(pb: in PackageBuild, name: in String): Option[TFnDecl] {
+  for f in pb.pkg.funcs {
+    match mapGet(pb.names, f.sym.id) {
+      case Some(k) -> if k.startsWith("App::" + name + "(") { return Some(value = f) }
+      case None -> ()
+    }
+  }
+  None
+}
+
+func messagesOfFn(d: in TFnDecl): List[String] {
+  val acc: List[String] = newList()
+  match d.body {
+    case Some(b) -> assertMessages(b, acc)
+    case None -> ()
+  }
+  acc
+}
+
+test "a public function's result and inout parameter of its own invariant type are re-checked at exit (D507)" {
+  val (pb, interner) = invBuild()
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  for en in [true, false] {
+    val done = elaborateBundle(interner, bundle, en)
+    val mk = match funcOf(done[0], "mk") { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+    val ms = messagesOfFn(mk)
+    assertEqualInt(ms.count, 1, "one exit check on mk")
+    assertTrue(ms[0] == "InvariantViolated: App.mk result", ms[0])
+    val bump = match funcOf(done[0], "bump") { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+    val bs = messagesOfFn(bump)
+    assertEqualInt(bs.count, 1, "one exit check on bump")
+    assertTrue(bs[0] == "InvariantViolated: App.bump parameter s", bs[0])
+    val hidden = match funcOf(done[0], "hidden") { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+    assertEqualInt(messagesOfFn(hidden).count, 0, "a function that is not pub is no boundary")
+    val ds = verifyPackage(done[0].pkg, newList())
+    assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+  }
+}
+
+test "a public function checks an in parameter of another package's invariant type on entry (D507)" {
+  val (pb, interner) = invBuild()
+  val libFns: List[TFnDecl] = newList()
+  val appFns: List[TFnDecl] = newList()
+  for f in pb.pkg.funcs {
+    val key = match mapGet(pb.names, f.sym.id) { case Some(k) -> k; case None -> "" }
+    if key.startsWith("App::__lyric_checked_") {
+      libFns.add(f)
+    } else {
+      appFns.add(f)
+    }
+  }
+  val lib = PackageBuild(
+    pkg = TPackage(name = "Lib", symbols = pb.pkg.symbols, funcs = libFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val app = PackageBuild(
+    pkg = TPackage(name = "App", symbols = pb.pkg.symbols, funcs = appFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(app)
+  val visible: List[PackageBuild] = newList()
+  visible.add(lib)
+  val done = elaborateBundleWith(interner, bundle, true, visible)
+  val take = match funcOf(done[0], "take") { case Some(f) -> f; case None -> appFns[0] }
+  assertTrue(firstStmtIsDirectCall(take), "the checker is called before the body")
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }

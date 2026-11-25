@@ -39,6 +39,24 @@ record ExitPlan {
   span: Span
 }
 
+/// A type's construction checker (`__lyric_checked_T`, D505): the function, its declaration entry and the package
+/// that declares both.
+pub record CheckerRef {
+  sym: SymbolId
+  symEntry: TSymEntry
+  pkg: String
+}
+
+/// The invariant-carrying types the bundle's checkers cover, by the type's `SymbolId`, and the package whose
+/// function is being elaborated: the types of another package are checked where a value crosses the function's
+/// boundary, those of its own only where it is written back (docs/08 §7.1).
+pub record BoundaryCtx {
+  checkers: Map[Int, CheckerRef]
+  pkg: String
+  /// The checkers the package's functions call, by function `SymbolId`: their entries join the package's own.
+  used: Map[Int, CheckerRef]
+}
+
 func firstContractNodeId(): Int {
   700000000
 }
@@ -443,18 +461,43 @@ func clauseText(texts: in List[String], i: in Int): String {
 pub func elaborateFn(d: in TFnDecl, owner: in String, enabled: in Bool): TFnDecl {
   val nn: List[Int] = newList()
   nn.add(firstContractNodeId())
-  elaborateFnWith(d, owner, enabled, nn)
+  elaborateFnWith(d, owner, enabled, nn, None)
 }
 
 /// `elaborateFn` drawing its made-up node ids from `nextNode`, shared by every function of a package: node ids
-/// are unique within a package.
-pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, nextNode: in List[Int]): TFnDecl {
+/// are unique within a package.  `boundary` adds the public-boundary invariant checks of D507: each `in` or
+/// `inout` parameter of another package's invariant-carrying type is checked on entry, and each `inout`/`out`
+/// parameter and the result at every exit.  Those are system checks like the AST pass's, so they run when
+/// `enabled` is false too (only the source `requires:`/`ensures:` clauses are gated).
+pub func elaborateFnWith(
+  d: in TFnDecl,
+  owner: in String,
+  enabled: in Bool,
+  nextNode: in List[Int],
+  boundary: in Option[BoundaryCtx],
+): TFnDecl {
   val body = match d.body { case Some(b) -> b; case None -> return d }
-  if not enabled or d.isGenerator or (d.preconds.count == 0 and d.postconds.count == 0) {
+  if d.isGenerator {
     return d
   }
   val c = newCCtx(nextNode)
   val sp = body.span
+  val userPre: List[TExpr] = if enabled { d.preconds } else { newList() }
+  val userPost: List[TExpr] = if enabled { d.postconds } else { newList() }
+  val userPreTexts: List[String] = if enabled { d.precondTexts } else { newList() }
+  val userPostTexts: List[String] = if enabled { d.postcondTexts } else { newList() }
+  val entryChecks: List[TStmt] = newList()
+  val exitPosts: List[TExpr] = newList()
+  val exitMessages: List[String] = newList()
+  match boundary {
+    case Some(b) -> if d.isPublic and not owner.contains("__lyric_checked_") {
+      boundaryChecks(c, d, owner, b, entryChecks, exitPosts, exitMessages)
+    }
+    case None -> ()
+  }
+  if userPre.count == 0 and userPost.count == 0 and entryChecks.count == 0 and exitPosts.count == 0 {
+    return d
+  }
   val stmts: List[TStmt] = newList()
   // `old(e)` snapshots come first, so they hold the state the call began with even when a precondition fails.
   val collect = CCtx(
@@ -468,7 +511,7 @@ pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, next
     resultLocal = None,
     exits = None
   )
-  for p in d.postconds {
+  for p in userPost {
     cExpr(collect, p)
   }
   val oldLocals: List[LocalDecl] = newList()
@@ -491,8 +534,12 @@ pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, next
     stmts.add(bindStmt(c, l, cExpr(fresh, inner), sp))
     oi = oi + 1
   }
+  // The boundary's entry checks come before any `requires:` (docs/08 §7.1).
+  for st in entryChecks {
+    stmts.add(st)
+  }
   var pi = 0
-  while pi < d.preconds.count {
+  while pi < userPre.count {
     val clone = CCtx(
       nextNode = c.nextNode,
       nextLocal = c.nextLocal,
@@ -507,20 +554,30 @@ pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, next
     stmts.add(
       assertStmt(
         c,
-        cExpr(clone, d.preconds[pi]),
-        violation("PreconditionViolated", owner, "requires", clauseText(d.precondTexts, pi)),
-        d.preconds[pi].span
+        cExpr(clone, userPre[pi]),
+        violation("PreconditionViolated", owner, "requires", clauseText(userPreTexts, pi)),
+        userPre[pi].span
       )
     )
     pi = pi + 1
   }
   val messages: List[String] = newList()
   var mi = 0
-  while mi < d.postconds.count {
-    messages.add(violation("PostconditionViolated", owner, "ensures", clauseText(d.postcondTexts, mi)))
+  while mi < userPost.count {
+    messages.add(violation("PostconditionViolated", owner, "ensures", clauseText(userPostTexts, mi)))
     mi = mi + 1
   }
-  val plan = ExitPlan(posts = d.postconds, messages = messages, ret = d.ret, oldLocals = oldLocals, span = sp)
+  val posts: List[TExpr] = newList()
+  for p in userPost {
+    posts.add(p)
+  }
+  for p in exitPosts {
+    posts.add(p)
+  }
+  for m in exitMessages {
+    messages.add(m)
+  }
+  val plan = ExitPlan(posts = posts, messages = messages, ret = d.ret, oldLocals = oldLocals, span = sp)
   val walk = CCtx(
     nextNode = c.nextNode,
     nextLocal = c.nextLocal,
@@ -575,26 +632,181 @@ pub func elaborateFnWith(d: in TFnDecl, owner: in String, enabled: in Bool, next
     ownerParamCount = d.ownerParamCount,
     isGenerator = d.isGenerator,
     precondTexts = d.precondTexts,
-    postcondTexts = d.postcondTexts
+    postcondTexts = d.postcondTexts,
+    isPublic = d.isPublic
   )
+}
+
+/// `{ checker(arg); true }`: a postcondition whose evaluation runs the checker (which panics on a violation).
+func checkerHolds(c: in CCtx, ref: in CheckerRef, arg: in TExpr, sp: in Span): TExpr {
+  val args: List[TArg] = newList()
+  args.add(TArgIn(value = arg))
+  val call = TExpr(
+    id = newNode(c),
+    ty = arg.ty,
+    span = sp,
+    kind = XCall(callee = Direct(sym = ref.sym, typeArgs = newList()), args = args)
+  )
+  val stmts: List[TStmt] = newList()
+  stmts.add(TStmt(id = newNode(c), span = sp, kind = TsExpr(expr = call)))
+  val yes = TExpr(id = newNode(c), ty = tyBool(), span = sp, kind = XLit(lit = TLBool(value = true)))
+  TExpr(id = newNode(c), ty = tyBool(), span = sp, kind = XBlock(stmts = stmts, tail = Some(value = yes)))
+}
+
+func checkerOf(b: in BoundaryCtx, t: in Ty): Option[CheckerRef] {
+  match t {
+    case TNamed(s, targs) -> if targs.count == 0 { mapGet(b.checkers, s.id) } else { None }
+    case _ -> None
+  }
+}
+
+/// The public-boundary invariant checks of `d` (docs/08 §7.1, D507): the entry statements for each `in` or `inout`
+/// parameter of another package's invariant-carrying type, and the postconditions (with messages) for each
+/// `inout`/`out` parameter of any such type and for the result.  A type whose checker the bundle does not hold, a
+/// generic type, and a value inside a container are not checked here.
+func boundaryChecks(
+  c: in CCtx,
+  d: in TFnDecl,
+  owner: in String,
+  b: in BoundaryCtx,
+  entry: in List[TStmt],
+  posts: in List[TExpr],
+  messages: in List[String],
+): Unit {
+  for p in d.params {
+    match checkerOf(b, p.local.ty) {
+      case Some(ref) -> {
+        val foreign = ref.pkg != b.pkg
+        val isOut = match p.mode { case TMOut -> true; case _ -> false }
+        val written = match p.mode { case TMIn -> false; case _ -> true }
+        if foreign and not isOut {
+          val args: List[TArg] = newList()
+          args.add(TArgIn(value = localRead(c, p.local, d.span)))
+          val call = TExpr(
+            id = newNode(c),
+            ty = p.local.ty,
+            span = d.span,
+            kind = XCall(callee = Direct(sym = ref.sym, typeArgs = newList()), args = args)
+          )
+          entry.add(TStmt(id = newNode(c), span = d.span, kind = TsExpr(expr = call)))
+          b.used.add(ref.sym.id, ref)
+        }
+        if written {
+          posts.add(checkerHolds(c, ref, localRead(c, p.local, d.span), d.span))
+          messages.add("InvariantViolated: " + owner + " parameter " + p.local.name)
+          b.used.add(ref.sym.id, ref)
+        }
+      }
+      case None -> ()
+    }
+  }
+  match checkerOf(b, d.ret) {
+    case Some(ref) -> {
+      val res = TExpr(id = newNode(c), ty = d.ret, span = d.span, kind = XResult)
+      posts.add(checkerHolds(c, ref, res, d.span))
+      messages.add("InvariantViolated: " + owner + " result")
+      b.used.add(ref.sym.id, ref)
+    }
+    case None -> ()
+  }
+}
+
+/// The construction checkers of `pkgs`, by the `SymbolId` of the non-generic type each checks: a function named
+/// `__lyric_checked_T` of one parameter of type `T` (synthesized for each type that declares `invariant:`).
+func collectCheckers(interner: in DefPathInterner, pkgs: in List[PackageBuild]): Map[Int, CheckerRef] {
+  val found: Map[Int, CheckerRef] = newMap()
+  for pb in pkgs {
+    for f in pb.pkg.funcs {
+      if f.params.count == 1 {
+        val key = match defPathKeyOf(interner, f.sym) { case Some(k) -> k; case None -> "" }
+        val simple = simpleNameOf(key)
+        if simple.startsWith("__lyric_checked_") {
+          match f.params[0].local.ty {
+            case TNamed(ts, targs) -> if targs.count == 0 and not found.containsKey(ts.id) {
+              for en in pb.pkg.symbols {
+                if en.sym.id == f.sym.id and not found.containsKey(ts.id) {
+                  found.add(ts.id, CheckerRef(sym = f.sym, symEntry = en, pkg = pb.pkg.name))
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+    }
+  }
+  found
+}
+
+/// The last `::` segment of a DefPath key, without its parameter list.
+func simpleNameOf(key: in String): String {
+  val head = ownerNameOf(key)
+  var cut = -1
+  var i = 0
+  while i < head.length {
+    if head.substring(i, 1) == "." {
+      cut = i
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    head
+  } else {
+    head.substring(cut + 1, head.length - cut - 1)
+  }
 }
 
 /// `bundle` with `elaborateFn` applied to every function of every package.
 pub func elaborateBundle(
   interner: in DefPathInterner, bundle: in List[PackageBuild], enabled: in Bool
 ): List[PackageBuild] {
+  elaborateBundleWith(interner, bundle, enabled, newList())
+}
+
+/// `elaborateBundle` with the public-boundary invariant checks of D507: the construction checkers come from
+/// `bundle` and from `visible`, the other packages of the build the bundle's functions may cross into (the native
+/// bridge elaborates its own packages and the standard library's separately).
+pub func elaborateBundleWith(
+  interner: in DefPathInterner,
+  bundle: in List[PackageBuild],
+  enabled: in Bool,
+  visible: in List[PackageBuild],
+): List[PackageBuild] {
+  val all: List[PackageBuild] = newList()
+  for pb in visible {
+    all.add(pb)
+  }
+  for pb in bundle {
+    all.add(pb)
+  }
+  val checkers = collectCheckers(interner, all)
   val res: List[PackageBuild] = newList()
   for pb in bundle {
     val fns: List[TFnDecl] = newList()
     val nextNode: List[Int] = newList()
     nextNode.add(firstContractNodeId())
+    val ctx = BoundaryCtx(checkers = checkers, pkg = pb.pkg.name, used = newMap())
     for f in pb.pkg.funcs {
       val key = match defPathKeyOf(interner, f.sym) { case Some(k) -> k; case None -> "" }
-      fns.add(elaborateFnWith(f, ownerNameOf(key), enabled, nextNode))
+      fns.add(elaborateFnWith(f, ownerNameOf(key), enabled, nextNode, Some(value = ctx)))
+    }
+    val syms: List[TSymEntry] = newList()
+    val have: Map[Int, Bool] = newMap()
+    for en in pb.pkg.symbols {
+      syms.add(en)
+      have.add(en.sym.id, true)
+    }
+    for k in mapKeys(ctx.used) {
+      if not have.containsKey(k) {
+        match mapGet(ctx.used, k) {
+          case Some(ref) -> syms.add(ref.symEntry)
+          case None -> ()
+        }
+      }
     }
     res.add(
       PackageBuild(
-        pkg = TPackage(name = pb.pkg.name, symbols = pb.pkg.symbols, funcs = fns),
+        pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns),
         failed = pb.failed,
         total = pb.total,
         built = pb.built,

@@ -389,6 +389,7 @@ func mFnDecl(c: in MCtx, s: in Subst, sym: in SymbolId, d: in TFnDecl): TFnDecl 
     span = d.span,
     barrier = mOptExpr(c, s, d.barrier),
     ownerParamCount = 0,
-    isGenerator = d.isGenerator
+    isGenerator = d.isGenerator,
+    isPublic = d.isPublic
   )
 }
