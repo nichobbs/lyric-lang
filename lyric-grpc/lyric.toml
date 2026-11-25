@@ -1,14 +1,17 @@
 # lyric-grpc — gRPC client and server library for Lyric.
 #
-# Ships five packages:
+# Ships seven packages:
 #   Grpc.Types         — platform-neutral types: GrpcChannel, GrpcStatus,
 #                        GrpcStatusCode, GrpcCallOptions, GrpcStream.
-#   Grpc               — client API (openChannel, callUnary, openServerStream)
-#                        and server API (ServiceRegistry, addMethod, start).
+#   Grpc               — client API (openChannel, openChannelWith, callUnary,
+#                        openServerStream) and server API (ServiceRegistry, start).
+#   Grpc.Client        — pure-Lyric client over Std.HttpEngine.H2Client (default).
+#   Grpc.Wire          — gRPC-over-HTTP/2 framing, gzip, status mapping.
 #   Grpc.Aspects       — pub aspect templates: RequiresGrpcAuth,
 #                        RequiresGrpcRole, GrpcRateLimit, GrpcCircuitBreaker.
-#   Grpc.Kernel.Net    — Grpc.Net.Client / Grpc.Core.Api client (server hosting: #8642).
-#   Grpc.Kernel.Jvm    — grpc-java client (server hosting: #8642).
+#   Grpc.Kernel.Net    — Grpc.Net.Client / Grpc.Core.Api client, selected by the
+#                        `legacy-client` feature (removed in docs/72 slice 10).
+#   Grpc.Kernel.Jvm    — grpc-java client and server (client: `legacy-client`).
 #
 # Client usage (unary call):
 #   val ch = Grpc.openChannel("https://collector:4317").unwrap()
@@ -40,6 +43,9 @@ default = ["dotnet"]
 dotnet = []
 # io.grpc (grpc-java) backend.
 jvm    = []
+# Select the SDK client kernels (Grpc.Net.Client on dotnet, grpc-java on the JVM)
+# instead of the pure-Lyric client; removed with those kernels (docs/72 slice 10).
+legacy-client = []
 
 [project]
 name            = "Lyric.Grpc"
@@ -51,6 +57,10 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.Types"      = "src/types.l"
 # Client + server public API.
 "Grpc"            = "src/grpc.l"
+# gRPC-over-HTTP/2 wire format and status mapping, shared by client and server.
+"Grpc.Wire"       = "src/wire.l"
+# Pure-Lyric client over Std.HttpEngine.H2Client (docs/72 slice 6).
+"Grpc.Client"     = "src/client.l"
 # Pub aspect templates for cross-cutting gRPC handler concerns.
 "Grpc.Aspects"    = "src/aspects.l"
 # .NET kernel: Grpc.Net.Client / Grpc.Core.Api client.
@@ -70,6 +80,8 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.ServerTests" = "tests/server_tests.l"
 "Grpc.ServerDotnetTests" = "tests/server_dotnet_tests.l"
 "Grpc.RateLimitJvmTests" = "tests/rate_limit_jvm_tests.l"
+"Grpc.WireTests" = "tests/wire_tests.l"
+"Grpc.ClientH2Tests" = "tests/client_h2_tests.l"
 
 [dependencies]
 "Lyric.Auth"       = { workspace = true }

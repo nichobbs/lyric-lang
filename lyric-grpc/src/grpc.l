@@ -1,8 +1,7 @@
 //! Grpc — gRPC client and server API.
-//! Stability: @experimental. The client (openChannel/closeChannel, callUnary,
-//! openServerStream/nextMessage/closeStream, checkRateLimit) is real on both
-//! targets and tested end to end against in-process gRPC servers
-//! (Grpc.Net.Client on dotnet, grpc-java on the JVM). Server hosting
+//! Stability: @experimental. The client (openChannel/openChannelWith/closeChannel,
+//! callUnary, openServerStream/nextMessage/closeStream, checkRateLimit) is real
+//! on both targets and tested end to end against in-process gRPC servers. Server hosting
 //! (start/startHandle/stop) is not implemented on either target and panics
 //! naming #8642; see README.md's platform-parity table.
 //!
@@ -31,9 +30,11 @@
 //!
 //! See docs/37-grpc-proto-sketch.md.
 //!
-//! Each public function has a `dotnet`-feature body calling `Grpc.Kernel.Net`
-//! and a `jvm`-feature body calling `Grpc.Kernel.Jvm`; the feature selects
-//! which one a build keeps.
+//! The client functions call `Grpc.Client` (pure Lyric over
+//! `Std.HttpEngine.H2Client`) unless the `legacy-client` feature selects the
+//! SDK kernels: a `dotnet`-feature body calling `Grpc.Kernel.Net` or a
+//! `jvm`-feature body calling `Grpc.Kernel.Jvm`. The server functions still
+//! have a body per kernel.
 @runtime_checked
 @io
 package Grpc
@@ -41,6 +42,7 @@ package Grpc
 pub use Grpc.Types
 import Grpc.Kernel.Net
 import Grpc.Kernel.Jvm
+import Grpc.Client
 import Std.Core
 import Std.Collections
 import Std.Iter
@@ -50,14 +52,22 @@ import Std.String as Str
 // ─── Client: default options ──────────────────────────────────────────────────
 /// Default call options: no deadline, no metadata.
 pub func defaultOptions(): GrpcCallOptions {
-  GrpcCallOptions(timeoutMs = None, metadata = [])
+  GrpcCallOptions(timeoutMs = None, metadata = [], compression = GrpcCompression.NoCompression)
 }
 
 /// Return options with a specific deadline (milliseconds from now).
 pub func withTimeout(opts: in GrpcCallOptions, ms: in Int): GrpcCallOptions
   requires: ms > 0
 {
-  GrpcCallOptions(timeoutMs = Some(value = ms), metadata = opts.metadata)
+  GrpcCallOptions(timeoutMs = Some(value = ms), metadata = opts.metadata, compression = opts.compression)
+}
+
+/// Return options that send the request message gzip-compressed
+/// (`grpc-encoding: gzip`). The server must support it (grpc-java does; the
+/// pure-Lyric server decodes requests from slice 8). Responses are decoded
+/// whatever the server chose.
+pub func withCompression(opts: in GrpcCallOptions, compression: in GrpcCompression): GrpcCallOptions {
+  GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = opts.metadata, compression = compression)
 }
 
 /// Return options with an extra metadata entry added.
@@ -72,7 +82,11 @@ pub func withMetadata(opts: in GrpcCallOptions, metaKey: in String, metaValue: i
   requires: isValidMetadataValue(metaKey, metaValue)
 {
   val metaEntry = GrpcMetadataEntry(key = metaKey, value = metaValue)
-  GrpcCallOptions(timeoutMs = opts.timeoutMs, metadata = concat(opts.metadata, [metaEntry]))
+  GrpcCallOptions(
+    timeoutMs = opts.timeoutMs,
+    metadata = concat(opts.metadata, [metaEntry]),
+    compression = opts.compression
+  )
 }
 
 /// `withMetadata` for untrusted input: `Err` with a reason when the key or
@@ -140,34 +154,74 @@ func callTimeoutMs(opts: in GrpcCallOptions): Int {
 }
 
 // ─── Client: channel lifecycle ────────────────────────────────────────────────
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func openChannel(address: in String): Result[GrpcChannel, String] {
+  return Grpc.Client.openChannel(address, defaultChannelOptions())
+}
+
+/// `openChannel` with explicit `ChannelOptions`: TLS trust and client identity,
+/// the largest response message, connections per channel, keepalive, idle
+/// timeout, user agent and reconnect backoff. With the `legacy-client` feature
+/// (the SDK kernels, which have none of these settings) it returns `Err`.
+@stable(since = "0.2")
+@cfg(not(feature = "legacy-client"))
+pub func openChannelWith(address: in String, options: in ChannelOptions): Result[GrpcChannel, String] {
+  return Grpc.Client.openChannel(address, options)
+}
+
+@stable(since = "0.2")
+@cfg(feature = "legacy-client")
+pub func openChannelWith(address: in String, options: in ChannelOptions): Result[GrpcChannel, String] {
+  return Err("openChannelWith needs the pure-Lyric client: build lyric-grpc without the legacy-client feature")
+}
+
 /// Open a gRPC channel to `address` (e.g. "https://host:4317").
 /// Returns Err if the address is malformed or the channel cannot be created.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func openChannel(address: in String): Result[GrpcChannel, String] {
   return Grpc.Kernel.Net.netOpenChannel(address)
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func openChannel(address: in String): Result[GrpcChannel, String] {
   return Grpc.Kernel.Jvm.netOpenChannel(address)
 }
 
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func closeChannel(channel: in GrpcChannel): Unit {
+  Grpc.Client.closeChannel(channel)
+}
+
 /// Close the channel and release all HTTP/2 connections.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func closeChannel(channel: in GrpcChannel): Unit {
   Grpc.Kernel.Net.netCloseChannel(channel)
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func closeChannel(channel: in GrpcChannel): Unit {
   Grpc.Kernel.Jvm.netCloseChannel(channel)
 }
 
 // ─── Client: unary calls ──────────────────────────────────────────────────────
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func callUnary(
+  channel: in GrpcChannel,
+  service: in String,
+  method: in String,
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions,
+): Result[slice[Byte], GrpcStatus] {
+  return Grpc.Client.callUnary(channel, service, method, payload, opts)
+}
+
 /// Make a blocking unary gRPC call.
 ///
 /// `service` — fully-qualified proto service name (e.g. "pkg.MyService")
@@ -175,7 +229,7 @@ pub func closeChannel(channel: in GrpcChannel): Unit {
 /// `payload` — protobuf-encoded request body
 /// `opts`    — deadline and metadata (use defaultOptions() for defaults)
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
@@ -187,7 +241,7 @@ pub func callUnary(
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func callUnary(
   channel: in GrpcChannel,
   service: in String,
@@ -199,10 +253,22 @@ pub func callUnary(
 }
 
 // ─── Client: server-streaming calls ──────────────────────────────────────────
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func openServerStream(
+  channel: in GrpcChannel,
+  service: in String,
+  method: in String,
+  payload: in slice[Byte],
+  opts: in GrpcCallOptions,
+): Result[GrpcStream, GrpcStatus] {
+  return Grpc.Client.openServerStream(channel, service, method, payload, opts)
+}
+
 /// Start a server-streaming gRPC call.
 /// Always call closeStream when done, even if nextMessage returned None.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
@@ -221,7 +287,7 @@ pub func openServerStream(
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func openServerStream(
   channel: in GrpcChannel,
   service: in String,
@@ -239,29 +305,41 @@ pub func openServerStream(
   )
 }
 
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
+  return Grpc.Client.nextMessage(stream)
+}
+
 /// Read the next message from a server-streaming response.
 /// Returns Some(bytes) for each message; None when the stream ends cleanly.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Net.netNextStreamMessage(stream)
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func nextMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
   return Grpc.Kernel.Jvm.netNextStreamMessage(stream)
 }
 
+@stable(since = "0.1")
+@cfg(not(feature = "legacy-client"))
+pub func closeStream(stream: in GrpcStream): Unit {
+  Grpc.Client.closeStream(stream)
+}
+
 /// Release a server-streaming response handle.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
+@cfg(all(feature = "legacy-client", feature = "dotnet"))
 pub func closeStream(stream: in GrpcStream): Unit {
   Grpc.Kernel.Net.netCloseStream(stream)
 }
 
 @stable(since = "0.1")
-@cfg(feature = "jvm")
+@cfg(all(feature = "legacy-client", feature = "jvm"))
 pub func closeStream(stream: in GrpcStream): Unit {
   Grpc.Kernel.Jvm.netCloseStream(stream)
 }

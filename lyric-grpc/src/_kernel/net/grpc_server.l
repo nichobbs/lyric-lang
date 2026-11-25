@@ -26,6 +26,7 @@
 package Grpc.Kernel.Net.Server
 
 import Grpc.Types
+import Grpc.Wire
 import Std.Core
 import Std.Collections
 import Std.String as Str
@@ -126,20 +127,6 @@ func requestMetadata(headers: in List[HeaderField]): List[GrpcMetadataEntry] {
     }
   }
   entries
-}
-
-func frameMessage(message: in slice[Byte]): slice[Byte] {
-  val n = message.length
-  val acc: List[Byte] = newList()
-  acc.add(0.toByte())
-  acc.add(n.shr(24).and(255).toByte())
-  acc.add(n.shr(16).and(255).toByte())
-  acc.add(n.shr(8).and(255).toByte())
-  acc.add(n.and(255).toByte())
-  for b in message {
-    acc.add(b)
-  }
-  acc.toArray()
 }
 
 /// Whether the framed request body is exactly one uncompressed message, and
@@ -282,7 +269,7 @@ func sendData(cs: in ConnState, call: in Call, data: in slice[Byte]): Bool {
 }
 
 func sendMessage(cs: in ConnState, call: in Call, message: in slice[Byte]): Bool {
-  sendData(cs, call, frameMessage(message))
+  sendData(cs, call, Wire.frameMessage(message, false))
 }
 
 // ─── Running a call ───────────────────────────────────────────────────────────
