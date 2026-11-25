@@ -35,6 +35,7 @@ output_assembly = "Ws.dll"
 "Ws.WsFrameTests"                  = "tests/ws_frame_tests.l"
 "Ws.WsHandshakeTests"              = "tests/ws_handshake_tests.l"
 "Ws.WsE2eTests"                    = "tests/ws_e2e_tests.l"
+"Ws.WsHardeningTests"               = "tests/ws_hardening_tests.l"
 "Ws.WsSecurityAspectWeavingTests"  = "tests/ws_security_aspect_weaving_tests.l"
 
 [features]

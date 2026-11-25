@@ -47,6 +47,7 @@ package Ws
 
 import Std.Core
 import Std.Collections
+import Std.Tls as Tls
 import Ws.Frame
 import Ws.Kernel.Net as WsKernelNet
 import Ws.Kernel.Jvm as WsKernelJvm
@@ -79,18 +80,22 @@ func kernelStartServer(
   maxMessageSizeBytes: in Int,
   allowedOrigins: in slice[String],
   sameHostPorts: in slice[Int],
+  limits: in WsKernelNet.ServerLimits,
+  tls: in Option[Tls.TlsServerConfig],
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelNet.startServer(
+  WsKernelNet.startServerWith(
     host,
     port,
     path,
     maxMessageSizeBytes,
     allowedOrigins,
     sameHostPorts,
+    limits,
+    tls,
     onOpen,
     onMessage,
     onClose,
@@ -100,12 +105,13 @@ func kernelStartServer(
 
 func kernelCreateEndpoint(
   maxMessageSizeBytes: in Int,
+  limits: in WsKernelNet.ServerLimits,
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
   onMessage: in (String, String, String) -> Unit,
   onClose: in (String, Int, String) -> Unit,
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
-  WsKernelNet.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
+  WsKernelNet.createEndpointWith(maxMessageSizeBytes, limits, onOpen, onMessage, onClose, onError)
 }
 
 /// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`.
@@ -386,12 +392,50 @@ pub func createRegistry(): Result[NativeRegistry, WsError] {
 ///   of `sameHostPorts`: a page the same application serves on a sibling
 ///   port, such as an HTTP listener next to this WebSocket listener; or
 /// - `allowedOrigins` contains `"*"`, which disables the check.
+///
+/// The remaining fields bound what one peer can cost the server (docs/73 S8,
+/// D792); `0` turns a bound off, except `maxConnections`, where it means the
+/// target's default (10 000 on the JVM, 1 000 on dotnet and native):
+/// - `maxConnections`: connections admitted at once, handshakes included; one
+///   more is answered `503 Service Unavailable` (a `wss` listener just closes
+///   it) and `connectionCount` does not count it.
+/// - `idleTimeoutMs` (default 90 000, three default ping intervals): a
+///   connection that has received nothing for this long, a Pong to the
+///   keepalive Ping included, is closed with 1001.
+/// - `writeTimeoutMs` (default 10 000): a write that makes no progress for
+///   this long ends the connection (`onError`, then `onClose` with 1008).
+/// - `maxOutboundBytes` (default 1 MiB, at least one frame): bytes queued for
+///   one connection. `send` and `broadcast` return once a frame is queued; a
+///   connection whose backlog would pass this is dropped (`send` returns
+///   `Err`, `onError`, `onClose` 1008), so one slow consumer never delays
+///   the others.
+/// - `handshakeTimeoutMs` (default 10 000): the TLS and HTTP upgrade handshake.
 @stable(since = "0.2")
 pub record WsServerOptions {
   maxMessageSizeBytes: Int = 65536
   allowedOrigins: slice[String] = []
   sameHostPorts: slice[Int] = []
+  maxConnections: Int = 0
+  idleTimeoutMs: Int = 90000
+  writeTimeoutMs: Int = 10000
+  maxOutboundBytes: Int = 1048576
+  handshakeTimeoutMs: Int = 10000
   invariant: maxMessageSizeBytes >= 1024 and maxMessageSizeBytes <= 67108864
+  invariant: maxConnections >= 0
+  invariant: idleTimeoutMs >= 0
+  invariant: writeTimeoutMs >= 0
+  invariant: maxOutboundBytes >= 1024
+  invariant: handshakeTimeoutMs >= 0
+}
+
+func kernelLimits(options: in WsServerOptions): WsKernelNet.ServerLimits {
+  WsKernelNet.ServerLimits(
+    maxConnections = options.maxConnections,
+    idleTimeoutMs = options.idleTimeoutMs,
+    writeTimeoutMs = options.writeTimeoutMs,
+    maxOutboundBytes = options.maxOutboundBytes,
+    handshakeTimeoutMs = options.handshakeTimeoutMs
+  )
 }
 
 /// Start a real WebSocket server bound to `handler`, listening on
@@ -444,8 +488,45 @@ pub func startServerWithOptions(
   requires: port >= 1 and port <= 65535
   requires: path.startsWith("/")
 {
+  startOn(host, port, path, options, None, handler)
+}
+
+/// As `startServerWithOptions`, serving `wss`: every connection completes a
+/// TLS handshake with `tls` (a certificate chain and private key, optional
+/// minimum version and client-certificate policy: `Std.Tls`) before the
+/// WebSocket upgrade. The configuration is validated before the port is
+/// bound, so a bad one is `SERVER_START_FAILED`, not a listener that fails
+/// every handshake. A handshake that fails or stalls past
+/// `options.handshakeTimeoutMs` costs only its own connection.
+///
+/// Real on dotnet, the JVM and native, over `Std.TcpHost`'s TLS server path
+/// (`SslStream`, `SSLSocket`, OpenSSL).
+@stable(since = "0.4")
+pub func startServerTls(
+  host: in String,
+  port: in Int,
+  path: in String,
+  tls: in Tls.TlsServerConfig,
+  options: in WsServerOptions,
+  handler: in WsHandler,
+): Result[NativeRegistry, WsError]
+  requires: host.length > 0
+  requires: port >= 1 and port <= 65535
+  requires: path.startsWith("/")
+{
+  startOn(host, port, path, options, Some(value = tls), handler)
+}
+
+func startOn(
+  host: in String,
+  port: in Int,
+  path: in String,
+  options: in WsServerOptions,
+  tls: in Option[Tls.TlsServerConfig],
+  handler: in WsHandler,
+): Result[NativeRegistry, WsError] {
   val cbs = kernelCallbacks(path, handler)
-  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, options.sameHostPorts, cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
+  match kernelStartServer(host, port, path, options.maxMessageSizeBytes, options.allowedOrigins, options.sameHostPorts, kernelLimits(options), tls, cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err) -> Err(WsError(message = err, code = "SERVER_START_FAILED", connectionId = ""))
   }
@@ -519,7 +600,7 @@ pub func createEndpoint(
   requires: path.startsWith("/")
 {
   val cbs = kernelCallbacks(path, handler)
-  match kernelCreateEndpoint(options.maxMessageSizeBytes, cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
+  match kernelCreateEndpoint(options.maxMessageSizeBytes, kernelLimits(options), cbs.onOpen, cbs.onMessage, cbs.onClose, cbs.onError) {
     case Ok(handle) -> Ok(
       WsEndpoint(
         path = path,

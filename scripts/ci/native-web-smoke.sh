@@ -94,7 +94,8 @@ PY
 # real server over Std.TcpHost. The aspect-weaving suite is left out: native
 # does not yet resolve cross-package aspect templates (A0045, #3498), and a
 # panicking handler cannot be caught on native (D-N-003), so the e2e suite
-# skips that one check.
+# skips that one check. The hardening suite (docs/73 S8) adds the write timeout, the cap, the idle
+# timeout and a wss echo through `hostConnectTls`.
 (cd "$ROOT" && "$LYRIC" test --manifest lyric-ws/lyric.toml --target native --no-default-features --features native \
-  --suite Ws.WsTests --suite Ws.WsFrameTests --suite Ws.WsHandshakeTests --suite Ws.WsE2eTests)
+  --suite Ws.WsTests --suite Ws.WsFrameTests --suite Ws.WsHandshakeTests --suite Ws.WsE2eTests --suite Ws.WsHardeningTests)
 echo "native-web smoke OK"

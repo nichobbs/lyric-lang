@@ -906,7 +906,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Search` *(lyric-search)* | Search engine client | `SearchClient`, `SearchResult`, `IndexResult`, `search`, `index` |
 | `Session` *(lyric-session)* | Session store interface and in-process store | `SessionStore`, `SessionData`, `newSession`, `loadSession`, `get`, `set` |
 | `Validation` *(lyric-validation)* | Input validation | `ValidationError`, `required`, `minLength`, `email`, `url`, `all`, `toResult` |
-| `Ws` *(lyric-ws)* | WebSocket server | `WsHandler`, `WsRegistry`, `WsMessage`, `startServer`, `createEndpoint` (listener-less, for `Web.addWebSocket`), `send`, `broadcast` |
+| `Ws` *(lyric-ws)* | WebSocket server | `WsHandler`, `WsRegistry`, `WsMessage`, `WsServerOptions` (size, origins, cap, idle, write and handshake timeouts, outbound bound), `startServer`, `startServerTls`, `createEndpoint` (listener-less, for `Web.addWebSocket`), `send`, `broadcast` (both queue the frame; a slow consumer is dropped) |
 | `Flags` *(lyric-feature-flags)* | Runtime feature toggles | `FlagStore`, `isEnabled`, `getBool`, `getString`, `getInt`, `Registry.checkFlag` |
 | `I18n` *(lyric-i18n)* | Internationalisation | `TranslationStore`, `Locale`, `translate`, `translateWith`, `makeLocale` |
 | `Testing` *(lyric-testing)* | Test mocks and assertions | `TestContext`, `assertOk`, `assertErr`, `assertEq`, `MockMailSender` |
