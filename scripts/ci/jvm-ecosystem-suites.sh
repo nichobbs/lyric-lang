@@ -49,7 +49,7 @@
 #   auth        JWT/API-key verification and the B'-mode `ValidateKey` aspect
 #               (`__LyricBModeCallContext` on the JVM, #4600)
 #   ws          frames, handshake, the WsSecurity aspects and the loopback
-#               suite `Ws.WsE2eTests`, which dials the pure-Lyric server over
+#               suites `Ws.WsE2eTests` and `Ws.WsHardeningTests`, which dial the pure-Lyric server over
 #               Std.TcpHost (docs/73 S7a)
 #   logging     Std.Logging's `LogLevel` enum beside the stdlib's
 #               same-named `Std.Log.LogLevel` (type-scoped enum registry

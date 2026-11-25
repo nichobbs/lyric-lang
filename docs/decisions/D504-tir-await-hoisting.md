@@ -11,4 +11,7 @@
 
 ## Not done
 
+Tracked in #9374: 
 `forall`/`exists` bodies and `old(..)` are not entered (quantifiers never lower to code); an `out`/`inout` argument's place is not entered; the pass is not yet consumed by a backend (phase 4).
+
+An assignment target's receiver is bound with no `XArrayCopy`, which in TIR means it aliases the place: a backend port must keep that meaning (`arr[i] = await f()` writes the array it names).

@@ -13,7 +13,8 @@
 //!   rm lyric-ws/tests/zz_bench_ws_server.l
 //!
 //! Environment: `WS_PORT` (8190), `WS_BYTES` (1024), `WS_HZ` (10), `WS_SECONDS` (run time, 40), and the server
-//! prints `WS-BROADCAST connections=<n>` every second. Not part of CI (see README.md).
+//! prints `WS-BROADCAST connections=<n> sent=<n> worst_call_ms=<n>` every second, `worst_call_ms` being the longest
+//! `broadcastText` call since the last line (a stalled consumer shows up here). Not part of CI (see README.md).
 package Ws.BenchServer
 
 import Std.Core
@@ -68,12 +69,22 @@ func main(): Int {
   val endAt = Time.nowEpochMillis() + seconds.toLong() * 1000
   var lastReport = Time.nowEpochMillis()
   var broadcasts = 0
+  var worstCallMs = 0i64
   while Time.nowEpochMillis() < endAt {
     val tick = Time.nowEpochMillis()
     val _ = broadcastText(registry, tick.toString() + padding)
+    val callMs = Time.nowEpochMillis() - tick
+    if callMs > worstCallMs {
+      worstCallMs = callMs
+    }
     broadcasts = broadcasts + 1
     if tick - lastReport >= 1000 {
-      println("WS-BROADCAST connections=" + connectionCount(registry).toString() + " sent=" + broadcasts.toString())
+      println(
+        "WS-BROADCAST connections=" + connectionCount(registry).toString() + " sent=" + broadcasts.toString() +
+          " worst_call_ms=" +
+          worstCallMs.toString()
+      )
+      worstCallMs = 0i64
       lastReport = tick
     }
     val spent = (Time.nowEpochMillis() - tick).toInt()

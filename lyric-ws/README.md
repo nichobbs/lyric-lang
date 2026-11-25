@@ -14,7 +14,7 @@ WebSocket server with pluggable backends and aspect-based security.
 | `jvm`        | the same `Ws.Kernel.Net` | `ReentrantLock` locks (never `synchronized`, which pins a virtual thread's carrier), virtual-thread background tasks, a lock-guarded map | the same five suites through `scripts/ci/jvm-ecosystem-suites.sh` |
 | `native`     | the same `Ws.Kernel.Net` | pthread mutex pool, detached pthreads, a lock-guarded map | frame, handshake and loopback suites through `scripts/ci/native-web-smoke.sh` (the aspect-weaving suite does not build on native, `A0045`, #3498) |
 
-All three targets share the handshake parser and `Sec-WebSocket-Accept` derivation (`Ws.Handshake`), the frame codec (`Ws.Frame`: masking, control frames, **fragmented multi-frame message reassembly**, UTF-8 validation, size cap), **automatic ping-interval keepalive**, the Origin check, and the `onError` isolation of a failing handler. Concurrency: a background task runs the accept loop, and each connection gets a read-loop task plus (when ping keepalive is enabled) a ping-loop task; `pingIntervalMs` is read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` rather than threaded through `startServer`'s parameters (see `Ws.Kernel.Net`'s module header).
+All three targets share the handshake parser and `Sec-WebSocket-Accept` derivation (`Ws.Handshake`), the frame codec (`Ws.Frame`: masking, control frames, **fragmented multi-frame message reassembly**, UTF-8 validation, size cap), **automatic ping-interval keepalive**, the Origin check, and the `onError` isolation of a failing handler. Concurrency: a background task runs the accept loop, and each connection gets a read-loop task plus a maintenance task (keepalive pings, the idle timeout and the write watchdog, docs/73 S8) and, while frames are waiting to be written, a short-lived drain task; `pingIntervalMs` is read from `LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS` rather than threaded through `startServer`'s parameters (see `Ws.Kernel.Net`'s module header).
 
 The loopback suite (`tests/ws_e2e_tests.l`, `Ws.WsE2eTests`) dials the real server over `Std.TcpHost` with a hand-written RFC 6455 client: handshake, text and binary echo, a fragmented message, ping and pong, close handshake, registry state, `send` and `broadcast` from outside callbacks, the Origin policy (same-origin, cross-origin, `allowedOrigins`), a throwing handler, 250 simultaneous connections, and the routing of endpoint and server registries. A throwing handler cannot be caught on native (no unwinding, D-N-003), so that one check is a no-op there.
 
@@ -22,11 +22,27 @@ The loopback suite (`tests/ws_e2e_tests.l`, `Ws.WsE2eTests`) dials the real serv
 
 `Web.addWebSocket` on the JVM mounts a listener-less endpoint (`Ws.createEndpoint`) on `lyric-web`'s Undertow listener, through `Ws.Kernel.Jvm.endpointHandler`. That is all `Ws.Kernel.Jvm` does now, and it is why `lyric.toml` still has a `[maven]` table (`io.undertow:undertow-core` 2.3.13.Final, the same coordinate as `lyric-web`). It keeps the gaps of the old JVM kernel for those endpoints: fragmented messages are not reassembled, no ping keepalive is sent, and text decoding is lenient UTF-8. docs/73 slice S7b moves `Web.addWebSocket` to `Ws.Kernel.Net.adoptConnection` (as on dotnet and native) once `lyric-web` serves HTTP through the shared pure-Lyric server (S4, S6), and then deletes `Ws.Kernel.Jvm` and the `[maven]` table. Until then a `Ws.startServer` registry and a `createEndpoint` registry are told apart by their handle, so every `Ws` call reaches the right kernel.
 
+### Limits, slow consumers and wss (docs/73 S8, D792 to D794)
+
+Every limit is a field of `WsServerOptions` with a default, so existing callers compile and behave as before except for the bounds the defaults now enforce. A value of `0` turns a bound off, except `maxConnections`.
+
+| Option | Default | What it bounds |
+|--------|---------|----------------|
+| `maxOutboundBytes` | 1 MiB (at least 1024) | Bytes queued for one connection. `send` and `broadcast` return once a frame is queued (`Ok` means queued, not delivered). A connection whose backlog would pass the bound is dropped: `send` returns `Err` ("slow consumer: ..."), `onError` is told, `onClose` reports 1008 and the socket is shut down. The first frame is always accepted, so a single message larger than the bound is not refused. Ping, pong and close frames are exempt. |
+| `writeTimeoutMs` | 10 000 | A write that makes no progress for this long (the peer stopped reading but the queue still has room) ends the connection the same way. Enforced by the per-connection maintenance task, so it is checked every quarter of the shortest timeout (at most one second late), on every target. |
+| `idleTimeoutMs` | 90 000 | Nothing received for this long, a Pong to the keepalive Ping included, starts the close handshake with 1001; a peer that does not answer the Close within 5 s is shut down. With the default 30 s ping interval a healthy client is never idle. Set it to `0` if you also disable pings (`LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS=0`) and have quiet clients. |
+| `maxConnections` | 0 = per target: 10 000 on the JVM, 1 000 on dotnet and native (`Std.HttpServerHost.defaultMaxConnections`) | Connections admitted at once, handshakes included. One more is answered `503 Service Unavailable` (a `wss` listener closes it without an answer) and is not counted by `connectionCount`. |
+| `handshakeTimeoutMs` | 10 000 | The TLS handshake and the HTTP upgrade. A peer that connects and sends nothing is closed and holds its slot only that long. |
+
+`broadcast` encodes the frame once and queues it for every connection without writing to any socket, so one slow consumer delays no one; it returns `Err` with the first failure (a connection that closed meanwhile, or a slow consumer it dropped) after attempting all of them. The same bounds apply to `Web.addWebSocket` endpoints (`createEndpoint`), where `handshakeTimeoutMs` is the HTTP server's.
+
+**wss.** `Ws.startServerTls(host, port, path, tls, options, handler)` takes a `Std.Tls.TlsServerConfig` (certificate chain and key, minimum TLS version, optional client CA and `requireClientCert` for mutual TLS). The configuration is validated before the port is bound, and each connection's handshake runs on its own task, so a stalled one costs only itself. It runs over `Std.TcpHost`'s TLS server path on dotnet (`SslStream`), the JVM (`SSLSocket`) and native (OpenSSL). Tests: `tests/ws_hardening_tests.l` drives it through `Std.Http`'s TLS client on every target (TLS terminates, the WebSocket server answers through it, mutual TLS refuses and admits, a bad configuration is refused, a silent peer is cut off) and exchanges WebSocket frames over TLS on native only, because `Std.TcpHost` has a client TLS connect only on native.
+
 ### Known gaps
 
-- `Ws.startServer` is plain `ws://`; there is no TLS listener (docs/73 question 8). A `wss` socket is served by `Web.serveTls` with `Web.addWebSocket`.
-- No write timeout, connection cap, bounded outbound queue or slow-consumer handling: a stalled peer blocks its writer, and `broadcast` is a serial loop over the connections (docs/73 slice S8).
-- No `permessage-deflate` (RFC 7692) and no subprotocol negotiation.
+- Autobahn (RFC 6455 conformance) is not run in CI. It needs Docker, which the development container lacks, and the server answers a client Ping only through the handler (the kernel delivers `Ping` to `onMessage` and does not reply, so Autobahn's section 2 cases would fail). See D795.
+- No `permessage-deflate` (RFC 7692), by decision (D795), and no subprotocol negotiation.
+- A wss exchange of WebSocket frames is tested on native only; dotnet and the JVM are tested through an HTTPS client (see above), pending a client TLS connect in `Std.TcpHost` there.
 - `[package] targets` is not declared. Whether to claim native depends on the aspect-template limit above.
 
 ## Packages
@@ -140,12 +156,21 @@ Ws.startServer(host, port, path, handler) -> Result[NativeRegistry, WsError]
 Ws.startServerWithConfig(host, port, path, maxMessageSizeBytes, handler)
 Ws.startServerWithOptions(host, port, path, options: WsServerOptions, handler)
 
+Ws.startServerTls(host, port, path, tls: TlsServerConfig, options: WsServerOptions, handler)
+
 pub record WsServerOptions {
   maxMessageSizeBytes: Int = 65536        // 1024 to 67108864
   allowedOrigins: slice[String] = []
   sameHostPorts: slice[Int] = []
+  maxConnections: Int = 0                 // 0 = the target's default
+  idleTimeoutMs: Int = 90000              // 0 = off
+  writeTimeoutMs: Int = 10000             // 0 = off
+  maxOutboundBytes: Int = 1048576         // at least 1024
+  handshakeTimeoutMs: Int = 10000         // 0 = off
 }
 ```
+
+The last five fields are described under "Limits, slow consumers and wss".
 
 `port` must be 1 to 65535 and `path` must start with `/`.
 
@@ -275,4 +300,4 @@ See `lyric-web` documentation for full HTTP server setup.
 
 ## Decision log
 
-See `docs/03-decision-log.md` D057.
+See `docs/03-decision-log.md` D057; D787 (the pure-Lyric server on every target) and D792 to D795 (hardening: outbound path, limits, wss, Autobahn and permessage-deflate).
