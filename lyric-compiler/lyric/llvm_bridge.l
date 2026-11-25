@@ -1787,7 +1787,7 @@ pub func compileToNativeWithFeatures(
     }
     val arith: Map[String, Bool] = newMap()
     arith.add(optsTirOut[0].pkg.name, not hasWrappingArith(userFile))
-    val monoInputs = monoTirInputs(tirInterner[0], builds, arith)
+    val monoInputs = monoTirInputs(tirInterner[0], builds, arith, contractsEnabled)
     tirInputs = match mapGet(monoInputs, optsTirOut[0].pkg.name) { case Some(t) -> t; case None -> newList() }
     for pb in stdBuilds {
       match mapGet(monoInputs, pb.pkg.name) {
@@ -2349,7 +2349,7 @@ pub func compileProjectToNativeWithShape(
     for pb in stdBuilds {
       builds.add(pb)
     }
-    val monoInputs = monoTirInputs(projInterner[0], builds, ownArith)
+    val monoInputs = monoTirInputs(projInterner[0], builds, ownArith, contractsEnabled)
     var obi = 0
     while obi < ownBuilds.count {
       match mapGet(monoInputs, ownBuilds[obi].pkg.name) {
@@ -3256,8 +3256,36 @@ func monoTirInputs(
   interner: in DefPathInterner,
   builds: in List[TirBuild.PackageBuild],
   checkedArith: in Map[String, Bool],
+  ownContracts: in Bool,
 ): Map[String, List[LlvmTir.TirUnitInput]] {
-  val r = pipeMonoTir(interner, builds)
+  // The passes in the order docs/70 section 7.2 gives them: `?` is lowered into matches, contract clauses
+  // into asserts (the bundled standard library's always run, the own packages' follow the manifest), then
+  // the generics are monomorphised, so an instance carries both.
+  val prop = pipePropagateTir(interner, builds)
+  val ownPkgs: List[TirBuild.PackageBuild] = newList()
+  val stdPkgs: List[TirBuild.PackageBuild] = newList()
+  for pb in prop.pkgs {
+    if checkedArith.containsKey(pb.pkg.name) {
+      ownPkgs.add(pb)
+    } else {
+      stdPkgs.add(pb)
+    }
+  }
+  val ownDone = pipeContractsTir(interner, ownPkgs, ownContracts)
+  val stdDone = pipeContractsTir(interner, stdPkgs, true)
+  val elaborated: List[TirBuild.PackageBuild] = newList()
+  var oi = 0
+  var si = 0
+  for pb in prop.pkgs {
+    if checkedArith.containsKey(pb.pkg.name) {
+      elaborated.add(ownDone[oi])
+      oi = oi + 1
+    } else {
+      elaborated.add(stdDone[si])
+      si = si + 1
+    }
+  }
+  val r = pipeMonoTir(interner, elaborated)
   val byPkg: Map[String, List[LlvmTir.TirUnitInput]] = newMap()
   if r.pkgs.count == 0 {
     return byPkg
@@ -3290,6 +3318,7 @@ func monoTirInputs(
         pkg = pb.pkg,
         names = pb.names,
         census = LlvmTir.newTirCensus(),
+        contractsElaborated = true,
         checkedArith = match mapGet(checkedArith, pb.pkg.name) { case Some(b) -> b; case None -> false }
       )
     )

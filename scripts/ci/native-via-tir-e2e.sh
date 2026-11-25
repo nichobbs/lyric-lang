@@ -542,6 +542,40 @@ LYRICSRC
 done
 echo "numeric: ok"
 
+# Contract clauses and `?` (docs/70 phase 4a part 6, D502, D503): lowered on TIR before monomorphisation,
+# every function from TIR, the same output, and the same panic message when a clause is violated.
+csrc=scripts/ci/native-via-tir/contracts.l
+"$lyric_bin" build --target native "$csrc" -o "$work/c_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$csrc" -o "$work/c_tir" 2> "$work/c_census.txt" >/dev/null
+cat "$work/c_census.txt"
+"$work/c_ast" > "$work/c_ast.out"
+"$work/c_tir" > "$work/c_tir.out"
+diff -u "$work/c_ast.out" "$work/c_tir.out"
+printf '5\n10\n0\n4\n14\nbad\n3\nnone\n' | diff -u - "$work/c_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/c_census.txt" || {
+  echo "::error::expected every function of contracts.l to be lowered from TIR"
+  exit 1
+}
+sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(half(0 - 1)))|' "$csrc" > "$work/contracts_violated.l"
+"$lyric_bin" build --target native "$work/contracts_violated.l" -o "$work/cv_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$work/contracts_violated.l" -o "$work/cv_tir" 2> "$work/cv_census.txt" >/dev/null
+if grep -q '^  fallback:' "$work/cv_census.txt"; then
+  cat "$work/cv_census.txt"
+  echo "::error::the violated-contract program has a TIR fallback"
+  exit 1
+fi
+for which in ast tir; do
+  if "$work/cv_$which" > /dev/null 2> "$work/cv_$which.err"; then
+    echo "::error::the $which build did not panic on a violated precondition"
+    exit 1
+  fi
+done
+grep -o 'PreconditionViolated: .*' "$work/cv_ast.err" | head -1 > "$work/cv_ast.msg"
+grep -o 'PreconditionViolated: .*' "$work/cv_tir.err" | head -1 > "$work/cv_tir.msg"
+test -s "$work/cv_tir.msg" || { echo "::error::no precondition message"; cat "$work/cv_tir.err"; exit 1; }
+diff -u "$work/cv_ast.msg" "$work/cv_tir.msg"
+echo "contracts: ok"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 
