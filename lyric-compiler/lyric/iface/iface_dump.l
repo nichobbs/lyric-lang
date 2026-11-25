@@ -141,6 +141,7 @@ func convText(it: in DefPathInterner, k: in ConvKind): String {
     case CvLongToNat -> "long-to-nat"
     case CvNeverFn -> "never-fn"
     case CvUserdataSlot -> "userdata-slot"
+    case CvReinterpret -> "reinterpret"
   }
 }
 

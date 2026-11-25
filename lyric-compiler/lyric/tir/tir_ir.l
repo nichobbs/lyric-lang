@@ -169,6 +169,10 @@ pub union ConvKind {
   /// A pointer in one spelling of a C callback's userdata slot used as the other (`NativePtr[Byte]`, which
   /// `nativeKeepCallback` returns, where a `NativeUserdata` is wanted, or back): the same pointer.
   case CvUserdataSlot
+  /// The same bits read at the other signedness of the same width (`ULong` as `Long`, `UInt` as `Int`, or back):
+  /// no range check and no rounding, so it is the identity on the value's representation (D508).  The operand
+  /// and the node are `Int`/`UInt` or `Long`/`ULong`, one each.
+  case CvReinterpret
 }
 
 pub union ShortOp {
