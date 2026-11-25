@@ -389,7 +389,7 @@ test "native Std.HttpServer TLS round trip: request headers/body, JSON response 
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(certPem: in String): NativePtr[Byte] {\n" +
-    "  val conn = match hostConnectTls(\"127.0.0.1\", 19721, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"http/1.1\") {\n" +
+    "  val conn = match hostConnectTls(\"127.0.0.1\", 19721, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"http/1.1\", 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return toC(\"FAIL:handshake\")\n" +
     "  }\n" +
@@ -550,7 +550,7 @@ test "native Std.HttpServer serves a TLS request in the protocol ALPN selects, H
     "// server offers h2 and where it offers HTTP/1.1 only (Windows).\n" +
     "@unsafe_ffi\n" +
     "func clientNegotiated(certPem: in String): NativePtr[Byte] {\n" +
-    "  val conn = match hostConnectTls(\"127.0.0.1\", 19722, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"h2,http/1.1\") {\n" +
+    "  val conn = match hostConnectTls(\"127.0.0.1\", 19722, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"h2,http/1.1\", 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return toC(\"FAIL:handshake\")\n" +
     "  }\n" +
@@ -1182,7 +1182,7 @@ test "native Std.HttpServer runs the TLS handshake off the accept thread with a 
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(certPem: in String): NativePtr[Byte] {\n" +
-    "  val conn = match hostConnectTls(\"127.0.0.1\", 19730, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"http/1.1\") {\n" +
+    "  val conn = match hostConnectTls(\"127.0.0.1\", 19730, TlsTrustExclusive(caPem = certPem), None, TlsVersion.Tls12, \"http/1.1\", 0) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return toC(\"FAIL:handshake\")\n" +
     "  }\n" +

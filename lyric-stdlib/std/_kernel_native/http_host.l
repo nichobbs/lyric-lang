@@ -165,7 +165,7 @@
 //! coverage — `test_tls_client_additive_ca`/`test_tls_client_additive_requires_ca`
 //! — for the new function). `Std.TcpHost.hostConnectTls`/
 //! `hostUpgradeClientTls` (added alongside this file, same issue) expose it
-//! via `TlsClientTrust.TlsTrustAdditive`.
+//! via `Std.Tls.TlsClientTrust.TlsTrustAdditive`.
 //!
 //! ## Redirects are hand-rolled (native has no `HttpClientHandler`/`Redirect` to delegate to)
 //!
@@ -201,7 +201,7 @@ import Std.TcpHost as Tcp
 pub record HttpClientHandle {
   followRedirects: Bool
   maxRedirects: Int
-  trust: Tcp.TlsClientTrust
+  trust: Tls.TlsClientTrust
   clientIdentity: Option[Tls.Identity]
   minVersion: Tls.TlsVersion
   // Why every request through this client fails (module header item 3),
@@ -983,7 +983,7 @@ pub func hostSupportsTlsConfig(): Bool {
   true
 }
 
-func defaultClientHandle(trust: in Tcp.TlsClientTrust): HttpClientHandle {
+func defaultClientHandle(trust: in Tls.TlsClientTrust): HttpClientHandle {
   HttpClientHandle(
     followRedirects = true,
     maxRedirects = 20,
@@ -995,14 +995,14 @@ func defaultClientHandle(trust: in Tcp.TlsClientTrust): HttpClientHandle {
 }
 
 pub func hostDefaultClient(): HttpClientHandle {
-  defaultClientHandle(Tcp.TlsTrustSystemDefault)
+  defaultClientHandle(Tls.TlsTrustSystemDefault)
 }
 
 pub func hostClientWithRedirects(maxRedirects: in Int): HttpClientHandle {
   HttpClientHandle(
     followRedirects = maxRedirects > 0,
     maxRedirects = maxRedirects,
-    trust = Tcp.TlsTrustSystemDefault,
+    trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
     unsupportedReason = None
@@ -1013,7 +1013,7 @@ pub func hostClientNoRedirects(): HttpClientHandle {
   HttpClientHandle(
     followRedirects = false,
     maxRedirects = 0,
-    trust = Tcp.TlsTrustSystemDefault,
+    trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
     unsupportedReason = None
@@ -1047,7 +1047,7 @@ func unixSocketUnsupported(): HttpClientHandle {
   HttpClientHandle(
     followRedirects = false,
     maxRedirects = 0,
-    trust = Tcp.TlsTrustSystemDefault,
+    trust = Tls.TlsTrustSystemDefault,
     clientIdentity = None,
     minVersion = Tls.TlsVersion.Tls12,
     unsupportedReason = Some(
@@ -1096,9 +1096,9 @@ func resolveTrust(
   caCertificate: in Option[Tls.Certificate],
   exclusiveCaCertificate: in Option[Tls.Certificate],
   insecureSkipVerify: in Bool,
-): Tcp.TlsClientTrust {
+): Tls.TlsClientTrust {
   if insecureSkipVerify {
-    Tcp.TlsTrustInsecure
+    Tls.TlsTrustInsecure
   } else {
     match exclusiveCaCertificate {
       // Explicit static-call form (`Tls.Certificate.rawHandles(cert)`), not
@@ -1106,12 +1106,12 @@ func resolveTrust(
       // `buildServerCtx` for the direct-repro writeup of why the UFCS
       // spelling does not resolve an `internal` cross-package function in
       // native's bundled import closure.
-      case Some(cert) -> Tcp.TlsTrustExclusive(caPem = TlsHost.hostCertsPem(Tls.Certificate.rawHandles(cert)))
+      case Some(cert) -> Tls.TlsTrustExclusive(caPem = TlsHost.hostCertsPem(Tls.Certificate.rawHandles(cert)))
       case None -> match caCertificate {
-        case Some(cert2) -> Tcp.TlsTrustAdditive(
+        case Some(cert2) -> Tls.TlsTrustAdditive(
           caPem = TlsHost.hostCertsPem(Tls.Certificate.rawHandles(cert2))
         )
-        case None -> Tcp.TlsTrustSystemDefault
+        case None -> Tls.TlsTrustSystemDefault
       }
     }
   }

@@ -197,6 +197,10 @@ config HttpTls {
 
 with `LYRIC_CONFIG_<APP>_HTTPTLS_CACERTPATH` etc. overriding at startup.
 
+### 3.4 Raw client TLS in `Std.TcpHost` (D799, docs/72 slice 4)
+
+`Std.TcpHost` has a client TLS connect on every target with one signature: `hostConnectTls(host, port, trust, clientIdentity, minVersion, alpnCsv, connectTimeoutMs)` and `hostUpgradeClientTls(conn, sniHost, trust, clientIdentity, minVersion, alpnCsv)`, with `trust` a `Std.Tls.TlsClientTrust` (system default, additive CA, exclusive CA, insecure) and `hostAlpn` reporting the negotiated protocol. dotnet uses `SslStream.AuthenticateAsClient` with a callback-free `CertificateChainPolicy` (exclusive: `CustomRootTrust` over the CA; additive: the platform roots plus the CA; insecure: `AllFlags`), the JVM an `SSLSocket` with `Std.TlsClientContext` and the endpoint identification algorithm set to `HTTPS` explicitly (a raw `SSLSocket` verifies no host name otherwise), native OpenSSL. Hostname verification is on for every trust decision but insecure, and tested on each target. `Std.Http`'s own clients are unchanged.
+
 ## 4. The dual-key insecure policy
 
 Disabling certificate verification requires **both** an explicit code opt-in
@@ -222,7 +226,7 @@ The warning is emitted once per constructed client (not per request):
 is not set; TLS certificate verification remains ENABLED.
 ```
 
-The env var is read at client **build** time, not per request. The same
+The env var is read at client **build** time, not per request. `Std.TcpHost`'s raw client (`TlsTrustInsecure`, §3.4) executes the decision the caller already resolved through this policy and does not read the environment itself, on every target (native always did; dotnet and the JVM since D799). The same
 dual-key policy governs the server's `TlsServerConfig.insecureSkipClientVerify`
 (mTLS testing) and the native kernel (via the existing `Std.Environment`
 native twin), so the rule is target- and direction-uniform.

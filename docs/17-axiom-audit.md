@@ -1106,6 +1106,7 @@ recorded in the §19 baseline.
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.TcpHost`            | `tcp_host.l`                 | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
+| `Std.TlsClientContext`   | `tls_client_context.l`       | 1      | 0           |
 | `Std.TlsHost`            | `tls_host.l`                 | 1      | 0           |
 | `Std.TlsServerContext`   | `tls_server_context.l`       | 1      | 0           |
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
@@ -1117,12 +1118,12 @@ recorded in the §19 baseline.
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
-| **Total**                |                              | **33** | **0**       |
+| **Total**                |                              | **34** | **0**       |
 
 ### Combined total
 
-.NET (36 stable + 2 provisional = 38) + JVM (30 stable + 0 provisional =
-30) = **68** `@axiom` annotations covering the entire extern boundary
+.NET (36 stable + 2 provisional = 38) + JVM (31 stable + 0 provisional =
+31) = **69** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.PluginWasmBind` (docs/69 §9.3) binds the
 in-process wasm host `lyric_wasmhost` through `@library`, so like
 `Std.FfiHost` its one file lowers on dotnet and the JVM and is counted once,
@@ -1258,6 +1259,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.Task` | `task.l` | java.util.concurrent.atomic.AtomicBoolean is safe to use from several threads at once, as its JDK documentation states |
 | `jvm` | `Std.TcpHost` | `tcp_host.l` | java.net.Socket, ServerSocket and javax.net.ssl.SSLSocket operations conform to their documented JVM contracts |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
+| `jvm` | `Std.TlsClientContext` | `tls_client_context.l` | java.security.KeyStore, javax.net.ssl.KeyManagerFactory, TrustManagerFactory and SSLContext, and java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.TlsHost` | `tls_host.l` | java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts |
 | `jvm` | `Std.TlsServerContext` | `tls_server_context.l` | java.security.KeyStore, javax.net.ssl.KeyManagerFactory, TrustManagerFactory and SSLContext, and java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |

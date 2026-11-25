@@ -9184,9 +9184,9 @@ func registerUnionCaseRefs(ctx: in Ctx, pkg: in String, unionName: in String, ui
     if not ctx.caseRefs.containsKey(pkg + "." + unionName + "." + bare) {
       ctx.caseRefs.add(pkg + "." + unionName + "." + bare, cref)
     }
-    // A case qualified by its package alone (`Tcp.TlsTrustInsecure` under
-    // `import Std.TcpHost as Tcp`, which the alias rewrite makes
-    // `Std.TcpHost.TlsTrustInsecure`), as the type checker resolves it.
+    // A case qualified by its package alone (`Tls.TlsTrustInsecure` under
+    // `import Std.Tls as Tls`, which the alias rewrite makes
+    // `Std.Tls.TlsTrustInsecure`), as the type checker resolves it.
     if not ctx.caseRefs.containsKey(pkg + "." + bare) {
       ctx.caseRefs.add(pkg + "." + bare, cref)
     }
