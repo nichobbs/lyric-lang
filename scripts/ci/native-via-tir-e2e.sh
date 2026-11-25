@@ -288,6 +288,23 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/rg_tir.ll" lyric-rt/
 "$work/rg_asan" > "$work/rg_asan.out" 2> /dev/null || true
 diff -u "$work/rg_tir.out" "$work/rg_asan.out"
 echo "ranged distinct types under AddressSanitizer: clean"
+# `nativeAddrOf` of a String local and `NativePtr[String]` parameters (docs/70 phase 4a, D537).
+spsrc=scripts/ci/native-via-tir/stringptr.l
+"$lyric_bin" build --target native "$spsrc" -o "$work/sp_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$spsrc" -o "$work/sp_tir" 2> "$work/sp_census.txt" >/dev/null
+cat "$work/sp_census.txt"
+"$work/sp_ast" > "$work/sp_ast.out"
+"$work/sp_tir" > "$work/sp_tir.out"
+diff -u "$work/sp_ast.out" "$work/sp_tir.out"
+printf 'dflt\ntrue\nabc\n' | diff -u - "$work/sp_tir.out"
+if grep -q '^  fallback: ' "$work/sp_census.txt"; then
+  echo "::error::stringptr.l has a TIR fallback"
+  exit 1
+fi
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/sp_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/sp_asan"
+"$work/sp_asan" > "$work/sp_asan.out"
+diff -u "$work/sp_tir.out" "$work/sp_asan.out"
+echo "string pointers under AddressSanitizer: clean"
 
 # String methods that are one runtime call, numeric conversions and `panic`.
 bsrc=scripts/ci/native-via-tir/builtins.l
@@ -628,8 +645,8 @@ cat "$work/g_census.txt"
 "$work/g_ast" > "$work/g_ast.out"
 "$work/g_tir" > "$work/g_tir.out"
 diff -u "$work/g_ast.out" "$work/g_tir.out"
-printf '42\n6000000000\n82\ngv\nhello gv\nhello gv\n' | diff -u - "$work/g_tir.out"
-grep -q '^native via-TIR: 8 of 8 functions lowered from TIR' "$work/g_census.txt" || {
+printf '42\n6000000000\n82\ngv\nhello gv\nhello gv\n-5x1.5true\n' | diff -u - "$work/g_tir.out"
+grep -q '^native via-TIR: 9 of 9 functions lowered from TIR' "$work/g_census.txt" || {
   echo "::error::expected every function of globals.l to be lowered from TIR"
   exit 1
 }

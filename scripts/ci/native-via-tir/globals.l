@@ -8,10 +8,22 @@ import Std.Core
 import Std.Console as Console
 
 val LIMIT: Int = 41
+
 val BIG: Long = 3000000000
+
 val NAME: String = "gv"
+
 val TWICE: Int = LIMIT * 2
+
 val GREETING: String = "hello " + NAME
+
+val NEG: Int = -5
+
+val LETTER: Char = 'x'
+
+val RATIO: Double = 1.5
+
+val FLAG: Bool = true
 
 func limitPlus(n: in Int): Int {
   LIMIT + n
@@ -33,6 +45,10 @@ func greeting(): String {
   GREETING
 }
 
+func literals(): String {
+  toString(NEG) + toString(LETTER) + toString(RATIO) + toString(FLAG)
+}
+
 func main(): Unit {
   println(toString(limitPlus(1)))
   println(toString(big()))
@@ -40,4 +56,5 @@ func main(): Unit {
   println(label())
   println(greeting())
   println(greeting())
+  println(literals())
 }

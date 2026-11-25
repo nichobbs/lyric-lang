@@ -1017,8 +1017,8 @@ func arrayType(env: in TirLowerEnv, len: in ArrayLen, el: in Ty): Option[NType] 
   }
 }
 
-/// `NativePtr[T]`: a raw pointer to `T`, not counted.  The pointee is a scalar or another raw
-/// pointer; a pointer to a record or union keeps its AST-path form.
+/// `NativePtr[T]`: a raw pointer to `T`, not counted.  The pointee is a scalar, a `String` (the
+/// slot a runtime call writes an owned string to) or another raw pointer; a pointer to a record or union keeps its AST-path form.
 func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
   if h.args.count != 1 {
     return None
@@ -1026,7 +1026,11 @@ func nativePtrType(env: in TirLowerEnv, h: in HostTypeRef): Option[NType] {
   match tyToN(env, h.args[0]) {
     case Some(inner) -> match inner {
       case NVoid -> None
-      case NPtr(_) -> if isRefN(inner) { None } else { Some(value = NPtr(pointee = inner)) }
+      case NPtr(_) -> if isRefN(inner) and not isStringN(inner) {
+        None
+      } else {
+        Some(value = NPtr(pointee = inner))
+      }
       case _ -> if isScalarN(inner) { Some(value = NPtr(pointee = inner)) } else { None }
     }
     case None -> None
