@@ -224,7 +224,7 @@ Running `lyric restore` downloads the declared JARs to the local Maven cache (`~
 also reads the `[maven]` tables of every workspace and path dependency the
 manifest reaches, directly or through other dependencies, and restores them
 into the same `jvm-classpath.txt`. An application that depends on `lyric-web`
-gets Undertow without declaring it. When two manifests name different
+gets those Maven artifacts without declaring them. When two manifests name different
 versions of the same artifact, the nearest one wins (the manifest itself,
 then its direct dependencies, and so on) and `lyric restore` prints a note
 naming the version it dropped.

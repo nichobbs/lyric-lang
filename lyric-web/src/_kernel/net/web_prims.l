@@ -1,4 +1,4 @@
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "jvm"))
 @io
 package Web.Kernel.Runtime
 

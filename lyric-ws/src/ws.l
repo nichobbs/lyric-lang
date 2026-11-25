@@ -54,12 +54,14 @@ import Ws.Kernel.Jvm as WsKernelJvm
 // Kernel boundary: every BCL / JDK interaction goes through a platform
 // kernel.  `Ws.Kernel.Net` is the pure-Lyric RFC 6455 server over
 // `Std.TcpHost` and runs on every target; it serves `startServer` and the
-// rate limiter everywhere.  On the JVM, `Ws.Kernel.Jvm` additionally owns the
-// registries `createEndpoint` allocates, because `lyric-web` on the JVM still
-// serves HTTP through Undertow and mounts those endpoints on it (docs/73
-// slice S7b moves them to `Ws.Kernel.Net` and deletes `Ws.Kernel.Jvm`).  A
-// registry handle says which kernel owns it (`WsKernelJvm.ownsHandle`), so the
-// `kernelXxx` wrappers below route by handle on the JVM.  This file is the
+// rate limiter everywhere.  Endpoints (`createEndpoint`, used by
+// `Web.addWebSocket`) are `Ws.Kernel.Net` registries on every target since
+// docs/73 S6: `lyric-web` on the JVM serves through `Std.HttpServer` and hands
+// an upgrade over with `takeConnection`.  `Ws.Kernel.Jvm`'s Undertow endpoint
+// handler is therefore no longer reachable; its `ownsHandle` routing below
+// stays until docs/73 S7b deletes the package.  A registry handle says which
+// kernel owns it (`WsKernelJvm.ownsHandle`), so the `kernelXxx` wrappers
+// route by handle on the JVM.  This file is the
 // public surface of the library; it must not declare its own `@axiom`
 // stubs (doing so previously shadowed the kernel boundary and broke
 // the trust-boundary audit — see lyric-lang #739).  The kernels only ever
@@ -96,7 +98,6 @@ func kernelStartServer(
   )
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func kernelCreateEndpoint(
   maxMessageSizeBytes: in Int,
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
@@ -105,17 +106,6 @@ func kernelCreateEndpoint(
   onError: in (String, String) -> Unit,
 ): Result[Int, String] {
   WsKernelNet.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
-}
-
-@cfg(feature = "jvm")
-func kernelCreateEndpoint(
-  maxMessageSizeBytes: in Int,
-  onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
-  onMessage: in (String, String, String) -> Unit,
-  onClose: in (String, Int, String) -> Unit,
-  onError: in (String, String) -> Unit,
-): Result[Int, String] {
-  WsKernelJvm.createEndpoint(maxMessageSizeBytes, onOpen, onMessage, onClose, onError)
 }
 
 /// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`.

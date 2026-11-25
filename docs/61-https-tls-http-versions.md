@@ -21,8 +21,8 @@ TLS support off-Windows and is HTTP/1.1-only by construction.
 | Client TLS | Works (platform trust), no config surface | Works (default `SSLContext`), no config surface |
 | Client HTTP version | **1.1 only** (`HttpClient` default; the kernel never sets `DefaultRequestVersion`) | **h2 with 1.1 fallback** (JDK default; `_kernel_jvm/http_host.l` never calls `Builder.version()`) |
 | Server TLS (`Std.HttpServer`) | Shipped (phase 3.3, #5884): `startListenerTls` over the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream` transport (identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS); `HttpListener` retired | Shipped (D789, docs/73 S4): the shared driver over `Std.TcpHost` (`SSLSocket`, server `SSLContext` from `Std.TlsServerContext`; identity + `minVersion` + ALPN `h2` then `http/1.1` + mTLS); the JDK `HttpsServer` kernel (phase 2.1, #5880, mTLS #5930) is gone |
-| Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881): Undertow `addHttpsListener` + `ENABLE_HTTP2`, mTLS shipped (#6017) |
-| Server HTTP version | 1.1 (`HttpListener` cannot do h2) | `Std.HttpServer`: h1 and h2 (D789, ALPN on TLS); `lyric-web` still serves on Undertow with `ENABLE_HTTP2` until docs/73 S6 |
+| Server TLS (`lyric-web`) | Shipped (phase 3.4, #5885): `Web.serveTls` terminates real TLS via `Std.HttpServer.startListenerTls`, mTLS supported | Shipped (phase 2.2, #5881) on Undertow, mTLS (#6017); since docs/73 S6 (D791) the same `Std.HttpServer.startListenerTls` path as dotnet, h2 over ALPN, mTLS |
+| Server HTTP version | 1.1 (`HttpListener` cannot do h2) | `Std.HttpServer`: h1 and h2 (D789, ALPN on TLS); `lyric-web` serves through it too since docs/73 S6 (D791), Undertow is gone |
 | native | Client TLS shipped (N9.4, #6105): `_kernel_native/http_host.l` over a hand-rolled HTTP/1.1 client + `Std.TcpHost`'s new `hostConnectTls`/`hostUpgradeClientTls`. Server shipped (N9.3, #6104) and, since docs/73 S5 (D790), the shared driver `std/_kernel/http_server.l` over `Std.TcpHost` and the `Std.HttpServerHost` seam (thread-per-connection over `pthread_create`d threads): TLS with server identity, `minVersion` and mTLS, ALPN `h2` then `http/1.1` with HTTP/2 served through `Std.HttpEngine.H2Conn` (closes N9.5/#6106; the Windows server offers HTTP/1.1 only until its transport has a per-connection lock), the `WithLimits` variants, the connection cap and the timeouts, all as on dotnet. | — |
 
 HTTP/3 exists nowhere: on .NET it needs `libmsquic` plus explicit version
@@ -58,7 +58,8 @@ D128:
    Undertow retirement is a tracked issue, not a promise. _Update (D789,
    docs/73 S4): `Std.HttpServer` on the JVM converged onto the shared driver
    and the `HttpsServer` kernel is deleted; the measured evidence is in D789.
-   `lyric-web`'s Undertow kernel stays until docs/73 S6._
+   `lyric-web`'s Undertow kernel was deleted in docs/73 S6 (D791): lyric-web
+   serves through the shared driver on every target._
 7. **The .NET server is replaced by a pure-Lyric sans-IO HTTP protocol
    engine** plus a thin `TcpListener`/`SslStream` transport kernel (§6).
 8. **HTTP/2 is TLS-only (ALPN); no h2c.** It is implemented once, in the
@@ -268,9 +269,11 @@ HttpClientBuilder.withHttpVersion(v: in HttpVersion): HttpClientBuilder
 
 ### 5.2 Server
 
-- JVM lyric-web: `UndertowOptions.ENABLE_HTTP2` is set whenever TLS is
+- JVM lyric-web: `UndertowOptions.ENABLE_HTTP2` was set whenever TLS was
   configured (§6.3) — h2 requires ALPN in practice, so it sequences with,
-  not before, server TLS.
+  not before, server TLS. _Since docs/73 S6 (D791) lyric-web has no Undertow
+  listener: `Web.serveTls` is `Std.HttpServer.startListenerTls`, which offers
+  `h2` then `http/1.1` through ALPN on dotnet and the JVM._
 - `com.sun.net.httpserver` was 1.1 only (it cannot do h2); that path's h2 story
   was the engine convergence (decision 6). Done in D789 (docs/73 S4): the JVM
   `Std.HttpServer` is the shared driver and serves h2 over ALPN, and the JDK
@@ -441,7 +444,8 @@ therefore interleave, a slow handler no longer delays other streams, a response
 of any size is delivered as the peer grants window, and chunked responses reach
 the wire per chunk (`streamWriteChunk` blocks on a 32-chunk per-stream credit,
 and returns `Err` once the peer resets the stream or the connection closes). JVM
-h2 is Undertow's own path (phase 2.2, #5881); native is phase 5 (#5890).
+h2 was Undertow's own path (phase 2.2, #5881) until docs/73 S6 (D791), when
+lyric-web moved onto the shared driver; native is phase 5 (#5890).
 
 ### 6.5 JVM convergence criteria (decision 6)
 
@@ -717,7 +721,8 @@ items marked ∥ are independent and can proceed in parallel.
    (`buildServerSslContext`) and mTLS (`buildServerSslContextWithClientCa`)
    context constructors via the shared `buildServerSslContextCore` helper.
    `ServerSslContext.rawContext` (the `SSLContext` the two `serverSslContextFromConfig*` constructors wrap) is
-   `@experimental pub` on the JVM so `lyric-web`'s Undertow `serveTls` can read it from its own project (D437).
+   `@experimental pub` on the JVM so another project can read it (D437; `Std.TcpHost`
+   does, and lyric-web's Undertow `serveTls` did until docs/73 S6).
    Verified by `tls_server_jvm_tests.l`: a real handshake proving
    negotiation lands on TLSv1.2 or TLSv1.3, and a client whose own socket is
    pinned to TLSv1.1 alone (`SSLParameters.setProtocols`) failing the
@@ -727,8 +732,9 @@ items marked ∥ are independent and can proceed in parallel.
    `Std.TcpHost`, so mTLS (`requireClientCert`/`clientCa`) works, h2 is offered
    through ALPN, and the `SSLContext` construction and floor check live in
    `_kernel_jvm/tls_server_context.l` (`Std.TlsServerContext`, imported by
-   `Std.TcpHost`, `lyric-web`'s Undertow kernel and `tls_server_jvm_tests.l`; the
-   `pub use` re-export through `Std.HttpServer` is gone). The #5930 gap is moot._
+   `Std.TcpHost` and `tls_server_jvm_tests.l`, and until docs/73 S6 by
+   `lyric-web`'s Undertow kernel; the `pub use` re-export through
+   `Std.HttpServer` is gone). The #5930 gap is moot._
 6. lyric-web: Undertow `addHttpsListener` + `ENABLE_HTTP2`, `Web.serveTls`,
    `WebTls` config template, typed dotnet `Unsupported` until phase 3;
    docs + book. (After 1; ∥ with 5.) _Shipped in phase 2.2 (issue #5881,
@@ -758,7 +764,7 @@ items marked ∥ are independent and can proceed in parallel.
    (jvm) now only rejects the one genuine misconfiguration —
    `requireClientCert` with no `clientCa` — mirroring the dotnet kernel's
    `InvalidConfig` guard. Verified end-to-end by
-   `tests/jvm_server_smoke.l`'s in-process HTTPS/h2 self-check (a real
+   `tests/jvm_server_smoke.l`'s (now `web_smoke.l`'s) in-process HTTPS/h2 self-check (a real
    Undertow TLS listener + a `Std.Http` client that trusts the fixture cert
    and asserts `HttpResponse.negotiatedVersion() == Http2`) plus a
    `curl --http2` cross-check, an mTLS-accept self-check (a client
@@ -839,8 +845,9 @@ items marked ∥ are independent and can proceed in parallel.
     end-to-end over TLS + mTLS driven by the real Lyric HTTPS client, plus the
     `WebTls` config-template env-var override), wired into CI via `lyric test
     --manifest lyric-web/lyric.toml`; the JVM path stays covered by
-    `tests/jvm_server_smoke.l`. h2/ALPN end-to-end on the dotnet server
-    remains #5889._
+    `tests/jvm_server_smoke.l` (since docs/73 S6 `tests/web_smoke.l`, run by
+    `scripts/ci/lyric-web-smoke.sh`, on dotnet and the JVM). h2/ALPN end-to-end
+    on the dotnet server remains #5889._
 
 **Phase 4 — h2 (engine, .NET first)**
 11. HPACK codec + tests. ∥ with 12. _Shipped (D-progress-695, #5886):

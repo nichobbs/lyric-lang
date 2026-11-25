@@ -1,20 +1,17 @@
 //! tests/web_socket_tests.l — a `lyric-ws` endpoint served on a `Web.serve`
 //! router's own port (`Web.addWebSocket`, #7831).
 //!
-//! Drives a real `Web.serve` listener in-process (the background-`Task.Run`
-//! pattern of `serve_crash_isolation_tests.l`) with a hand-rolled RFC 6455
-//! client over `Std.TcpHost`, so the assertions cover the whole handover:
-//! the HTTP server parses the upgrade request, `Std.HttpServer.
+//! Drives a real `Web.serve` listener in-process (a background thread from
+//! `Std.HttpServerHost`, as `serve_crash_isolation_tests.l` does) with a
+//! hand-rolled RFC 6455 client over `Std.TcpHost`, so the assertions cover the
+//! whole handover: the HTTP server parses the upgrade request, `Std.HttpServer.
 //! takeConnection` detaches the connection, and `Ws.Kernel.Net` answers
 //! `101` and serves frames on it.  Ordinary routes keep working on the same
 //! port, including on a keep-alive connection that later upgrades.
 //!
-//! dotnet-only (the client dials `Std.TcpHost`, which has no JVM kernel), so
-//! the module is gated on the `dotnet` feature and a `--target jvm` run of
-//! this manifest skips it.  The JVM mount is covered by the browser
-//! end-to-end test of `examples/ui-customers` (`scripts/ci/ui-browser-e2e.sh`),
-//! whose page and socket share one port.
-@cfg(feature = "dotnet")
+//! Runs on dotnet and the JVM (docs/73 S6: the JVM hands the connection over
+//! through `takeConnection` like dotnet, no longer mounting the endpoint on an
+//! Undertow listener); `Std.TcpHost` is the client transport on both.
 @test_module
 package Web.WebSocketTests
 
@@ -24,20 +21,12 @@ import Std.Encoding
 import Std.String
 import Std.Parse
 import Std.TcpHost
+import Std.HttpServerHost
+import Std.Time as Time
 import Std.Testing
 import Web
 import Ws
 import Ws.Handshake
-
-extern type Task = "System.Threading.Tasks.Task"
-
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
 
 // ─── Server side ────────────────────────────────────────────────────────────
 ref record RegistryHolder {
@@ -100,8 +89,8 @@ func startServer(port: in Int): Started {
   var r = Web.addWebSocket(Web.create(), endpoint)
   r = Web.addGet(r, "/", PageHandler())
   r = Web.addGet(r, "/{*path}", PageHandler())
-  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
-  threadSleep(300)
+  startTask({ -> Web.serve(r, "127.0.0.1", port) })
+  Time.sleepMillis(300)
   Started(holder = holder)
 }
 
@@ -114,7 +103,7 @@ func dial(port: in Int): Conn {
     match hostConnect("127.0.0.1", port, 0) {
       case Ok(c) -> return c
       case Err(_) -> {
-        threadSleep(50)
+        Time.sleepMillis(50)
         attempt = attempt + 1
       }
     }

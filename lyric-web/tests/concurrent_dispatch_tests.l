@@ -1,17 +1,19 @@
-//! tests/concurrent_dispatch_tests.l — regression pin for #7997: the dotnet
-//! accept loops (`Web.serve`, `Web.serveStreaming`) used to run each handler
-//! inline, so one slow or streaming request stalled every other request.
+//! tests/concurrent_dispatch_tests.l — regression pin for #7997: the accept
+//! loops (`Web.serve`, `Web.serveStreaming`) used to run each handler inline,
+//! so one slow or streaming request stalled every other request.
 //!
 //! A `/slow` handler blocks until the test releases it. While it is blocked, a
 //! request to `/fast` must still complete; the slow request is only released
 //! afterwards, so a sequential server never answers `/fast` and the test fails
-//! instead of passing by timing luck. `jvm` is excluded: Undertow already
-//! dispatches on its own worker threads.
+//! instead of passing by timing luck. Every target runs the same accept loop
+//! (docs/73 S6), so the test runs on every target; the JVM was excluded while
+//! Undertow dispatched on its own worker threads.
 @test_module
 package Web.ConcurrentDispatchTests
 
 import Std.Core
 import Std.Http
+import Std.HttpServerHost
 import Std.Time as Time
 import Web
 import Std.Testing
@@ -56,20 +58,10 @@ func concurrentRouter(): Web.Router {
   r
 }
 
-@cfg(feature = "dotnet")
-extern type Task = "System.Threading.Tasks.Task"
-
-@cfg(feature = "dotnet")
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@cfg(feature = "dotnet")
 func startServerForTest(r: in Web.Router, port: in Int): Unit {
-  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
+  startTask({ -> Web.serve(r, "127.0.0.1", port) })
 }
 
-@cfg(feature = "dotnet")
 func pollStatus(client: in HttpClient, url: in String, maxAttempts: in Int): Int {
   var attempt = 0
   var status = 0
@@ -89,7 +81,6 @@ func pollStatus(client: in HttpClient, url: in String, maxAttempts: in Int): Int
   return status
 }
 
-@cfg(feature = "dotnet")
 func fetchSlow(url: in String): Unit {
   val client = HttpClientBuilder.build(HttpClientBuilder.new())
   match await client.get(url) {
@@ -98,7 +89,6 @@ func fetchSlow(url: in String): Unit {
   }
 }
 
-@cfg(feature = "dotnet")
 test "a blocked handler does not stall other requests (#7997)" {
   val port = 18941
   val client = HttpClientBuilder.build(HttpClientBuilder.new())
@@ -108,7 +98,7 @@ test "a blocked handler does not stall other requests (#7997)" {
   assertEqualInt(pollStatus(client, base + "/fast", 40), 200, "server is up")
 
   val slowUrl = base + "/slow"
-  val _ = taskRun({ -> fetchSlow(slowUrl) })
+  startTask({ -> fetchSlow(slowUrl) })
 
   var waited = 0
   while not gate.slowEntered and waited < 5000 {

@@ -39,7 +39,7 @@
 //! runtime and launching it with `Std.ProcessHost`, but `Lyric.Emitter` is a
 //! compiler-internal package reserved for the self-hosted compiler tree
 //! (see CLAUDE.md) — not available to an ecosystem library's own tests.
-//! This file instead follows `tests/jvm_server_smoke.l`'s precedent: a plain
+//! This file instead follows `tests/web_smoke.l`'s precedent: a plain
 //! `func main` program, built and run directly, with a CI script driving it
 //! and asserting the observable behavior (see the CI step named in this
 //! header's last paragraph — pinning the post-#5261 crash-isolation
@@ -58,7 +58,7 @@
 //!                   `/health` afterward (#5261).
 //!
 //! Fixed host/port (127.0.0.1:8199) rather than reading argv/env, matching
-//! `examples/rest_service.l` (8080) and `tests/jvm_server_smoke.l` (8099)'s
+//! `examples/rest_service.l` (8080) and `tests/web_smoke.l` (8099)'s
 //! precedent of a hardcoded port for a single-purpose CI smoke program;
 //! 8199 avoids both of those already-claimed ports.
 //!

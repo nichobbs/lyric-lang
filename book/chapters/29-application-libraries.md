@@ -532,7 +532,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-i18n | stable | stable | stable (suite in CI) | D-progress-628 |
 | lyric-feature-flags | stable | stable | stable | D-progress-627 |
 | lyric-jobs | experimental | `InProcessJobScheduler` real; Quartz.NET in `Lyric.Jobs.QuartzNet`, Hangfire in `Lyric.Jobs.Hangfire` | `InProcessJobScheduler` real, suite in CI; Quartz in `Lyric.Jobs.Quartz` | D-progress-633, D552 |
-| lyric-ws | stable | stable | stable for `Ws.startServer` (the same pure-Lyric RFC 6455 server over `Std.TcpHost` as dotnet, with fragmented messages and keepalive pings; the loopback suite runs in CI); a `Web.addWebSocket` endpoint on the JVM is still Undertow-backed with the old gaps until docs/73 S7b | D-progress-634, D787 |
+| lyric-ws | stable | stable | stable for `Ws.startServer` (the same pure-Lyric RFC 6455 server over `Std.TcpHost` as dotnet, with fragmented messages and keepalive pings; the loopback suite runs in CI); a `Web.addWebSocket` endpoint is served over `Std.HttpServer.takeConnection` on every target, the JVM included, since docs/73 S6 (D791); only the unreachable Undertow package `Ws.Kernel.Jvm` remains, for docs/73 S7b to delete | D-progress-634, D787 |
 | lyric-session | stable | stable | stable (`InProcessSessionStore` real, suite in CI); the Redis backend is `Lyric.Session.Redis` in `lyric-ecosystem`; `targets = ["dotnet", "jvm", "native"]` | D-progress-631, D614 |
 | lyric-auth | stable | stable | stable (JWT/API-key verification and `Auth.Aspects.ValidateKey` real, suite in CI) | D-progress-630 |
 | lyric-resilience | experimental | stable | stable (`Resilience.Kernel.Jvm`) | D-progress-225 |
@@ -542,7 +542,7 @@ This matrix summarises which backends are real on which target; each library's R
 | lyric-cache | stable | stable; `InProcessCacheStore` is thread-safe (protected type) | stable; `InProcessCacheStore` is thread-safe (protected type) | D056 |
 | lyric-db | experimental | Npgsql and SQLite real (#5407) | PostgreSQL JDBC and SQLite JDBC real, suite in CI (#8932) | D056; `targets = ["dotnet", "jvm"]` |
 | lyric-health | stable | stable | stable | D057 |
-| lyric-web | experimental | stable | stable | D057 |
+| lyric-web | experimental | stable | stable (the same `Std.HttpServer` server as dotnet since docs/73 S6: streaming, workers, h2 over ALPN, mTLS, WebSockets; no Maven dependency of its own); native builds and serves over HTTP/1.1 | D057, D791 |
 | lyric-logging | stable | stable | stable (suite in CI) | D054 |
 | lyric-forms | experimental | experimental | experimental | D137; see Chapter 31 |
 | lyric-mcp | experimental | experimental, real (stdio, spawned-child round trips) | experimental, real | D129, D133 |
