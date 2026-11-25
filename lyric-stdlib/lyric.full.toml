@@ -131,6 +131,7 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.HttpEngine.H2Frame" = "std/http_h2frame.l"
 "Std.HttpEngine.H2Conn"  = "std/http_h2conn.l"
 "Std.TcpHost"          = "std/_kernel/tcp_host.l"
+"Std.HttpEngine.H2Client" = "std/http_h2client.l"
 
 # Tier 6 — regex compatibility shim.
 "Std.RegexSafe"        = "std/regex_safe.l"

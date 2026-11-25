@@ -101,6 +101,7 @@ standard library but are outside the SemVer boundary.
 | `Std.HttpClientWire` | `std/http_client_wire.l` | HTTP/1.1 client response parsing |
 | `Std.HttpEngine` | `std/http_engine.l` | Sans-IO HTTP engine (docs/61) |
 | `Std.HttpEngine.H2Conn` | `std/http_h2conn.l` | HTTP/2 connection state machine |
+| `Std.HttpEngine.H2Client` | `std/http_h2client.l` | HTTP/2 client driver over `Std.TcpHost` |
 | `Std.HttpEngine.H2Frame` | `std/http_h2frame.l` | HTTP/2 frame codec |
 | `Std.HttpEngine.Hpack` | `std/http_hpack.l` | HPACK codec |
 | `Std.Linalg` | `std/linalg.l` | `Vec2`–`Vec4`, `Quat`, `Mat3`, `Mat4`, `Rgba8` (docs/67) |
