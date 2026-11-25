@@ -19538,11 +19538,7 @@ func tirUnitMaps(
                       LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
                     )
                   }
-<<<<<<< HEAD
-                } else if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
-=======
-                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
->>>>>>> origin/main
+                } else if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
