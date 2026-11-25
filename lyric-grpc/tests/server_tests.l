@@ -7,6 +7,7 @@
 //! dotnet, grpc-java on the JVM), so this also checks the server against an
 //! implementation it does not share code with on dotnet, where the server is
 //! pure Lyric over `Std.HttpEngine.H2Conn`.
+@cfg(not(feature = "native"))
 @test_module
 package Grpc.ServerTests
 

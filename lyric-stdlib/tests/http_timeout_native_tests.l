@@ -69,7 +69,10 @@ func tlsClient(): HttpClient {
     case Ok(c) -> c
     case Err(e) -> panic(Tls.TlsError.message(e))
   }
-  HttpClientBuilder.new().withNoRedirects().withExclusiveCaCertificate(ca).build()
+  // The raw peers below speak HTTP/1.1 after the handshake, which the shared
+  // TLS server would otherwise answer with ALPN h2; the h2 path is covered by
+  // http_client_h2_tests.l.
+  HttpClientBuilder.new().withNoRedirects().withHttpVersion(Http11).withExclusiveCaCertificate(ca).build()
 }
 
 func serverTls(): Tls.TlsServerConfig {
