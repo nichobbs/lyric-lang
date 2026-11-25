@@ -625,8 +625,8 @@ cat "$work/g_census.txt"
 "$work/g_ast" > "$work/g_ast.out"
 "$work/g_tir" > "$work/g_tir.out"
 diff -u "$work/g_ast.out" "$work/g_tir.out"
-printf '42\n6000000000\n82\ngv\nhello gv\nhello gv\n' | diff -u - "$work/g_tir.out"
-grep -q '^native via-TIR: 8 of 8 functions lowered from TIR' "$work/g_census.txt" || {
+printf '42\n6000000000\n82\ngv\nhello gv\nhello gv\n-5x1.5true\n' | diff -u - "$work/g_tir.out"
+grep -q '^native via-TIR: 9 of 9 functions lowered from TIR' "$work/g_census.txt" || {
   echo "::error::expected every function of globals.l to be lowered from TIR"
   exit 1
 }
