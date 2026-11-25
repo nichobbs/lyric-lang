@@ -288,6 +288,7 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/rg_tir.ll" lyric-rt/
 "$work/rg_asan" > "$work/rg_asan.out" 2> /dev/null || true
 diff -u "$work/rg_tir.out" "$work/rg_asan.out"
 echo "ranged distinct types under AddressSanitizer: clean"
+
 # `nativeAddrOf` of a String local and `NativePtr[String]` parameters (docs/70 phase 4a, D537).
 spsrc=scripts/ci/native-via-tir/stringptr.l
 "$lyric_bin" build --target native "$spsrc" -o "$work/sp_ast" >/dev/null
