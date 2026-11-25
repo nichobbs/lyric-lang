@@ -18960,6 +18960,8 @@ record TirUnitMaps {
   cases: Map[Int, LlvmTir.TirCaseRef]
   enums: Map[Int, Bool]
   enumCases: Map[Int, Int]
+  /// The distinct types without a range, by symbol, as their underlying types.
+  distincts: Map[Int, NType] = newMap()
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
@@ -19057,6 +19059,7 @@ func tirKnownTypes(
   recs: in Map[Int, LlvmTir.TirRecLayout],
   unions: in Map[Int, LlvmTir.TirUnionLayout],
   enums: in Map[Int, Bool],
+  distincts: in Map[Int, NType],
 ): Map[Int, NType] {
   val known: Map[Int, NType] = newMap()
   for id in mapKeys(recs) {
@@ -19073,6 +19076,12 @@ func tirKnownTypes(
   }
   for id in mapKeys(enums) {
     known.add(id, NI32)
+  }
+  for id in mapKeys(distincts) {
+    match mapGet(distincts, id) {
+      case Some(t) -> known.add(id, t)
+      case None -> ()
+    }
   }
   known
 }
@@ -19131,9 +19140,10 @@ func registerTirInstances(
   recs: in Map[Int, LlvmTir.TirRecLayout],
   unions: in Map[Int, LlvmTir.TirUnionLayout],
   enums: in Map[Int, Bool],
+  distincts: in Map[Int, NType],
   cases: in Map[Int, LlvmTir.TirCaseRef],
 ): Unit {
-  val known = tirKnownTypes(recs, unions, enums)
+  val known = tirKnownTypes(recs, unions, enums, distincts)
   var progress = true
   var rounds = 0
   while progress and rounds < 32 {
@@ -19370,6 +19380,7 @@ func tirUnitMaps(
   val unions: Map[Int, LlvmTir.TirUnionLayout] = newMap()
   val unionIds: Map[String, Int] = newMap()
   val enums: Map[Int, Bool] = newMap()
+  val distincts: Map[Int, NType] = newMap()
   val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
@@ -19485,7 +19496,12 @@ func tirUnitMaps(
                     unions.add(id, tirUnionLayout(ui))
                     unionIds.add(pkg + "." + rest, id)
                   }
-                  case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") { enums.add(id, true) }
+                  case None -> match mapGet(ctx.distinctDefs, pkg + "." + rest) {
+                    case Some(di) -> if not di.hasRange { distincts.add(id, di.underlying) }
+                    case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") {
+                      enums.add(id, true)
+                    }
+                  }
                 }
               }
             } else {
@@ -19628,7 +19644,7 @@ func tirUnitMaps(
   val instDecls: Map[Int, Tir.TFnDecl] = newMap()
   val instKeys: Map[Int, String] = newMap()
   if inputs.count > 1 {
-    registerTirInstances(ctx, inputs[1], invariantRecs, recs, unions, enums, cases)
+    registerTirInstances(ctx, inputs[1], invariantRecs, recs, unions, enums, distincts, cases)
     registerTirInstanceFns(sigs, inputs, fnNames, intrinsics, instFns, unitPkg)
     for ii in inputs[1].instances {
       instInfos.add(ii.inst.id, ii)
@@ -19650,6 +19666,7 @@ func tirUnitMaps(
     cases = cases,
     enums = enums,
     enumCases = enumCases,
+    distincts = distincts,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
     protRecs = protRecs,
@@ -19699,7 +19716,7 @@ func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool
   val gkey = ipkg + "." + bare + "/" + decl.params.count.toString()
   val fd = match mapGet(ctx.genericFnDefs, gkey) { case Some(x) -> x; case None -> return false }
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(x) -> x; case None -> return false }
-  val known = tirKnownTypes(maps.recs, maps.unions, maps.enums)
+  val known = tirKnownTypes(maps.recs, maps.unions, maps.enums, maps.distincts)
   val envTys: List[NType] = newList()
   for a in ii.args {
     match tirInstArg(ctx, known, a) {
@@ -19735,6 +19752,7 @@ func lowerWithTuples(
       cases = maps.cases,
       enums = maps.enums,
       enumCases = maps.enumCases,
+      distincts = maps.distincts,
       tuples = maps.tuples,
       funcs = maps.funcs,
       lists = maps.lists,

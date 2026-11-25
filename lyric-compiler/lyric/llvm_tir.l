@@ -270,6 +270,9 @@ pub record TirLowerEnv {
   /// by the case's symbol.
   unions: Map[Int, TirUnionLayout] = newMap()
   cases: Map[Int, TirCaseRef] = newMap()
+  /// The distinct types without a range, keyed by symbol: each is its underlying type's representation, so
+  /// wrapping and unwrapping one changes the type only.  A range-checked distinct type stays on the AST path.
+  distincts: Map[Int, NType] = newMap()
   /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
   /// case's symbol).  An enum value is its `i32` ordinal.
   /// A set: the value is always `true`.
@@ -891,6 +894,8 @@ func tyToN(env: in TirLowerEnv, t: in Ty): Option[NType] {
           case Some(u) -> Some(value = u.ty)
           case None -> if env.enums.containsKey(sym.id) {
             Some(value = NI32)
+          } else if env.distincts.containsKey(sym.id) {
+            mapGet(env.distincts, sym.id)
           } else {
             match mapGet(env.ifaces, sym.id) {
               case Some(il) -> Some(value = il.boxTy)
@@ -4831,6 +4836,16 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
       }
     }
     case CvUpcast(iface) -> lowerUpcast(c, e, iface, inner)
+    case CvWrapDistinct(sym) -> if c.env.distincts.containsKey(sym.id) {
+      lowerExpr(c, inner)
+    } else {
+      unsupported(c, "a conversion to the distinct type " + renderTyIn(c.env, e.ty))
+    }
+    case CvUnwrapDistinct(sym) -> if c.env.distincts.containsKey(sym.id) {
+      lowerExpr(c, inner)
+    } else {
+      unsupported(c, "a conversion from the distinct type " + renderTyIn(c.env, inner.ty))
+    }
     case CvWiden(_) -> {
       val v = lowerExpr(c, inner)
       match tyToN(c.env, e.ty) {
