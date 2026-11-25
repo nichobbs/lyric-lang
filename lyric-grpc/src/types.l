@@ -11,6 +11,7 @@ import Std.String as Str
 import Std.Char as Ch
 import Std.Encoding
 import Std.Collections
+import Std.Tls
 
 // ─── Channel ─────────────────────────────────────────────────────────────────
 /// An open gRPC channel to a single server address.
@@ -132,10 +133,18 @@ pub record GrpcMetadataEntry {
   // ─── Call options ─────────────────────────────────────────────────────────────
 }
 
+/// How a request message is compressed (`grpc-encoding`). Responses are
+/// decoded whichever the server chose, provided it is `gzip` or `identity`.
+pub enum GrpcCompression {
+  case NoCompression
+  case Gzip
+}
+
 /// Per-call options.
 pub record GrpcCallOptions {
   timeoutMs: Option[Int]
   metadata: slice[GrpcMetadataEntry]
+  compression: GrpcCompression
   // ─── Server-streaming response ────────────────────────────────────────────────
 }
 
@@ -171,6 +180,89 @@ internal func wrapServerHandle(id: in Int): GrpcServerHandle {
 /// Recover the platform kernel's registry key from a `GrpcServerHandle`. Kernel-only.
 internal func serverHandleId(h: in GrpcServerHandle): Int {
   h.handle
+}
+
+// ─── Channel options ──────────────────────────────────────────────────────────
+/// Channel configuration for `Grpc.openChannelWith`; start from
+/// `Grpc.defaultChannelOptions()` and change fields. The values are copied when
+/// the channel opens, so later changes do not reach it.
+///
+///   - `trust`, `identity`, `minVersion`: TLS for an `https://` address
+///     (`Std.Tls`): the trust decision, an mTLS client identity, the protocol
+///     floor.
+///   - `maxReceiveMessageBytes`: the largest response message accepted, also the
+///     bound on a decompressed one (`ResourceExhausted` beyond; 4 MiB).
+///   - `maxConnections`: HTTP/2 connections the channel may open to the server
+///     (1, as grpc-java). Calls multiplex on a connection up to the server's
+///     `SETTINGS_MAX_CONCURRENT_STREAMS`; a further connection is opened only
+///     when every open one is full, and calls queue first-in first-out when the
+///     limit is reached.
+///   - `connectTimeoutMs`: bounds one dial.
+///   - `keepAliveIntervalMs` (0 is off), `keepAliveTimeoutMs`,
+///     `keepAliveWithoutCalls`: HTTP/2 PING keepalive. Servers that answer
+///     frequent pings with GOAWAY make this opt-in.
+///   - `idleTimeoutMs`: close a connection with no calls this long (0 is never;
+///     30 minutes by default). A call reconnects transparently.
+///   - `userAgent`: the `user-agent` header.
+///   - `reconnectInitialBackoffMs`, `reconnectMaxBackoffMs`: after a failed dial
+///     calls fail with `Unavailable` until the backoff elapses; it grows by
+///     1.6 per consecutive failure, with 20 percent jitter, up to the maximum.
+pub ref record ChannelOptions {
+  var trust: TlsClientTrust
+  var identity: Option[Identity]
+  var minVersion: TlsVersion
+  var maxReceiveMessageBytes: Int
+  var maxConnections: Int
+  var connectTimeoutMs: Int
+  var keepAliveIntervalMs: Int
+  var keepAliveTimeoutMs: Int
+  var keepAliveWithoutCalls: Bool
+  var idleTimeoutMs: Int
+  var userAgent: String
+  var reconnectInitialBackoffMs: Int
+  var reconnectMaxBackoffMs: Int
+}
+
+/// The defaults documented on `ChannelOptions`.
+pub func defaultChannelOptions(): ChannelOptions {
+  ChannelOptions(
+    trust = TlsTrustSystemDefault,
+    identity = None,
+    minVersion = Tls12,
+    maxReceiveMessageBytes = 4194304,
+    maxConnections = 1,
+    connectTimeoutMs = 10000,
+    keepAliveIntervalMs = 0,
+    keepAliveTimeoutMs = 20000,
+    keepAliveWithoutCalls = false,
+    idleTimeoutMs = 1800000,
+    userAgent = "lyric-grpc/0.1",
+    reconnectInitialBackoffMs = 1000,
+    reconnectMaxBackoffMs = 120000
+  )
+}
+
+/// Why `options` cannot be used, or "" when it can.
+pub func channelOptionsProblem(options: in ChannelOptions): String {
+  if options.maxReceiveMessageBytes < 1 {
+    return "maxReceiveMessageBytes must be positive"
+  }
+  if options.maxConnections < 1 {
+    return "maxConnections must be at least 1"
+  }
+  if options.connectTimeoutMs < 0 or options.keepAliveIntervalMs < 0 or options.idleTimeoutMs < 0 {
+    return "timeouts must not be negative"
+  }
+  if options.keepAliveTimeoutMs < 1 {
+    return "keepAliveTimeoutMs must be positive"
+  }
+  if options.reconnectInitialBackoffMs < 1 or options.reconnectMaxBackoffMs < options.reconnectInitialBackoffMs {
+    return "reconnect backoff must satisfy 1 <= initial <= max"
+  }
+  if options.userAgent.length == 0 {
+    return "userAgent must not be empty"
+  }
+  ""
 }
 
 // ─── Server routing ───────────────────────────────────────────────────────────

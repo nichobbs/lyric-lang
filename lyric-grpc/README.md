@@ -4,9 +4,13 @@
 
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
-> **Status**: @experimental. The **client** is real on both targets and covered by end-to-end tests against an in-process gRPC server: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`addUnary`, `addServerStreaming`, `start`, `startHandle`, `stop`) works on both targets for unary and server-streaming methods, plaintext HTTP/2, and is covered by `tests/server_tests.l`. The aspect templates in `Grpc.Aspects` are `dotnet` only.
+> **Status**: @experimental. The **client** is pure Lyric (`Grpc.Client` over `Std.HttpEngine.H2Client`, docs/72 slice 6, D802) on both targets, pooled and multiplexed, with gzip, `openChannelWith` (TLS trust and identity, limits, keepalive, idle timeout, reconnect backoff) and one transparent retry of unprocessed streams; the `legacy-client` feature selects the former SDK kernels until slice 10. It is covered by end-to-end tests against in-process gRPC servers: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`addUnary`, `addServerStreaming`, `start`, `startHandle`, `stop`) works on both targets for unary and server-streaming methods, plaintext HTTP/2, and is covered by `tests/server_tests.l`. The aspect templates in `Grpc.Aspects` are `dotnet` only.
 
 ## Platform parity
+
+The client below is `Grpc.Client` unless built with `--features legacy-client`. Its tests are target neutral: `tests/client_h2_tests.l` (a scripted `H2Conn` peer: Trailers-Only, non-200, bad content type, status tables, large messages, `MAX_CONCURRENT_STREAMS`, GOAWAY, retry, idle close, TLS) and `tests/wire_tests.l`; `tests/client_dotnet_tests.l` and `tests/server_tests.l` run it against the pure-Lyric peer and the D287 server on dotnet, `tests/client_jvm_tests.l` and `tests/server_tests.l` against a grpc-java server on the JVM.
+
+Behaviour to know: one HTTP/2 connection per channel by default (`ChannelOptions.maxConnections`), calls beyond the server's `MAX_CONCURRENT_STREAMS` queue first-in first-out; a failed dial makes calls fail `Unavailable` until a jittered backoff elapses; a call refused or above a GOAWAY's last-stream-id is sent once more, nothing else is retried; responses over `maxReceiveMessageBytes` (4 MiB, also decompressed) are `ResourceExhausted`; `grpc-status-details-bin` is not parsed; error text differs from Grpc.Net and grpc-java, so do not match on it. Not native yet (slice 7).
 
 | Feature flag | Backend | Client | Server hosting | Tests |
 |---|---|---|---|---|
@@ -26,6 +30,8 @@ Differences to know about:
 | Package | Description |
 |---|---|
 | `Grpc` | Core: RPC calls, channel management, metadata |
+| `Grpc.Client` | Pure-Lyric client over `Std.HttpEngine.H2Client` (default) |
+| `Grpc.Wire` | gRPC-over-HTTP/2 framing, gzip, `grpc-timeout`, status mapping |
 | `Grpc.Kernel.Net` | .NET extern boundary (ASP.NET Core gRPC) |
 | `Grpc.Kernel.Jvm` | JVM extern boundary (grpc-java) |
 
@@ -36,8 +42,9 @@ Differences to know about:
 "Lyric.Grpc" = { path = "../lyric-grpc" }
 
 [features]
-dotnet = []    # enable .NET backend
-jvm = []       # enable JVM backend
+dotnet = []    # server kernel, rate limit and SDK dependencies (.NET)
+jvm = []       # the same for the JVM
+legacy-client = []  # use the SDK client kernels instead of Grpc.Client (removed in slice 10)
 ```
 
 ## Quick start
