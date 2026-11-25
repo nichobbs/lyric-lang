@@ -26,6 +26,10 @@ func probes(s: in String): Bool {
   s.startsWith("he") and s.endsWith("lo") and s.contains("ell")
 }
 
+func positions(s: in String): Int {
+  s.indexOf("l") * 100 + s.lastIndexOf("l") * 10 + s.indexOf("zz")
+}
+
 func widen(n: in Int): Long {
   n.toLong() * 1000000i64
 }
@@ -48,6 +52,7 @@ func main(): Unit {
   println(swap("banana"))
   println(toString(firstUnit("A")))
   println(toString(probes("hello")))
+  println(toString(positions("hello")))
   println(toString(widen(5000)))
   println(toString(narrow(4294967297i64)))
   println(toString(approx(3)))

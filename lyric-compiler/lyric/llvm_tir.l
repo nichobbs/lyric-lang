@@ -4662,6 +4662,15 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
     c.insns.add(NZExt(dest = d, fromTy = NI8, value = byte, toTy = NI32))
     return Some(value = Val(ty = NI32, value = NLocal(name = d)))
   }
+  if (method == "indexOf" or method == "lastIndexOf") and n == 2 {
+    val rt = if method == "indexOf" { "lyric_string_index_of" } else { "lyric_string_last_index_of" }
+    val r = borrow(c, lowerExpr(c, ins[0]))
+    val a = borrow(c, lowerExpr(c, ins[1]))
+    val wide = callRt(c, rt, NI64, arg2(sTy, r.value, sTy, a.value))
+    val d = tmp(c)
+    c.insns.add(NTrunc(dest = d, fromTy = NI64, value = wide, toTy = NI32))
+    return Some(value = Val(ty = NI32, value = NLocal(name = d)))
+  }
   if (method == "startsWith" or method == "endsWith" or method == "contains") and n == 2 {
     val fn = match method {
       case "startsWith" -> "lyric_string_starts_with"
