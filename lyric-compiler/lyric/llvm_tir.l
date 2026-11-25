@@ -1794,7 +1794,12 @@ func declareSlot(c: in LCtx, d: in LocalDecl): Option[Slot] {
     }
     case Some(nt) -> match nt {
       case NVoid -> {
-        c.problems.add("a local of type " + renderTyIn(c.env, d.ty))
+        // A Unit local owns no storage: its slot is a marker (empty pointer, `NVoid`) so a read yields
+        // Unit and an assignment only evaluates its right-hand side.
+        if c.slots.containsKey(d.id.id) {
+          c.slots.remove(d.id.id)
+        }
+        c.slots.add(d.id.id, Slot(ptr = "", ty = NVoid))
         None
       }
       case _ -> {
@@ -1816,10 +1821,13 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XLit(lit) -> lowerLit(c, e, lit)
     case XLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "a local with no slot")
-      case Some(slot) -> {
-        val d = tmp(c)
-        c.insns.add(NLoad(dest = d, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
-        Val(ty = slot.ty, value = NLocal(name = d))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> unitVal()
+        case _ -> {
+          val d = tmp(c)
+          c.insns.add(NLoad(dest = d, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
+          Val(ty = slot.ty, value = NLocal(name = d))
+        }
       }
     }
     case XCall(callee, args) -> lowerCall(c, e, callee, args)
@@ -2737,16 +2745,11 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
             match a {
               case TArgIn(v) -> {
                 val av = borrow(c, lowerExpr(c, v))
-                match av.ty {
-                  case NVoid -> c.problems.add("a Unit argument")
-                  case _ -> {
-                    if anyByRef and isRefN(av.ty) {
-                      retainRef(c, av.ty, av.value)
-                      held.add(av)
-                    }
-                    nargs.add(NArg(ty = av.ty, value = av.value))
-                  }
+                if anyByRef and isRefN(av.ty) {
+                  retainRef(c, av.ty, av.value)
+                  held.add(av)
                 }
+                nargs.add(NArg(ty = av.ty, value = av.value))
               }
               case TArgOut(place) -> nargs.add(byRefArg(c, place))
               case TArgInout(place) -> nargs.add(byRefArg(c, place))
@@ -2955,6 +2958,10 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     }
     match mapGet(c.slots, cap.local.id) {
       case Some(sl) -> {
+        match sl.ty {
+          case NVoid -> return unsupported(c, "a capture of a Unit local")
+          case _ -> ()
+        }
         capTys.add(sl.ty)
         capSlots.add(sl)
       }
@@ -3082,7 +3089,10 @@ func byRefArg(c: in LCtx, place: in TPlace): NArg {
   val none = NArg(ty = NI8, value = NLitInt(v = 0i64, ty = NI8))
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
-      case Some(slot) -> NArg(ty = NPtr(pointee = slot.ty), value = NLocal(name = slot.ptr))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> NArg(ty = NVoid, value = NUndef(ty = NVoid))
+        case _ -> NArg(ty = NPtr(pointee = slot.ty), value = NLocal(name = slot.ptr))
+      }
       case None -> {
         c.problems.add("a by-reference argument with no slot")
         none
@@ -3217,6 +3227,10 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     match ins[0].kind {
       case XLocal(id) -> match mapGet(c.slots, id.id) {
         case Some(slot) -> {
+          match slot.ty {
+            case NVoid -> return unsupported(c, "the address of a Unit local")
+            case _ -> ()
+          }
           val pt = NPtr(pointee = slot.ty)
           return match tyToN(c.env, rty) {
             case Some(want) -> if nTypeToIrString(want) == nTypeToIrString(pt) {
@@ -3589,10 +3603,7 @@ func lowerAsyncCall(c: in LCtx, e: in TExpr, irName: in String, args: in List[TA
     match a {
       case TArgIn(v) -> {
         val av = borrow(c, lowerExpr(c, v))
-        match av.ty {
-          case NVoid -> c.problems.add("a Unit argument")
-          case _ -> nargs.add(NArg(ty = av.ty, value = av.value))
-        }
+        nargs.add(NArg(ty = av.ty, value = av.value))
       }
       case _ -> {
         c.problems.add("an out argument of an async call")
@@ -4052,7 +4063,10 @@ func arrayElemPtr(c: in LCtx, arrTy: in NType, base: in NValue, idx: in NValue):
 func arrayPlaceAddr(c: in LCtx, e: in TExpr): Option[NValue] {
   match e.kind {
     case XLocal(id) -> match mapGet(c.slots, id.id) {
-      case Some(slot) -> Some(value = NLocal(name = slot.ptr))
+      case Some(slot) -> match slot.ty {
+        case NVoid -> None
+        case _ -> Some(value = NLocal(name = slot.ptr))
+      }
       case None -> None
     }
     case XField(recv, field) -> match fieldOwnerLayout(c, field.owner) {
@@ -5095,7 +5109,13 @@ func lowerAssign(c: in LCtx, place: in TPlace, op: in AssignKind, value: in TExp
   match place.kind {
     case PlLocal(id) -> match mapGet(c.slots, id.id) {
       case None -> unsupported(c, "an assignment to a local with no slot")
-      case Some(slot) -> assignSlot(c, slot, place.ty, op, value)
+      case Some(slot) -> match slot.ty {
+        case NVoid -> {
+          discard(c, lowerExpr(c, value))
+          unitVal()
+        }
+        case _ -> assignSlot(c, slot, place.ty, op, value)
+      }
     }
     case PlField(recv, field) -> match heapFieldPlace(c, recv, field) {
       case None -> unitVal()
@@ -5746,7 +5766,10 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
     case TsExpr(x) -> discard(c, lowerExpr(c, x))
     case TsScope(_, body) -> discard(c, lowerExpr(c, body))
     case TsVar(decl, init) -> match declareSlot(c, decl) {
-      case None -> ()
+      case None -> match init {
+        case Some(x) -> discard(c, lowerExpr(c, x))
+        case None -> ()
+      }
       case Some(slot) -> {
         val v = match init {
           case Some(x) -> own(c, lowerExpr(c, x))
@@ -5777,7 +5800,7 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
           c.problems.add("a binding with a sub-pattern")
         }
         case None -> match declareSlot(c, decl) {
-          case None -> ()
+          case None -> discard(c, lowerExpr(c, init))
           case Some(slot) -> {
             val v = own(c, lowerExpr(c, init))
             c.insns.add(NStore(ty = slot.ty, value = v.value, ptr = NLocal(name = slot.ptr)))
@@ -5989,15 +6012,16 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
       case Some(t) -> t
       case None -> return fallback(fn.sym, "parameter type " + renderTyIn(env, p.local.ty))
     }
-    match pt {
-      case NVoid -> return fallback(fn.sym, "a Unit parameter")
-      case _ -> ()
-    }
     val pname = "a" + toString(p.local.id.id)
     if byRef and fn.isAsync {
       return fallback(fn.sym, "an async function with an out or inout parameter")
     }
-    if byRef {
+    val ptUnit = match pt { case NVoid -> true; case _ -> false }
+    if ptUnit {
+      // A Unit parameter keeps its position (the callers pass a placeholder) and owns no storage.
+      params.add(NParam(name = pname, ty = NVoid))
+      c.slots.add(p.local.id.id, Slot(ptr = "", ty = NVoid))
+    } else if byRef {
       // An out or inout parameter is the address of the caller's cell: the local's slot is that
       // pointer, so every read and write reaches the caller's storage, and the callee owns
       // nothing (it is never tracked for release).
