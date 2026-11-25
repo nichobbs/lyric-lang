@@ -5,10 +5,9 @@
 //! `Grpc.*` client API (`Grpc.Kernel.Jvm`'s grpc-java binding) over loopback
 //! to an in-process grpc-java `Server` built here from the same grpc-java
 //! classes the client uses, with a pass-through marshaller so the wire bytes
-//! are exactly what the test sends. Declaring `extern`s in a test file follows
-//! `jvm_server_smoke.l`: a documented test-only exception to the
-//! `_kernel/`-only extern rule for driving the opposite side of a real
-//! protocol.
+//! are exactly what the test sends. Declaring `extern`s in a test file is a
+//! documented test-only exception to the `_kernel/`-only extern rule for
+//! driving the opposite side of a real protocol.
 //!
 //! Methods of service `test.Echo` (the same table as the dotnet suite):
 //!   Echo           unary, replies with the request message

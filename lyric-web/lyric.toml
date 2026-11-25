@@ -2,19 +2,17 @@
 #
 # Ships four packages:
 #   Web                — Router/Request/Response/Middleware, static file
-#                        serving, the HTTP server entry point, and runtime
-#                        config blocks.  Built on Std.HttpServer on
-#                        `dotnet`; on `jvm`, Web.Kernel.Runtime binds
-#                        io.undertow directly (Std.HttpServer's JVM kernel
-#                        doesn't yet expose the primitives Web needs — see
-#                        that kernel's header comment).
+#                        serving, the HTTP server entry points, and runtime
+#                        config blocks.  Built on Std.HttpServer, the shared
+#                        pure-Lyric server driver, on every target (dotnet,
+#                        jvm, native; docs/73 S6, D791).
 #   Web.OpenApi        — OpenAPI 3.1 spec type vocabulary and code-first
 #                        spec-builder.
 #   Web.Aspects        — pub aspect templates: RequiresAuth, RequiresRole,
 #                        ApiKey, RateLimit, HttpCircuitBreaker.
-#   Web.Kernel.Runtime — extern boundary: rate limiter on both targets, plus
-#                        the full Undertow HTTP server on `jvm` (exactly one
-#                        file compiled per build, selected by feature).
+#   Web.Kernel.Runtime — the per-target kernel: rate limiter, background
+#                        workers and request jobs, crash isolation, the
+#                        WebSocket hand-over.  No HTTP server code.
 #
 # Both development workflows are supported:
 #   Code-first:  populate a Web.OpenApi.Spec value, then either attach it
@@ -37,11 +35,11 @@ license     = "Apache-2.0"
 
 [features]
 default = ["dotnet"]
-# ASP.NET Core / Kestrel HTTP server backend.
+# --target dotnet (Std.HttpServer over System.Net.Sockets).
 dotnet = []
-# Undertow HTTP server backend.
+# The same server on --target jvm (Std.HttpServer over java.nio sockets; no Maven dependency of its own).
 jvm    = []
-# The same pure-Lyric server over Std.HttpServer's native kernel, on --target native.
+# The same server on --target native.
 native = []
 
 [project]
@@ -56,17 +54,14 @@ output_assembly = "Web.dll"
 "Web.OpenApi"     = "src/openapi.l"
 # Pub aspect templates for cross-cutting handler concerns.
 "Web.Aspects"     = "src/aspects.l"
-# Extern boundary — exactly one file is compiled per build (selected by feature):
-#   dotnet → rate limiter only; Web.serve runs its own
-#            Std.HttpServer accept loop and never calls into this package.
-#   jvm    → rate limiter (ConcurrentHashMap) *and* the full Undertow HTTP
-#            server; Web.serve's jvm branch delegates entirely to this
-#            package's serve().
+# Per-target kernel.  The rate limiter, worker loop, request jobs and the
+# WebSocket hand-over are shared (web_kernel.l); exactly one prims file is
+# compiled per build, selected by feature: net/ for dotnet and jvm (try/catch
+# isolation), native/ for native (no unwinding, D-N-003).
 "Web.Kernel.Runtime" = [
   "src/_kernel/net/web_kernel.l",
   "src/_kernel/net/web_prims.l",
   "src/_kernel/native/web_prims.l",
-  "src/_kernel/jvm/web_kernel.l",
 ]
 
 [project.tests]
@@ -88,11 +83,7 @@ output_assembly = "Web.dll"
 "Lyric.Ws"           = { workspace = true }
 
 [nuget]
-# The dotnet HTTP server (Std.HttpServer, System.Net.HttpListener) is part
-# of the base class library; no extra package needed.
+# The dotnet HTTP server (Std.HttpServer over System.Net.Sockets) is part of
+# the base class library; no extra package needed.
 # Add if using OpenTelemetry integration:
 # "OpenTelemetry.Extensions.Hosting" = "1.9.0"
-
-[maven]
-# JVM HTTP server backend (Phase 6).
-"io.undertow:undertow-core" = "2.3.13.Final"

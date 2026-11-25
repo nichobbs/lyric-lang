@@ -1,29 +1,32 @@
-//! Web.Kernel.Runtime (dotnet and native) — pure-Lyric rate limiter for lyric-web.
+//! Web.Kernel.Runtime (dotnet, the JVM and native) — the per-target kernel of
+//! lyric-web.
 //!
-//! Replaces the former @externTarget("Lyric.Ws.RateLimitHost.checkRateLimit")
-//! which pointed at a non-existent F# type.  The limiter is
-//! `Resilience.takeToken`'s refilling token bucket, the same one
-//! Ws.Kernel.Net.checkRateLimit uses, with separate process-global state
-//! keyed by the supplied endpoint string.
+//! lyric-web serves HTTP through `Std.HttpServer` on every target (docs/73 S6,
+//! D791): `Web.serve` runs its own accept loop and calls into this package
+//! only for what is genuinely per-target:
 //!
-//! The rate limiter and `startWorkerLoop` (issue #5359's background-worker
-//! dispatch, #778's fire-and-forget task boundary) live here: Web.serve's
-//! dotnet branch runs its own Std.HttpServer accept loop directly and
-//! never calls into this package for anything else. The JVM twin
-//! (`_kernel/jvm/web_kernel.l`, same package name — exactly one file is
-//! compiled per build, selected by feature) additionally exposes a full
-//! Undertow-backed serve(), because Std.HttpServer's JVM kernel doesn't
-//! yet expose the primitives Web.dispatch needs; it does not yet expose a
-//! `startWorkerLoop` twin (tracked separately, blocked on the pre-existing
-//! JVM compile failures #5444/#5458 that already keep `lyric-web`'s test
-//! suite from building on that target).
+//!   * the rate limiter (`checkRateLimit`), `Resilience.takeToken`'s
+//!     refilling token bucket, the same one `Ws.Kernel.Net.checkRateLimit`
+//!     uses, with separate process-global state keyed by the endpoint string;
+//!   * `startWorkerLoop` (issue #5359's background-worker dispatch, #778's
+//!     fire-and-forget task boundary) and `spawnRequestJob` (one background
+//!     task per request, #7997), both over `Ws.Kernel.Net.runBackground`: a
+//!     thread-pool task on dotnet, a virtual thread on the JVM, a thread on
+//!     native;
+//!   * crash isolation (`runAcceptStep`, and the guarded job/tick runners in
+//!     `web_prims.l`): `try`/`catch` on dotnet and the JVM (`_kernel/net/
+//!     web_prims.l`), none on native, which has no unwinding (D-N-003;
+//!     `_kernel/native/web_prims.l`);
+//!   * `upgradeWebSocket`, the `Web.addWebSocket` hand-over through
+//!     `Std.HttpServer.takeConnection`;
+//!   * on native, `realPath` for the static-file root check.
 //!
-//! The file is compiled for `dotnet` and `native` (the locks and background
-//! threads come from `Ws.Kernel.Net`'s per-target primitives) and erased for
-//! `jvm`.
+//! The package has two alternative sources for the prims: exactly one of
+//! `_kernel/net/web_prims.l` (dotnet and JVM) and `_kernel/native/web_prims.l`
+//! is compiled per build, selected by feature.  This file is compiled for all
+//! three targets.
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-@cfg(any(feature = "dotnet", feature = "native"))
 @io
 package Web.Kernel.Runtime
 

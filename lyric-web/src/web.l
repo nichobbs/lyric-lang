@@ -53,11 +53,10 @@
 //!   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
 //!   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
 //!
-//! `Web.addWorker`'s registered `Worker` fires on both targets: a real
-//! background `Task.Run`-backed loop on `--target dotnet` (issue #5359),
-//! and a `java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()`
-//! submission on `--target jvm` (issue #7578, `Web.Kernel.Runtime`'s
-//! `startWorkerLoop`/`WorkerLoopRunnable`).
+//! `Web.addWorker`'s registered `Worker` fires on every target: a real
+//! background task loop (`Web.Kernel.Runtime.startWorkerLoop`, issue #5359),
+//! a `Task.Run` task on `--target dotnet`, a virtual thread on `--target jvm`
+//! and a thread on `--target native`.
 @runtime_checked
 @io
 package Web
@@ -754,8 +753,7 @@ pub record Route {
 }
 
 /// A background worker registered with the server, fired every
-/// `intervalMs` on `--target dotnet` (issue #5359; `--target jvm` still
-/// registers but does not fire — see `Web.serve`'s jvm doc comment).
+/// `intervalMs` on every target (issue #5359).
 @stable(since = "0.3")
 pub record WorkerRegistration {
   name: String
@@ -910,10 +908,10 @@ pub func merge(a: in Router, b: in Router): Router {
 /// else gets the endpoint's `400`/`403` rejection.  The path is not affected
 /// by `prefix`, since the endpoint's path is fixed when it is created.
 ///
-/// dotnet: the connection leaves the HTTP server (`Std.HttpServer.
-/// takeConnection`) and no longer counts against its connection cap.  An
-/// upgrade over HTTP/2, over HTTP/1.0, or with bytes pipelined after it is
-/// answered `400`.  jvm: the endpoint is mounted on the Undertow listener.
+/// The connection leaves the HTTP server (`Std.HttpServer.takeConnection`)
+/// and no longer counts against its connection cap.  An upgrade over HTTP/2,
+/// over HTTP/1.0, or with bytes pipelined after it is answered `400`.  This
+/// holds on every target (the JVM used an Undertow mount until docs/73 S6).
 @stable(since = "0.4")
 pub func addWebSocket(router: in Router, endpoint: in Ws.WsEndpoint): Router
   requires: endpoint.path.startsWith("/")
@@ -1513,10 +1511,9 @@ func parseQueryPair(pair: in String): Option[QueryPair] {
 }
 
 /// Parse a raw (no leading `?`) query string into a `name -> value` map,
-/// URL-decoding both.  Exposed so a JVM-target kernel can build the same
-/// `Request.queryParams` shape as the dotnet accept loop's `buildRequest`
-/// without duplicating URL-decoding logic (`Web.Kernel.Runtime`'s Undertow
-/// handler calls this directly).
+/// URL-decoding both.  Public so that code outside this package can build the
+/// same `Request.queryParams` shape the accept loop's `buildRequest` does
+/// without duplicating the URL-decoding logic.
 @stable(since = "0.2")
 pub func parseQueryString(raw: in String): Map[String, String] {
   val result: Map[String, String] = newMap()
@@ -1626,16 +1623,15 @@ pub func dispatch(router: in Router, req: in Request): Response {
 // `dispatch`, or `serve`/`start`, so every existing non-streaming handler
 // compiles and behaves exactly as before.
 //
-// dotnet-only for now: the JVM `serve` delegates entirely to
-// `Web.Kernel.Runtime`'s Undertow server (a different I/O model), which
-// doesn't yet expose a streaming path — a tracked gap, not a silent skip
-// (lyric-lang#5979's follow-up).
+// Available on every target: the streaming path writes through
+// `Std.HttpServer`'s chunked-response helpers, which the shared driver
+// provides on dotnet, the JVM and native (the JVM served through Undertow,
+// without a streaming path, until docs/73 S6).
 // `streamHandle`, not `handleStream`: the "handle" prefix collides with the
 // `matches: name like "handle*"` convention `Web.Aspects`' own doc comment
 // recommends for aspect-instantiation (RequiresAuth/RateLimit/…), which
 // would otherwise sweep every `StreamingHandler` implementation into
 // row-constrained B'-mode aspects it has no matching fields for (#5993).
-@cfg(any(feature = "dotnet", feature = "native"))
 pub interface StreamingHandler {
   func streamHandle(req: in Request, w: in ResponseWriter): Unit
 }
@@ -1647,7 +1643,6 @@ pub interface StreamingHandler {
 /// (status + headers sent, `Transfer-Encoding: chunked` engaged) on that
 /// first write, and mutating them after that point is a contract
 /// violation, not silent.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub ref record ResponseWriter {
   ctx: HttpContext
   var status: Int
@@ -1656,7 +1651,6 @@ pub ref record ResponseWriter {
   var stream: Option[HttpChunkedStream]
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func newResponseWriter(ctx: in HttpContext): ResponseWriter {
   val noHeaders: Map[String, String] = newMap()
   return ResponseWriter(ctx = ctx, status = 200, headers = noHeaders, committed = false, stream = None)
@@ -1664,7 +1658,6 @@ func newResponseWriter(ctx: in HttpContext): ResponseWriter {
 
 /// Set the response status code. Must be called before the first
 /// `writeChunk` (default: 200).
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
   requires: not w.committed
   requires: isValidStatus(code)
@@ -1676,7 +1669,6 @@ pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
 /// "text/event-stream")`. Must be called before the first `writeChunk`.
 /// `Content-Type` is special-cased at commit time (the BCL response type
 /// exposes it as a dedicated property, not a regular header).
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): Unit
   requires: not w.committed
   requires: isHeaderToken(name)
@@ -1691,7 +1683,6 @@ pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): U
 // headers (mutating writeStatus/writeHeader after commit is already
 // rejected by their `requires:` clause, so this only runs once in
 // practice, but writeChunk calls it unconditionally for simplicity).
-@cfg(any(feature = "dotnet", feature = "native"))
 func commitStream(w: in ResponseWriter): HttpChunkedStream {
   match w.stream {
     case Some(s) -> return s
@@ -1726,7 +1717,6 @@ func commitStream(w: in ResponseWriter): HttpChunkedStream {
 /// response (status/headers/chunked mode) on the first call. `Err`
 /// surfaces a broken connection (e.g. the client disconnected) instead of
 /// failing silently — stop producing more output when this returns `Err`.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeChunk(w: in ResponseWriter, data: in String): Result[Unit, String] {
   val s = commitStream(w)
   val bytes = utf8Encode(data)
@@ -1737,7 +1727,6 @@ pub func writeChunk(w: in ResponseWriter, data: in String): Result[Unit, String]
 // empty chunked body) and close the response. Called once per request by
 // the streaming accept loop after the handler returns, regardless of
 // whether the handler itself already stopped writing.
-@cfg(any(feature = "dotnet", feature = "native"))
 func finishStream(w: in ResponseWriter): Unit {
   val s = commitStream(w)
   endChunkedResponse(w.ctx, s)
@@ -1746,7 +1735,6 @@ func finishStream(w: in ResponseWriter): Unit {
 /// A single registered streaming route binding a method + URL pattern to
 /// a `StreamingHandler`. Mirrors `Route`, but kept as a separate table
 /// (see the section header above for why).
-@cfg(any(feature = "dotnet", feature = "native"))
 pub record StreamRoute {
   method: String
   pattern: String
@@ -1757,19 +1745,16 @@ pub record StreamRoute {
 /// `Handler`s. Build one with `emptyStreamingRoutes()` then
 /// `addStreamingGet`/`addStreamingPost`, and pass it to
 /// `serveStreaming`/`startStreaming` alongside a regular `Router`.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub record StreamingRoutes {
   routes: slice[StreamRoute]
 }
 
 /// Empty streaming route table.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func emptyStreamingRoutes(): StreamingRoutes {
   val noRoutes: slice[StreamRoute] = []
   return StreamingRoutes(routes = noRoutes)
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func addStreamingRoute(
   sr: in StreamingRoutes, method: in String, pattern: in String, handler: in StreamingHandler
 ): StreamingRoutes {
@@ -1778,7 +1763,6 @@ func addStreamingRoute(
 }
 
 /// Register a streaming GET route.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
   requires: isValidRoutePattern(pattern)
 {
@@ -1786,7 +1770,6 @@ pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in
 }
 
 /// Register a streaming POST route.
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
   requires: isValidRoutePattern(pattern)
 {
@@ -1798,7 +1781,6 @@ pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: i
 // finish the stream, and report handled = true. `false` means the
 // caller should fall through to the ordinary `dispatch`/`writeResponse`
 // path.
-@cfg(any(feature = "dotnet", feature = "native"))
 func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in HttpContext): Bool {
   var i = 0
   while i < routes.length {
@@ -1834,14 +1816,12 @@ func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in H
 // with it. Needed because `StreamingAwareDispatchHandler` (below) has to
 // return *some* `Response` to satisfy `Handler`'s signature so it can
 // run inside the same `MiddlewareChain` regular routes use.
-@cfg(any(feature = "dotnet", feature = "native"))
 func streamedResponseSentinel(): Response {
   val empty: Map[String, String] = newMap()
   val noBytes: slice[Byte] = []
   return Response(status = -1, contentType = "", bodyBytes = noBytes, headers = empty)
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func isStreamedResponse(resp: in Response): Bool {
   return resp.status == -1
 }
@@ -1863,14 +1843,12 @@ func isStreamedResponse(resp: in Response): Bool {
 // already on the wire — this only fixes pre-processing/short-circuiting
 // middleware (which is what provides actual protection); the residual
 // gap is called out in the README.
-@cfg(any(feature = "dotnet", feature = "native"))
 record StreamingAwareDispatchHandler {
   routes: slice[Route]
   streamingRoutes: slice[StreamRoute]
   ctx: HttpContext
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 impl Handler for StreamingAwareDispatchHandler {
   func handle(req: in Request): Response {
     if dispatchStreaming(self.streamingRoutes, req, self.ctx) {
@@ -2029,17 +2007,11 @@ pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
 }
 
 // ─── Server entry point ───────────────────────────────────────────────────────
-// The four helpers below and the dotnet serve() implementation are the
-// Std.HttpServer shell of the dotnet accept loop.  The jvm serve() does not
-// go through Std.HttpServer at all — Web binds `io.undertow` directly
-// (Web.Kernel.Runtime, below) for a production multi-threaded server with
-// real exchange I/O, rather than `Std.HttpServer`'s single-consumer pull
-// model (on the JVM that is the shared pure-Lyric driver since docs/73 S4,
-// D789, with the same surface as dotnet, so the split here is a
-// server-architecture choice that docs/73 S6 retires, not a kernel-surface
-// gap).  All five items are therefore dotnet-only; erased
-// for jvm builds by Lyric.Cfg before type-checking.
-@cfg(any(feature = "dotnet", feature = "native"))
+// One accept loop for every target, over `Std.HttpServer` (the shared
+// pure-Lyric driver since docs/73 S3 to S5: sans-IO `Std.HttpEngine` over
+// `Std.TcpHost`).  The only per-target code is `Web.Kernel.Runtime`: the
+// crash-isolation primitives (`try`/`catch` exists on dotnet and the JVM,
+// not on native), the background task, and the rate limiter.
 func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback: in String): String {
   match mapGet(rawHeaders, name) {
     case Some(value) -> return value
@@ -2047,7 +2019,6 @@ func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback
   }
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   val headers: Map[String, String] = newMap()
   val rawNames = mapKeys(rawHeaders).toArray()
@@ -2061,7 +2032,6 @@ func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   return headers
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func buildRequest(ctx: in HttpContext): Request {
   val method = requestMethod(ctx).toUpper()
   val path = requestPath(ctx)
@@ -2082,7 +2052,6 @@ func buildRequest(ctx: in HttpContext): Request {
 // A `GET` to a mounted WebSocket endpoint's path goes to that endpoint
 // (`addWebSocket`), before middleware and route dispatch. Returns whether the
 // request was taken.
-@cfg(any(feature = "dotnet", feature = "native"))
 func serveWebSocketUpgrade(router: in Router, ctx: in HttpContext): Bool {
   if router.webSockets.length == 0 {
     return false
@@ -2099,7 +2068,6 @@ func serveWebSocketUpgrade(router: in Router, ctx: in HttpContext): Bool {
   }
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
   val contentType = if resp.contentType.length == 0 { "text/plain" } else { resp.contentType }
   respondBytesWithHeaders(ctx, resp.status, contentType, resp.bodyBytes, resp.headers)
@@ -2109,7 +2077,6 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// loops (#7997). An interface rather than a closure for the same reason
 /// `Worker` is: a closure-typed value cannot be invoked from inside another
 /// closure on this target, but an interface method can.
-@cfg(any(feature = "dotnet", feature = "native"))
 @stable(since = "0.3")
 pub interface RequestJob {
   func run(): Unit
@@ -2126,7 +2093,6 @@ pub interface RequestJob {
 // on one request still cannot stop the listener or any other in-flight
 // request. On `--target native` there is no unwinding (D-N-003), so a panic in
 // a handler ends the process instead.
-@cfg(any(feature = "dotnet", feature = "native"))
 record PlainRequestJob {
   router: Router
   streaming: StreamingRoutes
@@ -2134,7 +2100,6 @@ record PlainRequestJob {
   label: String
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 impl RequestJob for PlainRequestJob {
   func run(): Unit {
     val ctx = self.ctx
@@ -2167,7 +2132,6 @@ impl RequestJob for PlainRequestJob {
 /// a failure of the listener itself (`nextContext` failing) is reported through
 /// `fail` instead of silently ending the loop. Kept to `Web`'s own types so the
 /// kernel's public surface needs no `Std.HttpServer` type.
-@cfg(any(feature = "dotnet", feature = "native"))
 @stable(since = "0.3")
 pub interface AcceptLoop {
   func step(): Unit
@@ -2177,60 +2141,73 @@ pub interface AcceptLoop {
   func fail(message: in String): Unit
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
+/// Whether a server's accept loop has ended. Set by the loop's `step` when the
+/// listener reports that it was stopped (`tryNextContext` returns `None`) and by
+/// `fail`, so `serve` returns instead of pulling from a stopped listener.
+ref record AcceptState {
+  var ended: Bool = false
+}
+
 record PlainAcceptLoop {
   listener: HttpListener
   router: Router
   streaming: StreamingRoutes
   label: String
+  state: AcceptState
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 impl AcceptLoop for PlainAcceptLoop {
   func step(): Unit {
-    val ctx = nextContext(self.listener)
-    HttpKernel.spawnRequestJob(
-      PlainRequestJob(router = self.router, streaming = self.streaming, ctx = ctx, label = self.label)
-    )
+    match tryNextContext(self.listener) {
+      case Some(ctx) -> HttpKernel.spawnRequestJob(
+        PlainRequestJob(router = self.router, streaming = self.streaming, ctx = ctx, label = self.label)
+      )
+      case None -> {
+        self.state.ended = true
+      }
+    }
   }
 
   func fail(message: in String): Unit {
     Console.error("[lyric-web] listener failed on " + self.label + ": " + message)
     stopListener(self.listener)
     Env.exitCode(1)
+    self.state.ended = true
   }
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 record TlsAcceptLoop {
   listener: HttpListener
   router: Router
   label: String
+  state: AcceptState
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 impl AcceptLoop for TlsAcceptLoop {
   func step(): Unit {
-    val ctx = nextContext(self.listener)
-    HttpKernel.spawnRequestJob(TlsRequestJob(router = self.router, ctx = ctx, label = self.label))
+    match tryNextContext(self.listener) {
+      case Some(ctx) -> HttpKernel.spawnRequestJob(TlsRequestJob(router = self.router, ctx = ctx, label = self.label))
+      case None -> {
+        self.state.ended = true
+      }
+    }
   }
 
   func fail(message: in String): Unit {
     Console.error("[lyric-web] listener failed on " + self.label + ": " + message)
     stopListener(self.listener)
     Env.exitCode(1)
+    self.state.ended = true
   }
 }
 
 // Serves one request for `serveTls`.
-@cfg(any(feature = "dotnet", feature = "native"))
 record TlsRequestJob {
   router: Router
   ctx: HttpContext
   label: String
 }
 
-@cfg(any(feature = "dotnet", feature = "native"))
 impl RequestJob for TlsRequestJob {
   func run(): Unit {
     val ctx = self.ctx
@@ -2250,21 +2227,25 @@ impl RequestJob for TlsRequestJob {
   }
 }
 
-/// Run the accept loop for `router` on `host`:`port`.  Blocks forever.
-/// Each accepted request is handled on its own thread-pool task (#7997), so a
-/// slow or streaming handler never stalls other requests.
+/// Run the accept loop for `router` on `host`:`port`.  Blocks until the
+/// listener fails (it is then stopped, the exit code is set to 1 and this
+/// returns), which in normal operation means for the life of the process.
+/// Each accepted request is handled on its own task (#7997), so a slow or
+/// streaming handler never stalls other requests.
 /// Prefer `Web.start(router)` unless you need to bind without reading
 /// the environment (e.g. attaching a router built by `Lambda.withRouter`
 /// through a different entry point).
 ///
-/// dotnet: a `Std.HttpServer` pull loop over the pure-Lyric sans-IO HTTP/1.1
-/// engine + `System.Net.Sockets`/`SslStream` transport (the
-/// `System.Net.HttpListener` server was retired, docs/61 §6). The transport
-/// accepts and reads connections concurrently, and the dispatch loop hands
-/// each parsed request to its own task. Concurrency is bounded by the
-/// transport's connection cap (`LYRIC_HTTP_MAX_CONNECTIONS`, default 1000):
-/// HTTP/1.1 serves one request per connection at a time, so at most that many
-/// handlers run at once and further connections queue in the OS backlog.
+/// Every target runs the same server: a `Std.HttpServer` pull loop over the
+/// pure-Lyric sans-IO `Std.HttpEngine` and the `Std.TcpHost` transport (dotnet
+/// `System.Net.Sockets`, the JVM `java.nio` sockets, native `lyric-rt`
+/// sockets; docs/61 §6 and docs/73).  The transport accepts and reads
+/// connections concurrently, and the dispatch loop hands each parsed request
+/// to its own task (a thread-pool task on dotnet, a virtual thread on the JVM,
+/// a thread on native). Concurrency is bounded by the transport's connection
+/// cap (`LYRIC_HTTP_MAX_CONNECTIONS`, default 1000 on dotnet, 10 000 on the
+/// JVM): HTTP/1.1 serves one request per connection at a time, so at most that
+/// many handlers run at once and further connections queue in the OS backlog.
 ///
 /// Delegates to `serveStreaming` with an empty streaming route table: an
 /// empty `StreamingRoutes` never matches, so `dispatchStreaming` always
@@ -2273,7 +2254,6 @@ impl RequestJob for TlsRequestJob {
 /// this keeps the accept-loop/crash-isolation skeleton (#5261) in one
 /// place instead of duplicated across both entry points.
 @stable(since = "0.2")
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func serve(router: in Router, host: in String, port: in Int): Unit
   requires: host.length > 0
   requires: port >= 1
@@ -2282,32 +2262,14 @@ pub func serve(router: in Router, host: in String, port: in Int): Unit
   serveStreaming(router, emptyStreamingRoutes(), host, port)
 }
 
-/// jvm: delegates entirely to Web.Kernel.Runtime's Undertow-backed server —
-/// see that package for the dispatch model.  Undertow's own XNIO I/O/worker
-/// threads handle concurrent requests, unlike the dotnet accept loop above.
-@stable(since = "0.2")
-@cfg(feature = "jvm")
-pub func serve(router: in Router, host: in String, port: in Int): Unit
-  requires: host.length > 0
-  requires: port >= 1
-  requires: port <= 65535
-{
-  HttpKernel.serve(host, port, router)
-}
-
 // ─── TLS (HTTPS) server ─────────────────────────────────────────────────────
 /// Failure returned by `serveTls` (docs/61 §6.3).  A single case: server TLS
 /// is not runnable in the given configuration on the current target.  It is
-/// returned when the HTTPS listener cannot be brought up — on `dotnet`, an
-/// invalid TLS configuration (a mutual-TLS misconfiguration:
-/// `requireClientCert` with no `clientCa`) or a bind failure surfaced by
-/// `Std.HttpServer.startListenerTls`; on `jvm`, the same mutual-TLS
-/// misconfiguration (`requireClientCert` with no `clientCa`) — a valid mTLS
-/// or non-mTLS config is fully supported by the Undertow listener since
-/// issue #6017.  Since phase 3.4 (issue #5885) `dotnet` server TLS
-/// is real (the sans-IO `Std.HttpEngine` + `Std.TcpHost`/`SslStream`
-/// transport replaced `HttpListener`), so the "unsupported on dotnet at all"
-/// state is gone; non-mTLS and mTLS both serve there.  The case is named
+/// returned when the HTTPS listener cannot be brought up, on every target
+/// (they share one server, `Std.HttpServer`): an invalid TLS configuration (a
+/// mutual-TLS misconfiguration: `requireClientCert` with no `clientCa`) or a
+/// bind failure, both surfaced by `Std.HttpServer.startListenerTls`.  Valid
+/// mTLS and non-mTLS configurations both serve.  The case is named
 /// `ServerTlsUnsupported` rather than reusing `Std.HttpServer.TlsListenError`'s
 /// `NotSupportedOnTarget` on purpose: the self-hosted JVM backend resolves a
 /// bare match case name from a global table rather than the scrutinee's static
@@ -2390,28 +2352,24 @@ pub func tlsServerConfigFromWebTls(cfg: in WebTls): Result[Std.Tls.TlsServerConf
 }
 
 /// Serve `router` over HTTPS on `host`:`port`, terminating TLS from `tls`
-/// (docs/61 §6.3).  Blocks until the process is terminated, exactly like
-/// `serve`.  Returns only on a configuration that cannot be served — the
-/// `Ok` branch is never reached in normal operation (the accept loop blocks
-/// forever), so a returned `Err(ServerTlsUnsupported(...))` is the only
-/// observable return.
+/// (docs/61 §6.3).  Blocks until the listener stops, exactly like `serve`:
+/// in normal operation for the life of the process.  It returns `Err` when
+/// the listener cannot be brought up, and `Ok(())` only after the listener
+/// failed and was stopped (the exit code is then 1).
 ///
-/// dotnet: terminates TLS for real (phase 3.4, issue #5885) via
-/// `Std.HttpServer.startListenerTls` — the pure-Lyric sans-IO `Std.HttpEngine`
-/// over the `Std.TcpHost` `TcpListener`/`SslStream` transport (server
-/// identity + `minVersion` + ALPN `http/1.1` + callback-free mTLS) that
-/// replaced `HttpListener`.  The router is dispatched through the same pull
-/// loop / `dispatch` core as plaintext `serve`.  Mutual TLS is fully
-/// supported here (unlike the JVM Undertow listener): the `tls` config is
-/// passed straight through, including `clientCa`/`requireClientCert`.  A
-/// configuration that cannot bind a listener (a mutual-TLS misconfiguration —
-/// `requireClientCert` with no `clientCa` — or a socket bind failure) returns
-/// a typed `ServerTlsUnsupported` carrying the underlying
-/// `Std.HttpServer.TlsListenError` message rather than a silent failure.  h2
-/// end-to-end is out of scope here (the transport advertises only `http/1.1`;
-/// the engine's h2 FSM + ALPN wiring are issue #5889).
+/// Every target terminates TLS through `Std.HttpServer.startListenerTls`: the
+/// pure-Lyric sans-IO `Std.HttpEngine` over the `Std.TcpHost` transport
+/// (server identity, `minVersion`, ALPN `h2` then `http/1.1` on dotnet and the
+/// JVM, mTLS).  The router is dispatched through the same pull loop and
+/// `dispatch` core as plaintext `serve`.  The `tls` config is passed straight
+/// through, including `clientCa`/`requireClientCert`: with `clientCa` set the
+/// server requests a client certificate chained to it, and
+/// `requireClientCert` rejects a client without one at the handshake.  A
+/// configuration that cannot bind a listener (a mutual-TLS misconfiguration,
+/// `requireClientCert` with no `clientCa`, or a socket bind failure) returns a
+/// typed `ServerTlsUnsupported` carrying the underlying
+/// `Std.HttpServer.TlsListenError` message, never a silent failure.
 @stable(since = "0.3")
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func serveTls(
   router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig
 ): Result[Unit, ServeTlsError]
@@ -2419,11 +2377,13 @@ pub func serveTls(
   requires: port >= 1
   requires: port <= 65535
 {
-  // `startListenerTls` returns `Result[HttpListener, TlsListenError]`; extract
-  // the message via `TlsListenError.message` (a call, resolved inside
-  // `Std.HttpServer`) rather than matching its cases here, so no cross-package
-  // user-union case match happens in this function (the #5903 family — see the
-  // JVM `serveTls`' header for the concrete failure mode it avoids).
+  // `startListenerTls` returns `Result[HttpListener, TlsListenError]` and this
+  // function returns `Result[Unit, ServeTlsError]`.  The message is taken with
+  // `TlsListenError.message` (a call resolved inside `Std.HttpServer`) rather
+  // than by matching `TlsListenError`'s cases here.  The JVM backend once
+  // miscompiled the cross-error-type nested match (the #5903 family); D780's
+  // spike (c) could not reproduce it on v0.7.15, and `serve_tls_tests.l` pins
+  // both error paths on every target.
   val listener = match startListenerTls(host, port, tls) {
     case Ok(l) -> l
     case Err(e) -> {
@@ -2440,8 +2400,9 @@ pub func serveTls(
   Console.println("[lyric-web] Listening on https://" + host + ":" + port.toString() + "/")
   startWorkers(router)
   val label = "https://" + host + ":" + port.toString() + "/"
-  val acceptLoop = TlsAcceptLoop(listener = listener, router = router, label = label)
-  while true {
+  val state = AcceptState()
+  val acceptLoop = TlsAcceptLoop(listener = listener, router = router, label = label, state = state)
+  while not state.ended {
     // Per-request failures are isolated in the job; a failure of the listener
     // itself is reported by the loop's `fail`.
     HttpKernel.runAcceptStep(acceptLoop)
@@ -2449,67 +2410,13 @@ pub func serveTls(
   return Ok(value = ())
 }
 
-/// jvm: mutual TLS is fully supported (issue #6017): `tls.clientCa` pins a
-/// client-CA `TrustManager` onto the Undertow listener's `SSLContext` and
-/// `tls.requireClientCert` drives Undertow's XNIO `SSL_CLIENT_AUTH_MODE`
-/// socket option (`REQUIRED` when set, `REQUESTED` — optional — when
-/// `clientCa` is configured without `requireClientCert`).  Only one
-/// misconfiguration is rejected up front, with a typed
-/// `ServerTlsUnsupported`: `requireClientCert` set with no `clientCa` to
-/// pin trust to, mirroring the `dotnet` kernel's `InvalidConfig` guard
-/// (`std/http_server.l`).  A valid config delegates entirely to
-/// `Web.Kernel.Runtime.serveTls` — an Undertow HTTPS listener with
-/// `ENABLE_HTTP2` (h2 via ALPN) built from `tls` — which blocks forever once
-/// bound, so the `Ok(())` return is unreachable in normal operation.
-///
-/// The misconfiguration check lives HERE (not in the kernel) on purpose:
-/// the kernel's `serveTls` returns `Unit`, so this function never `match`es
-/// a `Result[_, Std.HttpServer.TlsListenError]` from inside a function
-/// returning `Result[_, ServeTlsError]`.  That cross-error-type nested
-/// match miscompiles on `--target jvm` — the backend casts the inner `Err`
-/// payload to the OUTER error type (`Web.ServeTlsError`) and throws
-/// `ClassCastException` at runtime (the #5903 global-case-table family;
-/// previously verified via the mTLS-rejection self-check in
-/// `tests/jvm_server_smoke.l`, now an end-to-end mTLS accept/reject
-/// self-check instead).  Reading `tls`'s fields and matching
-/// `Std.Core.Option` here is safe — only cross-package *user*-union case
-/// matching hits the bug.
-@stable(since = "0.3")
-@cfg(feature = "jvm")
-pub func serveTls(
-  router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig
-): Result[Unit, ServeTlsError]
-  requires: host.length > 0
-  requires: port >= 1
-  requires: port <= 65535
-{
-  val hasClientCa = match tls.clientCa { case Some(_) -> true; case None -> false }
-  if tls.requireClientCert and not hasClientCa {
-    return Err(
-      error = ServerTlsUnsupported(
-        message = "requireClientCert is set but no clientCa is configured; mutual TLS must pin trust to a " +
-          "client CA"
-      )
-    )
-  }
-  HttpKernel.serveTls(host, port, tls, router)
-  return Ok(value = ())
-}
-
 /// Fire every registered worker once, in the background, on a real
-/// thread-pool task per worker (issue #5359) — each loops
+/// background task per worker (issue #5359) — each loops
 /// `sleepMillis(intervalMs); handler.tick()` forever. Fire-and-forget by
-/// design: the returned `Task` is deliberately never awaited or held —
+/// design: the task is deliberately never awaited or held —
 /// `Web.serve`/`serveTls` block in their own accept loop for the life of
 /// the process, so there is nothing to join, and joining would block
-/// startup on a loop that never returns. `Task.Run` is genuinely
-/// concurrent here (confirmed empirically; `Std.Task.scopeSpawn`'s own
-/// `Task.Run(Action, CancellationToken)` binding was separately documented
-/// as never invoking its closure on `--target dotnet`, in `_kernel/task.l`'s
-/// own header comment — that finding predates an unrelated MSIL fix and no
-/// longer reproduces with a plain `Task.Run(Action)`, verified directly
-/// against this exact call shape).
-@cfg(any(feature = "dotnet", feature = "native"))
+/// startup on a loop that never returns.
 func startWorkers(router: in Router): Unit {
   for w in router.workers {
     HttpKernel.startWorkerLoop(w.intervalMs, w.handler)
@@ -2529,15 +2436,15 @@ func startWorkers(router: in Router): Unit {
 /// a broken connection mid-response) is isolated to that request: it is
 /// logged and answered with a 500, and the accept loop keeps serving —
 /// a single bad request must not take the whole server down (#5261).
-/// Only `nextContext` itself failing — meaning the listener can no
-/// longer accept new connections at all — is treated as fatal: that is
-/// logged, the listener is stopped, and the process exits non-zero
-/// rather than looping forever unable to make progress.
+/// Only the listener itself failing (`tryNextContext` panicking) — meaning
+/// it can no longer accept new connections at all — is treated as fatal: that
+/// is logged, the listener is stopped, the exit code is set to 1 and this
+/// returns, rather than looping forever unable to make progress.  A listener
+/// that was stopped (`tryNextContext` returns `None`) ends the loop the same
+/// way, without an error.
 ///
 /// Every registered worker is started in the background before the accept loop (see `startWorkers`).
-/// dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: in String, port: in Int): Unit
   requires: host.length > 0
   requires: port >= 1
@@ -2549,10 +2456,17 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   val suffix = if streaming.routes.length > 0 { " (streaming enabled)" } else { "" }
   Console.println("[lyric-web] Listening on " + prefixStr + suffix)
   startWorkers(router)
-  val acceptLoop = PlainAcceptLoop(listener = listener, router = router, streaming = streaming, label = prefixStr)
-  while true {
-    // A failure of the listener itself (`nextContext` failing) is reported by
-    // the loop's `fail`; per-request failures are isolated in the job.
+  val state = AcceptState()
+  val acceptLoop = PlainAcceptLoop(
+    listener = listener,
+    router = router,
+    streaming = streaming,
+    label = prefixStr,
+    state = state
+  )
+  while not state.ended {
+    // A failure of the listener itself (`tryNextContext` failing) is reported
+    // by the loop's `fail`; per-request failures are isolated in the job.
     HttpKernel.runAcceptStep(acceptLoop)
   }
 }
@@ -2561,7 +2475,7 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
 // environment, fail closed on an invalid port or an unsafe CORS
 // configuration, and return the router with CORS middleware applied (if
 // enabled) plus the bind host/port. Pure config resolution, no I/O — kept
-// target-independent so both the dotnet and jvm `start()` can use it.
+// target-independent.
 func resolveStartConfig(router: in Router): (Router, String, Int) {
   val host = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_HOST", "0.0.0.0")
   val portStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_PORT", "8080")
@@ -2627,9 +2541,8 @@ pub func start(router: in Router): Unit {
 }
 
 /// Like `start`, but also serves `streaming`'s routes — see
-/// `serveStreaming`. dotnet-only (see `StreamingHandler`'s doc comment).
+/// `serveStreaming`.
 @stable(since = "0.3")
-@cfg(any(feature = "dotnet", feature = "native"))
 pub func startStreaming(router: in Router, streaming: in StreamingRoutes): Unit {
   val (routerWithCors, host, port) = resolveStartConfig(router)
   serveStreaming(routerWithCors, streaming, host, port)

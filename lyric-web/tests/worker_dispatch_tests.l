@@ -5,19 +5,20 @@
 //! `Web.serve`/`Web.serveStreaming`/`Web.serveTls` never read at all —
 //! registered workers were never invoked. `Web.Worker` is now a real
 //! interface (mirroring `Handler`/`Middleware`, #5363) fired on a genuine
-//! background `Task.Run`-backed thread once the server starts
+//! background thread once the server starts
 //! (`Web.Kernel.Runtime.startWorkerLoop`, `_kernel/net/web_kernel.l`).
 //!
-//! Drives a REAL `Web.serve` listener in-process, same background-`Task.Run`
+//! Drives a REAL `Web.serve` listener in-process, same background-task
 //! + real Lyric `HttpClient` pattern `serve_tls_tests.l`/
 //! `serve_crash_isolation_tests.l` use — the worker's own dispatch is a
-//! SECOND, independent `Task.Run` started by `serve()` itself, so this
+//! SECOND, independent background task started by `serve()` itself, so this
 //! exercises two concurrently-running background tasks against each other.
 @test_module
 package Web.WorkerDispatchTests
 
 import Std.Core
 import Std.Http
+import Std.HttpServerHost
 import Std.Parse
 import Std.Time as Time
 import Web
@@ -99,61 +100,12 @@ func flakyWorkerRouter(): Web.Router {
   r
 }
 
-// `Web.serve` blocks the calling thread forever once bound, on EITHER
-// target — on `dotnet` in its own accept loop, on `jvm` behind
-// `Web.Kernel.Runtime`'s `CountDownLatch.await()` (Undertow's own listener
-// binds asynchronously via `server.start()`, but the wrapping kernel call
-// still blocks so a real server process stays up) — so each target needs
-// its own background-thread primitive: real concurrency `spawn` cannot give
-// this on `dotnet` (degenerate-synchronous, D119/D120), and a Lyric closure
-// cannot be handed to an arbitrary JDK functional interface on `jvm` (the
-// strongly-typed-delegate FFI, docs/50, is scoped to `@externTarget`
-// function parameters) — same reasoning as `Web.Kernel.Runtime`'s own
-// `WorkerLoopRunnable` (`_kernel/jvm/web_kernel.l`).
-@cfg(feature = "dotnet")
-extern type Task = "System.Threading.Tasks.Task"
-
-@cfg(feature = "dotnet")
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@cfg(feature = "dotnet")
+// `Web.serve` blocks the calling thread forever once bound, so the server runs
+// on a background thread from the `Std.HttpServerHost` seam (see
+// `serve_crash_isolation_tests.l`).  The worker's own loop is a second,
+// independent background task started by `serve()` itself.
 func startServerForTest(r: in Web.Router, port: in Int): Unit {
-  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
-}
-
-@cfg(feature = "jvm")
-extern type JRunnable = "java.lang.Runnable"
-
-@cfg(feature = "jvm")
-extern type JExecutorService = "java.util.concurrent.ExecutorService"
-
-@cfg(feature = "jvm")
-@externStatic
-@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
-func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
-
-@cfg(feature = "jvm")
-val testServerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
-
-@cfg(feature = "jvm")
-record TestServerRunnable {
-  r: Web.Router
-  port: Int
-}
-
-@cfg(feature = "jvm")
-impl JRunnable for TestServerRunnable {
-  func run(): Unit {
-    Web.serve(self.r, "127.0.0.1", self.port)
-  }
-}
-
-@cfg(feature = "jvm")
-func startServerForTest(r: in Web.Router, port: in Int): Unit {
-  val runnable: JRunnable = TestServerRunnable(r = r, port = port)
-  val _ = testServerExecutor.submit(runnable)
+  startTask({ -> Web.serve(r, "127.0.0.1", port) })
 }
 
 func getTickCount(client: in HttpClient, url: in String, maxAttempts: in Int): Int {

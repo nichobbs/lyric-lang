@@ -1,0 +1,3 @@
+# Contract elaboration on TIR, the declaration step (docs/70 phase 3c, D502)
+
+`Lyric.Tir.Contracts` (`lyric-compiler/lyric/tir/contracts/`) lowers a `TFnDecl`'s `requires:`/`ensures:` into `assert` calls in its body: `old(..)` snapshots, then preconditions, then postconditions at the tail and at every `return` (outside lambdas), with the AST pass's violation messages. The builder records each clause's source text on the declaration (`precondTexts`/`postcondTexts`) for them. `tir_contracts_self_test.l` builds small packages, elaborates, verifies the output and checks the assertion messages and counts. Entry: `Pipeline.pipeContractsTir`. Not covered yet: invariants, range checks, loop invariants, protected entries, aspect contracts, quantifier dropping (see the decision).
