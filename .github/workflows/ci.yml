@@ -4830,7 +4830,7 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci/self-test.sh --summary \"Std.HttpEngine.H2Conn test ran: http_h2conn_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/http_h2conn_tests.l"
+        run: bash scripts/ci/h2conn-tests.sh jvm
 
       # Map-key self-test on JVM (#1480 MSIL / #4982 Finding 1 JVM) — the JVM
       # half of the dotnet-job step of the same name.  Records with
@@ -7115,7 +7115,7 @@ jobs:
       # the JVM step above must and do produce identical results.
       - name: Std.HttpEngine.H2Conn test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_h2conn_tests.l
+        run: bash scripts/ci/h2conn-tests.sh dotnet
 
       # Std.TcpHost transport-kernel test coverage (#5882, docs/61 §6.1/§6.3
       # phase 3.1): the dotnet TcpListener + SslStream server-side TLS
