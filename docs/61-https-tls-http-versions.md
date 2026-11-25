@@ -427,6 +427,12 @@ Lyric): HPACK codec (RFC 7541, static+dynamic tables, Huffman); frame codec
 (connection + stream windows). No server push (deprecated in practice); no
 prioritization tree (RFC 9113 deprecates RFC 7540 priorities).
 
+**Client role (docs/72 slice 1, D797):** the same `H2Connection` FSM also plays
+the client (`newClientConnection`): it frames requests (`openStream`), validates
+responses and trailers, and applies GOAWAY and Rapid-Reset rules per role. It is
+sans-IO like the server; the transport driver over `Std.TcpHost` is docs/72
+slice 5.
+
 The .NET client (which already speaks h2 after §5.1) is the e2e test peer
 for the h2 server self-test — both directions of our own stack verify each
 other, plus a `curl --http2` smoke in CI for an independent implementation.

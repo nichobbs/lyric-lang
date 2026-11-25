@@ -2115,6 +2115,12 @@ func processH2Event(state: in H2ConnState, ev: in H2.H2Event): Unit {
     case H2PingReceived(_) -> ()
     case H2PingAcknowledged(_) -> ()
     case H2GoAwayReceived(_, _) -> ()
+    // Client-role events: a server-role connection never emits them.
+    case H2InformationalHeaders(_, _, _) -> ()
+    case H2ResponseHeaders(_, _, _, _) -> ()
+    case H2ResponseData(_, _, _, _) -> ()
+    case H2ResponseTrailers(_, _) -> ()
+    case H2StreamUnprocessed(_) -> ()
     case H2PeerReset(streamId, _) -> {
       removeAccum(state, streamId)
       forgetRejectedStream(state, streamId)
