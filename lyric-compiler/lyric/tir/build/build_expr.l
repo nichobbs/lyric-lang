@@ -675,11 +675,12 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
 
 /// `a == b` and `a != b` on a structural record (D164): the operands are bound once each, left to right, and
 /// compared leaf by leaf along the paths the checker recorded (a nested record expanded into its fields, a
-/// distinct type through its value), the conjunction negated for `!=`.  A record with a leaf the site compares
-/// specially (an array, a tuple or union holding one, or a `Float` with its `NaN` rule, D167, D172), and a leaf
-/// path the builder cannot read (through a generic record), keep the one `IoEq`/`IoNeq` on the record type that
-/// the builder produced before, until their own steps exist; the backends that lower the operator by type are
-/// unaffected.
+/// distinct type through its value), the conjunction negated for `!=`.  An array leaf is compared element by
+/// element (D167) and a `Float`/`Double` leaf is equal when `==` holds or both are `NaN` (D172), as the AST pass
+/// states them (`arrayEqBlock`, `floatEqExpr`).  A record with a tuple or union leaf holding an array (the
+/// checker's `wrapLeaves`), and a leaf path the builder cannot read (through a generic record), keep the one
+/// `IoEq`/`IoNeq` on the record type that the builder produced before, until their own steps exist; the
+/// backends that lower the operator by type are unaffected.
 func buildRecordEq(
   env: in BuildEnv, e: in Expr, ty: in Ty, site: in RecordEqSite, lhs: in Expr, rhs: in Expr
 ): Option[TExpr] {
@@ -687,7 +688,7 @@ func buildRecordEq(
   val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
   // Every fallback below reuses the operands built above, so nothing is built or evaluated twice.
   val iop = if site.negate { IoNeq } else { IoEq }
-  if site.arrayLeaves.count > 0 or site.wrapLeaves.count > 0 or site.floatLeaves.count > 0 {
+  if site.wrapLeaves.count > 0 {
     return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
   }
   val rt = if tyEq(lt.ty, rt0.ty) {
@@ -698,31 +699,93 @@ func buildRecordEq(
       case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
     }
   }
+  val all = match recordEqCore(env, e, site, lt, rt) {
+    case Some(c) -> c
+    case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
+  }
+  val result = if site.negate { boolNot(env, e, all) } else { all }
+  Some(value = mkExpr(e, ty, result.kind))
+}
+
+func boolNot(env: in BuildEnv, e: in Expr, x: in TExpr): TExpr {
+  val one: List[TExpr] = newList()
+  one.add(x)
+  TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoNot, one))
+}
+
+func boolLitOf(env: in BuildEnv, e: in Expr, v: in Bool): TExpr {
+  TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = XLit(lit = TLBool(value = v)))
+}
+
+func eqIntrinsic(env: in BuildEnv, e: in Expr, a: in TExpr, b: in TExpr): TExpr {
+  val two: List[TExpr] = newList()
+  two.add(a)
+  two.add(b)
+  TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoEq, two))
+}
+
+func localOf(env: in BuildEnv, e: in Expr, d: in LocalDecl): TExpr {
+  TExpr(id = freshNodeId(env), ty = d.ty, span = e.span, kind = XLocal(local = d.id))
+}
+
+func letStmt(env: in BuildEnv, d: in LocalDecl, init: in TExpr): TStmt {
+  val pat = TPat(id = freshNodeId(env), ty = d.ty, span = init.span, kind = TpBind(decl = d, inner = None))
+  TStmt(id = freshNodeId(env), span = init.span, kind = TsLet(pat = pat, init = init))
+}
+
+/// `a` and `b` equal as two `Float`/`Double` values: `==` holds or both are `NaN` (D172).  Each operand is
+/// bound to a local first, so it is evaluated once.
+func floatEqCore(env: in BuildEnv, e: in Expr, a: in TExpr, b: in TExpr): TExpr {
+  val ad = declareLocal(env, "__feq_a" + toString(env.nextLocal[0] + 1), a.ty, false)
+  val bd = declareLocal(env, "__feq_b" + toString(env.nextLocal[0] + 1), b.ty, false)
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(env, ad, a))
+  stmts.add(letStmt(env, bd, b))
+  val same = eqIntrinsic(env, e, localOf(env, e, ad), localOf(env, e, bd))
+  val aNan = boolNot(env, e, eqIntrinsic(env, e, localOf(env, e, ad), localOf(env, e, ad)))
+  val bNan = boolNot(env, e, eqIntrinsic(env, e, localOf(env, e, bd), localOf(env, e, bd)))
+  val bothNan = TExpr(
+    id = freshNodeId(env),
+    ty = tyBool(),
+    span = e.span,
+    kind = XShort(op = ShAnd, lhs = aNan, rhs = bNan)
+  )
+  val res = TExpr(
+    id = freshNodeId(env),
+    ty = tyBool(),
+    span = e.span,
+    kind = XShort(op = ShOr, lhs = same, rhs = bothNan)
+  )
+  TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = XBlock(stmts = stmts, tail = Some(value = res)))
+}
+
+/// The leaves of the structural record `site` compared, un-negated: the operands `lt` and `rt` (of one type) are
+/// bound to locals and the leaves joined with `and`.  None when a leaf path cannot be read.
+func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TExpr, rt: in TExpr): Option[TExpr] {
   val ld = declareLocal(env, "__req_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
   val rd = declareLocal(env, "__req_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
   val stmts: List[TStmt] = newList()
-  val lpat = TPat(id = freshNodeId(env), ty = lt.ty, span = lt.span, kind = TpBind(decl = ld, inner = None))
-  val rpat = TPat(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = TpBind(decl = rd, inner = None))
-  stmts.add(TStmt(id = freshNodeId(env), span = lt.span, kind = TsLet(pat = lpat, init = lt)))
-  stmts.add(TStmt(id = freshNodeId(env), span = rt.span, kind = TsLet(pat = rpat, init = rt)))
+  stmts.add(letStmt(env, ld, lt))
+  stmts.add(letStmt(env, rd, rt))
   var cmp: Option[TExpr] = None
   for path in site.paths {
-    var l = TExpr(id = freshNodeId(env), ty = lt.ty, span = e.span, kind = XLocal(local = ld.id))
-    var r = TExpr(id = freshNodeId(env), ty = rt.ty, span = e.span, kind = XLocal(local = rd.id))
+    var l = localOf(env, e, ld)
+    var r = localOf(env, e, rd)
     for seg in path {
-      l = match recordEqStep(env, e, l, seg) {
-        case Some(x) -> x
-        case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
-      }
-      r = match recordEqStep(env, e, r, seg) {
-        case Some(x) -> x
-        case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
+      l = match recordEqStep(env, e, l, seg) { case Some(x) -> x; case None -> return None }
+      r = match recordEqStep(env, e, r, seg) { case Some(x) -> x; case None -> return None }
+    }
+    var joined = ""
+    for seg in path {
+      joined = if joined.length == 0 { seg } else { joined + "." + seg }
+    }
+    val leaf = match mapGet(site.arrayLeaves, joined) {
+      case Some(arr) -> match arrayEqCore(env, e, arr, l, r) { case Some(x) -> x; case None -> return None }
+      case None -> match mapGet(site.floatLeaves, joined) {
+        case Some(_) -> floatEqCore(env, e, l, r)
+        case None -> eqIntrinsic(env, e, l, r)
       }
     }
-    val two: List[TExpr] = newList()
-    two.add(l)
-    two.add(r)
-    val leaf = TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoEq, two))
     cmp = match cmp {
       case None -> Some(value = leaf)
       case Some(acc) -> Some(
@@ -735,23 +798,123 @@ func buildRecordEq(
       )
     }
   }
-  val all = match cmp {
-    case Some(c) -> c
-    case None -> TExpr(
+  val all = match cmp { case Some(c) -> c; case None -> boolLitOf(env, e, true) }
+  Some(
+    value = TExpr(
       id = freshNodeId(env),
       ty = tyBool(),
       span = e.span,
-      kind = XLit(lit = TLBool(value = true))
+      kind = XBlock(stmts = stmts, tail = Some(value = all))
     )
+  )
+}
+
+/// Two arrays of `site.len` elements compared element by element (D167): each operand is bound once, then
+/// `while ok and i < len { if not (l[i] == r[i]) { ok = false }; i = i + 1 }`, an element that is a structural
+/// record compared field by field, a nested array in turn, a `Float` with its `NaN` rule.  None for an element
+/// shape with no step yet (a tuple or union holding an array).
+func arrayEqCore(env: in BuildEnv, e: in Expr, site: in ArrayEqSite, lt: in TExpr, rt: in TExpr): Option[TExpr] {
+  val elemTy = match lt.ty { case TArray(_, el) -> el; case _ -> return None }
+  val ld = declareLocal(env, "__aeq_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
+  val rd = declareLocal(env, "__aeq_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
+  val idecl = declareLocal(env, "__aeq_i" + toString(env.nextLocal[0] + 1), tyInt(), true)
+  val okd = declareLocal(env, "__aeq_ok" + toString(env.nextLocal[0] + 1), tyBool(), true)
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(env, ld, lt))
+  stmts.add(letStmt(env, rd, rt))
+  val zero = TExpr(id = freshNodeId(env), ty = tyInt(), span = e.span, kind = XLit(lit = TLInt(value = 0i64)))
+  stmts.add(TStmt(id = freshNodeId(env), span = e.span, kind = TsVar(decl = idecl, init = Some(value = zero))))
+  stmts.add(
+    TStmt(id = freshNodeId(env), span = e.span, kind = TsVar(decl = okd, init = Some(value = boolLitOf(env, e, true))))
+  )
+  val le = TExpr(
+    id = freshNodeId(env),
+    ty = elemTy,
+    span = e.span,
+    kind = XIndex(recv = localOf(env, e, ld), idx = localOf(env, e, idecl), how = IkArray)
+  )
+  val re = TExpr(
+    id = freshNodeId(env),
+    ty = elemTy,
+    span = e.span,
+    kind = XIndex(recv = localOf(env, e, rd), idx = localOf(env, e, idecl), how = IkArray)
+  )
+  val same: TExpr = match site.elem {
+    case AEPlain -> eqIntrinsic(env, e, le, re)
+    case AEValue -> {
+      val lv = match recordEqStep(env, e, le, "value") { case Some(x) -> x; case None -> return None }
+      val rv = match recordEqStep(env, e, re, "value") { case Some(x) -> x; case None -> return None }
+      eqIntrinsic(env, e, lv, rv)
+    }
+    case AEFloat(viaValue, _) -> if viaValue {
+      val lv = match recordEqStep(env, e, le, "value") { case Some(x) -> x; case None -> return None }
+      val rv = match recordEqStep(env, e, re, "value") { case Some(x) -> x; case None -> return None }
+      floatEqCore(env, e, lv, rv)
+    } else {
+      floatEqCore(env, e, le, re)
+    }
+    case AERecord(rs) -> match recordEqCore(env, e, rs, le, re) {
+      case Some(x) -> x
+      case None -> return None
+    }
+    case AEArray(inner) -> match arrayEqCore(env, e, inner, le, re) {
+      case Some(x) -> x
+      case None -> return None
+    }
+    case AEShape(_) -> return None
   }
-  val result = if site.negate {
-    val one: List[TExpr] = newList()
-    one.add(all)
-    TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoNot, one))
-  } else {
-    all
-  }
-  Some(value = mkExpr(e, ty, XBlock(stmts = stmts, tail = Some(value = result))))
+  val okPlace = TPlace(ty = tyBool(), kind = PlLocal(local = okd.id))
+  val setFalse = TExpr(
+    id = freshNodeId(env),
+    ty = tyUnit(),
+    span = e.span,
+    kind = XAssign(place = okPlace, op = AkSet, value = boolLitOf(env, e, false))
+  )
+  val setStmts: List[TStmt] = newList()
+  setStmts.add(TStmt(id = freshNodeId(env), span = e.span, kind = TsExpr(expr = setFalse)))
+  val thenB = TExpr(id = freshNodeId(env), ty = tyUnit(), span = e.span, kind = XBlock(stmts = setStmts, tail = None))
+  val ifE = TExpr(
+    id = freshNodeId(env),
+    ty = tyUnit(),
+    span = e.span,
+    kind = XIf(cond = boolNot(env, e, same), thenBranch = thenB, elseBranch = None)
+  )
+  val one = TExpr(id = freshNodeId(env), ty = tyInt(), span = e.span, kind = XLit(lit = TLInt(value = 1i64)))
+  val bump = TExpr(
+    id = freshNodeId(env),
+    ty = tyUnit(),
+    span = e.span,
+    kind = XAssign(place = TPlace(ty = tyInt(), kind = PlLocal(local = idecl.id)), op = AkAdd, value = one)
+  )
+  val bodyStmts: List[TStmt] = newList()
+  bodyStmts.add(TStmt(id = freshNodeId(env), span = e.span, kind = TsExpr(expr = ifE)))
+  bodyStmts.add(TStmt(id = freshNodeId(env), span = e.span, kind = TsExpr(expr = bump)))
+  val body = TExpr(id = freshNodeId(env), ty = tyUnit(), span = e.span, kind = XBlock(stmts = bodyStmts, tail = None))
+  val lenLit = TExpr(
+    id = freshNodeId(env),
+    ty = tyInt(),
+    span = e.span,
+    kind = XLit(lit = TLInt(value = site.len.toLong()))
+  )
+  val lt2: List[TExpr] = newList()
+  lt2.add(localOf(env, e, idecl))
+  lt2.add(lenLit)
+  val inRange = TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoLt, lt2))
+  val cond = TExpr(
+    id = freshNodeId(env),
+    ty = tyBool(),
+    span = e.span,
+    kind = XShort(op = ShAnd, lhs = localOf(env, e, okd), rhs = inRange)
+  )
+  stmts.add(TStmt(id = freshNodeId(env), span = e.span, kind = TsWhile(label = None, cond = cond, body = body)))
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = tyBool(),
+      span = e.span,
+      kind = XBlock(stmts = stmts, tail = Some(value = localOf(env, e, okd)))
+    )
+  )
 }
 
 /// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference

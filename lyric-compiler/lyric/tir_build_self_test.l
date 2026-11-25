@@ -3978,6 +3978,8 @@ func eqShape(e: in TExpr): String {
   match e.kind {
     case XBlock(_, Some(t)) -> eqShape(t)
     case XShort(ShAnd, l, r) -> "and(" + eqShape(l) + "," + eqShape(r) + ")"
+    case XShort(ShOr, l, r) -> "or(" + eqShape(l) + "," + eqShape(r) + ")"
+    case XLocal(_) -> "ok"
     case XCall(Intrinsic(IoEq), _) -> "eq"
     case XCall(Intrinsic(IoNot), args) -> match args[0] { case TArgIn(v) -> "not(" + eqShape(v) + ")"; case _ -> "?" }
     case _ -> "?"
@@ -4006,14 +4008,39 @@ test "!= on a record negates the conjunction of its leaves" {
   }
 }
 
-test "== on a record with a Float field keeps the single IoEq on the record (no I0002)" {
-  val r = buildFirstFn("package App\nrecord P { x: Float }\nfunc f(a: in P, b: in P): Bool { a == b }\n")
-  assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertEqualInt(r.env.errors.count, 0, "no I0002")
-  match r.body {
-    case Some(b) -> assertTrue(eqShape(b) == "eq", eqShape(b))
+test "== on a record with a Float field compares it equal when == holds or both are NaN (D172)" {
+  val c = censusOf("package App\nrecord P { x: Float }\nfunc f(a: in P, b: in P): Bool { a == b }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  match c.pkg.funcs[0].body {
+    case Some(b) -> assertTrue(eqShape(b) == "or(eq,and(not(eq),not(eq)))", eqShape(b))
     case None -> assertTrue(false, "builds")
   }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "== on a record with an array field compares the elements in a loop (D167)" {
+  val c = censusOf("package App\nrecord P { xs: array[3, Int]\n n: Int }\nfunc f(a: in P, b: in P): Bool { a == b }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  match c.pkg.funcs[0].body {
+    case Some(b) -> assertTrue(eqShape(b) == "and(ok,eq)", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "!= on a record holding an array of Floats and one of records builds and verifies (D167, D172)" {
+  val c = censusOf(
+    "package App\nrecord Q { v: Int }\nrecord P { fs: array[2, Float]\n qs: array[2, Q]\n g: array[2, array[2, Int]] }\nfunc f(a: in P, b: in P): Bool { a != b }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  match c.pkg.funcs[0].body {
+    case Some(b) -> assertTrue(eqShape(b) == "not(and(and(ok,ok),ok))", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
 test "== on a record holding a generic record keeps the single IoEq on the record (no I0002)" {
