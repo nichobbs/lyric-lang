@@ -3878,3 +3878,54 @@ test "a tuple literal checked at a wider tuple type widens its elements" {
     case None -> assertTrue(false, "builds")
   }
 }
+
+/// The integer literal a bound temporary's call takes (`note(4)` gives 4), or -1.
+func letCallArg(st: in TStmt): Long {
+  match st.kind {
+    case TsLet(_, init) -> match init.kind {
+      case XCall(_, args) -> if args.count > 0 {
+        match args[0] {
+          case TArgIn(v) -> match v.kind { case XLit(TLInt(n)) -> n; case _ -> -1 }
+          case _ -> -1
+        }
+      } else {
+        -1
+      }
+      case _ -> -1
+    }
+    case _ -> -1
+  }
+}
+
+test "an inout array element's computed index is bound in source order among named arguments" {
+  val r = buildFirstFn(
+    "package App\nfunc f(): Unit {\n  var arr: array[3, Int] = [0, 0, 0]\n  addBoth(b = note(4), x = arr[at(2)], a = note(5))\n}\nfunc note(v: in Int): Int { v }\nfunc at(i: in Int): Int { i }\nfunc addBoth(x: inout Int, a: in Int, b: in Int): Unit { x = x + a * 10 + b }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(outer, tail) -> {
+        val stmts: List[TStmt] = newList()
+        for st in outer {
+          stmts.add(st)
+        }
+        match tail {
+          case Some(t) -> match t.kind { case XBlock(inner, _) -> { for st in inner { stmts.add(st) } }; case _ -> () }
+          case None -> ()
+        }
+        val lits: List[Long] = newList()
+        for st in stmts {
+          val n = letCallArg(st)
+          if n >= 0 {
+            lits.add(n)
+          }
+        }
+        assertEqualInt(lits.count, 3, "b, the index and a are each bound")
+        assertTrue(lits[0] == 4 and lits[1] == 2 and lits[2] == 5, "in the order written: b, i, a")
+      }
+      case _ -> assertTrue(false, "a block")
+    }
+    case None -> assertTrue(false, "builds")
+  }
+}

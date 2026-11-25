@@ -616,6 +616,25 @@ test -s "$work/cv_tir.msg" || { echo "::error::no precondition message"; cat "$w
 diff -u "$work/cv_ast.msg" "$work/cv_tir.msg"
 echo "contracts: ok"
 
+# Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
+# values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
+gsrc=scripts/ci/native-via-tir/globals.l
+"$lyric_bin" build --target native "$gsrc" -o "$work/g_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$gsrc" -o "$work/g_tir" 2> "$work/g_census.txt" >/dev/null
+cat "$work/g_census.txt"
+"$work/g_ast" > "$work/g_ast.out"
+"$work/g_tir" > "$work/g_tir.out"
+diff -u "$work/g_ast.out" "$work/g_tir.out"
+printf '42\n6000000000\n82\ngv\nhello gv\nhello gv\n' | diff -u - "$work/g_tir.out"
+grep -q '^native via-TIR: 8 of 8 functions lowered from TIR' "$work/g_census.txt" || {
+  echo "::error::expected every function of globals.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/g_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/g_asan"
+"$work/g_asan" > "$work/g_asan.out"
+diff -u "$work/g_tir.out" "$work/g_asan.out"
+echo "globals under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 
