@@ -18968,8 +18968,9 @@ record TirUnitMaps {
   cases: Map[Int, LlvmTir.TirCaseRef]
   enums: Map[Int, Bool]
   enumCases: Map[Int, Int]
-  /// The distinct types without a range, by symbol, as their underlying types.
+  /// The distinct types, by symbol, as their underlying types, and what the lowering reads of each.
   distincts: Map[Int, NType] = newMap()
+  distinctInfos: Map[Int, LlvmTir.TirDistinct] = newMap()
   /// The tuple layouts registered for this unit so far, keyed as `LlvmTir.TirLowerEnv.tuples` is.
   tuples: Map[String, LlvmTir.TirRecLayout] = newMap()
   funcs: Map[String, NType] = newMap()
@@ -19399,6 +19400,7 @@ func tirUnitMaps(
   val unionIds: Map[String, Int] = newMap()
   val enums: Map[Int, Bool] = newMap()
   val distincts: Map[Int, NType] = newMap()
+  val distinctInfos: Map[Int, LlvmTir.TirDistinct] = newMap()
   val enumCases: Map[Int, Int] = newMap()
   val caseIds: List[Int] = newList()
   val caseKeys: List[String] = newList()
@@ -19515,7 +19517,25 @@ func tirUnitMaps(
                     unionIds.add(pkg + "." + rest, id)
                   }
                   case None -> match mapGet(ctx.distinctDefs, pkg + "." + rest) {
-                    case Some(di) -> if not di.hasRange { distincts.add(id, di.underlying) }
+                    case Some(di) -> {
+                      distincts.add(id, di.underlying)
+                      distinctInfos.add(
+                        id,
+                        LlvmTir.TirDistinct(
+                          ty = di.underlying,
+                          unsigned = di.isUnsigned,
+                          hasRange = di.hasRange,
+                          lo = di.lo,
+                          hi = di.hi,
+                          isFloat = di.isFloat,
+                          loF = di.loF,
+                          hiF = di.hiF,
+                          hiExclusive = di.hiExclusive,
+                          boundsText = di.boundsText,
+                          name = rest
+                        )
+                      )
+                    }
                     case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") {
                       enums.add(id, true)
                     }
@@ -19685,6 +19705,7 @@ func tirUnitMaps(
     enums = enums,
     enumCases = enumCases,
     distincts = distincts,
+    distinctInfos = distinctInfos,
     intrinsics = intrinsics,
     asyncFns = asyncFns,
     protRecs = protRecs,
@@ -19834,6 +19855,7 @@ func lowerWithTuples(
       enums = maps.enums,
       enumCases = maps.enumCases,
       distincts = maps.distincts,
+      distinctInfos = maps.distinctInfos,
       tuples = maps.tuples,
       funcs = maps.funcs,
       lists = maps.lists,

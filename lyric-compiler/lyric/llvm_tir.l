@@ -78,6 +78,26 @@ pub record TirUnitInput {
   instCases: Map[Int, List[SymbolId]] = newMap()
 }
 
+/// A distinct type as the lowering reads it: its representation, the primitive it wraps (so the operators
+/// on it read their signedness and overflow rule from the primitive) and its range when it has one.
+pub record TirDistinct {
+  ty: NType
+  /// The wrapped `Byte`/`UInt`/`ULong`: the range bounds compare unsigned.
+  unsigned: Bool
+  hasRange: Bool
+  lo: Long
+  hi: Long
+  /// A `Double`/`Float` range: `loF ..= hiF`, or `..<` when `hiExclusive`.
+  isFloat: Bool = false
+  loF: Double = 0.0
+  hiF: Double = 0.0
+  hiExclusive: Bool = false
+  /// `[lo, hi]` or `[lo, hi)` as written, for the range-violation message.
+  boundsText: String
+  /// The type's own name, for the same message.
+  name: String
+}
+
 /// The package, name and parameter count of a top-level function.
 pub record TirFnName {
   pkg: String
@@ -274,9 +294,11 @@ pub record TirLowerEnv {
   /// by the case's symbol.
   unions: Map[Int, TirUnionLayout] = newMap()
   cases: Map[Int, TirCaseRef] = newMap()
-  /// The distinct types without a range, keyed by symbol: each is its underlying type's representation, so
-  /// wrapping and unwrapping one changes the type only.  A range-checked distinct type stays on the AST path.
+  /// The distinct types, keyed by symbol: each is its underlying type's representation, so wrapping and
+  /// unwrapping one changes the type only (a range-checked one also checks the range when it is wrapped).
   distincts: Map[Int, NType] = newMap()
+  /// What the lowering needs of each distinct type beyond its representation, keyed as `distincts` is.
+  distinctInfos: Map[Int, TirDistinct] = newMap()
   /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
   /// case's symbol).  An enum value is its `i32` ordinal.
   /// A set: the value is always `true`.
@@ -626,6 +648,28 @@ func unsupported(c: in LCtx, why: in String): Val {
 }
 
 /// Whether the type of an expression lowers to `nt`.
+/// The type an operator on `t` follows: the primitive a distinct type wraps, else `t`.
+func opTy(c: in LCtx, t: in Ty): Ty {
+  match t {
+    case TNamed(sym, args) -> if args.count == 0 {
+      match mapGet(c.env.distinctInfos, sym.id) {
+        case Some(d) -> match d.ty {
+          case NI8 -> TPrim(kind = TPByte)
+          case NI32 -> TPrim(kind = if d.unsigned { TPUInt } else { TPInt })
+          case NI64 -> TPrim(kind = if d.unsigned { TPULong } else { TPLong })
+          case NFloat -> TPrim(kind = TPFloat)
+          case NDouble -> TPrim(kind = TPDouble)
+          case _ -> t
+        }
+        case None -> t
+      }
+    } else {
+      t
+    }
+    case _ -> t
+  }
+}
+
 func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
   match tyToN(c.env, ty) {
     case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
@@ -1159,7 +1203,14 @@ func compoundElem(
     return None
   }
   match assignOp(op) {
-    case Some(iop) -> Some(value = lowerBinary(c, iop, placeTy, nt, cur.value, rhs.value, line))
+    case Some(iop) -> Some(
+      value = rangeCheckedResult(
+        c,
+        placeTy,
+        lowerBinary(c, iop, opTy(c, placeTy), nt, cur.value, rhs.value, line),
+        line
+      )
+    )
     case None -> None
   }
 }
@@ -1530,6 +1581,56 @@ func overflowTypeName(ty: in Ty): Option[String] {
     }
     case _ -> None
   }
+}
+
+/// The result of an operator whose result type is a range-checked distinct type: derived arithmetic goes
+/// through `T.from`, so a result outside the range panics with its message (#7226).  Comparisons yield `Bool`
+/// and pass through.
+func rangeCheckedResult(c: in LCtx, resultTy: in Ty, v: in Val, line: in Int): Val {
+  match resultTy {
+    case TNamed(sym, args) -> if args.count == 0 {
+      match mapGet(c.env.distinctInfos, sym.id) {
+        case Some(d) -> if d.hasRange { trapIf(c, distinctOutOfRange(c, d, v), distinctRangeMessage(d), line) }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  v
+}
+
+/// The text the managed targets raise when a value is wrapped into a range-checked distinct type (language
+/// reference section 2.3).
+func distinctRangeMessage(d: in TirDistinct): String {
+  d.name + ".from: value out of range " + d.boundsText
+}
+
+/// An `i1` that is true when `v` lies outside the range of `d`.
+func distinctOutOfRange(c: in LCtx, d: in TirDistinct, v: in Val): NValue {
+  if d.isFloat {
+    val geLo = tmp(c)
+    c.insns.add(NFCmp(dest = geLo, pred = FOge, ty = d.ty, a = v.value, b = NLitFloat(v = d.loF, ty = d.ty)))
+    val inHi = tmp(c)
+    c.insns.add(
+      NFCmp(
+        dest = inHi,
+        pred = if d.hiExclusive { FOlt } else { FOle },
+        ty = d.ty,
+        a = v.value,
+        b = NLitFloat(v = d.hiF, ty = d.ty)
+      )
+    )
+    val inRange = tmp(c)
+    c.insns.add(NAnd(dest = inRange, ty = NI1, a = NLocal(name = geLo), b = NLocal(name = inHi)))
+    val bad = tmp(c)
+    c.insns.add(NXor(dest = bad, ty = NI1, a = NLocal(name = inRange), b = NLitInt(v = 1i64, ty = NI1)))
+    return NLocal(name = bad)
+  }
+  val below = icmpV(c, if d.unsigned { IUlt } else { ISlt }, d.ty, v.value, intLit(d.ty, d.lo))
+  val above = icmpV(c, if d.unsigned { IUgt } else { ISgt }, d.ty, v.value, intLit(d.ty, d.hi))
+  val bad = tmp(c)
+  c.insns.add(NOr(dest = bad, ty = NI1, a = below, b = above))
+  NLocal(name = bad)
 }
 
 /// Branch to a panic named `msg` when `cond` holds, and continue otherwise.
@@ -2722,7 +2823,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               "an operator on operands of different types (" + renderTy(ins[0].ty) + ", " + renderTy(ins[1].ty) + ")"
             )
           } else {
-            lowerBinary(c, op, ins[0].ty, nt, a.value, b.value, line)
+            rangeCheckedResult(c, e.ty, lowerBinary(c, op, opTy(c, ins[0].ty), nt, a.value, b.value, line), line)
           }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
@@ -2748,7 +2849,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           } else if not sameResultType(c, e.ty, nt) {
             unsupported(c, "a unary operator whose result type differs from its operand's")
           } else {
-            lowerUnary(c, op, ins[0].ty, nt, a.value, line)
+            rangeCheckedResult(c, e.ty, lowerUnary(c, op, opTy(c, ins[0].ty), nt, a.value, line), line)
           }
           case None -> unsupported(c, "an operator on " + renderTy(ins[0].ty))
         }
@@ -4970,7 +5071,14 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
     }
     case CvUpcast(iface) -> lowerUpcast(c, e, iface, inner)
     case CvWrapDistinct(sym) -> if c.env.distincts.containsKey(sym.id) {
-      lowerExpr(c, inner)
+      val v = lowerExpr(c, inner)
+      match mapGet(c.env.distinctInfos, sym.id) {
+        case Some(d) -> if d.hasRange {
+          trapIf(c, distinctOutOfRange(c, d, v), distinctRangeMessage(d), e.span.startPos.line)
+        }
+        case None -> ()
+      }
+      v
     } else {
       unsupported(c, "a conversion to the distinct type " + renderTyIn(c.env, e.ty))
     }
@@ -5136,7 +5244,13 @@ func assignSlot(c: in LCtx, slot: in Slot, placeTy: in Ty, op: in AssignKind, va
     case Some(iop) -> {
       val cur = tmp(c)
       c.insns.add(NLoad(dest = cur, ty = slot.ty, ptr = NLocal(name = slot.ptr)))
-      val res = lowerBinary(c, iop, placeTy, slot.ty, NLocal(name = cur), rhs.value, value.span.startPos.line)
+      val line = value.span.startPos.line
+      val res = rangeCheckedResult(
+        c,
+        placeTy,
+        lowerBinary(c, iop, opTy(c, placeTy), slot.ty, NLocal(name = cur), rhs.value, line),
+        line
+      )
       c.insns.add(NStore(ty = slot.ty, value = res.value, ptr = NLocal(name = slot.ptr)))
     }
   }
