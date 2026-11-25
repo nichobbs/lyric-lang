@@ -22,6 +22,7 @@ import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Iface
+import Lyric.Tir.Walk
 import Lyric.Fmt as Fmt
 
 /// The builder's state for one function: the lexical scopes of locals, the
@@ -4531,7 +4532,9 @@ func buildFnCore(
     for inv in env.memberInvs {
       match buildExpr(env, inv.expr) {
         case Some(t) -> {
-          invs.add(t)
+          // The clause is one AST node tree built in every member: each copy takes node ids of its own.
+          val w = Walker(pre = { x: TExpr -> None }, post = { x: TExpr -> renumberNode(env, x) })
+          invs.add(walkExpr(w, t))
           invTexts.add(Fmt.exprInline(0, inv.expr))
         }
         case None -> {
@@ -4640,6 +4643,10 @@ func buildFnCore(
     )
     case None -> None
   }
+}
+
+func renumberNode(env: in BuildEnv, x: in TExpr): TExpr {
+  TExpr(id = freshNodeId(env), ty = x.ty, span = x.span, kind = x.kind)
 }
 
 /// A body whose value is not `Unit` and does not diverge, as a `Unit` body that evaluates it for its effect.
