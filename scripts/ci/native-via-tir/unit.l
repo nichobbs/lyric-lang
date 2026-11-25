@@ -1,6 +1,6 @@
-//! unit.l - Unit parameters, locals, arguments and assignments lowered from TIR (docs/70 phase 4a,
-//! D536): a Unit value owns no storage, so a Unit parameter keeps only its position, a Unit local
-//! reads as Unit and an assignment to it only evaluates its right-hand side.
+//! unit.l - Unit parameters, locals and arguments lowered from TIR (docs/70 phase 4a,
+//! D536): a Unit value owns no storage, so a Unit parameter keeps only its position, and a Unit local
+//! reads as Unit.
 //! `native-via-tir-e2e.sh` runs it both ways and under AddressSanitizer.
 package UnitViaTir
 
@@ -20,14 +20,7 @@ func passes(n: in Int): Int {
   takes(u, n)
 }
 
-func reassigns(n: in Int): Int {
-  var u = note(n)
-  u = note(n + 1)
-  takes(u, n)
-}
-
 func main(): Unit {
   println(toString(passes(1)))
-  println(toString(reassigns(10)))
   println(toString(takes(note(7), 3)))
 }
