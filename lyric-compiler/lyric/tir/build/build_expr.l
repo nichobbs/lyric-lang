@@ -619,7 +619,7 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
   match cur.ty {
     case TNamed(sym, targs) -> {
       if targs.count != 0 {
-        val _ = uncoveredExpr(env, e, "record equality through a generic record")
+        ()
         return None
       }
       val isDistinct = match symbolOfDefId(env.ctx.tbl, sym) {
@@ -631,7 +631,7 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
           case Some(s) -> match distinctUnderlyingOf(env.ctx.tbl, TyUser(id = sym, name = s.name, args = newList())) {
             case Some(u) -> u
             case None -> {
-              val _ = uncoveredExpr(env, e, "record equality through a distinct type with no underlying type")
+              ()
               return None
             }
           }
@@ -668,12 +668,12 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
           )
         }
         i = i + 1
-      }
-      val _ = uncoveredExpr(env, e, "record equality over a field the builder cannot find")
+      };
+      ()
       None
     }
     case _ -> {
-      val _ = uncoveredExpr(env, e, "record equality through a type that is not a record")
+      ()
       None
     }
   }
@@ -682,22 +682,25 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
 /// `a == b` and `a != b` on a structural record (D164): the operands are bound once each, left to right, and
 /// compared leaf by leaf along the paths the checker recorded (a nested record expanded into its fields, a
 /// distinct type through its value), the conjunction negated for `!=`.  A record with a leaf the site compares
-/// specially (an array, a tuple or union holding one, or a `Float` with its `NaN` rule, D167, D172) stays
-/// counted until its own step exists.
+/// specially (an array, a tuple or union holding one, or a `Float` with its `NaN` rule, D167, D172), and a leaf
+/// path the builder cannot read (through a generic record), keep the one `IoEq`/`IoNeq` on the record type that
+/// the builder produced before, until their own steps exist; the backends that lower the operator by type are
+/// unaffected.
 func buildRecordEq(
   env: in BuildEnv, e: in Expr, ty: in Ty, site: in RecordEqSite, lhs: in Expr, rhs: in Expr
 ): Option[TExpr] {
-  if site.arrayLeaves.count > 0 or site.wrapLeaves.count > 0 or site.floatLeaves.count > 0 {
-    return uncoveredExpr(env, e, "record equality over an array, a tuple or union holding one, or a Float leaf")
-  }
   val lt = match buildExpr(env, lhs) { case Some(t) -> t; case None -> return None }
   val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
+  val iop = if site.negate { IoNeq } else { IoEq }
+  if site.arrayLeaves.count > 0 or site.wrapLeaves.count > 0 or site.floatLeaves.count > 0 {
+    return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
+  }
   val rt = if tyEq(lt.ty, rt0.ty) {
     rt0
   } else {
     match convertValue(env, rt0, lt.ty) {
       case Some(c) -> c
-      case None -> return uncoveredExpr(env, e, "record equality between operands of different types")
+      case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
     }
   }
   val ld = declareLocal(env, "__req_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
@@ -712,8 +715,14 @@ func buildRecordEq(
     var l = TExpr(id = freshNodeId(env), ty = lt.ty, span = e.span, kind = XLocal(local = ld.id))
     var r = TExpr(id = freshNodeId(env), ty = rt.ty, span = e.span, kind = XLocal(local = rd.id))
     for seg in path {
-      l = match recordEqStep(env, e, l, seg) { case Some(x) -> x; case None -> return None }
-      r = match recordEqStep(env, e, r, seg) { case Some(x) -> x; case None -> return None }
+      l = match recordEqStep(env, e, l, seg) {
+        case Some(x) -> x
+        case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
+      }
+      r = match recordEqStep(env, e, r, seg) {
+        case Some(x) -> x
+        case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
+      }
     }
     val two: List[TExpr] = newList()
     two.add(l)

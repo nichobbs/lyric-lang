@@ -3964,8 +3964,20 @@ test "!= on a record negates the conjunction of its leaves" {
   }
 }
 
-test "== on a record with a Float field is not expressed yet" {
+test "== on a record with a Float field keeps the single IoEq on the record (no I0002)" {
   val r = buildFirstFn("package App\nrecord P { x: Float }\nfunc f(a: in P, b: in P): Bool { a == b }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(r.body.isNone(), "the NaN rule is not built")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> assertTrue(eqShape(b) == "eq", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+}
+
+test "== on a record holding a generic record keeps the single IoEq on the record (no I0002)" {
+  val src = "package App\nrecord Box[T] { v: T }\nrecord P { b: Box[Int]\n n: Int }\nfunc f(a: in P, b: in P): Bool { a == b }\n"
+  val r = buildFirstFn(src)
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(r.body.isSome(), "builds")
 }
