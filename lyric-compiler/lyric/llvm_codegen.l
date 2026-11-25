@@ -505,6 +505,9 @@ record Ctx {
   // inference; `genericDeclPkg` records the declaring package.
   genericRecordDefs: Map[String, RecordDecl]
   genericUnionDefs: Map[String, UnionDecl]
+  /// The LLVM type of every record, union, enum and distinct type the TIR lowering has laid out in any unit
+  /// so far, by symbol: a generic instance in one unit may take a type argument another unit declares.
+  tirKnownAll: Map[Int, NType] = newMap()
   genericDeclPkg: Map[String, String]
   caseToGenericUnion: Map[String, String]
   // Module accumulators for lazy instantiation: type definitions and
@@ -17929,6 +17932,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     distinctDefs = mod.distinctDefs,
     genericRecordDefs = mod.genericRecordDefs,
     genericUnionDefs = mod.genericUnionDefs,
+    tirKnownAll = mod.tirKnownAll,
     genericDeclPkg = mod.genericDeclPkg,
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
@@ -19138,7 +19142,10 @@ func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NT
     } else {
       None
     }
-    case _ -> LlvmTir.tirInstArgN(known, t)
+    case _ -> match LlvmTir.tirInstArgN(known, t) {
+      case Some(n) -> Some(value = n)
+      case None -> LlvmTir.tirInstArgN(ctx.tirKnownAll, t)
+    }
   }
 }
 
@@ -19158,6 +19165,14 @@ func registerTirInstances(
   cases: in Map[Int, LlvmTir.TirCaseRef],
 ): Unit {
   val known = tirKnownTypes(recs, unions, enums, distincts)
+  for kid in mapKeys(known) {
+    match mapGet(known, kid) {
+      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) {
+        ctx.tirKnownAll.add(kid, kt)
+      }
+      case None -> ()
+    }
+  }
   var progress = true
   var rounds = 0
   while progress and rounds < 32 {
@@ -19231,6 +19246,14 @@ func registerTirInstances(
           case None -> ()
         }
       }
+    }
+  }
+  for kid in mapKeys(known) {
+    match mapGet(known, kid) {
+      case Some(kt) -> if not ctx.tirKnownAll.containsKey(kid) {
+        ctx.tirKnownAll.add(kid, kt)
+      }
+      case None -> ()
     }
   }
 }
