@@ -640,6 +640,38 @@ func buildDeclaredBinary(
   }
 }
 
+/// The operands of a primitive binary operator at one type: the checker accepts `SCALE + 1` with
+/// `SCALE: Long` and `x < 2.0` with `x: Float`, an operand of a narrower numeric type that widens to the
+/// other's, and the TIR states that widening on the narrower one so a backend never sees two types.
+/// Operands already of one type, or that do not convert, stay as built.
+func unifyPrimOperands(env: in BuildEnv, lt: in TExpr, rt: in TExpr): List[TExpr] {
+  val res: List[TExpr] = newList()
+  if tyEq(lt.ty, rt.ty) or not isPrimTy(rt.ty) {
+    res.add(lt)
+    res.add(rt)
+    return res
+  }
+  match convertValue(env, rt, lt.ty) {
+    case Some(r2) -> {
+      res.add(lt)
+      res.add(r2)
+      return res
+    }
+    case None -> ()
+  }
+  match convertValue(env, lt, rt.ty) {
+    case Some(l2) -> {
+      res.add(l2)
+      res.add(rt)
+    }
+    case None -> {
+      res.add(lt)
+      res.add(rt)
+    }
+  }
+  res
+}
+
 func isPrimTy(t: in Ty): Bool {
   match t {
     case TPrim(_) -> true
@@ -2811,8 +2843,9 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
             case None -> match intrinsicOfBinop(op) {
               case Some(iop) -> if isPrimTy(lt.ty) {
                 val two: List[TExpr] = newList()
-                two.add(lt)
-                two.add(rt)
+                val pair = unifyPrimOperands(env, lt, rt)
+                two.add(pair[0])
+                two.add(pair[1])
                 Some(value = mkExpr(e, ty, intrinsicCall(iop, two)))
               } else {
                 buildDeclaredBinary(env, e, ty, iop, lt, rt)

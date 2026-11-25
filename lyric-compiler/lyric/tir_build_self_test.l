@@ -3878,3 +3878,45 @@ test "a tuple literal checked at a wider tuple type widens its elements" {
     case None -> assertTrue(false, "builds")
   }
 }
+
+/// The two operand types of the first binary intrinsic call found in `e` (-1 when none): 1 when both are Long,
+/// 2 when both are Double, 0 for anything else.
+func binaryOperandKind(e: in TExpr): Int {
+  match e.kind {
+    case XCall(Intrinsic(_), args) -> if args.count == 2 {
+      val a = match args[0] { case TArgIn(v) -> v.ty; case _ -> tyUnit() }
+      val b = match args[1] { case TArgIn(v) -> v.ty; case _ -> tyUnit() }
+      if tyEq(a, TPrim(TPLong)) and tyEq(b, TPrim(TPLong)) {
+        1
+      } else if tyEq(a, TPrim(TPDouble)) and tyEq(b, TPrim(TPDouble)) {
+        2
+      } else {
+        0
+      }
+    } else {
+      -1
+    }
+    case XBlock(_, Some(t)) -> binaryOperandKind(t)
+    case _ -> -1
+  }
+}
+
+test "a binary operator on a Long and an Int literal takes both operands at Long" {
+  val r = buildFirstFn("package App\nfunc f(a: in Long): Long {\n  a + 1\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> assertEqualInt(binaryOperandKind(b), 1, "both operands are Long")
+    case None -> assertTrue(false, "builds")
+  }
+}
+
+test "a comparison of a Double and a Float takes both operands at Double" {
+  val r = buildFirstFn("package App\nfunc f(a: in Double, b: in Float): Bool {\n  a < b\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> assertEqualInt(binaryOperandKind(b), 2, "both operands are Double")
+    case None -> assertTrue(false, "builds")
+  }
+}
