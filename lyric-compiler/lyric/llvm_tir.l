@@ -6190,7 +6190,7 @@ func stmtKindName(k: in TStmtKind): String {
     case TsFor(_, _, _, _) -> "TsFor"
     case TsWhile(_, _, _) -> "TsWhile"
     case TsLoop(_, _) -> "TsLoop"
-    case TsInvariant(_) -> "TsInvariant"
+    case TsInvariant(_, _) -> "TsInvariant"
     case _ -> "a statement kind added after this lowering was written"
   }
 }

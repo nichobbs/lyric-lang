@@ -15,6 +15,9 @@ import Lyric.Tir
 pub record Walker {
   pre: (TExpr) -> Option[TExpr]
   post: (TExpr) -> TExpr
+  /// Offered each statement of a block before it is walked: `Some(stmts)` replaces it with those statements (which
+  /// the walk does not visit again), `None` walks it as usual.
+  preStmt: (TStmt) -> Option[List[TStmt]] = { s: TStmt -> None }
 }
 
 func wOptExpr(w: in Walker, o: in Option[TExpr]): Option[TExpr] {
@@ -45,7 +48,11 @@ func wPlace(w: in Walker, p: in TPlace): TPlace {
     case PlLocal(_) -> p.kind
     case PlGlobal(_) -> p.kind
     case PlField(recv, f) -> PlField(recv = walkExpr(w, recv), field = f)
-    case PlIndex(recv, idx, how) -> PlIndex(recv = walkExpr(w, recv), idx = walkExpr(w, idx), how = how)
+    case PlIndex(recv, idx, how) -> PlIndex(
+      recv = walkExpr(w, recv),
+      idx = walkExpr(w, idx),
+      how = how
+    )
   }
   TPlace(ty = p.ty, kind = k)
 }
@@ -54,7 +61,10 @@ func wPat(w: in Walker, p: in TPat): TPat {
   val k: TPatKind = match p.kind {
     case TpBind(d, inner) -> TpBind(
       decl = d,
-      inner = match inner { case Some(i) -> Some(value = wPat(w, i)); case None -> None }
+      inner = match inner {
+        case Some(i) -> Some(value = wPat(w, i))
+        case None -> None
+      }
     )
     case TpCtor(sym, args) -> {
       val subs: List[TPat] = newList()
@@ -114,9 +124,13 @@ func wStmt(w: in Walker, st: in TStmt): TStmt {
       iter = walkExpr(w, iter),
       body = walkExpr(w, body)
     )
-    case TsWhile(label, cond, body) -> TsWhile(label = label, cond = walkExpr(w, cond), body = walkExpr(w, body))
+    case TsWhile(label, cond, body) -> TsWhile(
+      label = label,
+      cond = walkExpr(w, cond),
+      body = walkExpr(w, body)
+    )
     case TsLoop(label, body) -> TsLoop(label = label, body = walkExpr(w, body))
-    case TsInvariant(e) -> TsInvariant(expr = walkExpr(w, e))
+    case TsInvariant(e, t) -> TsInvariant(expr = walkExpr(w, e), text = t)
   }
   TStmt(id = st.id, span = st.span, kind = k)
 }
@@ -137,10 +151,7 @@ pub func walkExpr(w: in Walker, e: in TExpr): TExpr {
       for a in args {
         argList.add(wArg(w, a))
       }
-      val cl: Callee = match callee {
-        case Indirect(fv) -> Indirect(fnValue = walkExpr(w, fv))
-        case _ -> callee
-      }
+      val cl: Callee = match callee { case Indirect(fv) -> Indirect(fnValue = walkExpr(w, fv)); case _ -> callee }
       XCall(callee = cl, args = argList)
     }
     case XConstruct(sym, fields) -> XConstruct(sym = sym, fields = wExprs(w, fields))
@@ -154,14 +165,22 @@ pub func walkExpr(w: in Walker, e: in TExpr): TExpr {
     }
     case XArrayCopy(inner) -> XArrayCopy(inner = walkExpr(w, inner))
     case XZeroValue(_) -> e.kind
-    case XIndex(recv, idx, how) -> XIndex(recv = walkExpr(w, recv), idx = walkExpr(w, idx), how = how)
+    case XIndex(recv, idx, how) -> XIndex(
+      recv = walkExpr(w, recv),
+      idx = walkExpr(w, idx),
+      how = how
+    )
     case XConvert(kind, inner) -> XConvert(kind = kind, inner = walkExpr(w, inner))
     case XTuple(elems) -> XTuple(elems = wExprs(w, elems))
     case XListLit(elems) -> XListLit(elems = wExprs(w, elems))
     case XInterp(parts) -> XInterp(parts = wExprs(w, parts))
     case XRange(lo, hi, inc) -> XRange(lo = walkExpr(w, lo), hi = walkExpr(w, hi), inclusive = inc)
     case XShort(op, l, r) -> XShort(op = op, lhs = walkExpr(w, l), rhs = walkExpr(w, r))
-    case XIf(cond, t, f) -> XIf(cond = walkExpr(w, cond), thenBranch = walkExpr(w, t), elseBranch = wOptExpr(w, f))
+    case XIf(cond, t, f) -> XIf(
+      cond = walkExpr(w, cond),
+      thenBranch = walkExpr(w, t),
+      elseBranch = wOptExpr(w, f)
+    )
     case XMatch(scrut, arms, exh) -> {
       val as1: List[TArm] = newList()
       for a in arms {
@@ -172,7 +191,14 @@ pub func walkExpr(w: in Walker, e: in TExpr): TExpr {
     case XBlock(stmts, tail) -> {
       val ss: List[TStmt] = newList()
       for st in stmts {
-        ss.add(wStmt(w, st))
+        match w.preStmt(st) {
+          case Some(repl) -> {
+            for r in repl {
+              ss.add(r)
+            }
+          }
+          case None -> ss.add(wStmt(w, st))
+        }
       }
       XBlock(stmts = ss, tail = wOptExpr(w, tail))
     }
@@ -184,8 +210,16 @@ pub func walkExpr(w: in Walker, e: in TExpr): TExpr {
     case XPropagate(i) -> XPropagate(inner = walkExpr(w, i))
     case XOld(i) -> XOld(inner = walkExpr(w, i))
     case XResult -> e.kind
-    case XForall(bs, wh, body) -> XForall(binders = bs, whereExpr = wOptExpr(w, wh), body = walkExpr(w, body))
-    case XExists(bs, wh, body) -> XExists(binders = bs, whereExpr = wOptExpr(w, wh), body = walkExpr(w, body))
+    case XForall(bs, wh, body) -> XForall(
+      binders = bs,
+      whereExpr = wOptExpr(w, wh),
+      body = walkExpr(w, body)
+    )
+    case XExists(bs, wh, body) -> XExists(
+      binders = bs,
+      whereExpr = wOptExpr(w, wh),
+      body = walkExpr(w, body)
+    )
     case XAssign(p, op, v) -> XAssign(place = wPlace(w, p), op = op, value = walkExpr(w, v))
   }
   w.post(TExpr(id = e.id, ty = e.ty, span = e.span, kind = k))
