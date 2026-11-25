@@ -1,0 +1,3 @@
+# 2026-11-25: native TIR runs `?` lowering and contract elaboration (D534)
+
+`lyric build --target native --via-tir` now runs the TIR passes `Lyric.Tir.Propagate` (D503) and `Lyric.Tir.Contracts` (D502) before `Lyric.Tir.Mono`, lowers the `assert` builtin they produce, and lowers `nativeAddrOf`/`nativeNullPtr`. Functions with `requires:`/`ensures:` and `?` no longer fall back to the AST path, with the same panic messages. On the native self-test census, functions lowered from TIR went from 1398 to 1527 of 1744. Covered by `scripts/ci/native-via-tir/contracts.l` and a violated-clause comparison in `native-via-tir-e2e.sh`.

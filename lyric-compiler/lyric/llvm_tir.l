@@ -66,6 +66,10 @@ pub record TirUnitInput {
   /// Whether `+`, `-`, `*` and unary `-` on `Int`, `Long`, `UInt`, `ULong` and `Byte` panic on
   /// overflow (D163: a debug build of a user package); false wraps (release, the standard library).
   checkedArith: Bool = false
+  /// Whether the package went through `Lyric.Tir.Contracts` (docs/70 section 7.2, D502): its functions' `requires:` and
+  /// `ensures:` are asserts in the body, the clauses staying on the declaration for the verifier.  False for TIR
+  /// the contract pass has not seen, whose functions with clauses stay on the AST path.
+  contractsElaborated: Bool = false
   /// On the instances unit of a monomorphised bundle (docs/70 section 7.2, D500; `Lyric.Mono.Instances`
   /// is the last package of `MonoResult.pkgs`): the table `(generic, arguments) -> instance` and each
   /// instance union's case symbols in declaration order.  Every unit of the bundle is given the one
@@ -331,6 +335,8 @@ pub record TirLowerEnv {
   /// See `TirUnitInput.checkedArith`.  The contract elaborator's overflow pass rewrites the AST
   /// the TIR is built from, so the lowering emits the same checks itself.
   checkedArith: Bool = false
+  /// See `TirUnitInput.contractsElaborated`.
+  contractsElaborated: Bool = false
 }
 
 /// A function type the lowering needs a closure type for: its key in `TirLowerEnv.funcs` and
@@ -3183,6 +3189,49 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   if name == "panic" and ins.count == 1 {
     return lowerPanicCall(c, ins[0], line)
   }
+  // `assert(cond)` and `assert(cond, message)`: the contract pass's checks.  The message is evaluated on the
+  // failure path only, as on the AST path, so a dynamic message costs nothing when the assertion holds.
+  if name == "assert" and (ins.count == 1 or ins.count == 2) {
+    val cond = borrow(c, lowerExpr(c, ins[0]))
+    val okL = newLabel(c, "assert.ok")
+    val failL = newLabel(c, "assert.fail")
+    c.insns.add(NCondBr(cond = cond.value, thenLabel = okL, elseLabel = failL))
+    startBlock(c, failL)
+    if ins.count == 2 {
+      discard(c, lowerPanicCall(c, ins[1], line))
+    } else {
+      emitPanic(c, "assertion failed", line)
+    }
+    c.insns.add(NBr(label = okL))
+    startBlock(c, okL)
+    return unitVal()
+  }
+  // The C NULL pointer as a `NativePtr[Byte]` (docs/native-plan N4.5).  Where it may be written is the mode
+  // checker's N0100 charge.
+  if name == "nativeNullPtr" and ins.count == 0 {
+    return Val(ty = NPtr(pointee = NI8), value = NLitNull(ty = NPtr(pointee = NI8)))
+  }
+  // The address of a local's stack slot (N4.2): the slot is the pointer.  The local must hold a scalar or a
+  // pointer so the result is the `NativePtr[T]` the checker typed it as.
+  if name == "nativeAddrOf" and ins.count == 1 {
+    match ins[0].kind {
+      case XLocal(id) -> match mapGet(c.slots, id.id) {
+        case Some(slot) -> {
+          val pt = NPtr(pointee = slot.ty)
+          return match tyToN(c.env, rty) {
+            case Some(want) -> if nTypeToIrString(want) == nTypeToIrString(pt) {
+              Val(ty = pt, value = NLocal(name = slot.ptr))
+            } else {
+              unsupported(c, "the address of a local whose pointer type is " + nTypeToIrString(want))
+            }
+            case None -> unsupported(c, "the address of a local of type " + renderTyIn(c.env, ins[0].ty))
+          }
+        }
+        case None -> return unsupported(c, "the address of a local with no stack slot")
+      }
+      case _ -> return unsupported(c, "the address of something other than a local")
+    }
+  }
   match lowerCollectionBuiltin(c, name, ins) {
     case Some(v) -> return v
     case None -> ()
@@ -5899,8 +5948,8 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   if fn.isGenerator {
     return fallback(fn.sym, "a generator")
   }
-  if fn.preconds.count > 0 or fn.postconds.count > 0 {
-    return fallback(fn.sym, "contracts (docs/70 phase 3c elaborates them)")
+  if (fn.preconds.count > 0 or fn.postconds.count > 0) and not env.contractsElaborated {
+    return fallback(fn.sym, "contracts that the contract pass has not elaborated")
   }
   val irName = match mapGet(if fn.isAsync { env.asyncFns } else { env.fnNames }, fn.sym.id) {
     case Some(n) -> n
