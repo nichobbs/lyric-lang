@@ -762,6 +762,10 @@ func floatEqCore(env: in BuildEnv, e: in Expr, a: in TExpr, b: in TExpr): TExpr 
 /// The leaves of the structural record `site` compared, un-negated: the operands `lt` and `rt` (of one type) are
 /// bound to locals and the leaves joined with `and`.  None when a leaf path cannot be read.
 func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TExpr, rt: in TExpr): Option[TExpr] {
+  // A tuple or union leaf holding an array has no step yet, at any depth: the caller keeps one `IoEq`.
+  if site.wrapLeaves.count > 0 {
+    return None
+  }
   val ld = declareLocal(env, "__req_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
   val rd = declareLocal(env, "__req_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
   val stmts: List[TStmt] = newList()
@@ -782,6 +786,7 @@ func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TE
     val leaf = match mapGet(site.arrayLeaves, joined) {
       case Some(arr) -> match arrayEqCore(env, e, arr, l, r) { case Some(x) -> x; case None -> return None }
       case None -> match mapGet(site.floatLeaves, joined) {
+        // Presence is what matters: the map's flag only says `Float` against `Double`.
         case Some(_) -> floatEqCore(env, e, l, r)
         case None -> eqIntrinsic(env, e, l, r)
       }

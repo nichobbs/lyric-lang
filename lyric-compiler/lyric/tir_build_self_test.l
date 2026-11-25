@@ -4127,3 +4127,31 @@ test "a construction of a generic record with an invariant is checked at its typ
   val ds = verifyPackage(pb.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "== on a record holding a tuple with an array keeps one IoEq, also as an array element (D506)" {
+  val c = censusOf(
+    "package App\nrecord Q { t: (array[2, Int], Int) }\nrecord P { qs: array[2, Q] }\nfunc f(a: in Q, b: in Q): Bool { a == b }\nfunc g(a: in P, b: in P): Bool { a == b }\n"
+  )
+  assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  for fd in c.pkg.funcs {
+    match fd.body {
+      case Some(b) -> assertTrue(eqShape(b) == "eq", eqShape(b))
+      case None -> assertTrue(false, "body")
+    }
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "== on a record with a Double leaf and a distinct-over-Float array element uses the NaN rule (D172)" {
+  val c = censusOf(
+    "package App\ntype Metres = Float\nrecord D { x: Double\n ms: array[2, Metres] }\nfunc f(a: in D, b: in D): Bool { a == b }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  match c.pkg.funcs[0].body {
+    case Some(b) -> assertTrue(eqShape(b) == "and(or(eq,and(not(eq),not(eq))),ok)", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
