@@ -43,6 +43,10 @@ default = ["dotnet"]
 dotnet = []
 # io.grpc (grpc-java) backend.
 jvm    = []
+# --target native: the pure-Lyric client (docs/72 slice 7). The server surface
+# (`start`, `startHandle`, `stop`, `serverPort`, `checkRateLimit`) is not built
+# on native until the portable server of docs/72 slice 8 lands.
+native = []
 # Select the SDK client kernels (Grpc.Net.Client on dotnet, grpc-java on the JVM)
 # instead of the pure-Lyric client; removed with those kernels (docs/72 slice 10).
 legacy-client = []
