@@ -3929,3 +3929,43 @@ test "an inout array element's computed index is bound in source order among nam
     case None -> assertTrue(false, "builds")
   }
 }
+
+/// The names of the intrinsic calls and short-circuits in `e`'s tail, in order: `eq` for `IoEq`, `and` for a
+/// short-circuit and, `not` for `IoNot`.
+func eqShape(e: in TExpr): String {
+  match e.kind {
+    case XBlock(_, Some(t)) -> eqShape(t)
+    case XShort(ShAnd, l, r) -> "and(" + eqShape(l) + "," + eqShape(r) + ")"
+    case XCall(Intrinsic(IoEq), _) -> "eq"
+    case XCall(Intrinsic(IoNot), args) -> match args[0] { case TArgIn(v) -> "not(" + eqShape(v) + ")"; case _ -> "?" }
+    case _ -> "?"
+  }
+}
+
+test "== on a record with no var field is compared leaf by leaf (D164)" {
+  val r = buildFirstFn(
+    "package App\nrecord P { x: Int\n y: Int }\nrecord L { p: P\n n: Int }\nfunc f(a: in L, b: in L): Bool { a == b }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> assertTrue(eqShape(b) == "and(and(eq,eq),eq)", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+}
+
+test "!= on a record negates the conjunction of its leaves" {
+  val r = buildFirstFn("package App\nrecord P { x: Int\n y: Int }\nfunc f(a: in P, b: in P): Bool { a != b }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> assertTrue(eqShape(b) == "not(and(eq,eq))", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+}
+
+test "== on a record with a Float field is not expressed yet" {
+  val r = buildFirstFn("package App\nrecord P { x: Float }\nfunc f(a: in P, b: in P): Bool { a == b }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.body.isNone(), "the NaN rule is not built")
+}

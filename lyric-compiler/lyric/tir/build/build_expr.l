@@ -613,6 +613,143 @@ func buildRecordArith(env: in BuildEnv, e: in Expr, ty: in Ty, op: in BinOp, lhs
   Some(value = mkExpr(e, ty, XBlock(stmts = stmts, tail = Some(value = built))))
 }
 
+/// The read of one segment of a `RecordEqSite` leaf path off `cur`: a field of a record, or `value` of a
+/// distinct type (the unwrapped underlying value).
+func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): Option[TExpr] {
+  match cur.ty {
+    case TNamed(sym, targs) -> {
+      if targs.count != 0 {
+        val _ = uncoveredExpr(env, e, "record equality through a generic record")
+        return None
+      }
+      val isDistinct = match symbolOfDefId(env.ctx.tbl, sym) {
+        case Some(s) -> match s.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+        case None -> false
+      }
+      if isDistinct {
+        val under = match symbolOfDefId(env.ctx.tbl, sym) {
+          case Some(s) -> match distinctUnderlyingOf(env.ctx.tbl, TyUser(id = sym, name = s.name, args = newList())) {
+            case Some(u) -> u
+            case None -> {
+              val _ = uncoveredExpr(env, e, "record equality through a distinct type with no underlying type")
+              return None
+            }
+          }
+          case None -> return None
+        }
+        val uty = match tyOfType(env.ctx, under) { case Ok(t) -> t; case Err(msg) -> { env.errors.add(msg); return None } }
+        return Some(
+          value = TExpr(
+            id = freshNodeId(env),
+            ty = uty,
+            span = e.span,
+            kind = XConvert(kind = CvUnwrapDistinct(sym = sym), inner = cur)
+          )
+        )
+      }
+      val fields = fieldsOfRecord(env.ctx.tbl, sym)
+      var i = 0
+      while i < fields.count {
+        if fields[i].name == seg {
+          val ft = match tyOfType(env.ctx, fields[i].ty) {
+            case Ok(t) -> t
+            case Err(msg) -> {
+              env.errors.add(msg)
+              return None
+            }
+          }
+          return Some(
+            value = TExpr(
+              id = freshNodeId(env),
+              ty = ft,
+              span = e.span,
+              kind = XField(recv = cur, field = FieldRef(owner = sym, name = seg, index = i))
+            )
+          )
+        }
+        i = i + 1
+      }
+      val _ = uncoveredExpr(env, e, "record equality over a field the builder cannot find")
+      None
+    }
+    case _ -> {
+      val _ = uncoveredExpr(env, e, "record equality through a type that is not a record")
+      None
+    }
+  }
+}
+
+/// `a == b` and `a != b` on a structural record (D164): the operands are bound once each, left to right, and
+/// compared leaf by leaf along the paths the checker recorded (a nested record expanded into its fields, a
+/// distinct type through its value), the conjunction negated for `!=`.  A record with a leaf the site compares
+/// specially (an array, a tuple or union holding one, or a `Float` with its `NaN` rule, D167, D172) stays
+/// counted until its own step exists.
+func buildRecordEq(
+  env: in BuildEnv, e: in Expr, ty: in Ty, site: in RecordEqSite, lhs: in Expr, rhs: in Expr
+): Option[TExpr] {
+  if site.arrayLeaves.count > 0 or site.wrapLeaves.count > 0 or site.floatLeaves.count > 0 {
+    return uncoveredExpr(env, e, "record equality over an array, a tuple or union holding one, or a Float leaf")
+  }
+  val lt = match buildExpr(env, lhs) { case Some(t) -> t; case None -> return None }
+  val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
+  val rt = if tyEq(lt.ty, rt0.ty) {
+    rt0
+  } else {
+    match convertValue(env, rt0, lt.ty) {
+      case Some(c) -> c
+      case None -> return uncoveredExpr(env, e, "record equality between operands of different types")
+    }
+  }
+  val ld = declareLocal(env, "__req_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
+  val rd = declareLocal(env, "__req_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
+  val stmts: List[TStmt] = newList()
+  val lpat = TPat(id = freshNodeId(env), ty = lt.ty, span = lt.span, kind = TpBind(decl = ld, inner = None))
+  val rpat = TPat(id = freshNodeId(env), ty = rt.ty, span = rt.span, kind = TpBind(decl = rd, inner = None))
+  stmts.add(TStmt(id = freshNodeId(env), span = lt.span, kind = TsLet(pat = lpat, init = lt)))
+  stmts.add(TStmt(id = freshNodeId(env), span = rt.span, kind = TsLet(pat = rpat, init = rt)))
+  var cmp: Option[TExpr] = None
+  for path in site.paths {
+    var l = TExpr(id = freshNodeId(env), ty = lt.ty, span = e.span, kind = XLocal(local = ld.id))
+    var r = TExpr(id = freshNodeId(env), ty = rt.ty, span = e.span, kind = XLocal(local = rd.id))
+    for seg in path {
+      l = match recordEqStep(env, e, l, seg) { case Some(x) -> x; case None -> return None }
+      r = match recordEqStep(env, e, r, seg) { case Some(x) -> x; case None -> return None }
+    }
+    val two: List[TExpr] = newList()
+    two.add(l)
+    two.add(r)
+    val leaf = TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoEq, two))
+    cmp = match cmp {
+      case None -> Some(value = leaf)
+      case Some(acc) -> Some(
+        value = TExpr(
+          id = freshNodeId(env),
+          ty = tyBool(),
+          span = e.span,
+          kind = XShort(op = ShAnd, lhs = acc, rhs = leaf)
+        )
+      )
+    }
+  }
+  val all = match cmp {
+    case Some(c) -> c
+    case None -> TExpr(
+      id = freshNodeId(env),
+      ty = tyBool(),
+      span = e.span,
+      kind = XLit(lit = TLBool(value = true))
+    )
+  }
+  val result = if site.negate {
+    val one: List[TExpr] = newList()
+    one.add(all)
+    TExpr(id = freshNodeId(env), ty = tyBool(), span = e.span, kind = intrinsicCall(IoNot, one))
+  } else {
+    all
+  }
+  Some(value = mkExpr(e, ty, XBlock(stmts = stmts, tail = Some(value = result))))
+}
+
 /// A binary operator on values that are not primitives: `a == b` and `a != b` (language reference
 /// 2.5, D172, D206), the ordering operators a type derives or a type parameter is bounded by
 /// (`T: Compare`), and the arithmetic of a distinct, range or record type that derives `Add`, `Sub`
@@ -2776,6 +2913,10 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       // lowering does that, and TIR has no node for it yet, so the body stays counted.
       if env.ctx.tbl.recordArithSites.containsKey(recordCopySiteKey(e.span)) {
         return buildRecordArith(env, e, ty, op, lhs, rhs)
+      }
+      match mapGet(env.ctx.tbl.recordEqSites, recordCopySiteKey(e.span)) {
+        case Some(site) -> return buildRecordEq(env, e, ty, site, lhs, rhs)
+        case None -> ()
       }
       // `None == x`: the checker leaves the bare left operand untyped, and equality takes its type
       // from the right one.
