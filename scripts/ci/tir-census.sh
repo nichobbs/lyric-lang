@@ -192,7 +192,7 @@ absorb_log() {
   while IFS= read -r l; do
     n="$(sed -E 's/.*: ([0-9]+) diagnostic.*/\1/' <<<"$l")"
     d=$((d + n))
-  done < <(grep -E '^I0003 (mono |propagate |contracts )?census' "$log" || true)
+  done < <(grep -E '^I0003 (mono |propagate |contracts |hoist )?census' "$log" || true)
   if [[ "$d" -gt 0 ]]; then
     echo "I0003 in $name: $d"
     grep -E '^  I0003 rule: |^    e\.g\. ' "$log" | head -8
@@ -351,21 +351,21 @@ done
 fi
 
 if [[ "$AREAS" == *" self-tests "* ]]; then
-# The JVM kernels of lyric-web and lyric-ws call Undertow classes through `[maven]` dependencies, and a self-test
-# that builds them (`jvm_auto_ffi_bridge_self_test.l` builds the real `lyric-web/lyric.toml`) resolves those
+# The JVM kernel of lyric-grpc calls grpc-java classes through `[maven]` dependencies, and a self-test
+# that builds it (`jvm_auto_ffi_bridge_self_test.l` builds the real `lyric-grpc/lyric.toml`) resolves those
 # calls from the restored classpath, as a real `--target jvm` build does.  Without a restore the host metadata
-# cannot resolve them and 26 bodies count as unbuilt for want of a jar, not for a builder gap.  The restore needs
+# cannot resolve them and their bodies count as unbuilt for want of a jar, not for a builder gap.  The restore needs
 # the Maven resolver (`make maven-resolver`) and network access to Maven Central; where either is missing the
 # census says so and counts those bodies as it did before.
 resolver="${LYRIC_MAVEN_RESOLVER:-$REPO_ROOT/resolver/target/lyric-resolver.jar}"
 if [[ -f "$resolver" ]]; then
-  for m in lyric-web lyric-ws; do
+  for m in lyric-grpc; do
     if ! LYRIC_MAVEN_RESOLVER="$resolver" "$LYRIC" restore --manifest "$REPO_ROOT/$m/lyric.toml" >"$OUT/restore-$m.txt" 2>&1; then
-      echo "NOTICE: the Maven restore of $m failed; its Undertow bodies count as unbuilt (see below)"; tail -n 3 "$OUT/restore-$m.txt"
+      echo "NOTICE: the Maven restore of $m failed; its grpc-java bodies count as unbuilt (see below)"; tail -n 3 "$OUT/restore-$m.txt"
     fi
   done
 else
-  echo "NOTICE: no Maven resolver at $resolver (make maven-resolver); the Undertow bodies of lyric-web and lyric-ws count as unbuilt"
+  echo "NOTICE: no Maven resolver at $resolver (make maven-resolver); the grpc-java bodies of lyric-grpc count as unbuilt"
 fi
 # The compiler's self-tests, one program each.
 while IFS= read -r f; do

@@ -10,8 +10,8 @@
 //! port, including on a keep-alive connection that later upgrades.
 //!
 //! Runs on dotnet and the JVM (docs/73 S6: the JVM hands the connection over
-//! through `takeConnection` like dotnet, no longer mounting the endpoint on an
-//! Undertow listener); `Std.TcpHost` is the client transport on both.
+//! through `takeConnection` like dotnet, no longer mounting the endpoint on a
+//! separate listener); `Std.TcpHost` is the client transport on both.
 @test_module
 package Web.WebSocketTests
 

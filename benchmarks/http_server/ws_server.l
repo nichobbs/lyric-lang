@@ -8,8 +8,7 @@
 //!
 //!   cp benchmarks/http_server/ws_server.l lyric-ws/tests/zz_bench_ws_server.l
 //!   (cd lyric-ws && lyric build --target dotnet tests/zz_bench_ws_server.l -o ws_server.dll)   # pure-Lyric RFC 6455
-//!   lyric restore --manifest lyric-ws/lyric.toml                                               # JVM: Maven Central
-//!   (cd lyric-ws && lyric build --target jvm --features jvm tests/zz_bench_ws_server.l -o ws_server.jar)  # Undertow
+//!   (cd lyric-ws && lyric build --target jvm --features jvm tests/zz_bench_ws_server.l -o ws_server.jar)
 //!   rm lyric-ws/tests/zz_bench_ws_server.l
 //!
 //! Environment: `WS_PORT` (8190), `WS_BYTES` (1024), `WS_HZ` (10), `WS_SECONDS` (run time, 40), and the server

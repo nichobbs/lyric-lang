@@ -13,8 +13,8 @@
 #                          com.sun.net.httpserver kernel it replaced in D789 is gone)
 #               native     benchmarks/http_server/server.l on --target native  (the shared driver, h1 and h2)
 #               web-<t>    benchmarks/http_server/server_web.l through lyric-web on --target <t> (the same shared
-#                          driver, plus lyric-web's job dispatch). Before docs/73 S6 (D791) web-jvm was Undertow and
-#                          restored lyric-web's Maven dependencies, so it needed Maven Central.
+#                          driver, plus lyric-web's job dispatch). Before docs/73 S6 (D791) web-jvm was a
+#                          Maven-backed kernel that needed Maven Central.
 #   scenario  b1 b2 b3 b4 b5 b6 (default: b1 b2 b3 b4 b5), and the same load driven by wrk and h2load when
 #             they are on PATH: b1w b2w b3w (wrk) and b4h (h2load). The Lyric generator needs no tools
 #             but is slower than wrk; the wrk/h2load rows show whether it was the limit.
@@ -238,7 +238,7 @@ for s in "${scenarios[@]}"; do
       openssl req -x509 -newkey rsa:2048 -nodes -keyout "$OUT/key.pem" -out "$OUT/cert.pem" -days 2 \
         -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
       start_server BENCH_CERT="$OUT/cert.pem" BENCH_KEY="$OUT/key.pem"
-      # What does the server negotiate? The JDK-HttpServer kernel and Undertow-less configurations may stay on h1.
+      # What does the server negotiate? A server without h2 stays on h1.
       ver="$(curl -sk --http2 -o /dev/null -w '%{http_version}' "https://127.0.0.1:$PORT/hello")"
       record "b4.negotiated_http_version=$ver"
       if [ "$ver" != 2 ]; then record "b4.skipped=server negotiated HTTP/$ver, not h2"; stop_server; continue; fi
@@ -306,7 +306,7 @@ PY
       stop_server ;;
     b5)
       # The Std.HttpServer engines cap concurrent connections at LYRIC_HTTP_MAX_CONNECTIONS (default 1000, #6071),
-      # so the 10 000-connection scenario raises it; Undertow and the JDK server have no such cap.
+      # so the 10 000-connection scenario raises it; the kernels this one replaced had no such cap.
       start_server LYRIC_HTTP_MAX_CONNECTIONS="$((IDLE + 1000))"
       start_sampler "$OUT/b5.samples"
       loadgen LG_MODE=idle LG_IDLE="$IDLE" LG_SECONDS="$SECONDS_RUN" | sed "s/^/$target.b5./" | tee -a "$RESULTS"

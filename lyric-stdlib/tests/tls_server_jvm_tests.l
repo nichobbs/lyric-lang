@@ -495,7 +495,7 @@ test "startListenerTls negotiates a real TLS 1.3 handshake" {
 
 // PR-6560 review finding #6563: `serverSslContextFromConfigMtls`
 // (`_kernel_jvm/tls_server_context.l`, the mTLS `SSLContext` constructor both
-// `Std.TcpHost` and lyric-web's Undertow `serveTls` call whenever `clientCa`
+// `Std.TcpHost` and lyric-web's former JVM `serveTls` call whenever `clientCa`
 // is set, #6017) was a near-verbatim copy of the non-mTLS constructor that
 // silently omitted the `assertProtocolFloor` call the tests above prove for the
 // non-mTLS path, so every mTLS listener lost the TLS-1.2-floor guarantee with

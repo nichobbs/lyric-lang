@@ -1004,7 +1004,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - A read of a `config` block field (`Settings.port`) is a module value named `Pkg::Settings::port`, and a shared enum case written `Enum.Case` (`LogLevel.Info` of two packages' enums) is the case of the enum its node settled at; builder only (D419).
   - An open element of a bracket literal (`None` in `[Some(1), None]`) takes the literal's element type, an untyped literal of `Some`/`None` or `Ok`/`Err` is typed from its payloads, and an open left operand of `==` takes the right one's type (D377).
   - The field defaults of a generic record that mention none of its parameters are carried in its interface (D740); `Alias.Type.f(x)` resolves through an import alias and a `pub use` chain (D741).
-  - The self-tests census restores `lyric-web`'s and `lyric-ws`'s Maven dependencies first, so their Undertow bodies are judged as a real JVM build judges them.
+  - The self-tests census restores `lyric-grpc`'s Maven dependencies first, so its grpc-java bodies are judged as a real JVM build judges them.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
@@ -1017,6 +1017,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Monomorphisation on TIR (`Lyric.Tir.Mono`, D500): generic functions, members, records, protected types and unions are replaced by instances (DefPath key with the arguments in brackets) in one synthetic package, value-generic parameters become lengths, the output verifies, and `lyric build --verify-ir` prints a mono census; generic interfaces and distinct types stay counted as unresolved.
   - Contract elaboration on TIR, the declaration step (`Lyric.Tir.Contracts`, D502): `requires:`/`ensures:` become `assert` calls in the body with `old(..)` snapshots and the AST pass's messages (the builder records each clause's text on `TFnDecl`); invariants, range checks, loop invariants, protected entries and aspect contracts are later slices.
   - `?` lowered on TIR (`Lyric.Tir.Propagate`, D503) over a shared rewriting walker (`Lyric.Tir.Walk`): each `XPropagate` becomes a bind, a match and an early `return` of the failure rebuilt at the function's type; hoisting and nullable propagation are later slices.
+  - Await hoisting on TIR, the last middle-end pass (`Lyric.Tir.AwaitHoist`, D504): every operand up to and including an awaiting one is bound to a fresh local ahead of the statement so each `await` evaluates on an empty stack; conditional parts keep their preludes inside them and a `while` condition with an `await` becomes a `loop`.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

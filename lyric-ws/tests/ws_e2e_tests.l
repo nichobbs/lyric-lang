@@ -71,8 +71,7 @@ impl WsHandler for EchoHandler {
           }
           // The kernel delivers Ping to onMessage but does not auto-reply
           // (Ws.Kernel.Net's module header) — replying is this handler's
-          // job, exercising the same app-level contract the JVM/Undertow
-          // kernel establishes.
+          // job, which is the app-level contract every target shares.
           case Ping -> {
             val _ = registry.send(ctx.connectionId, Pong)
             Ok(())
@@ -670,9 +669,8 @@ test "loopback: many simultaneous connections all complete the handshake promptl
 }
 
 // A `createEndpoint` registry (served by lyric-web's HTTP server) and a
-// `startServer` registry coexist in one process. On the JVM the first is
-// Undertow-backed and the second pure Lyric until docs/73 S7b, so each call
-// has to reach the kernel that owns its registry.
+// `startServer` registry coexist in one process, and each call has to reach
+// the registry its handle names.
 test "an endpoint registry and a server registry in one process each reach their own connections" {
   val endpoint = match createEndpoint("/live", WsServerOptions(), EchoHandler(holder = RegistryHolder())) {
     case Ok(e) -> e

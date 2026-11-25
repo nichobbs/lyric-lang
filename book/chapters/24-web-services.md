@@ -77,7 +77,7 @@ from the environment, starts the HTTP listener (built on
 (`dotnet`, `jvm` and `native`) `Std.HttpServer` is the same pure-Lyric driver
 over the sans-IO HTTP engine and a socket transport — `System.Net.Sockets` +
 `SslStream` on dotnet, `java.net` sockets on the JVM; the `HttpListener`,
-JDK `com.sun.net.httpserver` and Undertow servers were retired (docs/61 §6,
+JDK `com.sun.net.httpserver` and the former Maven-backed JVM server were retired (docs/61 §6,
 docs/73) — so connections are accepted and read concurrently. `lyric-web`
 dispatches each parsed request on its own task, so a slow or streaming handler
 does not stall other requests; in-flight handlers are bounded by the

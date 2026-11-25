@@ -9,10 +9,10 @@
 # Unlike `self-test.sh` (a bare `lyric test`), this ensures `mvn` is on
 # PATH, builds `resolver/target/lyric-resolver.jar` (`make maven-resolver`),
 # exports `LYRIC_MAVEN_RESOLVER`, and runs `lyric restore --manifest
-# <manifest>` before the test — the same sequence `lyric-web`'s Undertow
-# smoke test already inlines, extracted
+# <manifest>` before the test — the sequence an ecosystem JVM suite
+# needs, extracted
 # here so a manifest whose JVM build pulls in a Maven-backed dependency
-# (like lyric-auth or lyric-web) can wire a CI
+# (like lyric-grpc or lyric-mail) can wire a CI
 # step in the same one-line `self-test.sh` form other JVM ecosystem suites
 # use. `flock` on the shared per-job lock files matches the other Maven call
 # sites so concurrent `background: true` steps in the same job don't race

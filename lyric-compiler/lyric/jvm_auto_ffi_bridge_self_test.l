@@ -34,17 +34,13 @@
 //! since it needs an actual JVM run to prove the resolved call executes
 //! correctly.
 //!
-//! **Not wired into any CI job** (checked: no `jvm_auto_ffi_bridge_self_test.l`
-//! reference in `.github/workflows/`) — run manually via `make self-test
-//! NAME=jvm_auto_ffi_bridge` or `make test`/`make test-emitter`. Most tests in
-//! this file are hermetic and need nothing beyond `java`, but the #6565
-//! acceptance-criterion test (`Cli.buildProject` against the real
-//! `lyric-web/lyric.toml`) is **local-only**: it needs a restored Maven
-//! classpath for `io.undertow:undertow-core` (`lyric restore --manifest
-//! lyric-web/lyric.toml`, `LYRIC_MAVEN_RESOLVER` set, network access to Maven
-//! Central) — see that test's own comment for why. Wiring this whole file
-//! into CI, and giving that one test a CI-side restored classpath, is
-//! tracked as a follow-up rather than attempted here.
+//! Run in CI by the "JVM auto-FFI bridge self-test" step of
+//! `compiler-self-tests-jvm-b`.  Most tests in this file are hermetic and need
+//! nothing beyond `java`, but the #6565 acceptance-criterion test
+//! (`Cli.buildProject` against the real `lyric-grpc/lyric.toml`) needs a
+//! restored Maven classpath for grpc-java (`lyric restore --manifest
+//! lyric-grpc/lyric.toml`, `LYRIC_MAVEN_RESOLVER` set, network access to Maven
+//! Central); the CI step restores it first, and a local run has to do the same.
 //!
 //! Run via:
 //!   lyric test lyric-compiler/lyric/jvm_auto_ffi_bridge_self_test.l
@@ -175,9 +171,9 @@ test "T.new() on a concrete JDK class still compiles fine (no false-positive J00
 
 // ─── #6565: java.lang.Object-inherited method fallback when the receiver's
 // class metadata cannot be loaded (Maven-sourced extern type, no JAR on the
-// auto-FFI classpath — the exact `lyric-web` `Web.Kernel.Runtime` shape,
-// where `extern type JHttpString = "io.undertow.util.HttpString"` has no
-// `lyric-resolver.jar`-resolved Undertow JAR available at compile time) ────
+// auto-FFI classpath, the shape a Maven-sourced extern type such as grpc-java's
+// `io.grpc.Metadata` has when no `lyric-resolver.jar`-resolved JAR is
+// available at compile time) ────
 //
 // When `Jvm.Codegen.lowerMethodCall` cannot load ANY metadata for the
 // receiver's class (a made-up FQN below plays the role of an
@@ -575,58 +571,47 @@ test "findBestInstanceMethod never selects a same-named STATIC method over a gen
 
 // ─── #6565 end-to-end: the reported acceptance criterion ────────────────────
 //
-// `lyric build --manifest lyric-web/lyric.toml --target jvm` failed to build
-// the real `Web.Kernel.Runtime` package: `buildRequestHeaders`'s
-// `name.toString().toLower()` (`name` an `io.undertow.util.HttpString`,
-// resolved via the `JHttpStringCollection[T]` phantom-generic-collection
-// idiom) failed with "no matching instance or inherited method for
-// 'java.lang.Object.toLower()'" — `name`'s static type had erased to
-// `Object` (the type-checker half of this fix) and, in whatever compile-time
-// environment #6565 was originally observed in, `.toString()`'s return type
-// ALSO fell back to the untyped `()Object` guess (the codegen half of this
-// fix) instead of resolving via real JDK metadata.
+// `lyric build --manifest <library with Maven-sourced extern types> --target
+// jvm` failed to build: a chained `name.toString().toLower()` on a value whose
+// static type is an extern type resolved from a Maven jar failed with "no
+// matching instance or inherited method for 'java.lang.Object.toLower()'",
+// because the receiver's static type had erased to `Object` (the type-checker
+// half of the fix) and `.toString()`'s return type also fell back to the
+// untyped `()Object` guess (the codegen half).  The case was first reported
+// against lyric-web's former Maven-backed HTTP kernel, which docs/73 S6 deleted, so this test
+// drives lyric-grpc, whose JVM kernel is the remaining library built on
+// Maven-sourced extern types (grpc-java).
 //
 // Drives the exact CLI entry point (`Lyric.Cli.buildProject`, what
 // `lyric build --manifest ... --target jvm` itself calls) against the real
-// on-disk `lyric-web/lyric.toml`, run from the repo root (`lyric test`'s own
-// working directory) — this is the literal repro command from the issue.
+// on-disk `lyric-grpc/lyric.toml`, run from the repo root (`lyric test`'s own
+// working directory) with the `jvm` feature selected.
 //
-// IMPORTANT — this is an environment-dependent SMOKE test, not a hermetic
-// regression guard for #6565's exact failure mode: it requires a restored
-// Maven classpath for `io.undertow:undertow-core` (`lyric restore --manifest
-// lyric-web/lyric.toml` with `LYRIC_MAVEN_RESOLVER` set, network access to
-// Maven Central) to get past `JHttpString.new(...)`'s own static-constructor
-// auto-FFI resolution elsewhere in the same package — without that restored
-// classpath, this test fails on an unrelated, already-correct diagnostic
-// ("class 'io.undertow.util.HttpString' not found in JDK jmods or
-// LYRIC_FFI_JARS", M-15 part 1, docs/44) rather than #6565's error, on any
-// host where JDK jmods are discoverable (`Jvm.AutoFfi.findJmodsDir`) — which
-// is effectively every real dev machine and CI runner with `java` installed.
-// And once a real, restored Undertow classpath IS available, #6565's exact
-// symptom is actually LATENT here regardless of either fix: `name.toString()`
-// resolves via real `java.lang.Object` metadata (always resolvable — Object
-// is a core JDK class) whether or not `name`'s static type is correctly
-// `JHttpString`, and `Object.toString()`'s real signature already returns
-// `String`, so `.toLower()` succeeds either way. This test therefore mainly
-// re-proves the acceptance criterion from #6565's own report (`lyric build
-// --manifest lyric-web/lyric.toml --target jvm` must succeed) rather than
-// discriminating the fix. The two tests directly above (real, deliberately
-// metadata-unresolvable extern methods) and
-// `auto_ffi_jvm_self_test.l`'s "for-loop over an extern generic collection"
-// test (real runtime values through the actual erased-vs-typed element
-// path) are the hermetic regression guards for #6565's two root causes —
-// see their own comments for why each is deterministic regardless of the
-// host's JDK/Maven configuration.
-test "Cli.buildProject: lyric-web --manifest --target jvm succeeds end-to-end (acceptance criterion for #6565, requires a restored Maven classpath — see comment above)" {
-  val noFeatures: List[String] = newList()
+// IMPORTANT: this is an environment-dependent SMOKE test, not a hermetic
+// regression guard for #6565's exact failure mode.  It requires a restored
+// Maven classpath for grpc-java (`lyric restore --manifest
+// lyric-grpc/lyric.toml` with `LYRIC_MAVEN_RESOLVER` set, network access to
+// Maven Central) to get past the static-constructor auto-FFI resolution
+// elsewhere in the same package; without it the test fails on an unrelated,
+// already-correct diagnostic ("class 'io.grpc.ManagedChannelBuilder' not found
+// in JDK jmods or LYRIC_FFI_JARS", M-15 part 1, docs/44).  Once a real
+// classpath is available, #6565's exact symptom is latent regardless of either
+// fix, because `Object.toString()` always resolves from core JDK metadata and
+// already returns `String`.  The two tests directly above (real, deliberately
+// metadata-unresolvable extern methods) and `auto_ffi_jvm_self_test.l`'s
+// "for-loop over an extern generic collection" test are the hermetic
+// regression guards for #6565's two root causes.
+test "Cli.buildProject: lyric-grpc --manifest --target jvm succeeds end-to-end (acceptance criterion for #6565, requires a restored Maven classpath, see comment above)" {
+  val jvmFeature: List[String] = newList()
+  jvmFeature.add("jvm")
   val noDefines: List[String] = newList()
   val noPre: Option[Cli.ResolvedManifestDeps] = None
   val rc = Cli.buildProject(
-    "lyric-web/lyric.toml",
+    "lyric-grpc/lyric.toml",
     None,
     Emitter.Jvm,
-    noFeatures,
-    false,
+    jvmFeature,
+    true,
     false,
     false,
     None,
@@ -636,9 +621,9 @@ test "Cli.buildProject: lyric-web --manifest --target jvm succeeds end-to-end (a
   assertEqualInt(
     rc,
     0,
-    "lyric build --manifest lyric-web/lyric.toml --target jvm must succeed — previously failed with " +
-      "'JVM auto-FFI: no matching instance or inherited method for java.lang.Object.toLower()' compiling " +
-      "Web.Kernel.Runtime.buildRequestHeaders (#6565)"
+    "lyric build --manifest lyric-grpc/lyric.toml --target jvm --no-default-features --features jvm must succeed " +
+      "(#6565: a chained .toString().toLower() on a Maven-sourced extern type used to fail with " +
+      "'JVM auto-FFI: no matching instance or inherited method for java.lang.Object.toLower()')"
   )
 }
 

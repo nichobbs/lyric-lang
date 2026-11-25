@@ -183,7 +183,7 @@ output_assembly = "MvnLib.dll"
 "Mvn.Lib" = "src/lib.l"
 
 [maven]
-"io.undertow:undertow-core" = "2.3.13.Final"
+"io.grpc:grpc-stub" = "1.65.0"
 TOML
 printf 'package Mvn.Lib\n\npub func one(): Int {\n  1\n}\n' > "$work/mvnlib/src/lib.l"
 cat > "$work/mvnapp/lyric.toml" <<TOML

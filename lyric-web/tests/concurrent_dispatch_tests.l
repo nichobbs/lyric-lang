@@ -7,7 +7,7 @@
 //! afterwards, so a sequential server never answers `/fast` and the test fails
 //! instead of passing by timing luck. Every target runs the same accept loop
 //! (docs/73 S6), so the test runs on every target; the JVM was excluded while
-//! Undertow dispatched on its own worker threads.
+//! the JVM kernel dispatched on its own worker threads.
 @test_module
 package Web.ConcurrentDispatchTests
 
