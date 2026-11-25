@@ -312,6 +312,10 @@ pub record TirLowerEnv {
   /// instantiates a generic function of another package on demand, so the name of one of its
   /// instances exists only once it has been asked for.
   needFns: List[Int] = newList()
+  /// The module-level values `globals` lacks, resolved by the code generator like `needFns`.
+  needGlobals: List[Int] = newList()
+  /// The module-level `val`/`const`s, keyed by symbol.
+  globals: Map[Int, TirGlobalRef] = newMap()
   /// The DefPath key of each symbol, for naming a type in a fallback reason.
   symNames: Map[Int, String] = newMap()
   /// The async functions' IR names, keyed by symbol.  They are kept out of `fnNames`: a call to
@@ -337,6 +341,18 @@ pub record TirLowerEnv {
   checkedArith: Bool = false
   /// See `TirUnitInput.contractsElaborated`.
   contractsElaborated: Bool = false
+}
+
+/// A module-level `val` or `const` as the code generator holds it: a constant its initialiser is (`initIr` empty,
+/// `lit` the value), or a global computed on first use (`initIr` the IR name of its hoisted initialiser,
+/// whose `mvensure.<initIr>` runs it and whose `mv.<initIr>` holds it).
+pub record TirGlobalRef {
+  ty: NType
+  initIr: String
+  lit: NValue
+  /// A string literal's text, for a value that needs instructions to build (`hasText`): lowered at each read.
+  hasText: Bool = false
+  text: String = ""
 }
 
 /// A function type the lowering needs a closure type for: its key in `TirLowerEnv.funcs` and
@@ -471,6 +487,7 @@ pub record TirFallback {
   needTasks: List[TirListNeed] = newList()
   needScans: List[TirScanNeed] = newList()
   needFns: List[Int] = newList()
+  needGlobals: List[Int] = newList()
 }
 
 pub record TirLowered {
@@ -1851,7 +1868,48 @@ func lowerExpr(c: in LCtx, e: in TExpr): Val {
     case XAwait(inner) -> lowerAwait(c, inner)
     case XSpawn(inner) -> lowerSpawn(c, inner)
     case XLambda(params, captures, body) -> lowerLambda(c, e, params, captures, body)
+    case XGlobal(sym, targs) -> lowerGlobal(c, e, sym, targs)
     case _ -> unsupported(c, "expression " + exprKindName(e.kind))
+  }
+}
+
+/// A read of a module-level `val` or `const`: the constant inlined, or the global behind its hoisted
+/// initialiser, which `mvensure.<init>` runs on first use and the load then borrows from (the global owns
+/// the value for the life of the process, as on the AST path).
+func lowerGlobal(c: in LCtx, e: in TExpr, sym: in SymbolId, targs: in List[Ty]): Val {
+  if targs.count > 0 {
+    return unsupported(c, "a generic module-level value")
+  }
+  match mapGet(c.env.globals, sym.id) {
+    case None -> {
+      if not listContainsInt(c.env.needGlobals, sym.id) {
+        c.env.needGlobals.add(sym.id)
+      }
+      unsupported(c, "the module-level value " + renderGlobalName(c.env, sym))
+    }
+    case Some(g) -> {
+      if not sameResultType(c, e.ty, g.ty) {
+        return unsupported(c, "a module-level value whose type differs from its declaration's")
+      }
+      if g.hasText {
+        stringLiteral(c, g.text)
+      } else if g.initIr.length == 0 {
+        Val(ty = g.ty, value = g.lit)
+      } else {
+        val noArgs: List[NArg] = newList()
+        c.insns.add(NCallVoid(fn = NGlobal(name = "mvensure." + g.initIr), args = noArgs))
+        val d = tmp(c)
+        c.insns.add(NLoad(dest = d, ty = g.ty, ptr = NGlobal(name = "mv." + g.initIr)))
+        Val(ty = g.ty, value = NLocal(name = d))
+      }
+    }
+  }
+}
+
+func renderGlobalName(env: in TirLowerEnv, sym: in SymbolId): String {
+  match mapGet(env.symNames, sym.id) {
+    case Some(k) -> k
+    case None -> "#" + toString(sym.id)
   }
 }
 
@@ -3222,7 +3280,12 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
             case Some(want) -> if nTypeToIrString(want) == nTypeToIrString(pt) {
               Val(ty = pt, value = NLocal(name = slot.ptr))
             } else {
-              unsupported(c, "the address of a local whose pointer type is " + nTypeToIrString(want))
+              unsupported(
+                c,
+                "the address of a local that holds a " + renderTyIn(c.env, ins[0].ty) + " (the pointer type would be " +
+                  nTypeToIrString(want) +
+                  ")"
+              )
             }
             case None -> unsupported(c, "the address of a local of type " + renderTyIn(c.env, ins[0].ty))
           }
@@ -5935,7 +5998,8 @@ pub func lowerTirFunction(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLowere
         needMaps = env.needMaps,
         needTasks = env.needTasks,
         needScans = env.needScans,
-        needFns = env.needFns
+        needFns = env.needFns,
+        needGlobals = env.needGlobals
       )
     )
   }
