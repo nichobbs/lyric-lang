@@ -254,8 +254,8 @@ cat "$work/un_census.txt"
 "$work/un_ast" > "$work/un_ast.out"
 "$work/un_tir" > "$work/un_tir.out"
 diff -u "$work/un_ast.out" "$work/un_tir.out"
-printf 'note 1\n2\nnote 7\n4\n\nnote 2\n()\n' | diff -u - "$work/un_tir.out"
-grep -q '^native via-TIR: 4 of 4 functions lowered from TIR' "$work/un_census.txt" || {
+printf 'note 1\n2\nnote 7\n4\nnote 3\n1\n\nnote 2\n()\n' | diff -u - "$work/un_tir.out"
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/un_census.txt" || {
   echo "::error::expected every function of unit.l to be lowered from TIR"
   exit 1
 }

@@ -2581,7 +2581,7 @@ func patBindU(c: in LCtx, u: in UnionScrut, pat: in TPat): Unit {
         while i < args.count {
           match args[i].kind {
             case TpBind(decl, inner) -> match u.lay.cases[cr.index].fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit field")
+              case NVoid -> bindBorrowed(c, decl, unitVal())
               case _ -> {
                 bindBorrowed(c, decl, loadCaseField(c, u, cr, i))
                 match inner {
@@ -5614,7 +5614,7 @@ func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
         while i < elems.count {
           if patBinds(elems[i]) {
             match lay.fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit element")
+              case NVoid -> patBind(c, elems[i], unitVal())
               case _ -> patBind(c, elems[i], loadTupleElem(c, lay, scrut.value, i))
             }
           }
@@ -5665,7 +5665,7 @@ func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
         while i < elems.count {
           if patBinds(elems[i]) {
             match lay.fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit element")
+              case NVoid -> patBindOwned(c, elems[i], unitVal())
               case _ -> patBindOwned(c, elems[i], loadTupleElem(c, lay, v.value, i))
             }
           }
