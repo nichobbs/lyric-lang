@@ -647,7 +647,6 @@ func unsupported(c: in LCtx, why: in String): Val {
   Val(ty = NI32, value = NUndef(ty = NI32))
 }
 
-/// Whether the type of an expression lowers to `nt`.
 /// The type an operator on `t` follows: the primitive a distinct type wraps, else `t`.
 func opTy(c: in LCtx, t: in Ty): Ty {
   match t {
@@ -670,6 +669,7 @@ func opTy(c: in LCtx, t: in Ty): Ty {
   }
 }
 
+/// Whether the type of an expression lowers to `nt`.
 func sameResultType(c: in LCtx, ty: in Ty, nt: in NType): Bool {
   match tyToN(c.env, ty) {
     case Some(rt) -> nTypeToIrString(rt) == nTypeToIrString(nt)
@@ -2581,7 +2581,7 @@ func patBindU(c: in LCtx, u: in UnionScrut, pat: in TPat): Unit {
         while i < args.count {
           match args[i].kind {
             case TpBind(decl, inner) -> match u.lay.cases[cr.index].fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit field")
+              case NVoid -> bindBorrowed(c, decl, unitVal())
               case _ -> {
                 bindBorrowed(c, decl, loadCaseField(c, u, cr, i))
                 match inner {
@@ -3316,7 +3316,7 @@ func heapFieldPlace(c: in LCtx, recv: in TExpr, field: in FieldRef): Option[Val]
 /// `toString` of a scalar: the runtime's formatter, a fresh owned string.
 func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
   val sTy = lyricStringNType()
-  val uns = isUnsignedTy(ty)
+  val uns = isUnsignedTy(opTy(c, ty))
   val isChar = match ty { case TPrim(k) -> match k { case TPChar -> true; case _ -> false }; case _ -> false }
   val r = match v.ty {
     case NI32 -> {
@@ -3350,6 +3350,7 @@ func scalarToString(c: in LCtx, ty: in Ty, v: in Val): Val {
     }
     case NDouble -> callRt(c, "lyric_string_from_float", sTy, arg1(NDouble, v.value))
     case NFloat -> callRt(c, "lyric_string_from_float32", sTy, arg1(NFloat, v.value))
+    case NVoid -> return stringLiteral(c, "()")
     case _ -> {
       c.problems.add("toString of " + renderTy(ty))
       NUndef(ty = sTy)
@@ -3436,6 +3437,14 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   match lowerNumericConversion(c, name, ins, line) {
     case Some(v) -> return v
     case None -> ()
+  }
+  if name == "println" and ins.count == 0 {
+    callRtVoid(
+      c,
+      "lyric_console_write_line",
+      arg2(NI32, NLitInt(v = 1i64, ty = NI32), lyricStringNType(), stringLiteral(c, "").value)
+    )
+    return unitVal()
   }
   if ins.count != 1 {
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
@@ -5605,7 +5614,7 @@ func patBind(c: in LCtx, pat: in TPat, scrut: in Val): Unit {
         while i < elems.count {
           if patBinds(elems[i]) {
             match lay.fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit element")
+              case NVoid -> patBind(c, elems[i], unitVal())
               case _ -> patBind(c, elems[i], loadTupleElem(c, lay, scrut.value, i))
             }
           }
@@ -5656,7 +5665,7 @@ func patBindOwned(c: in LCtx, pat: in TPat, v: in Val): Unit {
         while i < elems.count {
           if patBinds(elems[i]) {
             match lay.fieldTys[i] {
-              case NVoid -> c.problems.add("a binding of a Unit element")
+              case NVoid -> patBindOwned(c, elems[i], unitVal())
               case _ -> patBindOwned(c, elems[i], loadTupleElem(c, lay, v.value, i))
             }
           }

@@ -20,7 +20,22 @@ func passes(n: in Int): Int {
   takes(u, n)
 }
 
+union Step {
+  case Tick(u: Unit)
+  case Stop
+}
+
+func stepValue(s: in Step): Int {
+  match s {
+    case Tick(u) -> 1
+    case Stop -> 0
+  }
+}
+
 func main(): Unit {
   println(toString(passes(1)))
   println(toString(takes(note(7), 3)))
+  println(toString(stepValue(Tick(note(3))) + stepValue(Stop)))
+  println()
+  println(toString(note(2)))
 }
