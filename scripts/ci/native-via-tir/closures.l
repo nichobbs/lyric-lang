@@ -31,6 +31,21 @@ func run(f: in () -> Unit): Unit {
   f()
 }
 
+func marked(): Unit {
+  println("marked")
+}
+
+func takesUnit(u: in Unit, n: in Int): Int {
+  n + 100
+}
+
+func unitClosures(): Int {
+  val u = marked()
+  val capture: (Int) -> Int = { n -> takesUnit(u, n) }
+  val param: (Unit, Int) -> Int = { x, n -> takesUnit(x, n) }
+  capture(1) + param(u, 2)
+}
+
 func main(): Unit {
   val base = 10
   val add = makeAdder(base)
@@ -44,4 +59,5 @@ func main(): Unit {
   println(toString(twice(double, 3)))
   run({ -> println("ran") })
   println(nest("p-")())
+  println(toString(unitClosures()))
 }

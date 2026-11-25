@@ -1415,7 +1415,7 @@ func funcType(env: in TirLowerEnv, t: in Ty): Option[NType] {
       case _ -> return None
     }
     match tyToN(env, p.ty) {
-      case Some(nt) -> match nt { case NVoid -> return None; case _ -> ptys.add(nt) }
+      case Some(nt) -> ptys.add(nt)
       case None -> return None
     }
   }
@@ -3188,6 +3188,8 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   }
   val capTys: List[NType] = newList()
   val capSlots: List[Slot] = newList()
+  val liveCaps: List[Capture] = newList()
+  val unitCaps: List[Capture] = newList()
   for cap in captures {
     match cap.mode {
       case CmByValue -> ()
@@ -3196,11 +3198,13 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     match mapGet(c.slots, cap.local.id) {
       case Some(sl) -> {
         match sl.ty {
-          case NVoid -> return unsupported(c, "a capture of a Unit local")
-          case _ -> ()
+          case NVoid -> unitCaps.add(cap)
+          case _ -> {
+            capTys.add(sl.ty)
+            capSlots.add(sl)
+            liveCaps.add(cap)
+          }
         }
-        capTys.add(sl.ty)
-        capSlots.add(sl)
       }
       case None -> return unsupported(c, "a capture with no slot")
     }
@@ -3249,8 +3253,11 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   val stores: List[NInsn] = newList()
   val ecast = "self.env"
   stores.add(NBitcast(dest = ecast, fromTy = i8ptr(), value = NLocal(name = "env"), toTy = implTy))
+  for uc in unitCaps {
+    ch.slots.add(uc.local.id, Slot(ptr = "", ty = NVoid))
+  }
   var ci = 0
-  while ci < captures.count {
+  while ci < liveCaps.count {
     val gp = "cap" + toString(ci)
     val gi: List[NArg] = newList()
     gi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -3258,10 +3265,10 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     stores.add(NGEP(dest = gp, ty = structTy, ptr = NLocal(name = ecast), indices = gi))
     val lv = "capv" + toString(ci)
     stores.add(NLoad(dest = lv, ty = capTys[ci], ptr = NLocal(name = gp)))
-    val sname = "s" + toString(captures[ci].local.id) + ".cap"
+    val sname = "s" + toString(liveCaps[ci].local.id) + ".cap"
     ch.allocas.add(NAlloca(dest = sname, ty = capTys[ci]))
     stores.add(NStore(ty = capTys[ci], value = NLocal(name = lv), ptr = NLocal(name = sname)))
-    ch.slots.add(captures[ci].local.id, Slot(ptr = sname, ty = capTys[ci]))
+    ch.slots.add(liveCaps[ci].local.id, Slot(ptr = sname, ty = capTys[ci]))
     ci = ci + 1
   }
   val ptys: List[NType] = newList()
@@ -3269,10 +3276,6 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     val pt = match tyToN(c.env, p.ty) {
       case Some(t) -> t
       case None -> return unsupported(c, "a lambda parameter of type " + renderTy(p.ty))
-    }
-    match pt {
-      case NVoid -> return unsupported(c, "a Unit lambda parameter")
-      case _ -> ()
     }
     ptys.add(pt)
     val pname = "a" + toString(p.id.id)
@@ -3300,7 +3303,7 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   c.insns.add(NGEP(dest = fslot, ty = structTy, ptr = obj, indices = fi))
   c.insns.add(NStore(ty = i8ptr(), value = NLocal(name = fcast), ptr = NLocal(name = fslot)))
   var si = 0
-  while si < captures.count {
+  while si < capTys.count {
     val cv = tmp(c)
     c.insns.add(NLoad(dest = cv, ty = capTys[si], ptr = NLocal(name = capSlots[si].ptr)))
     if isRefN(capTys[si]) {

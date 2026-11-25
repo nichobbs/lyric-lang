@@ -397,6 +397,9 @@ pub record TFnDecl {
   /// source text of its own; the builder records it from the clause.  Empty for a declaration read from an interface.
   precondTexts: List[String] = newList()
   postcondTexts: List[String] = newList()
+  /// Declared `pub`: a public function is an invariant boundary (docs/08 §7.1), where a value of a type
+  /// that declares `invariant:` clauses is checked as it crosses (D507).
+  isPublic: Bool = false
 }
 
 /// A callable's signature, as a call checks against it.
