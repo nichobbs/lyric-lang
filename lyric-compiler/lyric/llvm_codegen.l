@@ -508,6 +508,9 @@ record Ctx {
   /// The LLVM type of every record, union, enum and distinct type the TIR lowering has laid out in any unit
   /// so far, by symbol: a generic instance in one unit may take a type argument another unit declares.
   tirKnownAll: Map[Int, NType] = newMap()
+  /// The functions that exist only on TIR (the synthesised `__lyric_checked_T` construction checkers of the bundled
+  /// packages, D854), lowered on demand by `instantiateTirOnlyFn`, by IR name.
+  tirOnlyFns: Map[String, Bool] = newMap()
   genericDeclPkg: Map[String, String]
   caseToGenericUnion: Map[String, String]
   // Module accumulators for lazy instantiation: type definitions and
@@ -17933,6 +17936,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     genericRecordDefs = mod.genericRecordDefs,
     genericUnionDefs = mod.genericUnionDefs,
     tirKnownAll = mod.tirKnownAll,
+    tirOnlyFns = mod.tirOnlyFns,
     genericDeclPkg = mod.genericDeclPkg,
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
@@ -19824,13 +19828,72 @@ func resolveTirGlobal(ctx: in Ctx, maps: in TirUnitMaps, sym: in Int): Bool {
   true
 }
 
+/// The IR name of a function that exists only on TIR: the construction checker `__lyric_checked_T` of a type with
+/// `invariant:` clauses in a bundled package, which the contracts pass adds to the TIR bundle but the AST path never
+/// synthesises for a bundled package.  It is lowered once, on the first call that asks for it, into the module.
+/// False when `fsym` is no such function or its lowering falls back (the caller then keeps the AST path).
+func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
+  val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
+  val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
+  val n = match LlvmTir.tirTopLevelFn(key) { case Some(x) -> x; case None -> return false }
+  if decl.isAsync or decl.typeParams.count > 0 or not Str.startsWith(n.name, "__lyric_checked_") {
+    return false
+  }
+  if maps.fnNames.containsKey(fsym) {
+    return false
+  }
+  val irName = n.pkg + "." + n.name
+  if ctx.tirOnlyFns.containsKey(irName) {
+    maps.fnNames.add(fsym, irName)
+    return true
+  }
+  ctx.tirOnlyFns.add(irName, true)
+  maps.fnNames.add(fsym, irName)
+  match lowerWithTuples(ctx, maps, decl) {
+    case Err(_) -> {
+      maps.fnNames.remove(fsym)
+      ctx.tirOnlyFns.remove(irName)
+      false
+    }
+    case Ok(l) -> {
+      for g in l.globals {
+        ctx.globals.add(g)
+      }
+      for xf in l.extraFns {
+        ctx.moduleFns.add(xf)
+      }
+      for cd in l.closures {
+        ctx.moduleTypeDefs.add(NTypeDefn(name = cd.implName, fields = cd.implFields))
+        if cd.dtor.length > 0 {
+          ctx.moduleFns.add(synthClosureDtor(ctx, cd.dtor, cd.implName, cd.implFields, cd.capTys))
+        }
+      }
+      ctx.moduleFns.add(
+        NFunc(
+          name = irName,
+          params = l.fn.params,
+          retTy = l.fn.retTy,
+          isPublic = false,
+          isExtern = false,
+          body = l.fn.body,
+          attributes = l.fn.attributes
+        )
+      )
+      true
+    }
+  }
+}
+
 /// The IR name of the instance of a generic function a TIR call names, which the AST path instantiates
 /// on demand (`ensureFnInst`): `fsym` is looked up among the bundle's instances, its type arguments are
 /// laid out as the AST path would lay them out, and the instantiation is registered under the
 /// symbol.  False when `fsym` is no instance of a generic function the code generator holds, or an
 /// argument is outside what `LlvmTir.tirInstArgN` covers.
 func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
-  val ii = match mapGet(maps.instInfos, fsym) { case Some(x) -> x; case None -> return false }
+  val ii = match mapGet(maps.instInfos, fsym) {
+    case Some(x) -> x
+    case None -> return instantiateTirOnlyFn(ctx, maps, fsym)
+  }
   val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
   val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
   if decl.isAsync {
