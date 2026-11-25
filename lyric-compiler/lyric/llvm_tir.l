@@ -299,6 +299,9 @@ pub record TirLowerEnv {
   distincts: Map[Int, NType] = newMap()
   /// What the lowering needs of each distinct type beyond its representation, keyed as `distincts` is.
   distinctInfos: Map[Int, TirDistinct] = newMap()
+  /// The type arguments of each monomorphised instance, keyed by the instance's symbol: `T.tryFrom` reads
+  /// the distinct type `T` from the `Result[T, String]` instance it builds.
+  instArgs: Map[Int, List[Ty]] = newMap()
   /// The enums (keyed by the enum's `SymbolId.id`) and each enum case's ordinal (keyed by the
   /// case's symbol).  An enum value is its `i32` ordinal.
   /// A set: the value is always `true`.
@@ -1583,6 +1586,70 @@ func overflowTypeName(ty: in Ty): Option[String] {
   }
 }
 
+/// `T.tryFrom(x)` on a distinct type `T`: `Ok(x)` when `x` is in range, else `Err("T.tryFrom: value out of
+/// range [lo, hi]")`, as `Result[T, String]`.  `T` is the first type argument of the instance the node
+/// has; a range subtype or another shape stays on the AST path.
+func lowerTryFrom(c: in LCtx, e: in TExpr, ins: in List[TExpr], line: in Int): Val {
+  if ins.count != 1 {
+    return unsupported(c, "tryFrom with " + toString(ins.count) + " arguments")
+  }
+  val inst = match e.ty {
+    case TNamed(sym, a) -> if a.count == 0 {
+      sym
+    } else {
+      return unsupported(c, "tryFrom of " + renderTy(e.ty))
+    }
+    case _ -> return unsupported(c, "tryFrom of " + renderTy(e.ty))
+  }
+  val targs = match mapGet(c.env.instArgs, inst.id) {
+    case Some(a) -> a
+    case None -> return unsupported(c, "tryFrom with no instance arguments")
+  }
+  val d = match targs[0] {
+    case TNamed(sym, a) -> match mapGet(c.env.distinctInfos, sym.id) {
+      case Some(x) -> x
+      case None -> return unsupported(c, "tryFrom on " + renderTy(targs[0]))
+    }
+    case _ -> return unsupported(c, "tryFrom on " + renderTy(targs[0]))
+  }
+  val ul = match mapGet(c.env.unions, inst.id) {
+    case Some(u) -> u
+    case None -> return unsupported(c, "tryFrom into an unregistered Result")
+  }
+  val okRef = TirCaseRef(unionId = inst.id, index = 0)
+  val errRef = TirCaseRef(unionId = inst.id, index = 1)
+  val v = borrow(c, lowerExpr(c, ins[0]))
+  if not d.hasRange {
+    val one: List[Val] = newList()
+    one.add(v)
+    return buildCaseFromVals(c, okRef, ul, one)
+  }
+  val bad = distinctOutOfRange(c, d, v)
+  val errL = newLabel(c, "tryfrom.err")
+  val okL = newLabel(c, "tryfrom.ok")
+  val joinL = newLabel(c, "tryfrom.join")
+  c.ticker.add(0)
+  val slot = "tryfrom.slot." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = slot, ty = ul.ty))
+  c.insns.add(NCondBr(cond = bad, thenLabel = errL, elseLabel = okL))
+  startBlock(c, errL)
+  val errVals: List[Val] = newList()
+  errVals.add(stringLiteral(c, d.name + ".tryFrom: value out of range " + d.boundsText))
+  val errV = buildCaseFromVals(c, errRef, ul, errVals)
+  c.insns.add(NStore(ty = ul.ty, value = errV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, okL)
+  val okVals: List[Val] = newList()
+  okVals.add(v)
+  val okV = buildCaseFromVals(c, okRef, ul, okVals)
+  c.insns.add(NStore(ty = ul.ty, value = okV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, joinL)
+  val joined = tmp(c)
+  c.insns.add(NLoad(dest = joined, ty = ul.ty, ptr = NLocal(name = slot)))
+  Val(ty = ul.ty, value = NLocal(name = joined), owned = ul.inline == false)
+}
+
 /// The result of an operator whose result type is a range-checked distinct type: derived arithmetic goes
 /// through `T.from`, so a result outside the range panics with its message (#7226).  Comparisons yield `Bool`
 /// and pass through.
@@ -2418,6 +2485,12 @@ func lowerCase(c: in LCtx, cr: in TirCaseRef, fields: in List[TExpr]): Val {
     vals.add(v)
     i = i + 1
   }
+  buildCaseFromVals(c, cr, ul, vals)
+}
+
+/// The union value of case `cr` over field values already lowered (borrowed), as `lowerCase` builds it.
+func buildCaseFromVals(c: in LCtx, cr: in TirCaseRef, ul: in TirUnionLayout, vals: in List[Val]): Val {
+  val cl = ul.cases[cr.index]
   var base: NValue = NUndef(ty = ul.ty)
   if ul.inline {
     c.ticker.add(0)
@@ -2788,6 +2861,7 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
         }
       }
       match op {
+        case IoTryFrom -> return lowerTryFrom(c, e, ins, line)
         case IoBuiltin(name) -> return lowerBuiltin(c, name, ins, line, e.ty)
         case IoWire(w, m) -> return unsupported(c, "a call through the wire " + w + "." + m)
         case _ -> ()

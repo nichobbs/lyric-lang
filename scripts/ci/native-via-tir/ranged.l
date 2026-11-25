@@ -14,6 +14,8 @@ type Level = Byte range 1 ..= 5 derives Add, Compare
 
 type Ratio = Double range 0.0 ..= 1.0 derives Add, Compare
 
+type Plain = Long
+
 ref record Wallet {
   var balance: Cents
 }
@@ -55,6 +57,20 @@ func halves(): Ratio {
   half() + half()
 }
 
+func tryC(v: in Long): String {
+  match Cents.tryFrom(v) {
+    case Ok(c) -> toString(c)
+    case Err(m) -> m
+  }
+}
+
+func tryPlain(v: in Long): String {
+  match Plain.tryFrom(v) {
+    case Ok(p) -> "plain " + toString(p)
+    case Err(m) -> m
+  }
+}
+
 func main(): Unit {
   println(toString(plus(c(250), c(750))))
   println(toString(minus(c(900), c(150))))
@@ -64,5 +80,9 @@ func main(): Unit {
   println(toString(higher(lvl(200u8 - 197u8), lvl(5u8))))
   println(toString(sum(lvl(2u8), lvl(3u8))))
   println(toString(halves()))
+  println(tryC(5))
+  println(tryC(-1))
+  println(tryC(2000))
+  println(tryPlain(7))
   println(toString(minus(c(1), c(2))))
 }

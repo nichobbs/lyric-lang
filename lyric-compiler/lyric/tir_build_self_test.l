@@ -13,6 +13,7 @@ import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.ContractElaborator
 import Lyric.TypeChecker
 import Lyric.Resolve
 import Lyric.Symbols
@@ -4022,4 +4023,80 @@ test "== on a record holding a generic record keeps the single IoEq on the recor
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   assertTrue(r.body.isSome(), "builds")
+}
+
+/// The shape of a function body's tail: `check(construct)` for a construction wrapped in a call.
+func tailShape(d: in TFnDecl): String {
+  val body = match d.body { case Some(b) -> b; case None -> return "none" }
+  val t = match body.kind { case XBlock(_, Some(x)) -> x; case _ -> body }
+  match t.kind {
+    case XCall(Direct(_, _), args) -> if args.count == 1 {
+      match args[0] {
+        case TArgIn(v) -> match v.kind { case XConstruct(_, _) -> "check(construct)"; case _ -> "check(other)" }
+        case _ -> "check(arg)"
+      }
+    } else {
+      "call"
+    }
+    case XConstruct(_, _) -> "construct"
+    case _ -> "other"
+  }
+}
+
+func funcNamed(pb: in PackageBuild, key: in String, interner: in DefPathInterner): Option[TFnDecl] {
+  for f in pb.pkg.funcs {
+    match defPathKeyOf(interner, f.sym) {
+      case Some(k) -> if k.startsWith(key) { return Some(value = f) }
+      case None -> ()
+    }
+  }
+  None
+}
+
+test "a construction of a record with invariant clauses is its checker called on the built value (D505)" {
+  val src = "package App\nrecord Span {\n  lo: Int\n  hi: Int\n  invariant: lo <= hi\n}\nfunc mk(a: Int, b: Int): Span { Span(lo = a, hi = b) }\n"
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(src).file)).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val mk = match funcNamed(pb, "App::mk", cr.symbols.interner) { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+  assertTrue(tailShape(mk) == "check(construct)", "got " + tailShape(mk))
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a construction of an opaque type with an invariant is checked, and .copy of a record too (D505)" {
+  val src = "package App\nopaque type Pos {\n  v: Int\n  invariant: v >= 0\n}\nrecord R {\n  a: Int\n  invariant: a > 0\n}\nfunc mkp(n: Int): Pos { Pos(v = n) }\nfunc cp(r: in R): R { r.copy(a = 2) }\n"
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(src).file)).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val mkp = match funcNamed(pb, "App::mkp", cr.symbols.interner) { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+  assertTrue(tailShape(mkp) == "check(construct)", "opaque: " + tailShape(mkp))
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a construction of a generic record with an invariant is checked at its type arguments (D505)" {
+  val src = "package App\nrecord Box[T] {\n  v: T\n  n: Int\n  invariant: n >= 0\n}\nfunc mk(x: Int): Box[Int] { Box(v = x, n = 1) }\n"
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(src).file)).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val mk = match funcNamed(pb, "App::mk", cr.symbols.interner) { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+  assertTrue(tailShape(mk) == "check(construct)", "got " + tailShape(mk))
+  val ds = verifyPackage(pb.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
