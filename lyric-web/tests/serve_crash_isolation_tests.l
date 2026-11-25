@@ -5,19 +5,20 @@
 //! taking the whole server down over a single bad request).
 //!
 //! `serveStreaming` (which `serve` now delegates to, #5990) wraps
-//! `nextContext` and per-request handling in separate `try`/`catch Bug`
+//! `tryNextContext` and per-request handling in separate `try`/`catch Bug`
 //! blocks: a handler panic (or any other `Bug` raised while building the
 //! request, dispatching it, or writing the response) is logged and
 //! answered with a 500 for that request only — the accept loop keeps
 //! running and serves the next request normally. Only a failure in
-//! `nextContext` itself (the listener can no longer accept connections at
-//! all) remains fatal.
+//! `tryNextContext` itself (the listener can no longer accept connections
+//! at all) remains fatal.
 //!
-//! This drives a REAL `Web.serve` listener in-process (same
-//! background-`Task.Run` + real Lyric `HttpClient` pattern
-//! `tests/serve_tls_tests.l` uses to drive `Web.serveTls`) so the
-//! assertions exercise the real accept loop, not just `Web.dispatch`'s
-//! pure core.
+//! This drives a REAL `Web.serve` listener in-process (a background thread
+//! from `Std.HttpServerHost` + a real Lyric `HttpClient`, as
+//! `tests/serve_tls_tests.l` does for `Web.serveTls`) so the assertions
+//! exercise the real accept loop, not just `Web.dispatch`'s pure core.   Native has
+//! no unwinding (D-N-003), so a handler panic ends that process and this
+//! suite is for dotnet and the JVM.
 //!
 //! `tests/serve_failure_tests.l` is a separate, CI-orchestrated program
 //! that predates this fix (#5260); its accompanying
@@ -30,6 +31,7 @@ package Web.ServeCrashIsolationTests
 
 import Std.Core
 import Std.Http
+import Std.HttpServerHost
 import Std.Time as Time
 import Web
 import Std.Testing
@@ -59,57 +61,13 @@ func crashRouter(): Web.Router {
   r
 }
 
-// `Web.serve` blocks the calling thread forever once bound, on EITHER
-// target (see `worker_dispatch_tests.l`'s matching comment for the full
-// reasoning) — on `dotnet`, `Task.Run(Action)` gives the real concurrency
-// `spawn` cannot on this target (D119/D120); on `jvm`, a Lyric closure
-// cannot be handed to an arbitrary JDK functional interface directly, so a
-// record `impl`s the real `java.lang.Runnable` instead (mirroring
-// `Web.Kernel.Runtime`'s own `WorkerLoopRunnable`).
-@cfg(feature = "dotnet")
-extern type Task = "System.Threading.Tasks.Task"
-
-@cfg(feature = "dotnet")
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@cfg(feature = "dotnet")
+// `Web.serve` blocks the calling thread forever once bound, so the server runs
+// on a background thread from the `Std.HttpServerHost` seam (a thread-pool
+// task on dotnet, a virtual thread on the JVM, a thread on native): the real
+// concurrency `spawn` cannot give on dotnet (D119/D120).  One helper for every
+// target; docs/73 S6 retired the per-target ones.
 func startServerForTest(r: in Web.Router, port: in Int): Unit {
-  val _ = taskRun({ -> Web.serve(r, "127.0.0.1", port) })
-}
-
-@cfg(feature = "jvm")
-extern type JRunnable = "java.lang.Runnable"
-
-@cfg(feature = "jvm")
-extern type JExecutorService = "java.util.concurrent.ExecutorService"
-
-@cfg(feature = "jvm")
-@externStatic
-@externTarget("java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor")
-func newVirtualThreadPerTaskExecutor(): JExecutorService = ()
-
-@cfg(feature = "jvm")
-val testServerExecutor: JExecutorService = newVirtualThreadPerTaskExecutor()
-
-@cfg(feature = "jvm")
-record TestServerRunnable {
-  r: Web.Router
-  port: Int
-}
-
-@cfg(feature = "jvm")
-impl JRunnable for TestServerRunnable {
-  func run(): Unit {
-    Web.serve(self.r, "127.0.0.1", self.port)
-  }
-}
-
-@cfg(feature = "jvm")
-func startServerForTest(r: in Web.Router, port: in Int): Unit {
-  val runnable: JRunnable = TestServerRunnable(r = r, port = port)
-  val _ = testServerExecutor.submit(runnable)
+  startTask({ -> Web.serve(r, "127.0.0.1", port) })
 }
 
 // Retry a GET against `url` until the listener accepts the connection (it

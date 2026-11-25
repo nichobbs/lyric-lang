@@ -6369,8 +6369,8 @@ jobs:
           build-config: ${{ env.BUILD_CONFIG }}
 
       # Ecosystem suites on JVM: storage, resilience, mcp, health,
-      # generator-sdk, web (coverage notes in the script; web restores its
-      # own Undertow Maven dependency first).
+      # generator-sdk, web (coverage notes in the script; web restores
+      # lyric-ws's Undertow Maven dependency first, until docs/73 S7b).
       - name: Ecosystem suites on JVM (scripts/ci/jvm-ecosystem-suites.sh)
         if: ${{ !cancelled() }}
         background: true
@@ -6386,8 +6386,7 @@ jobs:
       # failure mode of #5571's workspace-dependency chain; the same
       # resolver now backs root and dependency builds, so pinning the
       # flag-less root build pins the propagation rule too (the end-to-end
-      # lyric-web Undertow smoke, tests/jvm_server_smoke.l, is wired as its
-      # own step below now that #5610/#5444/#5458 landed).
+      # lyric-web smoke, tests/web_smoke.l, is wired as its own step below).
       - name: lyric-auth manifest build on JVM without feature flags (#5571)
         if: ${{ !cancelled() }}
         background: true
@@ -6444,25 +6443,15 @@ jobs:
           fi
           "$lyric_bin" test --manifest lyric-auth/lyric.toml --target jvm
 
-      # lyric-web Undertow end-to-end smoke on JVM (#5610/#5444/#5458): builds
-      # tests/jvm_server_smoke.l single-file (bundling the imported Web +
-      # Web.Kernel.Runtime project packages with their workspace deps and
-      # target-normalized features, #5571), starts the real Undertow listener
-      # under java, and asserts all four endpoints — path param, header echo
-      # through HeaderMap, request-body echo, and 404.  This is also the
-      # regression pin for cross-package impl-method parameter registration
-      # (#5610): a two-package bundled compile where an impl method takes
-      # another package's record cannot be expressed in a single-file
-      # self-test, so this smoke IS that test.  Needs the Maven resolver jar
-      # and a lyric-web restore first: a single-file jvm build reads the
-      # restored lyric-web/target/restore/jvm-classpath.txt (NOT
-      # module-path.txt), and the bundle jar's manifest Class-Path carries
-      # the restored Undertow jar paths, so `java -jar` needs no -cp.
-      - name: lyric-web Undertow smoke on JVM (tests/jvm_server_smoke.l)
+      # lyric-web smoke on JVM (#5610, docs/73 S6): web_smoke.l (endpoints, body
+      # cap, HTTPS/h2, mTLS), crash isolation, streaming; the script header has
+      # the detail.  Needs the Maven resolver jar and a lyric-web restore first
+      # while lyric-ws still declares its Undertow [maven] table (S7b).
+      - name: lyric-web smoke on JVM (tests/web_smoke.l)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/lyric-web-undertow-jvm-smoke.sh
+        run: bash scripts/ci/lyric-web-smoke.sh jvm
 
       - name: UI library suites on JVM (#7378)
         if: ${{ !cancelled() }}

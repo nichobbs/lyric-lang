@@ -474,6 +474,9 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   (`Web.Kernel.Runtime`'s Undertow binding) wires up and its full manifest
   test suite passes on `--target jvm`, wired into
   `scripts/ci/jvm-ecosystem-suites.sh`. The others remain unverified here.
+  _Update (docs/73 S6, D791): the Undertow binding is gone; `lyric-web` serves
+  through `Std.HttpServer` on the JVM with no `[maven]` table of its own, and
+  streaming responses, `serveStreaming` and `Web.addWorker` work there._
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
 - **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via
@@ -677,7 +680,8 @@ and J4 (async), and the J2→J4 logical dependency holds — so Track A
   #5881, `Web.serveTls` on JVM), and the dotnet `Web.serveTls` reached parity
   in phase 3.4 (issue #5885, D-progress-701) over `Std.HttpServer`'s new
   sans-IO server — so lyric-web server TLS is now real on **both** managed
-  targets (dotnet additionally supports mTLS; JVM mTLS is #6017). Only the JVM
+  targets (dotnet additionally supports mTLS; JVM mTLS is #6017). _(Both are
+  `Std.HttpServer.startListenerTls` since docs/73 S6, D791.)_ Only the JVM
   engine convergence (docs/61 §6.5) remains open; longer-term the JVM
   converges onto the pure-Lyric sans-IO HTTP engine once it has parity +
   performance evidence on dotnet.

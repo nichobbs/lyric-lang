@@ -4,7 +4,7 @@
 
 HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Ships real method/path routing with path parameters, static file serving, a middleware pipeline (CORS built in), OpenAPI 3.1 type vocabulary for spec generation, and aspect templates for authentication and rate limiting.
 
-> **Status**: `@experimental`. Route dispatch, static files, and middleware are implemented and tested (`lyric-web/tests/dispatch_tests.l`) against both targets. On `dotnet`, built on `Std.HttpServer` — the pure-Lyric sans-IO `Std.HttpEngine` over the `Std.TcpHost` `TcpListener`/`SslStream` transport that replaced `System.Net.HttpListener` (TLS via `Web.serveTls`, #5884/#5885); the transport accepts and reads connections concurrently on background tasks, and lyric-web's dispatch loop hands each parsed request to its own thread-pool task (#7997), so a slow or streaming handler never stalls other requests. On `jvm`, `Web.Kernel.Runtime` binds `io.undertow` directly (Undertow's own multi-threaded XNIO I/O/worker pool handles concurrent requests natively); the full test suite compiles and passes on `--target jvm` (#7578) — see [JVM target](#jvm-target) below.
+> **Status**: `@experimental`. Route dispatch, static files, middleware, streaming responses, TLS and WebSocket endpoints are implemented and tested (`lyric-web/tests/`) on `dotnet` and `jvm`, and served on `native`. **One server on every target:** `Web.serve`, `Web.serveStreaming` and `Web.serveTls` are built on `Std.HttpServer`, the shared pure-Lyric driver over the sans-IO `Std.HttpEngine` and the `Std.TcpHost` transport (`System.Net.Sockets` on dotnet, `java.nio` sockets on the JVM, `lyric-rt` sockets on native). The transport accepts and reads connections concurrently on background tasks, and lyric-web's dispatch loop hands each parsed request to its own task (#7997), so a slow or streaming handler never stalls other requests. Until docs/73 S6 (D791) the JVM served through a separate Undertow kernel; lyric-web has no per-target HTTP server code and no Maven dependency of its own any more. See [JVM target](#jvm-target).
 
 ## Packages
 
@@ -13,7 +13,7 @@ HTTP web service library for [Lyric](https://github.com/nichobbs/lyric-lang). Sh
 | `Web` | Core: `Router`, `Route`, `Request`, `Response`, `Handler`, `Middleware`, `ApiError`, static file serving, the server entry point |
 | `Web.OpenApi` | OpenAPI 3.1 spec types (`Spec`, `Schema`, `Operation`, …) and spec builder |
 | `Web.Aspects` | Template aspects: `RequiresAuth`, `RequiresRole`, `ApiKey`, `RateLimit`, `HttpCircuitBreaker` |
-| `Web.Kernel.Runtime` | Extern boundary, exactly one file compiled per build: rate limiter on both targets; on `jvm` also the full Undertow HTTP server `Web.serve` delegates to |
+| `Web.Kernel.Runtime` | The per-target kernel (no HTTP server code): rate limiter, background worker loop, per-request tasks, crash isolation, the WebSocket hand-over, and on native the static-root `realpath` |
 
 ## Installation
 
@@ -241,7 +241,7 @@ func main(): Unit {
 - `Web.writeChunk(w, data)` writes and flushes one chunk immediately (`Transfer-Encoding: chunked`, no `Content-Length` — the body length is never known up front) and returns `Result[Unit, String]`: an `Err` means the write failed (e.g. the client disconnected) — stop producing more output rather than writing into a dead connection.
 - A handler that returns without ever calling `writeChunk` still gets a well-formed (empty) chunked response — the framework commits and closes it either way.
 - **Middleware that rejects/short-circuits a request works for streaming routes exactly like it does for ordinary ones** — a `Middleware.wrap` that returns without calling `next.handle` never invokes the matched `StreamingHandler`, so no bytes are streamed to a request the middleware rejected. **Middleware that *post-processes* the response `next.handle` returns does not** — by the time a middleware wrapping a streaming route gets control back, the real response has already been committed and sent to the wire, so there's nothing left to attach extra headers to. Concretely: `Web.corsMiddleware`'s `Access-Control-Allow-Origin`/`Vary` headers on an *allowed*-origin request never reach a streaming response (its `OPTIONS` preflight handling is unaffected, since that returns before ever calling `next`) — tracked in lyric-lang#5985, see [Known gaps](#known-gaps).
-- **dotnet-only for now.** The JVM `serve` path goes through a completely different server (`Web.Kernel.Runtime`'s Undertow binding) that doesn't yet expose a streaming path — see [Known gaps](#known-gaps).
+- Streaming works on every target (`dotnet`, `jvm`, `native`), through `Std.HttpServer`'s chunked-response helpers. `scripts/ci/lyric-web-smoke.sh` runs `tests/streaming_tests.l` on dotnet and the JVM.
 
 ---
 
@@ -266,8 +266,7 @@ Web.serve(router, "0.0.0.0", 8080)
 - The endpoint is served at exactly `endpoint.path`; `prefix` does not move it.
 - A `GET` to that path goes to the endpoint **before** middleware and route dispatch. Authorise a socket in the handler's `onOpen` (or with the `Ws.Aspects.WsAuth` aspect), not with router middleware.
 - A valid upgrade gets `101`; a malformed one `400`, a cross-site one `403`.
-- dotnet: the connection is handed over with `Std.HttpServer.takeConnection` and stops counting against the HTTP server's connection cap. An upgrade over HTTP/2, over HTTP/1.0, or with bytes pipelined after it is answered `400` (browsers open WebSockets over HTTP/1.1).
-- jvm: the endpoint is mounted on the Undertow listener at its path.
+- On every target the connection is handed over with `Std.HttpServer.takeConnection` and stops counting against the HTTP server's connection cap. An upgrade over HTTP/2, over HTTP/1.0, or with bytes pipelined after it is answered `400` (browsers open WebSockets over HTTP/1.1). (On the JVM the endpoint was mounted on an Undertow listener before docs/73 S6.)
 
 ---
 
@@ -322,7 +321,7 @@ All config fields are env-var-backed, read once at startup, fail-fast if a requi
 | `LYRIC_CONFIG_WEB_SERVER_HOST` | `String` | `0.0.0.0` | Bind address |
 | `LYRIC_CONFIG_WEB_SERVER_PORT` | `Int` | `8080` | TCP port (1–65535) |
 
-Request bodies are capped at 10 MiB on both targets (`Std.HttpEngine`'s
+Request bodies are capped at 10 MiB on every target (`Std.HttpEngine`'s
 `EngineLimits.defaults().maxBodyBytes`). A larger body is answered with a
 bodyless `413 Content Too Large` and never reaches a handler. That covers a
 declared `Content-Length` and a chunked body that grows past the limit while
@@ -330,32 +329,26 @@ it is read, for every method (a `GET` or `HEAD` carrying a body included).
 
 ### HTTPS (TLS)
 
-`Web.serveTls(router, host, port, tls)` serves `router` over HTTPS on **both
-targets**, built from a `Std.Tls.TlsServerConfig` (PEM cert + key; see
-`Std.Tls`). It blocks forever like `Web.serve`, and returns
-`Result[Unit, ServeTlsError]` — the only observable return is an `Err`
-(`ServerTlsUnsupported`) for a configuration that cannot be served:
+`Web.serveTls(router, host, port, tls)` serves `router` over HTTPS, built from a
+`Std.Tls.TlsServerConfig` (PEM cert + key; see `Std.Tls`). It blocks like
+`Web.serve` and returns `Result[Unit, ServeTlsError]` — in normal operation the
+only observable return is an `Err` (`ServerTlsUnsupported`) for a configuration
+that cannot be served.
 
-- **`--target dotnet`: real TLS termination** over the pure-Lyric sans-IO
-  `Std.HttpServer` (`Std.HttpEngine` + `Std.TcpHost`/`SslStream`) that
-  replaced `HttpListener` — server identity + minimum version + ALPN
-  `http/1.1`, dispatched through the same `Web.dispatch` core as plaintext
-  `serve` (phase 3.4 of epic #5874, issue #5885). **Mutual TLS is fully
-  supported here** (`clientCa` + `requireClientCert` are passed straight
-  through to the callback-free mTLS transport kernel). h2 end-to-end is not
-  yet negotiated on this server (the transport advertises only `http/1.1`;
-  issue #5889).
-- **`--target jvm`: real TLS termination** over an Undertow `addHttpsListener`
-  with `ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). **Mutual TLS is fully
-  supported here** (issue #6017): `clientCa` pins a client-CA `TrustManager`
-  onto the listener's `SSLContext`, and `requireClientCert` drives Undertow's
-  XNIO `SSL_CLIENT_AUTH_MODE` socket option (`REQUIRED` when set, `REQUESTED`
-  — optional — when `clientCa` is configured without `requireClientCert`).
+TLS terminates in `Std.HttpServer.startListenerTls` on every target (docs/73
+S6): the pure-Lyric sans-IO `Std.HttpEngine` over `Std.TcpHost` (`SslStream` on
+dotnet, the JDK's TLS on the JVM, OpenSSL on native), dispatched through the same
+`Web.dispatch` core as plaintext `serve`. Server identity and minimum version
+come from the config. ALPN offers `h2` then `http/1.1` on dotnet and the JVM, so
+HTTP/2 is served on every target (native since docs/73 S5, D790; a Windows server offers `http/1.1` only).
+**Mutual TLS is fully supported** (issue #6017): `clientCa` makes the server
+request a client certificate chained to that CA, and `requireClientCert`
+rejects a client without one at the handshake.
 
 A configuration that cannot bind a listener — a mutual-TLS misconfiguration
 (`requireClientCert` with no `clientCa`) or a socket bind failure — returns a
-typed `ServerTlsUnsupported` carrying the underlying reason on either target,
-never a silent failure.
+typed `ServerTlsUnsupported` carrying the underlying reason on every target,
+never a silent failure. `tests/serve_tls_tests.l` pins both paths.
 
 Cert/key/client-CA paths are runtime-configurable so a deployment can point
 them per environment without a rebuild. The `Web.WebTls` config template
@@ -501,11 +494,10 @@ impl Web.Worker for PollWorker {
 router = Web.addWorker(router, "poller", 2000, PollWorker())
 ```
 
-On `--target dotnet` this runs on a real background thread-pool task
-(`System.Threading.Tasks.Task.Run`), independent of the accept loop — issue
-#5359. On `--target jvm` it runs on a real background virtual thread
-(`java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()`),
-started when `Web.serve`/`serveTls` start their Undertow listener (#7578).
+The worker runs on a real background task, independent of the accept loop
+(`Web.Kernel.Runtime.startWorkerLoop`, issue #5359): a thread-pool task on
+`--target dotnet`, a virtual thread on `--target jvm` (#7578) and a thread on
+`--target native`, started when `Web.serve`/`serveTls` start their listener.
 
 A `tick()` that panics is isolated to that tick: the loop logs the failure
 and keeps running on its next `intervalMs` interval, rather than the
@@ -515,22 +507,19 @@ background task silently and permanently dying (#6935).
 
 ## Known gaps
 
-- **Per-request concurrency on `dotnet` is bounded by the connection cap.** `Web.serve`/`serveStreaming`/`serveTls` run every request on its own thread-pool task (#7997); the number of handlers in flight is bounded by the transport's `LYRIC_HTTP_MAX_CONNECTIONS` cap (default 1000, HTTP/1.1 serves one request per connection at a time), beyond which connections queue in the OS backlog. Handlers now run on arbitrary threads, so state shared between requests must be synchronised, and thread-local state must be set inside middleware/handler code, not on the accept thread. A `Bug` in one request is logged and answered with a 500 inside its own task (this now also holds for `serveTls`, which previously stopped the listener).
-- **Streaming (`StreamingHandler`/`ResponseWriter`) is `dotnet`-only** (lyric-lang#5979). The JVM `serve` path delegates entirely to `Web.Kernel.Runtime`'s Undertow server, a different I/O model that doesn't yet expose a chunked-write path — a tracked follow-up, not a silent gap.
+- **Per-request concurrency is bounded by the connection cap.** `Web.serve`/`serveStreaming`/`serveTls` run every request on its own task (#7997); the number of handlers in flight is bounded by the transport's `LYRIC_HTTP_MAX_CONNECTIONS` cap (default 1000 on dotnet, 10 000 on the JVM; HTTP/1.1 serves one request per connection at a time), beyond which connections queue in the OS backlog. Handlers now run on arbitrary threads, so state shared between requests must be synchronised, and thread-local state must be set inside middleware/handler code, not on the accept thread. A `Bug` in one request is logged and answered with a 500 inside its own task (this now also holds for `serveTls`, which previously stopped the listener).
 - **Middleware that post-processes a response (rather than rejecting/short-circuiting it) has no effect on streaming responses** — tracked in lyric-lang#5985. `serveStreaming`/`startStreaming` run streaming requests through `router.middlewares` (so a middleware that rejects a request outright is fully honored), but a streaming response is already committed and sent to the wire by the time a wrapping middleware gets control back to inspect/modify it, so header additions like `Web.corsMiddleware`'s `Access-Control-Allow-Origin` on an allowed-origin request are silently dropped for streaming routes specifically (CORS preflight `OPTIONS` handling is unaffected).
 - **`Web.WebTls`'s env-var override is not observed on `--target jvm`** (#7594): a `config { }` block's `<clinit>` reads its env var via a direct `System.getenv` call on the JVM backend, bypassing `Std.Environment.setVar`'s process-wide overlay (added by #7577) entirely — the field keeps its declared default forever. This affects every `config { }` block on `--target jvm`, not `lyric-web`-specific; the override itself works correctly on `--target dotnet` (`SetEnvironmentVariable` mutates the real process environment `.cctor`'s `GetEnvironmentVariable` reads from). See `tests/webtls_config_tests.l`.
-- **JVM target's test suite now compiles and passes** (#7578) — the previously-tracked JVM backend bugs below are all resolved:
-  - **#5443** (worked around) — the `[project.packages]` array form for one package built from two alternative files (`_kernel/net/web_kernel.l` / `_kernel/jvm/web_kernel.l`, selected by feature) leaked the non-selected file's `extern type` binding when both files reused the same local alias name for genuinely different host types, producing a JVM class file with a dangling reference to the **.NET** type name. The general `[project.packages]` compiler bug is still open (a real risk for any future multi-file package reusing an alias name), but this library sidesteps it: the JVM file's alias was renamed from `ConcurrentDict[K, V]` to `JvmConcurrentDict[K, V]` so it no longer collides with the `.NET` file's `ConcurrentDict[K, V]`.
-  - **#5458** — JVM auto-FFI's inability to resolve a generic extern type's own method call (`dict.get(key)`) from inside a generic function operating on that type — fixed upstream; `Web.RateLimitTests` compiles and passes on `--target jvm`.
-  - **#5444** — calling an interface method (`mw.wrap(req, next)`) on a `Middleware` pulled from a `List`/`slice` used to crash JVM compilation (the erased `Object` element wasn't checkcast back to the interface type) — fixed upstream; `Web.DispatchTests`, `Web.CorsGuardTests`, and `Web.SecurityAspectWeavingTests` all compile and pass on `--target jvm`.
-
-  `Web.Kernel.Runtime`'s Undertow implementation (below) is verified end to end on `--target jvm`: `impl <ExternInterface> for Record` against real JDK interfaces (`io.undertow.server.HttpHandler`, `java.lang.Runnable`) works correctly (`Jvm.Codegen.constraintRefToJvmClass`, pinned by `lyric-compiler/jvm/ffi_iface_impl_jvm_self_test.l`), and the full manifest test suite — dispatch, CORS, static files, middleware, aspect weaving, rate limiting, `serve`/`serveTls` (including mTLS) round trips, and `addWorker`'s background loop (see below) — passes on both `--target dotnet` and `--target jvm`. See `lyric-web/tests/jvm_server_smoke.l` for the end-to-end HTTP round-trip test and manual verification steps, and `scripts/ci/jvm-ecosystem-suites.sh` for the CI wiring.
+- **The JVM backend's `[project.packages]` alias-collision bug (#5443)** is still open in general (a package built from alternative files that reuse an `extern type` alias name for different host types leaks the non-selected file's binding). lyric-web no longer has such a pair (`Web.Kernel.Runtime`'s two prims files declare no extern type), so it is not exposed here.
+- **Request header names keep the client's capitalisation** from the engine on every target (Undertow and the JDK server normalised them on the JVM); `Web.header` folds case on lookup, so handlers are unaffected.
+- **The JVM's `slice[Byte]` is a boxed array** (nichobbs/lyric-lang#9245), so a large request or response body costs more memory on the JVM than it did under Undertow: the 64 KiB echo benchmark's server RSS is about 2x Undertow's (D789).
+- **`lyric-ws` still carries an Undertow `[maven]` table** (docs/73 S7b deletes `Ws.Kernel.Jvm`): a JVM build of lyric-web restores those jars, but lyric-web neither compiles against nor loads Undertow.
 
 ## JVM target
 
-`Web.Kernel.Runtime`'s JVM file (`src/_kernel/jvm/web_kernel.l`) binds `io.undertow` directly: `Undertow.builder().addHttpListener(port, host).setHandler(handler).build()`, where `handler` is a Lyric record (`LyricUndertowHandler`) implementing the real `io.undertow.server.HttpHandler` interface via `impl` (docs/51-ffi-interfaces-proposal.md). Each request is read fully into a `Web.Request` (blocking I/O via `exchange.startBlocking()`), routed through the same `Web.dispatch(router, req)` pure core the `dotnet` accept loop uses, and the `Web.Response` is written back onto the exchange. `Web.serve`'s `jvm` branch (`@cfg(feature = "jvm")`) delegates to it entirely; `Web.serve`'s `dotnet` branch is unaffected and unchanged. `Web.addWorker`'s registered `Web.Worker`s also fire on `jvm`: `startWorkerLoop` submits a `WorkerLoopRunnable` (`impl java.lang.Runnable`) to a shared `Executors.newVirtualThreadPerTaskExecutor()`, mirroring the `.NET` kernel's fire-and-forget `Task.Run` dispatch and its per-tick crash isolation (#6935). See [Known gaps](#known-gaps) above for the current build blockers that were fixed to get here (#5444, #5458; #5443 is worked around) and how the interface-binding half was verified independently of them.
+On `--target jvm`, `Web.serve`, `Web.serveStreaming` and `Web.serveTls` are the same code as on dotnet and native (`src/web.l`, no `@cfg`): a `Std.HttpServer` pull loop (`tryNextContext`) over `Std.HttpEngine` and the `java.nio`-based `Std.TcpHost`, one virtual thread per connection and per request, h2 over ALPN on TLS listeners, `takeConnection` for WebSocket upgrades. The loop ends when the listener stops, which only a listener failure does (the process exit code is then 1). `Web.Kernel.Runtime` (`src/_kernel/net/`) holds the only per-target pieces: crash isolation by `try`/`catch` (`web_prims.l`, dotnet and JVM; native has no unwinding), the rate limiter, `startWorkerLoop` and `spawnRequestJob` (over `Ws.Kernel.Net.runBackground`) and `upgradeWebSocket`. `Web.addWorker`'s registered `Web.Worker`s fire on a background virtual thread with per-tick crash isolation (#6935).
 
-`Web.serveTls` (HTTPS, above) reuses the same `LyricUndertowHandler` / `Web.dispatch` core: only the listener differs — `addHttpsListener(port, host, sslContext)` + `UndertowOptions.ENABLE_HTTP2` (HTTP/2 via ALPN, TLS-only). The server `SSLContext` is built by reusing `Std.HttpServer.serverSslContextFromConfig` (the same `KeyManagerFactory`-backed construction `Std.HttpServer.startListenerTls` uses) rather than re-declaring the keystore/keymanager extern boundary. `tests/jvm_server_smoke.l` carries an in-process HTTPS/HTTP-2 self-check — a real `Web.serveTls` listener driven by a `Std.Http` client that trusts the fixture cert and asserts `HttpResponse.negotiatedVersion() == Http2` — wired into the `compiler-self-tests-jvm-c` CI job alongside a `curl --http2` cross-check.
+`scripts/ci/lyric-web-smoke.sh jvm` builds and drives `tests/web_smoke.l` (endpoints, the 10 MiB body cap, the HTTPS/h2 and mTLS accept/reject self-checks, `curl --http2`), `tests/serve_failure_tests.l` (crash isolation) and `tests/streaming_tests.l` (chunked streaming); `lyric test --manifest lyric-web/lyric.toml --target jvm --no-default-features --features jvm` runs the manifest suite, including `Web.WebSocketTests` over `takeConnection`.
 
 ## Package layout
 
@@ -543,15 +532,20 @@ lyric-web/
     openapi.l                     Web.OpenApi  (spec types + builder)
     aspects.l                     Web.Aspects  (RequiresAuth, RequiresRole, ApiKey, RateLimit, HttpCircuitBreaker)
     _kernel/
-      net/web_kernel.l            Web.Kernel.Runtime (dotnet)  (rate-limiter extern boundary)
-      jvm/web_kernel.l            Web.Kernel.Runtime (jvm)  (rate limiter + Undertow HTTP server)
+      net/web_kernel.l            Web.Kernel.Runtime  (rate limiter, worker loop, request jobs, WebSocket hand-over; all targets)
+      net/web_prims.l             Web.Kernel.Runtime  (try/catch crash isolation; dotnet and jvm)
+      native/web_prims.l          Web.Kernel.Runtime  (no unwinding, realpath; native)
   tests/
     dispatch_tests.l              Web.dispatch: routing, path/query/headers, static files, middleware, CORS
     cors_guard_tests.l            CORS startup-guard validation
     rate_limit_tests.l            Web.Kernel.Runtime.checkRateLimit
     security_aspect_weaving_tests.l  Web.Aspects templates, woven
-    jvm_server_smoke.l            real Undertow HTTP round trip (jvm; blocked on #5444/#5458, see Known gaps)
+    web_smoke.l                   real HTTP, HTTPS/h2 and mTLS round trip (dotnet, jvm); driven by scripts/ci/lyric-web-smoke.sh
     serve_failure_tests.l         Web.serve() failure-observability path (#5260); CI-orchestrated, see file header
+    streaming_tests.l             chunked streaming responses (#5979); CI-orchestrated, see file header
+    serve_tls_tests.l             Web.serveTls round trips (TLS, mTLS), both start-failure paths
+    web_socket_tests.l            Web.addWebSocket over takeConnection (dotnet, jvm)
+    worker_dispatch_tests.l       Web.addWorker's loop and per-tick crash isolation
     serve_crash_isolation_tests.l Web.serve()/serveStreaming() per-request crash isolation (#5261)
     concurrent_dispatch_tests.l   a blocked handler does not stall other requests (#7997)
 ```

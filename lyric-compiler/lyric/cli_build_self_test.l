@@ -867,7 +867,7 @@ test "buildOneNative: single-file build near a manifest resolves an already-buil
 // ─── single-file + nearby-manifest own-package inclusion (#5571) ────────
 // A loose .l file near a lyric.toml that imports one of THAT manifest's own
 // [project.packages] (the `lyric build tests/x.l` inside-a-library-tree
-// shape, e.g. lyric-web's tests/jvm_server_smoke.l importing Web) compiles
+// shape, e.g. lyric-web's tests/web_smoke.l importing Web) compiles
 // the imported package into the synthetic project request.  Before this,
 // the request carried only dependencies, so the import either failed to
 // resolve or fell through to an unrelated same-named function.
