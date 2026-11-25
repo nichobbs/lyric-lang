@@ -3853,3 +3853,28 @@ test "an unsuffixed literal too large for Int passes for a UInt parameter as the
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+test "a tuple literal checked at a wider tuple type widens its elements" {
+  val r = buildFirstFn("package App\nfunc f(i: in Int): (Long, Int) {\n  (i, 1)\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XTuple(es) -> {
+          assertEqualInt(es.count, 2, "two elements")
+          assertTrue(tyEq(es[0].ty, TPrim(TPLong)), "the first element is a Long")
+          match es[0].kind {
+            case XConvert(CvWiden(_), _) -> ()
+            case _ -> assertTrue(false, "the first element is a widening")
+          }
+          assertTrue(tyEq(es[1].ty, tyInt()), "the second stays an Int")
+        }
+        case _ -> assertTrue(false, "a tuple tail")
+      }
+      case XTuple(es) -> assertTrue(tyEq(es[0].ty, TPrim(TPLong)), "the first element is a Long")
+      case _ -> assertTrue(false, "a block or tuple")
+    }
+    case None -> assertTrue(false, "builds")
+  }
+}

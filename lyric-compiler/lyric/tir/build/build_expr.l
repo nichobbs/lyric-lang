@@ -2628,7 +2628,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case ELiteral(l) -> Some(value = mkExpr(e, ty, XLit(lit = litOf(l))))
     case EParen(inner) -> buildExpr(env, inner)
     case ETuple(xs) -> match buildAll(env, xs) {
-      case Some(ts) -> Some(value = mkExpr(e, ty, XTuple(elems = ts)))
+      case Some(ts) -> Some(value = mkExpr(e, ty, XTuple(elems = widenTupleElems(env, ts, ty))))
       case None -> None
     }
     case EList(xs) -> {
@@ -7440,6 +7440,30 @@ pub func isListHostName(name: in String): Bool {
   name == "System.Collections.Generic.List`1" or name == "java.util.List" or name == "java.util.ArrayList" or
     name == "java.util.List`1" or
     name == "java.util.ArrayList`1"
+}
+
+/// The elements of a tuple literal whose settled type is `ty`, each widened to its element type where the checker
+/// recorded the literal at a wider expected type (`(i, 1)` for a `(Long, Int)`): an element already of its type, or
+/// one that does not convert, stays as built.
+func widenTupleElems(env: in BuildEnv, elems: in List[TExpr], ty: in Ty): List[TExpr] {
+  val want = match ty { case TTuple(ws) -> ws; case _ -> return elems }
+  if want.count != elems.count {
+    return elems
+  }
+  val res: List[TExpr] = newList()
+  var i = 0
+  while i < elems.count {
+    if tyEq(elems[i].ty, want[i]) {
+      res.add(elems[i])
+    } else {
+      match convertValue(env, elems[i], want[i]) {
+        case Some(c) -> res.add(c)
+        case None -> res.add(elems[i])
+      }
+    }
+    i = i + 1
+  }
+  res
 }
 
 /// A tuple literal used where a tuple of other element types is wanted (`(two(), "a")` where an
