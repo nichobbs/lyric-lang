@@ -2,8 +2,8 @@
 //! state machine with flow control (RFC 9113 §3/§5/§6, D128; phase 4.3 of
 //! epic #5874, issue #5888).
 //!
-//! `Std.HttpEngine.H2Conn` is the top of the pure-Lyric HTTP/2 server stack.
-//! It composes the two shipped building blocks — the frame codec
+//! `Std.HttpEngine.H2Conn` is the top of the pure-Lyric HTTP/2 stack, for both
+//! connection roles. It composes the two shipped building blocks — the frame codec
 //! (`Std.HttpEngine.H2Frame`, #5887) and HPACK header compression
 //! (`Std.HttpEngine.Hpack`, #5886) — into a single connection- and
 //! stream-level finite state machine. Like every other layer of the engine
@@ -20,14 +20,23 @@
 //! `Std.Core`/`Std.Collections` and the two sibling engine packages are
 //! imported.
 //!
-//! ## Scope (issue #5888)
+//! ## Scope (issue #5888, docs/72 slice 1)
 //!
-//! This is the SERVER-side connection/stream FSM. It implements, per
-//! RFC 9113:
+//! One connection/stream FSM serves both roles, chosen at construction:
+//! `newServerConnection` and `newClientConnection` return the same
+//! `H2Connection` type with an `H2Role` recorded in its `H2RoleState`. Every
+//! role-neutral rule (frame codec, HPACK, SETTINGS, flow control, PING,
+//! CONTINUATION assembly, field validation) is shared; the role gates only
+//! which side may open streams, which header block is a request, a response
+//! or a trailer section, which ids are idle, the GOAWAY semantics, and whether
+//! the Rapid-Reset mitigation applies (it is server-side: a client sees
+//! server-sent `RST_STREAM` as routine). It implements, per RFC 9113:
 //!
-//!   - the §3.4 connection-preface exchange (the 24-octet client preface is
-//!     matched by the frame decoder; the server's initial `SETTINGS` frame is
-//!     produced by `serverInitialFrame`);
+//!   - the §3.4 connection-preface exchange (a server's decoder matches the
+//!     24-octet client preface and its initial `SETTINGS` frame is
+//!     `serverInitialFrame`; a client writes `clientInitialBytes`, the preface
+//!     plus its `SETTINGS`, and requires a `SETTINGS` frame first from the
+//!     server);
 //!   - `SETTINGS` negotiation and acknowledgement (§6.5): a received peer
 //!     `SETTINGS` frame is validated, applied, and acknowledged automatically
 //!     (the ACK is appended to the outbound bytes);
@@ -47,13 +56,22 @@
 //!   - `PING` (§6.7): a non-ack `PING` is answered with a `PING` ACK
 //!     automatically;
 //!   - `GOAWAY` (§6.8): a received `GOAWAY` is surfaced; `sendGoAway` produces
-//!     a server-initiated one for graceful shutdown;
+//!     one for graceful shutdown. A client additionally records the peer's
+//!     last-stream-id (it may only decrease), refuses to open new streams, and
+//!     closes every stream above that id with `H2StreamUnprocessed` (safe to
+//!     retry elsewhere, RFC 9113 §8.7);
+//!   - client request/response messaging (§8.1, §8.3.2): `openStream` allocates
+//!     the next odd stream id under the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`
+//!     and frames the request HEADERS; response blocks are validated
+//!     (`malformedResponseReason`) and surfaced as `H2InformationalHeaders`,
+//!     `H2ResponseHeaders`, `H2ResponseData` and `H2ResponseTrailers`;
 //!   - the RFC's error classification (§5.4): a connection error appends a
 //!     `GOAWAY` and poisons the connection; a stream error appends a
 //!     `RST_STREAM` and closes just that stream.
 //!
 //! Deliberately **out of scope** (per the issue and RFC 9113): no server push
-//! (`PUSH_PROMISE` received by a server is a `PROTOCOL_ERROR`), and no
+//! (`PUSH_PROMISE` is a `PROTOCOL_ERROR` for a server, and for a client, which
+//! always advertises `SETTINGS_ENABLE_PUSH = 0`, §6.6), and no
 //! RFC 7540 priority tree (RFC 9113 §5.3.2 deprecates it — `PRIORITY` frames
 //! are accepted and ignored). ALPN wiring and the end-to-end .NET transport
 //! are issue #5889, not this sans-IO layer.
@@ -73,7 +91,8 @@
 //!
 //! A `H2Connection` is a reference value threaded through `feed` and the
 //! send/grant helpers, mirroring `Std.HttpEngine.Connection`. Its fields are
-//! FSM internals — construct one only via `newServerConnection`, and observe
+//! FSM internals — construct one only via `newServerConnection` or
+//! `newClientConnection`, and observe
 //! it only through the query functions (`streamState`, `connectionSendWindow`,
 //! …) and the events `feed` returns. Once a connection-level error is emitted
 //! `isFailed(conn)` is true and `feed` refuses to run again
@@ -179,9 +198,10 @@ pub ref record H2Settings {
   var maxHeaderListSize: Int
 }
 
-/// True when `settings` is something this server may advertise (RFC 9113
+/// True when `settings` is something this endpoint may advertise (RFC 9113
 /// §6.5.2): a frame size in 16384..16777215, an initial window in
-/// 0..2^31-1, push disabled (a server never enables it), and non-negative
+/// 0..2^31-1, push disabled (a server never enables it and a client, which
+/// cannot accept it, must advertise 0), and non-negative
 /// table, stream and header-list limits. Peer settings are validated as
 /// data when a SETTINGS frame arrives; this guards the local configuration.
 @pure
@@ -211,10 +231,31 @@ pub func h2DefaultServerSettings(): H2Settings {
   )
 }
 
+/// The default settings a client advertises: RFC-default header table and
+/// frame size, push disabled (`enablePush = 0`, which is what lets a
+/// `PUSH_PROMISE` be a connection error), a 1 MiB initial stream window so a
+/// response is not throttled to 64 KiB per round trip, a concurrent-streams
+/// ceiling of 100 (it caps only streams the peer initiates, so with push off it
+/// is advisory), and a 32 KiB advisory header-list cap. The connection-level
+/// receive window is not a setting; raise it with `grantConnectionWindow`.
+@pure
+@experimental
+pub func h2DefaultClientSettings(): H2Settings {
+  H2Settings(
+    headerTableSize = 4096,
+    enablePush = 0,
+    maxConcurrentStreams = 100,
+    initialWindowSize = 1048576,
+    maxFrameSize = 16384,
+    maxHeaderListSize = 32768
+  )
+}
+
 /// The default settings assumed for the peer before its `SETTINGS` frame
 /// arrives (RFC 9113 §6.5.2 initial values): 4096 header table, push enabled
-/// (irrelevant to a server that never pushes), no concurrent-stream limit
-/// applied to us, 65535 initial window, 16384 frame size.
+/// (never acted on: this FSM does not implement push in either role), no
+/// concurrent-stream limit applied to us, 65535 initial window, 16384 frame
+/// size.
 @pure
 @experimental
 pub func h2DefaultPeerSettings(): H2Settings {
@@ -231,9 +272,10 @@ pub func h2DefaultPeerSettings(): H2Settings {
 // =============================================================================
 // §2. Stream state and events.
 // =============================================================================
-/// The per-stream lifecycle states this server tracks (RFC 9113 §5.1). The
-/// two reserved states are omitted: this server never pushes, so `reserved
-/// (local)` never occurs, and it never receives a valid `PUSH_PROMISE`, so
+/// The per-stream lifecycle states tracked (RFC 9113 §5.1), from this
+/// endpoint's point of view: "local" is this endpoint's sending side, "remote"
+/// the peer's. The two reserved states are omitted: push is not implemented, so
+/// `reserved (local)` never occurs, and a `PUSH_PROMISE` is never valid, so
 /// `reserved (remote)` never occurs.
 @experimental
 pub enum H2StreamState {
@@ -272,6 +314,27 @@ pub enum H2StreamState {
 ///   - `H2PeerReset(streamId, errorCode)` — the peer reset a stream.
 ///   - `H2GoAwayReceived(lastStreamId, errorCode)` — the peer is shutting the
 ///     connection down gracefully.
+///
+/// Client-role events (a server-role connection never emits them, and a
+/// client-role connection never emits `H2RequestHeaders`/`H2RequestData`):
+///
+///   - `H2InformationalHeaders(streamId, status, headers)` — a 1xx header block
+///     (never final, never ends the stream, may repeat); the final response
+///     still follows.
+///   - `H2ResponseHeaders(streamId, status, headers, endStream)` — the final
+///     response header block, `headers` being the whole validated list
+///     including `:status` (as `H2RequestHeaders` includes its pseudo-headers).
+///     `endStream` is a Trailers-Only response: gRPC `grpc-status` and
+///     `grpc-message` then arrive in `headers`.
+///   - `H2ResponseData(streamId, data, endStream, wireLength)` — response body
+///     payload, with the same `wireLength` rule as `H2RequestData`.
+///   - `H2ResponseTrailers(streamId, headers)` — a trailer section (always
+///     carries END_STREAM; no pseudo-headers).
+///   - `H2StreamUnprocessed(streamId)` — a peer `GOAWAY` named a last-stream-id
+///     below this locally opened stream, so the peer did not and will not act
+///     on it: the stream is closed and the request is safe to retry on another
+///     connection. Distinct from `H2PeerReset`, whose `H2RefusedStream` is also
+///     retry-safe (RFC 9113 §8.7) but arrives as a reset.
 ///   - `H2ConnError(errorCode, message)` — a connection-level error; a `GOAWAY`
 ///     has been queued in `outbound` and the connection is poisoned.
 ///   - `H2StreamErr(streamId, errorCode, message)` — a stream-level error; a
@@ -288,6 +351,11 @@ pub union H2Event {
   case H2WindowUpdated(streamId: Int)
   case H2PeerReset(streamId: Int, errorCode: H2ErrorCode)
   case H2GoAwayReceived(lastStreamId: Int, errorCode: H2ErrorCode)
+  case H2InformationalHeaders(streamId: Int, status: Int, headers: List[HeaderField])
+  case H2ResponseHeaders(streamId: Int, status: Int, headers: List[HeaderField], endStream: Bool)
+  case H2ResponseData(streamId: Int, data: slice[Byte], endStream: Bool, wireLength: Int)
+  case H2ResponseTrailers(streamId: Int, headers: List[HeaderField])
+  case H2StreamUnprocessed(streamId: Int)
   case H2ConnError(errorCode: H2ErrorCode, message: String)
   case H2StreamErr(streamId: Int, errorCode: H2ErrorCode, message: String)
 }
@@ -300,7 +368,7 @@ pub union H2Event {
 ///     windows, floored at 0); split the write and retry after a
 ///     `H2WindowUpdated`.
 ///   - `StreamNotWritable(streamId)` — the stream is not in a state that
-///     permits the server to send DATA (unknown, idle, half-closed-local, or
+///     permits this endpoint to send DATA (unknown, idle, half-closed-local, or
 ///     closed).
 @experimental
 pub union H2FlowError {
@@ -311,7 +379,7 @@ pub union H2FlowError {
 /// The error returned by `encodeResponseHeaders`.
 ///
 ///   - `HeaderStreamNotWritable(streamId)` — the stream is not in a state that
-///     permits the server to send HEADERS (unknown, idle, half-closed-local,
+///     permits this endpoint to send HEADERS (unknown, idle, half-closed-local,
 ///     closed, or the connection is failed).
 ///   - `HeaderEncodingFailed(error)` — HPACK encoding failed (a pending encoder
 ///     table resize that exceeds the negotiated size).
@@ -321,15 +389,72 @@ pub union H2SendError {
   case HeaderEncodingFailed(error: HpackError)
 }
 
+/// Which side of the connection this FSM plays. Fixed at construction.
+@experimental
+pub enum H2Role {
+  case H2Server
+  case H2Client
+}
+
+/// Where a stream is in the response message sequence (RFC 9113 §8.1), tracked
+/// for a client: `H2PhaseAwaitFinal` until the final (non-1xx) header block,
+/// `H2PhaseBody` after it (DATA and then optionally one trailer section),
+/// `H2PhaseDone` once the trailers or END_STREAM ended the message.
+@experimental
+pub enum H2HeaderPhase {
+  case H2PhaseAwaitFinal
+  case H2PhaseBody
+  case H2PhaseDone
+}
+
+/// The error returned by `openStream` when a request cannot be started.
+///
+///   - `OpenConnectionFailed` — a connection-level error poisoned the connection.
+///   - `OpenConnectionDraining` — a `GOAWAY` was received or sent: open the
+///     request on another connection.
+///   - `OpenStreamLimitReached(active, limit)` — `active` locally opened streams
+///     already meet the peer's `SETTINGS_MAX_CONCURRENT_STREAMS` `limit`
+///     (§5.1.2); queue and retry once a stream closes.
+///   - `OpenStreamIdsExhausted` — the 2^31-1 stream-id space is used up (§5.1.1);
+///     open a new connection.
+///   - `OpenHeaderListTooLarge(size, limit)` — the header list (name + value + 32
+///     octets per field, §6.5.2) exceeds the peer's advertised
+///     `SETTINGS_MAX_HEADER_LIST_SIZE`.
+///   - `OpenHeaderEncodingFailed(error)` — HPACK encoding failed.
+@experimental
+pub union H2OpenError {
+  case OpenConnectionFailed
+  case OpenConnectionDraining
+  case OpenStreamLimitReached(active: Int, limit: Int)
+  case OpenStreamIdsExhausted
+  case OpenHeaderListTooLarge(size: Int, limit: Int)
+  case OpenHeaderEncodingFailed(error: HpackError)
+}
+
+/// What `openStream` returns: the allocated stream id and the serialized
+/// HEADERS (+ CONTINUATION) frames to write, in order, on the connection.
+@experimental
+pub record H2OpenResult {
+  streamId: Int
+  bytes: slice[Byte]
+}
+
 // =============================================================================
 // §3. Internal FSM state.
 // =============================================================================
-/// One tracked stream. `sendWindow` is how many DATA bytes the server may
+/// One tracked stream. `sendWindow` is how many DATA bytes this endpoint may
 /// still send (governed by the peer's initial window + `WINDOW_UPDATE`);
 /// `recvWindow` is how many the peer may still send us (governed by our
 /// advertised initial window + the `WINDOW_UPDATE`s we emit via `grant*`).
 /// Reference semantics: a stream fetched from `H2Connection.streams` and
 /// mutated in place updates the tracked value.
+///
+/// The last four fields are client bookkeeping: the response `phase`, the
+/// request method (a HEAD response carries no body whatever its
+/// `content-length`), the final `responseStatus`, and `resetLocal`, set when
+/// this endpoint sent `RST_STREAM`, so frames the peer had already queued for
+/// the stream are discarded rather than treated as errors (RFC 9113 §5.1,
+/// "closed").
 @experimental
 pub ref record H2Stream {
   id: Int
@@ -338,6 +463,10 @@ pub ref record H2Stream {
   var recvWindow: Int
   var expectedContentLength: Long = -1i64
   var receivedDataBytes: Long = 0i64
+  var phase: H2HeaderPhase = H2PhaseAwaitFinal
+  var requestMethod: String = ""
+  var responseStatus: Int = 0
+  var resetLocal: Bool = false
 }
 
 /// In-progress HEADERS + CONTINUATION reassembly (§6.10). `accepted` is false
@@ -363,7 +492,8 @@ pub ref record ContinuationState {
 /// sub-record. `goAwaySent`/`goAwayLastStreamId` drive the post-GOAWAY
 /// new-stream refusal (§6.8); `goAwayReceived` records a peer GOAWAY;
 /// `rapidResetCount`/`serverCompletedCount` are the Rapid-Reset
-/// (CVE-2023-44487) counter and its completion credit.
+/// (CVE-2023-44487) counter and its completion credit (a server-role
+/// mitigation: a client never advances either).
 ///
 /// This is a separate record purely to keep `H2Connection`'s constructor arity
 /// low: the self-hosted JVM backend under-computes a record constructor's
@@ -380,10 +510,34 @@ pub ref record H2ShutdownState {
   var serverCompletedCount: Int
 }
 
+/// The connection's role and the stream-id bookkeeping that depends on it,
+/// kept in a sub-record for the same arity reason as `H2ShutdownState`
+/// (#6089): `H2Connection` stays at 13 fields.
+///
+///   - `role` — fixed at construction.
+///   - `nextLocalStreamId` — the id `openStream` allocates next (odd, client
+///     only), as a `Long` because the id after 2^31-1 does not fit `Int`; a
+///     value above 2^31-1 means the id space is exhausted.
+///   - `highestPeerStreamId` — the highest peer-initiated stream id seen: the
+///     server's client-stream high-water mark. Always 0 for a client, whose
+///     peer cannot initiate streams (push is disabled).
+///   - `expectPeerSettings` — the peer's first frame must be a non-ACK
+///     `SETTINGS` (RFC 9113 §3.4); cleared once it arrives.
+///   - `peerGoAwayLastStreamId` — the lowest last-stream-id of any `GOAWAY`
+///     received (2^31-1 before one arrives; RFC 9113 §6.8 forbids raising it).
+@experimental
+pub ref record H2RoleState {
+  role: H2Role
+  var nextLocalStreamId: Long
+  var highestPeerStreamId: Int
+  var expectPeerSettings: Bool
+  var peerGoAwayLastStreamId: Int
+}
+
 /// Per-connection FSM state. A reference value threaded through `feed` and the
-/// send/grant helpers; construct only via `newServerConnection`, observe only
-/// via the query functions and `feed`'s events. See the module header for its
-/// lifecycle contract.
+/// send/grant helpers; construct only via `newServerConnection` or
+/// `newClientConnection`, observe only via the query functions and `feed`'s
+/// events. See the module header for its lifecycle contract.
 @experimental
 pub ref record H2Connection {
   var dec: FrameDecoder
@@ -399,8 +553,7 @@ pub ref record H2Connection {
   // the iteration and pruning passes need; both are updated together.
   streamIndex: Map[Int, H2Stream]
   var cont: Option[ContinuationState]
-  var lastPeerStreamId: Int
-  var expectClientSettings: Bool
+  roleState: H2RoleState
   var fatal: Bool
   shutdown: H2ShutdownState
 }
@@ -525,17 +678,102 @@ pub func newServerConnection(localSettings: in H2Settings): H2Connection
     streams = newList(),
     streamIndex = newMap(),
     cont = noContinuation(),
-    lastPeerStreamId = 0,
-    expectClientSettings = true,
+    roleState = H2RoleState(
+      role = H2Server,
+      nextLocalStreamId = 2i64,
+      highestPeerStreamId = 0,
+      expectPeerSettings = true,
+      peerGoAwayLastStreamId = h2MaxWindow()
+    ),
     fatal = false,
-    shutdown = H2ShutdownState(
-      goAwaySent = false,
-      goAwayLastStreamId = 0,
-      goAwayReceived = false,
-      rapidResetCount = 0,
-      serverCompletedCount = 0
-    )
+    shutdown = newShutdownState()
   )
+}
+
+func newShutdownState(): H2ShutdownState {
+  H2ShutdownState(
+    goAwaySent = false,
+    goAwayLastStreamId = 0,
+    goAwayReceived = false,
+    rapidResetCount = 0,
+    serverCompletedCount = 0
+  )
+}
+
+/// A fresh client-side connection. `localSettings` is what the client
+/// advertises (see `h2DefaultClientSettings`; `enablePush` must be 0); the
+/// peer's settings default to RFC initial values until the server's `SETTINGS`
+/// frame arrives. Write `clientInitialBytes(conn)` to the peer before anything
+/// else; request HEADERS may follow immediately (RFC 9113 §3.4), without
+/// waiting for the server's `SETTINGS`. The first stream id is 1.
+@pure
+@experimental
+pub func newClientConnection(localSettings: in H2Settings): H2Connection
+  requires: isValidLocalSettings(localSettings)
+{
+  newClientConnectionAt(localSettings, 1)
+}
+
+/// `newClientConnection` whose first stream id is `firstStreamId` (odd, at
+/// least 1, RFC 9113 §5.1.1 allows any odd start). It exists so a caller can
+/// exercise `OpenStreamIdsExhausted`, which a real connection reaches only
+/// after 2^30 requests.
+@pure
+@experimental
+pub func newClientConnectionAt(localSettings: in H2Settings, firstStreamId: in Int): H2Connection
+  requires: isValidLocalSettings(localSettings)
+  requires: firstStreamId >= 1 and firstStreamId % 2 == 1
+{
+  H2Connection(
+    // A client never receives the 24-octet preface: it sends it.
+    dec = newFrameDecoderWithMaxSize(false, localSettings.maxFrameSize),
+    hpackDec = newDecoder(localSettings.headerTableSize),
+    hpackEnc = newEncoder(4096, true),
+    localSettings = localSettings,
+    remoteSettings = h2DefaultPeerSettings(),
+    connSendWindow = h2InitialWindow(),
+    connRecvWindow = h2InitialWindow(),
+    streams = newList(),
+    streamIndex = newMap(),
+    cont = noContinuation(),
+    roleState = H2RoleState(
+      role = H2Client,
+      nextLocalStreamId = firstStreamId.toLong(),
+      highestPeerStreamId = 0,
+      expectPeerSettings = true,
+      peerGoAwayLastStreamId = h2MaxWindow()
+    ),
+    fatal = false,
+    shutdown = newShutdownState()
+  )
+}
+
+func isClientRole(state: in H2Connection): Bool {
+  match state.roleState.role {
+    case H2Client -> true
+    case H2Server -> false
+  }
+}
+
+/// This connection's role.
+@pure
+@experimental
+pub func connectionRole(conn: in H2Connection): H2Role {
+  conn.roleState.role
+}
+
+/// True for a connection built by `newClientConnection`.
+@pure
+@experimental
+pub func isClientConnection(conn: in H2Connection): Bool {
+  isClientRole(conn)
+}
+
+/// True for a connection built by `newServerConnection`.
+@pure
+@experimental
+pub func isServerConnection(conn: in H2Connection): Bool {
+  not isClientRole(conn)
 }
 
 func buildSettingsFrame(s: in H2Settings): slice[Byte] {
@@ -553,8 +791,26 @@ func buildSettingsFrame(s: in H2Settings): slice[Byte] {
 /// server writes on a new connection, before feeding any peer bytes.
 @pure
 @experimental
-pub func serverInitialFrame(conn: in H2Connection): slice[Byte] {
+pub func serverInitialFrame(conn: in H2Connection): slice[Byte]
+  requires: isServerConnection(conn)
+{
   buildSettingsFrame(conn.localSettings)
+}
+
+/// The client's initial bytes (RFC 9113 §3.4): the 24-octet connection preface
+/// followed by the client's `SETTINGS` frame, in one slice. The client MUST
+/// write these before anything else on the connection. To also widen the
+/// connection-level receive window (a setting cannot), append
+/// `grantConnectionWindow(conn, n)`.
+@pure
+@experimental
+pub func clientInitialBytes(conn: in H2Connection): slice[Byte]
+  requires: isClientConnection(conn)
+{
+  val outb: List[Byte] = newList()
+  appendBytes(outb, connectionPreface())
+  appendBytes(outb, buildSettingsFrame(conn.localSettings))
+  outb.toArray()
 }
 
 /// True once a connection-level error poisoned the connection; `feed` refuses
@@ -617,7 +873,11 @@ func createStream(state: inout H2Connection, streamId: in Int): H2Stream {
     sendWindow = state.remoteSettings.initialWindowSize,
     recvWindow = state.localSettings.initialWindowSize,
     expectedContentLength = -1i64,
-    receivedDataBytes = 0i64
+    receivedDataBytes = 0i64,
+    phase = H2PhaseAwaitFinal,
+    requestMethod = "",
+    responseStatus = 0,
+    resetLocal = false
   )
   state.streams.add(st)
   state.streamIndex[streamId] = st
@@ -650,11 +910,12 @@ func markEndStreamReceived(state: inout H2Connection, streamId: in Int): Unit {
   }
 }
 
-/// The server sent END_STREAM: it will send nothing further on this stream.
-/// A stream on which the server completes its response counts toward
+/// This endpoint sent END_STREAM: it will send nothing further on this stream.
+/// On a server, a stream whose response it completes counts toward
 /// `serverCompletedCount`, the "legitimate work" credit that offsets the
-/// Rapid-Reset counter (§ `maxRapidResets`).
+/// Rapid-Reset counter (§ `maxRapidResets`); a client keeps no such count.
 func markEndStreamSent(state: inout H2Connection, streamId: in Int): Unit {
+  val credit = if isClientRole(state) { 0 } else { 1 }
   match findStream(state, streamId) {
     case None -> ()
     case Some(st) -> {
@@ -662,16 +923,28 @@ func markEndStreamSent(state: inout H2Connection, streamId: in Int): Unit {
       match s.state {
         case H2SOpen -> {
           s.state = H2SHalfClosedLocal
-          state.shutdown.serverCompletedCount = state.shutdown.serverCompletedCount + 1
+          state.shutdown.serverCompletedCount = state.shutdown.serverCompletedCount + credit
         }
         case H2SHalfClosedRemote -> {
           s.state = H2SClosed
-          state.shutdown.serverCompletedCount = state.shutdown.serverCompletedCount + 1
+          state.shutdown.serverCompletedCount = state.shutdown.serverCompletedCount + credit
         }
         case H2SIdle -> ()
         case H2SHalfClosedLocal -> ()
         case H2SClosed -> ()
       }
+    }
+  }
+}
+
+/// This endpoint is sending `RST_STREAM` on `streamId`: frames the peer had
+/// already queued for it are expected and discarded (RFC 9113 §5.1, "closed").
+func markResetLocal(state: inout H2Connection, streamId: in Int): Unit {
+  match findStream(state, streamId) {
+    case None -> ()
+    case Some(st) -> {
+      val s: H2Stream = st
+      s.resetLocal = true
     }
   }
 }
@@ -704,13 +977,39 @@ func windowUpdateOverflows(window: in Int, increment: in Int): Bool {
 /// closed-and-forgotten one? A late WINDOW_UPDATE/RST_STREAM on an idle stream
 /// is a connection `PROTOCOL_ERROR` (RFC 9113 §5.1), whereas the same frame on
 /// a closed stream is a tolerated no-op (§5.1 flow-control/reset race). An even
-/// id is a server-initiated (push) id this server never creates, so it is
-/// always idle; an odd id above the client high-water mark has not been opened
-/// yet; an odd id at or below the high-water mark is a client stream that was
+/// id is a server-initiated (push) id that neither role ever opens, so it is
+/// always idle. Server: an odd id above the client high-water mark has not been
+/// opened yet, and one at or below it is a client stream that was
 /// opened-and-closed (or implicitly closed by a higher id, §5.1.1) and since
-/// forgotten.
+/// forgotten. Client: an odd id at or above `nextLocalStreamId` has not been
+/// allocated yet; a lower one was opened here and has since closed.
 func isIdleStreamId(state: in H2Connection, streamId: in Int): Bool {
-  streamId % 2 == 0 or streamId > state.lastPeerStreamId
+  if streamId % 2 == 0 {
+    return true
+  }
+  if isClientRole(state) {
+    streamId.toLong() >= state.roleState.nextLocalStreamId
+  } else {
+    streamId > state.roleState.highestPeerStreamId
+  }
+}
+
+/// The highest stream id this endpoint has seen opened, which anchors closed
+/// stream pruning: the peer's high-water mark for a server, the last id this
+/// client allocated for a client.
+func streamIdHighWater(state: in H2Connection): Int {
+  if isClientRole(state) {
+    val last = state.roleState.nextLocalStreamId - 2i64
+    if last <= 0i64 {
+      0
+    } else if last > 2147483647i64 {
+      2147483647
+    } else {
+      last.toInt()
+    }
+  } else {
+    state.roleState.highestPeerStreamId
+  }
 }
 
 /// How many trailing client stream-id slots (each 2 apart — client ids are
@@ -739,7 +1038,7 @@ func isClosedState(s: in H2StreamState): Bool {
 
 /// Drop `H2SClosed` records whose id has scrolled more than
 /// `h2ClosedStreamRetentionWindow()` stream-slots behind
-/// `state.lastPeerStreamId`. Never touches an idle/open/half-closed record —
+/// `streamIdHighWater(state)`. Never touches an idle/open/half-closed record —
 /// only fully `H2SClosed` entries are eligible — so an active stream's flow-
 /// control bookkeeping is never disturbed, and `isIdleStreamId`'s
 /// id-and-high-water-mark-only test still classifies a pruned id exactly as
@@ -758,7 +1057,7 @@ func pruneClosedStreams(state: inout H2Connection): Unit {
   if state.streams.count <= h2ClosedStreamRetentionWindow() {
     return
   }
-  val threshold = state.lastPeerStreamId - h2ClosedStreamRetentionWindow() * 2
+  val threshold = streamIdHighWater(state) - h2ClosedStreamRetentionWindow() * 2
   if threshold <= 0 {
     return
   }
@@ -822,7 +1121,9 @@ func connFail(
   state.shutdown.goAwaySent = true
   appendBytes(
     outb,
-    serializeFrame(GoAwayFrame(lastStreamId = state.lastPeerStreamId, errorCode = code, debugData = emptyBytes()))
+    serializeFrame(
+      GoAwayFrame(lastStreamId = state.roleState.highestPeerStreamId, errorCode = code, debugData = emptyBytes())
+    )
   )
   events.add(H2ConnError(errorCode = code, message = message))
 }
@@ -837,7 +1138,9 @@ func streamFail(
   code: in H2ErrorCode,
   message: in String,
 ): Unit {
-  val serverIncomplete = match findStream(state, streamId) {
+  // Rapid Reset is a server-side mitigation: a client resets its own streams
+  // routinely (deadlines, cancellation) and never counts them.
+  val incomplete = match findStream(state, streamId) {
     case None -> false
     case Some(st) -> {
       val s: H2Stream = st
@@ -848,7 +1151,9 @@ func streamFail(
       }
     }
   }
+  val serverIncomplete = incomplete and not isClientRole(state)
   closeStream(state, streamId)
+  markResetLocal(state, streamId)
   appendBytes(outb, serializeFrame(RstStreamFrame(streamId = streamId, errorCode = code)))
   events.add(H2StreamErr(streamId = streamId, errorCode = code, message = message))
   if serverIncomplete {
@@ -1019,10 +1324,45 @@ func handlePing(
 }
 
 func handleGoAway(
-  state: inout H2Connection, events: in List[H2Event], lastStreamId: in Int, errorCode: in H2ErrorCode
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  lastStreamId: in Int,
+  errorCode: in H2ErrorCode,
 ): Unit {
+  if not isClientRole(state) {
+    state.shutdown.goAwayReceived = true
+    events.add(H2GoAwayReceived(lastStreamId = lastStreamId, errorCode = errorCode))
+    return
+  }
+  // RFC 9113 section 6.8: an endpoint may send further GOAWAY frames only with a
+  // last-stream-id no higher than the previous one.
+  if lastStreamId > state.roleState.peerGoAwayLastStreamId {
+    connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "GOAWAY raises the last-stream-id of an earlier GOAWAY (RFC 9113 section 6.8)"
+    )
+    return
+  }
   state.shutdown.goAwayReceived = true
+  state.roleState.peerGoAwayLastStreamId = lastStreamId
   events.add(H2GoAwayReceived(lastStreamId = lastStreamId, errorCode = errorCode))
+  // Every stream this client opened above the last-stream-id was not and will
+  // not be processed: close it and tell the driver it is safe to retry
+  // elsewhere (section 6.8, section 8.7).
+  var i = 0
+  while i < state.streams.count {
+    val st: H2Stream = state.streams[i]
+    if st.id > lastStreamId and isActiveState(st.state) {
+      st.state = H2SClosed
+      st.resetLocal = true
+      events.add(H2StreamUnprocessed(streamId = st.id))
+    }
+    i = i + 1
+  }
 }
 
 func handleWindowUpdate(
@@ -1109,9 +1449,16 @@ func handleRstStream(
       // (CVE-2023-44487) signal — the peer forced per-stream work (HPACK decode,
       // dispatch) and freed the concurrency slot instantly. A reset of an
       // already-half-closed-local/closed stream is a benign teardown race.
-      val serverIncomplete = match s.state { case H2SOpen -> true; case H2SHalfClosedRemote -> true; case _ -> false }
+      // The mitigation is server-side: a server-sent reset is routine to a client.
+      val wasActive = isActiveState(s.state)
+      val incomplete = match s.state { case H2SOpen -> true; case H2SHalfClosedRemote -> true; case _ -> false }
+      val serverIncomplete = incomplete and not isClientRole(state)
       s.state = H2SClosed
-      events.add(H2PeerReset(streamId = streamId, errorCode = errorCode))
+      // A client that already closed the stream (its own reset, or the end of
+      // the exchange) has nothing left to learn from the peer's reset.
+      if wasActive or not isClientRole(state) {
+        events.add(H2PeerReset(streamId = streamId, errorCode = errorCode))
+      }
       if serverIncomplete {
         state.shutdown.rapidResetCount = state.shutdown.rapidResetCount + 1
         if state.shutdown.rapidResetCount > maxRapidResets() and state.shutdown.rapidResetCount > state.shutdown.serverCompletedCount {
@@ -1158,6 +1505,11 @@ func handleData(
         // A stream that was never opened: DATA before HEADERS is a connection
         // PROTOCOL_ERROR (RFC 9113 section 5.1 idle state).
         connFail(state, events, outb, H2ProtocolError, "DATA on an idle stream (RFC 9113 section 6.1)")
+      } else if isClientRole(state) {
+        // A stream this client opened, closed, and has since forgotten: the
+        // server's DATA was queued before it saw our reset (or this is a stale
+        // frame); discard it and give the connection window back.
+        reclaimConnectionWindow(state, outb, wireLength)
       } else {
         // A recently-closed or just-refused stream (odd id at/below the client
         // high-water mark): a client that pipelined DATA before seeing our
@@ -1186,7 +1538,13 @@ func dispatchDataToStream(
     case H2SHalfClosedLocal -> receiveData(state, events, outb, st, data, endStream, wireLength)
     case H2SIdle -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
     case H2SHalfClosedRemote -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
-    case H2SClosed -> reclaimAndStreamFail(state, events, outb, st.id, wireLength)
+    case H2SClosed -> {
+      if isClientRole(state) and st.resetLocal {
+        reclaimConnectionWindow(state, outb, wireLength)
+      } else {
+        reclaimAndStreamFail(state, events, outb, st.id, wireLength)
+      }
+    }
   }
 }
 
@@ -1233,7 +1591,17 @@ func receiveData(
   endStream: in Bool,
   wireLength: in Int,
 ): Unit {
-  if wireLength > st.recvWindow {
+  if isClientRole(state) and phaseAwaitsFinal(st.phase) {
+    reclaimConnectionWindow(state, outb, wireLength)
+    streamFail(
+      state,
+      events,
+      outb,
+      st.id,
+      H2ProtocolError,
+      "DATA before the final response HEADERS (RFC 9113 section 8.1)"
+    )
+  } else if wireLength > st.recvWindow {
     // The connection window was already debited for this DATA (in handleData);
     // the stream is being reset, so give those octets back to the connection
     // window rather than leaking them (#6074) — matches the reclaim the
@@ -1264,7 +1632,14 @@ func receiveData(
     } else {
       st.recvWindow = st.recvWindow - wireLength
       st.receivedDataBytes = nextBytes
-      events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
+      if isClientRole(state) {
+        events.add(H2ResponseData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
+        if endStream {
+          st.phase = H2PhaseDone
+        }
+      } else {
+        events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
+      }
       if endStream {
         markEndStreamReceived(state, st.id)
       }
@@ -1285,18 +1660,121 @@ func handleHeaders(
   endHeaders: in Bool,
 ): Unit {
   if streamId % 2 == 0 {
-    connFail(
-      state,
-      events,
-      outb,
-      H2ProtocolError,
+    val why = if isClientRole(state) {
+      "HEADERS on a server-initiated (push) stream id, but push is disabled (RFC 9113 sections 5.1.1 and 6.6)"
+    } else {
       "HEADERS with an even (server-initiated) stream id (RFC 9113 section 5.1.1)"
-    )
+    }
+    connFail(state, events, outb, H2ProtocolError, why)
+    return
+  }
+  if isClientRole(state) {
+    handleClientHeaders(state, events, outb, streamId, fragment, endStream, endHeaders)
     return
   }
   match findStream(state, streamId) {
     case None -> beginNewStreamHeaders(state, events, outb, streamId, fragment, endStream, endHeaders)
     case Some(st) -> beginTrailerHeaders(state, events, outb, st, fragment, endStream, endHeaders)
+  }
+}
+
+func phaseAwaitsFinal(p: in H2HeaderPhase): Bool {
+  match p {
+    case H2PhaseAwaitFinal -> true
+    case H2PhaseBody -> false
+    case H2PhaseDone -> false
+  }
+}
+
+/// A HEADERS frame arrived on an odd stream id at a client. Only a stream this
+/// client opened can carry one: an id it has not allocated yet is HEADERS on an
+/// idle stream (a connection error), and one it opened and has since forgotten
+/// is a frame the server queued before it saw our reset, so its block is
+/// decoded (to keep the HPACK context in sync, RFC 9113 section 4.3) and
+/// discarded.
+func handleClientHeaders(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  streamId: in Int,
+  fragment: in slice[Byte],
+  endStream: in Bool,
+  endHeaders: in Bool,
+): Unit {
+  match findStream(state, streamId) {
+    case Some(st) -> beginResponseHeaders(state, events, outb, st, fragment, endStream, endHeaders)
+    case None -> {
+      if isIdleStreamId(state, streamId) {
+        connFail(state, events, outb, H2ProtocolError, "HEADERS on an idle stream (RFC 9113 section 5.1)")
+      } else {
+        beginAssembly(state, events, outb, streamId, fragment, endStream, endHeaders, false, false)
+      }
+    }
+  }
+}
+
+/// Route a HEADERS frame on a retained client stream by where the stream's
+/// response is: a block before the final status is a response (or 1xx) block,
+/// a block after it is the trailer section and must end the stream.
+func beginResponseHeaders(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  st: in H2Stream,
+  fragment: in slice[Byte],
+  endStream: in Bool,
+  endHeaders: in Bool,
+): Unit {
+  val sid = st.id
+  match st.state {
+    case H2SOpen -> routeResponseBlock(state, events, outb, st, fragment, endStream, endHeaders)
+    case H2SHalfClosedLocal -> routeResponseBlock(state, events, outb, st, fragment, endStream, endHeaders)
+    case H2SHalfClosedRemote -> {
+      // RFC 9113 section 5.1: more frames than WINDOW_UPDATE/PRIORITY/RST_STREAM
+      // after the server's END_STREAM are a STREAM_CLOSED stream error. The
+      // block is still decoded so the shared HPACK context stays in sync.
+      streamFail(
+        state,
+        events,
+        outb,
+        sid,
+        H2StreamClosed,
+        "HEADERS on a half-closed (remote) stream (RFC 9113 section 5.1)"
+      )
+      beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false, true)
+    }
+    case H2SClosed -> {
+      if st.resetLocal {
+        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false, false)
+      } else {
+        connFail(state, events, outb, H2StreamClosed, "HEADERS on a closed stream (RFC 9113 section 5.1)")
+      }
+    }
+    case H2SIdle -> connFail(state, events, outb, H2ProtocolError, "HEADERS on an idle stream (RFC 9113 section 5.1)")
+  }
+}
+
+func routeResponseBlock(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  st: in H2Stream,
+  fragment: in slice[Byte],
+  endStream: in Bool,
+  endHeaders: in Bool,
+): Unit {
+  val sid = st.id
+  match st.phase {
+    case H2PhaseAwaitFinal -> beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, true, false)
+    case H2PhaseBody -> {
+      if endStream {
+        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, true, true)
+      } else {
+        streamFail(state, events, outb, sid, H2ProtocolError, "trailer HEADERS must carry END_STREAM (RFC 9113 section 8.1)")
+        beginAssembly(state, events, outb, sid, fragment, endStream, endHeaders, false, true)
+      }
+    }
+    case H2PhaseDone -> connFail(state, events, outb, H2ProtocolError, "HEADERS after the end of the response")
   }
 }
 
@@ -1309,7 +1787,7 @@ func beginNewStreamHeaders(
   endStream: in Bool,
   endHeaders: in Bool,
 ): Unit {
-  if streamId <= state.lastPeerStreamId {
+  if streamId <= state.roleState.highestPeerStreamId {
     connFail(
       state,
       events,
@@ -1319,7 +1797,7 @@ func beginNewStreamHeaders(
     )
     return
   }
-  state.lastPeerStreamId = streamId
+  state.roleState.highestPeerStreamId = streamId
   // A new stream is refused if the connection is draining after the server's own
   // GOAWAY and this id is above the advertised last-stream-id (RFC 9113 §6.8), or
   // if it would exceed SETTINGS_MAX_CONCURRENT_STREAMS (§5.1.2). Either way the
@@ -1556,7 +2034,9 @@ func finalizeHeaders(
     )
     case Err(_) -> connFail(state, events, outb, H2CompressionError, "HPACK decoding failed (RFC 9113 section 4.3)")
     case Ok(headers) -> {
-      if accepted {
+      if accepted and isClientRole(state) {
+        finalizeResponseHeaders(state, events, outb, streamId, headers, endStream, isTrailer)
+      } else if accepted {
         val problem = if isTrailer { malformedTrailerReason(headers) } else { malformedRequestReason(headers) }
         match problem {
           case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
@@ -1604,6 +2084,198 @@ func finalizeHeaders(
       }
     }
   }
+}
+
+/// A decoded response header block on a client stream: validate it, then
+/// surface it as 1xx, final response headers, or trailers, advancing the
+/// stream's response phase.
+func finalizeResponseHeaders(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  streamId: in Int,
+  headers: in List[HeaderField],
+  endStream: in Bool,
+  isTrailer: in Bool,
+): Unit {
+  match findStream(state, streamId) {
+    case None -> ()
+    case Some(found) -> {
+      val st: H2Stream = found
+      if isTrailer {
+        finalizeResponseTrailers(state, events, outb, st, headers)
+      } else {
+        match malformedResponseReason(headers) {
+          case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
+          case None -> finalizeValidResponse(state, events, outb, st, headers, endStream)
+        }
+      }
+    }
+  }
+}
+
+func finalizeResponseTrailers(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  st: in H2Stream,
+  headers: in List[HeaderField],
+): Unit {
+  val streamId = st.id
+  match malformedTrailerReason(headers) {
+    case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
+    case None -> {
+      if st.expectedContentLength >= 0i64 and st.receivedDataBytes != st.expectedContentLength {
+        streamFail(
+          state,
+          events,
+          outb,
+          streamId,
+          H2ProtocolError,
+          "DATA payload length does not match content-length before trailers (RFC 9113 section 8.1.1)"
+        )
+      } else {
+        st.phase = H2PhaseDone
+        events.add(H2ResponseTrailers(streamId = streamId, headers = headers))
+        markEndStreamReceived(state, streamId)
+      }
+    }
+  }
+}
+
+func finalizeValidResponse(
+  state: inout H2Connection,
+  events: in List[H2Event],
+  outb: in List[Byte],
+  st: in H2Stream,
+  headers: in List[HeaderField],
+  endStream: in Bool,
+): Unit {
+  val streamId = st.id
+  val status = responseStatusOf(headers)
+  if status >= 100 and status < 200 {
+    if endStream {
+      streamFail(
+        state,
+        events,
+        outb,
+        streamId,
+        H2ProtocolError,
+        "an informational (1xx) response must not carry END_STREAM (RFC 9113 section 8.1)"
+      )
+    } else {
+      events.add(H2InformationalHeaders(streamId = streamId, status = status, headers = headers))
+    }
+    return
+  }
+  // A HEAD response, 204 and 304 carry no content whatever `content-length`
+  // says (RFC 9110 section 6.4.1), so any DATA on them is a length mismatch.
+  val noContent = st.requestMethod == "HEAD" or status == 204 or status == 304
+  val cl = extractRequestContentLength(headers)
+  if endStream and not noContent and cl > 0i64 {
+    streamFail(
+      state,
+      events,
+      outb,
+      streamId,
+      H2ProtocolError,
+      "response HEADERS with END_STREAM has non-zero content-length (RFC 9113 section 8.1.1)"
+    )
+    return
+  }
+  st.responseStatus = status
+  st.expectedContentLength = if noContent { 0i64 } else { cl }
+  st.phase = if endStream { H2PhaseDone } else { H2PhaseBody }
+  events.add(H2ResponseHeaders(streamId = streamId, status = status, headers = headers, endStream = endStream))
+  if endStream {
+    markEndStreamReceived(state, streamId)
+  }
+}
+
+/// The value of the `:status` pseudo-header of an already-validated response
+/// block, or 0 if absent.
+func responseStatusOf(headers: in List[HeaderField]): Int {
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name == ":status" and isStatusDigits(h.value) {
+      return (charCodeAt(h.value, 0) - 48) * 100 + (charCodeAt(h.value, 1) - 48) * 10 + (charCodeAt(h.value, 2) - 48)
+    }
+    i = i + 1
+  }
+  0
+}
+
+/// Why a decoded response header block is malformed under RFC 9113 sections
+/// 8.2 and 8.3.2, or `None`: exactly one `:status` of three digits (100 to
+/// 599, and not 101, which HTTP/2 has no use for, RFC 9113 section 8.6) ahead
+/// of every regular field and no other pseudo-header; lowercase token field
+/// names; values with no CR, LF or NUL and no surrounding whitespace; no
+/// connection-specific field; a well-formed, consistent `content-length`. A
+/// malformed response is a stream error `PROTOCOL_ERROR` (section 8.1.1).
+@experimental
+pub func malformedResponseReason(headers: in List[HeaderField]): Option[String] {
+  var sawRegular = false
+  var sawStatus = false
+  var sawContentLength = false
+  var contentLengthVal = ""
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    val name = h.name
+    if name.length == 0 {
+      return Some(value = "empty header field name")
+    }
+    if not isValidH2FieldValue(h.value) {
+      return Some(value = "header field '" + name + "' has an invalid value (CR, LF, NUL or surrounding whitespace)")
+    }
+    if name.substring(0, 1) == ":" {
+      if sawRegular {
+        return Some(value = "pseudo-header '" + name + "' after a regular header field")
+      }
+      if name == ":status" {
+        if sawStatus {
+          return Some(value = "duplicate :status")
+        }
+        if not isStatusDigits(h.value) {
+          return Some(value = ":status is not three digits")
+        }
+        val code = (charCodeAt(h.value, 0) - 48) * 100 + (charCodeAt(h.value, 1) - 48) * 10 + (charCodeAt(h.value, 2) - 48)
+        if code < 100 or code > 599 {
+          return Some(value = ":status outside 100 to 599")
+        }
+        if code == 101 {
+          return Some(value = "101 (Switching Protocols) is not valid in HTTP/2 (RFC 9113 section 8.6)")
+        }
+        sawStatus = true
+      } else {
+        return Some(value = "request or unknown pseudo-header '" + name + "' in a response")
+      }
+    } else {
+      sawRegular = true
+      if not isValidH2FieldName(name) {
+        return Some(value = "header field name '" + name + "' is not a lowercase token")
+      }
+      if isConnectionSpecificField(name) {
+        return Some(value = "connection-specific header field '" + name + "'")
+      }
+      if name == "content-length" {
+        if parseH2ContentLength(h.value) < 0i64 {
+          return Some(value = "invalid content-length header field")
+        }
+        if sawContentLength and contentLengthVal != h.value {
+          return Some(value = "conflicting content-length header fields")
+        }
+        sawContentLength = true
+        contentLengthVal = h.value
+      }
+    }
+    i = i + 1
+  }
+  if not sawStatus {
+    return Some(value = "missing :status")
+  }
+  None
 }
 
 /// Why a decoded request header list is malformed under RFC 9113 sections
@@ -1882,7 +2554,20 @@ func charCodeAt(s: in String, i: in Int): Int {
 }
 
 func handlePushPromise(state: inout H2Connection, events: in List[H2Event], outb: in List[Byte]): Unit {
-  connFail(state, events, outb, H2ProtocolError, "a server must not receive PUSH_PROMISE (RFC 9113 section 8.4)")
+  if isClientRole(state) {
+    // This client always advertises SETTINGS_ENABLE_PUSH = 0, so any
+    // PUSH_PROMISE is a connection PROTOCOL_ERROR (RFC 9113 section 6.6). The
+    // codec has already decoded the frame, so no HPACK state is skipped.
+    connFail(
+      state,
+      events,
+      outb,
+      H2ProtocolError,
+      "PUSH_PROMISE received although SETTINGS_ENABLE_PUSH is 0 (RFC 9113 section 6.6)"
+    )
+  } else {
+    connFail(state, events, outb, H2ProtocolError, "a server must not receive PUSH_PROMISE (RFC 9113 section 8.4)")
+  }
 }
 
 // =============================================================================
@@ -1961,7 +2646,7 @@ func dispatchNormal(state: inout H2Connection, events: in List[H2Event], outb: i
     case SettingsFrame(settings, ack) -> handleSettings(state, events, outb, settings, ack)
     case PushPromiseFrame(_, _, _, _) -> handlePushPromise(state, events, outb)
     case PingFrame(opaqueData, ack) -> handlePing(state, events, outb, opaqueData, ack)
-    case GoAwayFrame(lastStreamId, errorCode, _) -> handleGoAway(state, events, lastStreamId, errorCode)
+    case GoAwayFrame(lastStreamId, errorCode, _) -> handleGoAway(state, events, outb, lastStreamId, errorCode)
     case WindowUpdateFrame(streamId, increment) -> handleWindowUpdate(state, events, outb, streamId, increment)
     case UnknownFrame(_, _) -> ()
   }
@@ -1983,18 +2668,17 @@ func dispatchFrame(state: inout H2Connection, events: in List[H2Event], outb: in
 func dispatchAfterPreface(
   state: inout H2Connection, events: in List[H2Event], outb: in List[Byte], frame: in H2Frame
 ): Unit {
-  if state.expectClientSettings {
+  if state.roleState.expectPeerSettings {
     if not isNonAckSettings(frame) {
-      connFail(
-        state,
-        events,
-        outb,
-        H2ProtocolError,
+      val why = if isClientRole(state) {
+        "the first frame from the server must be a non-ACK SETTINGS frame (RFC 9113 section 3.4)"
+      } else {
         "the first frame after the connection preface must be a non-ACK SETTINGS frame (RFC 9113 section 3.4)"
-      )
+      }
+      connFail(state, events, outb, H2ProtocolError, why)
       return
     }
-    state.expectClientSettings = false
+    state.roleState.expectPeerSettings = false
   }
   dispatchNormal(state, events, outb, frame)
 }
@@ -2069,9 +2753,10 @@ pub func connectionReceiveWindow(conn: in H2Connection): Int {
   conn.connRecvWindow
 }
 
-/// The highest client stream id opened (or implicitly closed by a higher id,
-/// RFC 9113 section 5.1.1) so far on this connection — 0 before any HEADERS
-/// has been received. Exposed so a caller layered on top of this FSM (e.g.
+/// The highest peer-initiated stream id opened (or implicitly closed by a
+/// higher id, RFC 9113 section 5.1.1) so far on this connection — 0 before any
+/// HEADERS has been received, and always 0 on a client connection, whose peer
+/// cannot open streams (push is disabled). Exposed so a caller layered on top of this FSM (e.g.
 /// `Std.HttpServer`'s own bounded-growth bookkeeping, #6566) can mirror
 /// `pruneClosedStreams`'s id-distance-behind-the-high-water-mark pruning
 /// shape for its own per-stream state without needing a second copy of the
@@ -2079,7 +2764,32 @@ pub func connectionReceiveWindow(conn: in H2Connection): Int {
 @pure
 @experimental
 pub func lastPeerStreamId(conn: in H2Connection): Int {
-  conn.lastPeerStreamId
+  conn.roleState.highestPeerStreamId
+}
+
+/// The id `openStream` will allocate next on a client connection (a `Long`
+/// because the id after 2^31-1 does not fit `Int`; a value above 2^31-1 means
+/// the id space is exhausted). On a server it is 2 and meaningless.
+@pure
+@experimental
+pub func nextLocalStreamId(conn: in H2Connection): Long {
+  conn.roleState.nextLocalStreamId
+}
+
+/// The peer's advertised `SETTINGS_MAX_CONCURRENT_STREAMS` (2^31-1 until its
+/// `SETTINGS` frame arrives): how many streams a client may have open at once.
+@pure
+@experimental
+pub func peerMaxConcurrentStreams(conn: in H2Connection): Int {
+  conn.remoteSettings.maxConcurrentStreams
+}
+
+/// The lowest last-stream-id of any `GOAWAY` received (2^31-1 while none has
+/// arrived; check `goAwayWasReceived`).
+@pure
+@experimental
+pub func peerGoAwayLastStreamId(conn: in H2Connection): Int {
+  conn.roleState.peerGoAwayLastStreamId
 }
 
 /// The current state of `streamId` (`H2SIdle` if never seen). Caveat: once a
@@ -2267,6 +2977,37 @@ pub func encodeResponseTrailers(
 ): Result[slice[Byte], H2SendError]
   requires: isH2ResponseTrailerListSafe(trailers)
 {
+  encodeTrailersOn(conn, streamId, trailers)
+}
+
+/// `encodeRequestTrailers`'s precondition: every field `isH2ResponseFieldSafe`
+/// and no pseudo-header (RFC 9113 §8.1). The same rule as
+/// `isH2ResponseTrailerListSafe`: a trailer section is role-neutral.
+@pure
+@experimental
+pub func isH2RequestTrailerListSafe(trailers: in List[HeaderField]): Bool {
+  isH2ResponseTrailerListSafe(trailers)
+}
+
+/// Frame `trailers` as the final HEADERS block of a request on `streamId`
+/// (RFC 9113 §8.1), the client counterpart of `encodeResponseTrailers`: it
+/// carries END_STREAM and closes this client's half of the stream, so the body
+/// must already have been sent.
+///
+/// # Contract
+/// `trailers` satisfies `isH2RequestTrailerListSafe`.
+@experimental
+pub func encodeRequestTrailers(
+  conn: in H2Connection, streamId: in Int, trailers: in List[HeaderField]
+): Result[slice[Byte], H2SendError]
+  requires: isH2RequestTrailerListSafe(trailers)
+{
+  encodeTrailersOn(conn, streamId, trailers)
+}
+
+func encodeTrailersOn(
+  conn: in H2Connection, streamId: in Int, trailers: in List[HeaderField]
+): Result[slice[Byte], H2SendError] {
   var state = conn
   if isFailed(state) {
     return Err(error = HeaderStreamNotWritable(streamId = streamId))
@@ -2433,9 +3174,10 @@ pub func grantStreamWindow(conn: in H2Connection, streamId: in Int, increment: i
   }
 }
 
-/// Produce a server-initiated `GOAWAY` for graceful shutdown (RFC 9113 section
-/// 6.8), naming the highest peer stream id processed so far as the last one the
-/// server will act on. Marks `goAwayWasSent` and records that last-stream-id, so
+/// Produce a `GOAWAY` for graceful shutdown (RFC 9113 section 6.8), naming the
+/// highest peer stream id processed so far as the last one this endpoint will
+/// act on. A client's peer opens none (push is disabled), so a client's
+/// `GOAWAY` always names stream 0 and, once sent, `openStream` refuses. Marks `goAwayWasSent` and records that last-stream-id, so
 /// the FSM subsequently refuses new peer streams above it (#6086 / §6.8). Does
 /// not poison the connection — streams at or below the advertised id may still
 /// complete.
@@ -2443,17 +3185,21 @@ pub func grantStreamWindow(conn: in H2Connection, streamId: in Int, increment: i
 pub func sendGoAway(conn: in H2Connection, errorCode: in H2ErrorCode): slice[Byte] {
   var state = conn
   state.shutdown.goAwaySent = true
-  state.shutdown.goAwayLastStreamId = state.lastPeerStreamId
-  serializeFrame(GoAwayFrame(lastStreamId = state.lastPeerStreamId, errorCode = errorCode, debugData = emptyBytes()))
+  state.shutdown.goAwayLastStreamId = state.roleState.highestPeerStreamId
+  serializeFrame(
+    GoAwayFrame(lastStreamId = state.roleState.highestPeerStreamId, errorCode = errorCode, debugData = emptyBytes())
+  )
 }
 
-/// Produce a server-initiated `RST_STREAM` (RFC 9113 section 6.4) carrying
-/// `errorCode`, closing `streamId` and returning the serialized frame to write.
-/// A server uses this to abort a single stream it can no longer serve (e.g. a
-/// response whose headers cannot be encoded — `H2InternalError`) without tearing
-/// down the whole connection, so a stream is never left hanging with no response
-/// and no reset. A no-op empty grant if the connection is already poisoned or the
-/// stream is unknown.
+/// Produce a `RST_STREAM` (RFC 9113 section 6.4) carrying `errorCode`, closing
+/// `streamId` and returning the serialized frame to write. A server uses this
+/// to abort a single stream it can no longer serve (e.g. a response whose
+/// headers cannot be encoded — `H2InternalError`) without tearing down the whole
+/// connection, so a stream is never left hanging with no response and no reset;
+/// a client uses it to cancel a call (`H2Cancel`, a deadline expiring), and
+/// anything the server had already queued for the stream is then discarded. A
+/// no-op empty grant if the connection is already poisoned or the stream is
+/// unknown.
 @experimental
 pub func sendRstStream(conn: in H2Connection, streamId: in Int, errorCode: in H2ErrorCode): slice[Byte] {
   var state = conn
@@ -2464,7 +3210,174 @@ pub func sendRstStream(conn: in H2Connection, streamId: in Int, errorCode: in H2
     case None -> emptyBytes()
     case Some(_) -> {
       closeStream(state, streamId)
+      markResetLocal(state, streamId)
       serializeFrame(RstStreamFrame(streamId = streamId, errorCode = errorCode))
+    }
+  }
+}
+
+/// Produce a `PING` frame (RFC 9113 section 6.7, no ACK flag) carrying the
+/// eight `opaqueData` octets; the peer's reply surfaces as
+/// `H2PingAcknowledged` with the same data. The FSM keeps no timers: sending
+/// keepalive pings and deciding when an unanswered one fails the connection is
+/// the driver's job. An empty slice if the connection is already poisoned.
+@experimental
+pub func sendPing(conn: in H2Connection, opaqueData: in slice[Byte]): slice[Byte]
+  requires: opaqueData.length == 8
+{
+  if isFailed(conn) {
+    return emptyBytes()
+  }
+  serializeFrame(PingFrame(opaqueData = opaqueData, ack = false))
+}
+
+/// `openStream`'s precondition (RFC 9113 sections 8.2 and 8.3.1): the
+/// pseudo-headers come first, each at most once; `:method` is present, and
+/// either the method is `CONNECT` (with `:authority`, and neither `:scheme` nor
+/// `:path`) or `:scheme` and a non-empty `:path` are present; no other
+/// pseudo-header; every regular field `isH2ResponseFieldSafe` (lowercase token
+/// name, clean value, not connection-specific); `te` only `trailers`; `host`,
+/// if present, equal to `:authority`; and a well-formed `content-length`.
+@pure
+@experimental
+pub func isH2RequestHeaderListSafe(headers: in List[HeaderField]): Bool {
+  var sawRegular = false
+  var method = ""
+  var sawMethod = false
+  var sawScheme = false
+  var sawPath = false
+  var sawAuthority = false
+  var authorityVal = ""
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    val name = h.name
+    if name.startsWith(":") {
+      if sawRegular or not isValidH2FieldValue(h.value) {
+        return false
+      }
+      if name == ":method" and not sawMethod {
+        sawMethod = true
+        method = h.value
+      } else if name == ":scheme" and not sawScheme {
+        sawScheme = true
+      } else if name == ":path" and not sawPath and h.value.length > 0 {
+        sawPath = true
+      } else if name == ":authority" and not sawAuthority {
+        sawAuthority = true
+        authorityVal = h.value
+      } else {
+        return false
+      }
+    } else {
+      sawRegular = true
+      if not isH2ResponseFieldSafe(name, h.value) {
+        return false
+      }
+      if name == "te" and h.value != "trailers" {
+        return false
+      }
+      if name == "host" and sawAuthority and Str.toLower(authorityVal) != Str.toLower(h.value) {
+        return false
+      }
+      if name == "content-length" and parseH2ContentLength(h.value) < 0i64 {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  if not sawMethod or method.length == 0 {
+    return false
+  }
+  if method == "CONNECT" {
+    sawAuthority and not sawScheme and not sawPath
+  } else {
+    sawScheme and sawPath
+  }
+}
+
+func requestMethodOf(headers: in List[HeaderField]): String {
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name == ":method" {
+      return h.value
+    }
+    i = i + 1
+  }
+  ""
+}
+
+/// The RFC 9113 section 6.5.2 size of a header list: name length plus value
+/// length plus 32 octets of overhead per field.
+func headerListSize(headers: in List[HeaderField]): Int {
+  var total = 0
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    total = total + h.name.length + h.value.length + 32
+    i = i + 1
+  }
+  total
+}
+
+/// Start a request on a client connection: allocate the next odd stream id,
+/// create the stream (open, or half-closed (local) when `endStream`), and
+/// HPACK-encode and frame the request HEADERS (+ CONTINUATION when the block
+/// exceeds the peer's max frame size). Write the returned bytes, then the body
+/// with `sendData`; HEADERS may be sent before the server's `SETTINGS` arrive
+/// (the stream starts with the default 65535 window and is corrected by
+/// `SETTINGS_INITIAL_WINDOW_SIZE`, RFC 9113 section 6.9.2).
+///
+/// # Contract
+/// The connection is a client connection, `headers` satisfies
+/// `isH2RequestHeaderListSafe`, and the caller serialises this call and the
+/// write of its bytes with every other call on the connection: ids and HPACK
+/// state must reach the wire in the order they were allocated (RFC 9113
+/// sections 4.3 and 5.1.1), and the FSM is a single mutable value.
+///
+/// Refusals leave the connection untouched: see `H2OpenError`. The driver
+/// queues on `OpenStreamLimitReached` and retries when a stream closes, and
+/// moves to a new connection on `OpenConnectionDraining`,
+/// `OpenStreamIdsExhausted` and `OpenConnectionFailed`.
+@experimental
+pub func openStream(
+  conn: in H2Connection, headers: in List[HeaderField], endStream: in Bool
+): Result[H2OpenResult, H2OpenError]
+  requires: isClientConnection(conn)
+  requires: isH2RequestHeaderListSafe(headers)
+{
+  var state = conn
+  if isFailed(state) {
+    return Err(error = OpenConnectionFailed)
+  }
+  if state.shutdown.goAwaySent or state.shutdown.goAwayReceived {
+    return Err(error = OpenConnectionDraining)
+  }
+  if state.roleState.nextLocalStreamId > 2147483647i64 {
+    return Err(error = OpenStreamIdsExhausted)
+  }
+  val active = countActiveStreams(state)
+  val limit = state.remoteSettings.maxConcurrentStreams
+  if active >= limit {
+    return Err(error = OpenStreamLimitReached(active = active, limit = limit))
+  }
+  val size = headerListSize(headers)
+  if size > state.remoteSettings.maxHeaderListSize {
+    return Err(error = OpenHeaderListTooLarge(size = size, limit = state.remoteSettings.maxHeaderListSize))
+  }
+  match encodeHeaderList(state.hpackEnc, headers) {
+    case Err(e) -> Err(error = OpenHeaderEncodingFailed(error = e))
+    case Ok(block) -> {
+      val streamId = state.roleState.nextLocalStreamId.toInt()
+      state.roleState.nextLocalStreamId = state.roleState.nextLocalStreamId + 2i64
+      val st = createStream(state, streamId)
+      st.requestMethod = requestMethodOf(headers)
+      val frames = headerBlockToFrames(streamId, block, endStream, state.remoteSettings.maxFrameSize)
+      if endStream {
+        markEndStreamSent(state, streamId)
+      }
+      Ok(value = H2OpenResult(streamId = streamId, bytes = frames))
     }
   }
 }
