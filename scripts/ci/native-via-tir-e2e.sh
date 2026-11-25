@@ -648,7 +648,7 @@ cat "$work/i_census.txt"
 "$work/i_tir" > "$work/i_tir.out"
 diff -u "$work/i_ast.out" "$work/i_tir.out"
 printf '9\n6\n7\n' | diff -u - "$work/i_tir.out"
-grep -q '^native via-TIR: 4 of 5 functions lowered from TIR' "$work/i_census.txt" || {
+grep -q '^native via-TIR: 5 of 6 functions lowered from TIR' "$work/i_census.txt" || {
   echo "::error::expected every function of invariants.l but the method to be lowered from TIR"
   exit 1
 }
