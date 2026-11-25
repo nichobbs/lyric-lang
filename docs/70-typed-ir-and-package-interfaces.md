@@ -1020,6 +1020,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Await hoisting on TIR, the last middle-end pass (`Lyric.Tir.AwaitHoist`, D504): every operand up to and including an awaiting one is bound to a fresh local ahead of the statement so each `await` evaluates on an empty stack; conditional parts keep their preludes inside them and a `while` condition with an `await` becomes a `loop`.
   - Type invariants on TIR, constructions (D505): the builder wraps each construction of a type that declares `invariant:` in a direct call of the type's synthesized `__lyric_checked_T`, as the AST pass does (record, opaque type, `.copy`, generic records); the public-boundary and `inout` re-checks and protected-type invariants are the next slices.
   - Public-boundary invariant checks on TIR (D507): a `pub` function's `in`/`inout` parameters of another package's invariant type are checked on entry and its `inout`/`out` parameters and result at every exit through the types' `__lyric_checked_T`, ungated by the contracts switch; methods, generic types and protected-type invariants are the next slices.
+  - Protected-type invariants on TIR (D509): each member carries its type's `invariant:` clauses, built in the member's scope with node ids of their own and asserted at every exit by `Lyric.Tir.Contracts`, ungated; protected-type invariant clauses are now numbered by `renumberNodeIds`.
 
 3b can run in parallel with 3a; 3c needs 3a.
 
