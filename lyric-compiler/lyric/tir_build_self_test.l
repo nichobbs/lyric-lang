@@ -3880,7 +3880,15 @@ test "an inout array element's computed index is bound in source order among nam
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   match r.body {
     case Some(b) -> match b.kind {
-      case XBlock(stmts, _) -> {
+      case XBlock(outer, tail) -> {
+        val stmts: List[TStmt] = newList()
+        for st in outer {
+          stmts.add(st)
+        }
+        match tail {
+          case Some(t) -> match t.kind { case XBlock(inner, _) -> { for st in inner { stmts.add(st) } }; case _ -> () }
+          case None -> ()
+        }
         val lits: List[Long] = newList()
         for st in stmts {
           val n = letCallArg(st)
