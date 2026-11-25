@@ -3273,8 +3273,8 @@ func monoTirInputs(
       stdPkgs.add(pb)
     }
   }
-  val ownDone = pipeContractsTir(interner, ownPkgs, ownContracts)
-  val stdDone = pipeContractsTir(interner, stdPkgs, true)
+  val ownDone = pipeContractsTir(interner, ownPkgs, ownContracts, stdPkgs)
+  val stdDone = pipeContractsTir(interner, stdPkgs, true, ownPkgs)
   if ownDone.count != ownPkgs.count or stdDone.count != stdPkgs.count {
     panic("Lyric.LlvmBridge: the contract pass changed the number of packages of the bundle")
   }

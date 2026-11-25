@@ -2447,9 +2447,12 @@ func pipeReportPropagateCensus(label: in String, tbl: in SymbolTable, pb: in Tir
 /// `bundle` with every function's contracts lowered into its body (docs/70 §7.2, D502): the TIR counterpart of
 /// `ContractElaborator.elaborateFile`, run on the output of `pipeMonoTir` or on a built package directly.
 pub func pipeContractsTir(
-  interner: in DefPathInterner, bundle: in List[TirBuild.PackageBuild], enabled: in Bool
+  interner: in DefPathInterner,
+  bundle: in List[TirBuild.PackageBuild],
+  enabled: in Bool,
+  visible: in List[TirBuild.PackageBuild] = newList(),
 ): List[TirBuild.PackageBuild] {
-  TirContracts.elaborateBundle(interner, bundle, enabled)
+  TirContracts.elaborateBundleWith(interner, bundle, enabled, visible)
 }
 
 /// `bundle` with every `await` evaluating on an empty stack (docs/70 §7.2, D504): the TIR counterpart of
