@@ -655,6 +655,35 @@ test -s "$work/cv_tir.msg" || { echo "::error::no precondition message"; cat "$w
 diff -u "$work/cv_ast.msg" "$work/cv_tir.msg"
 echo "contracts: ok"
 
+# Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's
+# result check lower from TIR, the same output; a method of the record keeps the AST path.  A violated invariant
+# panics with the same message on both paths.
+isrc=scripts/ci/native-via-tir/invariants.l
+"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
+cat "$work/i_census.txt"
+"$work/i_ast" > "$work/i_ast.out"
+"$work/i_tir" > "$work/i_tir.out"
+diff -u "$work/i_ast.out" "$work/i_tir.out"
+printf '9\n6\n7\n' | diff -u - "$work/i_tir.out"
+grep -q '^native via-TIR: 5 of 6 functions lowered from TIR' "$work/i_census.txt" || {
+  echo "::error::expected every function of invariants.l but the method to be lowered from TIR"
+  exit 1
+}
+sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(make(5, 1).hi))|' "$isrc" > "$work/invariants_violated.l"
+"$lyric_bin" build --target native "$work/invariants_violated.l" -o "$work/iv_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$work/invariants_violated.l" -o "$work/iv_tir" >/dev/null 2>&1
+for which in ast tir; do
+  if "$work/iv_$which" > /dev/null 2> "$work/iv_$which.err"; then
+    echo "::error::the $which build did not panic on a violated invariant"
+    exit 1
+  fi
+  grep -o 'InvariantViolated: .*' "$work/iv_$which.err" | head -1 > "$work/iv_$which.msg"
+done
+test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work/iv_tir.err"; exit 1; }
+diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
+echo "invariants: ok"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
