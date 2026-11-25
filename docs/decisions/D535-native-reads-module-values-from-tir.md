@@ -13,7 +13,7 @@ Status: accepted (docs/70 phase 4a, part 6; D520 slice 36).
 
 ## Consequences
 
-The census (20 suites) runs a module-level `val` through TIR for the first time, which exposed a TIR builder bug the AST fallback had hidden: the computed index of an `inout` array element is evaluated after later named arguments (D171, #9383). `inout_array_element_self_test.l` is listed as a known gap in `native-via-tir-census.sh` until the builder is fixed, as `named_arg_eval_order_self_test.l` was for #9076.
+The census (19 suites) runs a module-level `val` through TIR for the first time, which exposed a TIR builder bug the AST fallback had hidden: the computed index of an `inout` array element is evaluated after later named arguments (D171, #9383). `inout_array_element_self_test.l` is listed as a known gap in `native-via-tir-census.sh` until the builder is fixed, as `named_arg_eval_order_self_test.l` was for #9076.
 
 ## Verification
 
