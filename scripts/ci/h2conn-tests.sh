@@ -6,6 +6,9 @@
 #
 # Runs the server-role corpus (http_h2conn_tests.l), the client-role corpus with
 # its loopback and negative matrix (http_h2conn_client_tests.l), the client
+# seeded property and fuzz suite (http_h2fuzz_tests.l, fixed seeds, 40
+# iterations per property; LYRIC_H2_FUZZ_ITERS and LYRIC_H2_FUZZ_SEED scale and
+# move it, the nightly stage2-self-test.yml runs 3000), the client
 # driver corpus (http_h2client_tests.l: scripted peers, the real Std.HttpServer
 # over TLS) and the interop corpus (http_h2client_interop_tests.l, the driver
 # against `nghttpd` over h2c and TLS+ALPN) through self-test.sh, so a single
@@ -30,7 +33,7 @@ case "$target" in
     ;;
 esac
 
-for test_file in http_h2conn_tests.l http_h2conn_client_tests.l http_h2client_tests.l; do
+for test_file in http_h2conn_tests.l http_h2conn_client_tests.l http_h2fuzz_tests.l http_h2client_tests.l; do
   bash scripts/ci/self-test.sh \
     --summary "Std.HttpEngine.H2Conn test ran: ${test_file} (--target ${target})" \
     --target "$target" "lyric-stdlib/tests/${test_file}"
