@@ -682,11 +682,16 @@ cat "$work/w_census.txt"
 "$work/w_ast" > "$work/w_ast.out"
 "$work/w_tir" > "$work/w_tir.out"
 diff -u "$work/w_ast.out" "$work/w_tir.out"
-printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n' | diff -u - "$work/w_tir.out"
-grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/w_census.txt" || {
+printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n2147483647\n94\nxy\nxyb\nset later\n' | diff -u - "$work/w_tir.out"
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/w_census.txt" || {
   echo "::error::expected every function of wrapping.l to be lowered from TIR"
   exit 1
 }
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$wsrc" -o "$work/w_keep" >/dev/null 2>&1
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/w_keep.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/w_asan"
+"$work/w_asan" > "$work/w_asan.out"
+diff -u "$work/w_tir.out" "$work/w_asan.out"
 echo "wrapping: ok"
 
 # Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's
@@ -717,6 +722,67 @@ done
 test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work/iv_tir.err"; exit 1; }
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
+
+# A record with `invariant:` clauses declared in a bundled package (docs/70 phase 4a part 8, D856): its construction
+# checker has no AST copy and is lowered from TIR on the first call that names it.  The same output as the AST path,
+# every function from TIR, and a violated invariant panics.
+ssrc=scripts/ci/native-via-tir/stdinvariants.l
+"$lyric_bin" build --target native "$ssrc" -o "$work/si_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$ssrc" -o "$work/si_tir" 2> "$work/si_census.txt" >/dev/null
+cat "$work/si_census.txt"
+"$work/si_ast" > "$work/si_ast.out"
+"$work/si_tir" > "$work/si_tir.out"
+diff -u "$work/si_ast.out" "$work/si_tir.out"
+printf '100\n7\n' | diff -u - "$work/si_tir.out"
+if grep -q '^  fallback:' "$work/si_census.txt"; then
+  echo "::error::stdinvariants.l has a TIR fallback"
+  exit 1
+fi
+sed -e 's|maxSize = 7)|maxSize = 7)\n  println(toString(sizeOf(DynamicTable(entries = e, size = 9, maxSize = 7))))|' "$ssrc" > "$work/stdinvariants_violated.l"
+"$lyric_bin" build --target native --via-tir "$work/stdinvariants_violated.l" -o "$work/siv_tir" >/dev/null 2>&1
+if "$work/siv_tir" > /dev/null 2> "$work/siv_tir.err"; then
+  echo "::error::the TIR build did not panic on a violated bundled-package invariant"
+  exit 1
+fi
+grep -q 'InvariantViolated: Std.HttpEngine.Hpack.DynamicTable' "$work/siv_tir.err" || { echo "::error::no invariant message"; cat "$work/siv_tir.err"; exit 1; }
+echo "std invariants: ok"
+
+# An opaque type wrapping a raw handle (`@nativeDtor`, docs/70 phase 4a part 8, D856): every function from TIR, the
+# same exit status, and no leak, double release or release in the wrong order under AddressSanitizer.
+dsrc=scripts/ci/native-via-tir/nativedtor.l
+"$lyric_bin" build --target native "$dsrc" -o "$work/d_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$dsrc" -o "$work/d_tir" 2> "$work/d_census.txt" >/dev/null
+cat "$work/d_census.txt"
+"$work/d_ast"
+"$work/d_tir"
+if grep -q '^  fallback:' "$work/d_census.txt"; then
+  echo "::error::nativedtor.l has a TIR fallback"
+  exit 1
+fi
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/d_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/d_asan"
+"$work/d_asan"
+echo "nativedtor under AddressSanitizer: clean"
+
+# `mapGet` and `mapSize` (docs/70 phase 4a part 8, D857): every function from TIR, the same output, then under
+# AddressSanitizer (the `Some` retains the stored reference value).
+msrc=scripts/ci/native-via-tir/mapget.l
+"$lyric_bin" build --target native "$msrc" -o "$work/m_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$msrc" -o "$work/m_tir" 2> "$work/m_census.txt" >/dev/null
+cat "$work/m_census.txt"
+"$work/m_ast" > "$work/m_ast.out"
+"$work/m_tir" > "$work/m_tir.out"
+diff -u "$work/m_ast.out" "$work/m_tir.out"
+printf 'one!\nnone\n2\n7\n-1\n' | diff -u - "$work/m_tir.out"
+if grep -q '^  fallback:' "$work/m_census.txt"; then
+  echo "::error::mapget.l has a TIR fallback"
+  exit 1
+fi
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/m_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/m_asan"
+"$work/m_asan" > "$work/m_asan.out"
+diff -u "$work/m_tir.out" "$work/m_asan.out"
+echo "mapget under AddressSanitizer: clean"
 
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
