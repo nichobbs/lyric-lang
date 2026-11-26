@@ -2958,7 +2958,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           if not listContainsInt(c.env.needFns, sym.id) {
             c.env.needFns.add(sym.id)
           }
-          unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+          unsupported(
+            c,
+            "a call with no IR name (symbol #" + toString(sym.id) + " " +
+              (match mapGet(c.env.symNames, sym.id) { case Some(k) -> k; case None -> "" }) +
+              ")"
+          )
         }
         case Some(irName) -> {
           if c.coro {
