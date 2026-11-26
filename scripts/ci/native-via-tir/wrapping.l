@@ -30,6 +30,25 @@ func zero(): Int {
   z
 }
 
+func wrapSub(a: in Int, b: in Int): Int {
+  a.wrappingSub(b)
+}
+
+func wrapByte(a: in Byte, b: in Byte): Int {
+  a.wrappingAdd(b).toInt()
+}
+
+func nameAt(xs: in List[String], i: in Int, v: in String): String {
+  xs.set(i, v)
+  xs[i]
+}
+
+func later(): String {
+  var s: String = default()
+  s = "set later"
+  s
+}
+
 func main(): Unit {
   val xs: List[Int] = newList()
   xs.add(1)
@@ -40,4 +59,12 @@ func main(): Unit {
   println(toString(wrapMul(9223372036854775807i64, 2i64)))
   println(toString(wrapNeg(0 - 2147483647 - 1)))
   println(toString(zero()))
+  println(toString(wrapSub(0 - 2147483647 - 1, 1)))
+  println(toString(wrapByte(250.toByte(), 100.toByte())))
+  val names: List[String] = newList()
+  names.add("a")
+  names.add("b")
+  println(nameAt(names, 0, "x" + "y"))
+  println(names[0] + names[1])
+  println(later())
 }

@@ -664,11 +664,16 @@ cat "$work/w_census.txt"
 "$work/w_ast" > "$work/w_ast.out"
 "$work/w_tir" > "$work/w_tir.out"
 diff -u "$work/w_ast.out" "$work/w_tir.out"
-printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n' | diff -u - "$work/w_tir.out"
-grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/w_census.txt" || {
+printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n2147483647\n94\nxy\nxyb\nset later\n' | diff -u - "$work/w_tir.out"
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/w_census.txt" || {
   echo "::error::expected every function of wrapping.l to be lowered from TIR"
   exit 1
 }
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$wsrc" -o "$work/w_keep" >/dev/null 2>&1
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/w_keep.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/w_asan"
+"$work/w_asan" > "$work/w_asan.out"
+diff -u "$work/w_tir.out" "$work/w_asan.out"
 echo "wrapping: ok"
 
 # Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's

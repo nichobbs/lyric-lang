@@ -509,7 +509,7 @@ record Ctx {
   /// so far, by symbol: a generic instance in one unit may take a type argument another unit declares.
   tirKnownAll: Map[Int, NType] = newMap()
   /// The functions that exist only on TIR (the synthesised `__lyric_checked_T` construction checkers of the bundled
-  /// packages, D854), lowered on demand by `instantiateTirOnlyFn`, by IR name.
+  /// packages, D856), lowered on demand by `instantiateTirOnlyFn`, by IR name.
   tirOnlyFns: Map[String, Bool] = newMap()
   genericDeclPkg: Map[String, String]
   caseToGenericUnion: Map[String, String]
@@ -19832,11 +19832,37 @@ func resolveTirGlobal(ctx: in Ctx, maps: in TirUnitMaps, sym: in Int): Bool {
 /// `invariant:` clauses in a bundled package, which the contracts pass adds to the TIR bundle but the AST path never
 /// synthesises for a bundled package.  It is lowered once, on the first call that asks for it, into the module.
 /// False when `fsym` is no such function or its lowering falls back (the caller then keeps the AST path).
-/// A checker lowered for a caller that later falls back to the AST path stays in the module, unused.
+/// A checker lowered for a caller that later falls back to the AST path stays in the module, unused, as does anything
+/// a checker whose lowering then falls back added to the module (a closure, a global).
 func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
-  val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
-  val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
-  val n = match LlvmTir.tirTopLevelFn(key) { case Some(x) -> x; case None -> return false }
+  val trace = LlvmTir.tirTraceRequested()
+  val key = match mapGet(maps.instKeys, fsym) {
+    case Some(x) -> x
+    case None -> {
+      if trace {
+        Console.error("native via-TIR: symbol #" + fsym.toString() + " has no key in the bundle")
+      }
+      return false
+    }
+  }
+  val decl = match mapGet(maps.instDecls, fsym) {
+    case Some(x) -> x
+    case None -> {
+      if trace and Str.contains(key, "__lyric_checked_") {
+        Console.error("native via-TIR: " + key + " has no declaration in the bundle")
+      }
+      return false
+    }
+  }
+  val n = match LlvmTir.tirTopLevelFn(key) {
+    case Some(x) -> x
+    case None -> {
+      if trace and Str.contains(key, "__lyric_checked_") {
+        Console.error("native via-TIR: " + key + " is not a top-level function key")
+      }
+      return false
+    }
+  }
   if decl.isAsync or decl.typeParams.count > 0 or not Str.startsWith(n.name, "__lyric_checked_") {
     return false
   }
