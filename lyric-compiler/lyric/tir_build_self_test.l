@@ -4155,3 +4155,40 @@ test "== on a record with a Double leaf and a distinct-over-Float array element 
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
+
+// #7791: an impl of a generic interface, a call through a generic-interface-typed
+// value and a method-generic interface method all build as TIR and verify.
+func censusClean(src: in String, want: in Int): Unit {
+  val c = censusOf(src)
+  assertEqualInt(c.built, want, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an impl of a concrete instantiation of a generic interface builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc f(b: in IntBox): Int { b.get() }\n",
+    2
+  )
+}
+
+test "a generic impl over a generic record builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\nfunc f(b: in Box[Int]): Int { b.get() }\n",
+    2
+  )
+}
+
+test "a call through a generic-interface-typed value builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T\n func put(self: in Self, x: in T): Unit }\nfunc f(h: in Holder[Int]): Int { h.put(3)\n h.get() }\nfunc g[U](h: in Holder[U]): U { h.get() }\n",
+    2
+  )
+}
+
+test "a method-generic interface method builds (#7791)" {
+  censusClean(
+    "package App\ninterface Echo { func id[U](self: in Self, x: in U): U }\nrecord R { n: Int }\nimpl Echo for R { func id[V](self: in R, x: in V): V = x }\nfunc f(e: in Echo): Int { e.id(4) }\nfunc g(r: in R): String { r.id(\"s\") }\n",
+    3
+  )
+}

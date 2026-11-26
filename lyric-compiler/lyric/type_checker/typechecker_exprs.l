@@ -6341,8 +6341,8 @@ func recordMethodCalleeNode(
 // its generics (D580: the owner's parameters then its own, instantiated from the
 // receiver's type arguments).  A dot-named function that is generic, or whose receiver is an
 // instance of a generic type, is recorded with its full signature (`full`): the call is that
-// function called with the receiver first.  A generic interface receiver waits for the
-// generic-call step.
+// function called with the receiver first.  A generic interface receiver is recorded with its
+// arguments in `recvTy` (#7791).
 func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
   val recv = unrefine(recvTy)
   var iface: Option[SymbolId] = None
@@ -6373,11 +6373,9 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
   if mp.fullSig.isSome() {
     iface = None
   }
-  // A generic interface's call carries the interface's arguments, which the site does not record yet; a
-  // method with type parameters of its own on a non-generic interface is built from the call's instantiation.
-  if iface.isSome() and recvArgs > 0 {
-    return
-  }
+  // A generic interface's call carries the interface's arguments in the receiver's type (`recvTy`); the
+  // signature is already instantiated at them.  A method with type parameters of its own is built from the
+  // call's instantiation.
   val declared = match mp.fullSig {
     case Some(f) -> if f.params.count > 0 { f.params[0].ty } else { recv }
     case None -> recv
