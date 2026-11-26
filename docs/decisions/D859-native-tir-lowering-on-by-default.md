@@ -6,7 +6,12 @@ Status: accepted (docs/70 phase 4a, part 8; D520 slice 48; item 4 of the 4a plan
 
 1. **`--target native` lowers every function TIR covers from TIR and keeps the rest on the AST path**, the behaviour `--via-tir` switched on (D520). `LlvmTir.viaTirRequested()` is true unless `LYRIC_NATIVE_VIA_TIR=0`; `lyric build --no-via-tir` sets that for the build, and `--via-tir` still sets `1`.
 2. **The census prints only when asked** (`--via-tir`, `LYRIC_NATIVE_VIA_TIR=1`, or the trace), so a default build's stderr is what the AST path's was. `LlvmTir.tirCensusRequested()` decides.
+2b. **Any value of `LYRIC_NATIVE_VIA_TIR` other than `0` and `1` (empty, `true`) means on, with no census.**
 3. **The AST baseline of the typed-IR tests is `--no-via-tir`**: every AST build in `native-via-tir-e2e.sh` and `native-via-tir-overflow-e2e.sh` says so, so the comparison with the TIR build still compares two lowerings.
+
+## What the flip kept on the AST path
+
+`toString` of an enum (the case name), an operator on a fixed array or other aggregate, and `default()` of anything but a numeric or boolean scalar fall back with their census reasons; `scripts/ci/native-via-tir/keptast.l` pins them.
 
 ## Not done
 

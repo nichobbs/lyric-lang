@@ -784,6 +784,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/m_tir.ll" lyric-rt/b
 diff -u "$work/m_tir.out" "$work/m_asan.out"
 echo "mapget under AddressSanitizer: clean"
 
+# Constructs the TIR lowering keeps on the AST path (docs/70 phase 4a, D859): the same output as the AST build, and
+# each fallback is reported with its reason, so a silent change of what the TIR path covers fails here.
+ksrc=scripts/ci/native-via-tir/keptast.l
+"$lyric_bin" build --target native --no-via-tir "$ksrc" -o "$work/k_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$ksrc" -o "$work/k_tir" 2> "$work/k_census.txt" >/dev/null
+cat "$work/k_census.txt"
+"$work/k_ast" > "$work/k_ast.out"
+"$work/k_tir" > "$work/k_tir.out"
+diff -u "$work/k_ast.out" "$work/k_tir.out"
+printf 'Green\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
+for reason in 'toString of an enum' 'an operator on the aggregate array' 'the zero value of String'; do
+  grep -q "^  fallback: $reason" "$work/k_census.txt" || {
+    echo "::error::keptast.l: expected the fallback '$reason' in the census"
+    exit 1
+  }
+done
+echo "kept on the AST path: ok"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
