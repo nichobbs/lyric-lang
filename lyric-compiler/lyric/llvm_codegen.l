@@ -511,6 +511,10 @@ record Ctx {
   /// The functions that exist only on TIR (the synthesised `__lyric_checked_T` construction checkers of the bundled
   /// packages, D856), lowered on demand by `instantiateTirOnlyFn`, by IR name.
   tirOnlyFns: Map[String, Bool] = newMap()
+  /// The declarations and DefPath keys of the construction checkers of every unit's TIR package, by symbol: a
+  /// call into another unit, or from a function the monomorphised bundle does not list, finds its checker here.
+  tirOnlyDecls: Map[Int, Tir.TFnDecl] = newMap()
+  tirOnlyKeys: Map[Int, String] = newMap()
   genericDeclPkg: Map[String, String]
   caseToGenericUnion: Map[String, String]
   // Module accumulators for lazy instantiation: type definitions and
@@ -17937,6 +17941,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     genericUnionDefs = mod.genericUnionDefs,
     tirKnownAll = mod.tirKnownAll,
     tirOnlyFns = mod.tirOnlyFns,
+    tirOnlyDecls = mod.tirOnlyDecls,
+    tirOnlyKeys = mod.tirOnlyKeys,
     genericDeclPkg = mod.genericDeclPkg,
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
@@ -19838,20 +19844,18 @@ func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool
   val trace = LlvmTir.tirTraceRequested()
   val key = match mapGet(maps.instKeys, fsym) {
     case Some(x) -> x
-    case None -> {
-      if trace {
-        Console.error("native via-TIR: symbol #" + fsym.toString() + " has no key in the bundle")
-      }
-      return false
-    }
+    case None -> match mapGet(ctx.tirOnlyKeys, fsym) { case Some(x) -> x; case None -> return false }
   }
   val decl = match mapGet(maps.instDecls, fsym) {
     case Some(x) -> x
-    case None -> {
-      if trace and Str.contains(key, "__lyric_checked_") {
-        Console.error("native via-TIR: " + key + " has no declaration in the bundle")
+    case None -> match mapGet(ctx.tirOnlyDecls, fsym) {
+      case Some(x) -> x
+      case None -> {
+        if trace and Str.contains(key, "__lyric_checked_") {
+          Console.error("native via-TIR: " + key + " has no declaration in the bundle")
+        }
+        return false
       }
-      return false
     }
   }
   val n = match LlvmTir.tirTopLevelFn(key) {
@@ -20487,6 +20491,20 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       declaredExterns.add(rtDecls[di].name, true)
     }
     di = di + 1
+  }
+  for tu in units {
+    if tu.tir.count > 0 {
+      val tin = tu.tir[0]
+      for tf in tin.pkg.funcs {
+        match mapGet(tin.names, tf.sym.id) {
+          case Some(tk) -> if Str.contains(tk, "::__lyric_checked_") and not ctx.tirOnlyDecls.containsKey(tf.sym.id) {
+            ctx.tirOnlyDecls.add(tf.sym.id, tf)
+            ctx.tirOnlyKeys.add(tf.sym.id, tk)
+          }
+          case None -> ()
+        }
+      }
+    }
   }
   var mainRet = NVoid
   var mainIr = ""
