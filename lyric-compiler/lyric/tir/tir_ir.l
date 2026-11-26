@@ -455,8 +455,27 @@ pub record TSymEntry {
   mutable: Bool
 }
 
+/// An `impl Iface[args] for Target { ... }` block (#7791, D860): which interface a type implements at which
+/// arguments, and the members that implement it.  The impl's own type parameters (`impl[T] Holder[T] for Box[T]`)
+/// are `TParam(owner = sym, index)`, so `target` and `ifaceArgs` are written over the same parameters and a pass
+/// that instantiates the impl binds them from the target's instantiation.
+pub record TImplDecl {
+  /// The impl block's DefPath symbol (`Pkg::Target::$impl(Iface[args])`), the owner of its type parameters.
+  sym: SymbolId
+  /// The impl's own type parameter names, in order.
+  typeParams: List[String]
+  target: Ty
+  iface: SymbolId
+  ifaceArgs: List[Ty]
+  /// The members the block declares, each a function the package declares.
+  members: List[SymbolId]
+  span: Span
+}
+
 pub record TPackage {
   name: String
   symbols: List[TSymEntry]
   funcs: List[TFnDecl]
+  /// The package's `impl` blocks (D860).  A pass that rebuilds the package keeps them.
+  impls: List[TImplDecl] = newList()
 }

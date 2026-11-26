@@ -49,6 +49,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Mono
 
 // Last segment of the impl's interface reference — the bare interface name,
 // matching how `checkImplConformance` resolves `ifaceName`.
@@ -81,25 +82,15 @@ func implProvidesMethod(decl: in ImplDecl, name: in String): Bool {
 }
 
 // Find an `IInterface` item declared in `items` whose name matches `name`.
-// GENERIC interfaces are skipped (treated as not-found, so the impl passes
-// through unchanged) — the same guard `Lyric.Stubbable` applies (#6446
-// review): a default body referencing the interface's own type parameter
-// would be copied into an impl where that parameter isn't in scope, and in
-// the collision case where the impl declares a same-named generic of its
-// own, would silently bind the WRONG parameter.  No generic interface with
-// a default method exists in the ecosystem today; when the backends learn
-// to reify interface generics (D-progress-759's deferred feature) this
-// guard is where inheritance support starts.
+// A generic interface is found too: the copy of its default method has the
+// interface's parameters replaced by the impl's arguments
+// (`inheritedCopy`, #7791).
 func findLocalInterface(items: in List[Item], name: in String): Option[InterfaceDecl] {
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IInterface(id) -> {
         if id.name == name {
-          val isGenericIface = match id.generics { case Some(_) -> true; case None -> false }
-          if isGenericIface {
-            return None
-          }
           return Some(value = id)
         }
       }
@@ -128,6 +119,37 @@ func implTargetName(decl: in ImplDecl): String {
   } else {
     segs[segs.count - 1]
   }
+}
+
+// The interface's default method `fn` as the impl inherits it: verbatim for a
+// non-generic interface, with the interface's type parameters replaced by the
+// impl's interface arguments for a generic one (`impl Named[Int] for L` gets
+// `tagged(x: in Int)` from `tagged(x: in T)`, #7791).  Unchanged when the
+// arguments are not all types or their count differs (the checker reports it).
+func inheritedCopy(decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl): FunctionDecl {
+  val names: List[String] = newList()
+  match ifaceDecl.generics {
+    case Some(gp) -> {
+      for g in gp.params {
+        match g {
+          case GPType(name, _) -> names.add(name)
+          case GPValue(_, _, _) -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  if names.count == 0 {
+    return fn
+  }
+  val args: List[TypeExpr] = newList()
+  for a in decl.iface.args {
+    match a {
+      case TAType(te) -> args.add(te)
+      case TAValue(_) -> return fn
+    }
+  }
+  substGenericsInDecl(fn, names, args)
 }
 
 // Return `decl` with a verbatim `IMplFunc` copy appended for every `IMFunc`
@@ -166,7 +188,7 @@ func withInheritedDefaults(
           // Marked, so the target's fields stay out of the copy's scope
           // (`inheritedDefaultAnnotationName`, #8264).
           val marked = withMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName(), fn.span)
-          newMembers.add(IMplFunc(fn = fn.copy(annotations = marked)))
+          newMembers.add(IMplFunc(fn = inheritedCopy(decl, ifaceDecl, fn).copy(annotations = marked)))
           changed = true
         }
       }

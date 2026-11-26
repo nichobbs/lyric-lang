@@ -9372,23 +9372,34 @@ func buildMethodCall(
   for a in rest {
     all.add(a)
   }
+  val ifaceArgs: List[Ty] = match recvOwnedOf(Some(value = declared)) { case Some(a) -> a; case None -> newList() }
   val callee = match ifaceSym {
-    case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = inst.tyArgs)
+    case Some(i) -> Interface(iface = i, ifaceArgs = ifaceArgs, method = sym, typeArgs = inst.tyArgs)
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
-  noteFuncSymN(
-    env,
-    sym,
-    site.sig,
-    Some(value = recvTyDecl),
-    if isEntry or isImplMember or (isSome(ifaceSym) and not isSome(site.sig.recvMode)) {
-      Some(value = PMIn)
-    } else {
-      site.sig.recvMode
-    },
-    if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
-    inst.tyArgs.count
-  )
+  val genericIface: Option[SymbolId] = if ifaceArgs.count > 0 { ifaceSym } else { None }
+  match genericIface {
+    case Some(gi) -> noteGenericIfaceMethodSym(
+      env,
+      sym,
+      gi,
+      match fn.kind { case EMember(_, mname) -> mname; case _ -> "" },
+      site
+    )
+    case None -> noteFuncSymN(
+      env,
+      sym,
+      site.sig,
+      Some(value = recvTyDecl),
+      if isEntry or isImplMember or (isSome(ifaceSym) and not isSome(site.sig.recvMode)) {
+        Some(value = PMIn)
+      } else {
+        site.sig.recvMode
+      },
+      if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
+      inst.tyArgs.count
+    )
+  }
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }
 
