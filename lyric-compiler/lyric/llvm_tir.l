@@ -4994,6 +4994,29 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
   if from == "ULong" and (method == "toLong" or method == "toDouble" or method == "toFloat") {
     return None
   }
+  // Everything that returns None is settled before the operand is lowered: the caller lowers it again,
+  // so a lowering here would run a call in it twice.
+  val converts = method == "toFloat" or method == "toDouble" or method == "toLong" or method == "toInt" or
+    method == "toByte" or
+    method == "toULong" or
+    method == "toUInt" or
+    method == "toNat" or
+    method == "toChar"
+  if not converts {
+    return None
+  }
+  match tyToN(c.env, ins[0].ty) {
+    case None -> return None
+    case Some(pt) -> {
+      val pIsFloat = match pt { case NFloat -> true; case NDouble -> true; case _ -> false }
+      if not (pIsFloat or bitsOf(pt) > 0) {
+        return None
+      }
+      if pIsFloat and (method == "toULong" or method == "toUInt") {
+        return None
+      }
+    }
+  }
   val unsigned = from == "UInt" or from == "ULong" or from == "Byte"
   val v0 = borrow(c, lowerExpr(c, ins[0]))
   val isFloat = match v0.ty { case NFloat -> true; case _ -> false }
