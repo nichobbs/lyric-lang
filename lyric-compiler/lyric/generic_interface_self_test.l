@@ -74,6 +74,23 @@ impl Named[String] for IntBox {
   func label(self: in IntBox): String = "box"
 }
 
+ref record LongBox {
+  var v: Long
+}
+
+impl Holder[Long] for LongBox {
+  func get(self: in LongBox): Long = self.v
+  func put(self: in LongBox, x: in Long): Unit {
+    self.v = x
+  }
+}
+
+func swapIn[T](h: in Holder[T], x: in T): T {
+  val old = h.get()
+  h.put(x)
+  old
+}
+
 func readIt(h: in Holder[Int]): Int = h.get()
 
 func bump(h: in Holder[Int]): Int {
@@ -134,4 +151,12 @@ test "different records implement different instantiations of one interface" {
 test "a default method of a generic interface runs" {
   val l = Label(s = "lbl")
   assertEqual(l.tagged(1), "lbl:tagged", "Named[Int].tagged")
+}
+
+test "a literal argument takes the type an implementor fixes for T" {
+  val b = LongBox(v = 5000000000)
+  assertEqualLong(swapIn(b, 7), 5000000000, "old value")
+  assertEqualLong(b.get(), 7, "new value")
+  val i = IntBox(v = 1)
+  assertEqualInt(swapIn(i, 2), 1, "Int implementor")
 }

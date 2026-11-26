@@ -6530,6 +6530,17 @@ func fillCheckedTypeArgsMono(
       while j < typeParams.count {
         if not subst.containsKey(typeParams[j]) {
           subst.add(typeParams[j], site.typeArgs[j])
+        } else {
+          // An argument this pass cannot unify (a record that implements a generic interface
+          // `Holder[T]`) leaves a literal to bind `T` to its own type; the checker widened it to
+          // the type the other argument fixes (`Long` for `swapIn(longBox, 7)`, #7791).
+          match mapGet(subst, typeParams[j]) {
+            case Some(own) -> if widerNumericTEMono(own, site.typeArgs[j]) {
+              subst.remove(typeParams[j])
+              subst.add(typeParams[j], site.typeArgs[j])
+            }
+            case None -> ()
+          }
         }
         j = j + 1
       }
