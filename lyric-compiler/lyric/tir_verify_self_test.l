@@ -820,7 +820,7 @@ func implOf(blockSym: in Int, iface: in Int, members: in List[SymbolId], ifaceAr
 }
 
 test "an impl whose members are declared verifies; a missing member and an unclosed argument do not (#7791)" {
-  val es: List[TSymEntry] = newList()
+  val es = entries()
   es.add(
     TSymEntry(
       sym = sym(20),

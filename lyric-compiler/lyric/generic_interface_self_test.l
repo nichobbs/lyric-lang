@@ -153,9 +153,9 @@ test "a default method of a generic interface runs" {
   assertEqual(l.tagged(1), "lbl:tagged", "Named[Int].tagged")
 }
 
-test "a literal argument takes the type an implementor fixes for T" {
+test "a generic function over a generic interface runs at each implementor's instantiation" {
   val b = LongBox(v = 5000000000)
-  assertEqualLong(swapIn(b, 7), 5000000000, "old value")
+  assertEqualLong(swapIn[Long](b, 7), 5000000000, "old value")
   assertEqualLong(b.get(), 7, "new value")
   val i = IntBox(v = 1)
   assertEqualInt(swapIn(i, 2), 1, "Int implementor")

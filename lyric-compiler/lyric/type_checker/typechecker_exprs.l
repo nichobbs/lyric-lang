@@ -5331,20 +5331,7 @@ func methodImplementedBy(own: in List[MethodEntry], member: in MethodEntry): Boo
 // The interface arguments of `impl` at a receiver whose type arguments are `recvArgs`: the impl's
 // own, with the target's type parameters (`impl[T] Holder[T] for Box[T]`) replaced by the receiver's
 // (`Box[Int]`).  Empty for an impl of a non-generic interface (#7791).
-func implIfaceArgsAt(pair: in ImplPair, recvArgs: in List[Type]): List[Type] {
-  if pair.ifaceArgs.count == 0 or pair.targetArgs.count != recvArgs.count {
-    return pair.ifaceArgs
-  }
-  val names: List[String] = newList()
-  for ta in pair.targetArgs {
-    names.add(match ta { case TyParam(n, _) -> n; case _ -> "" })
-  }
-  val args: List[Type] = newList()
-  for ia in pair.ifaceArgs {
-    args.add(substituteTyParams(ia, names, recvArgs))
-  }
-  args
-}
+func implIfaceArgsAt(pair: in ImplPair, recvArgs: in List[Type]): List[Type] = symTableImplIfaceArgs(pair, recvArgs)
 
 // Every method signature reachable on a value of type `recv` (an unrefined
 // `TyUser`) under `name`: the type's own record-body/impl methods, plus the
@@ -25596,7 +25583,13 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) {
-      case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId)
+      case Some(argId) -> symTableTypeImplementsAt(
+        tbl,
+        argId,
+        userTypeArgsOf(argTy),
+        ifaceId,
+        userTypeArgsOf(paramTy)
+      )
       case None -> false
     }
     case None -> false
@@ -25655,7 +25648,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
           }
           return true
         }
-        symTableTypeImplements(tbl, aid, eid)
+        symTableTypeImplementsAt(tbl, aid, aargs, eid, eargs)
       }
       case _ -> false
     }

@@ -3533,7 +3533,7 @@ func inferReturnFromName(
       // A type parameter nothing pins is left open: the checker reports it as
       // T0224 (D339, D381), so no `Object` fill stands in for it here and a call
       // whose parameters stay open is not typed (docs/70 section 5.2).
-      if typeParams.count > 0 {
+      if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
         fillCheckedTypeArgsMono(state, typeParams, subst, calleeSpan)
       }
       if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
@@ -6504,8 +6504,7 @@ func checkedValueArgsMono(state: in MonoState, valueParams: in List[String], cal
 // (see `MonoState.genericCallTypeArgSites`, #7865).  The checker typed every
 // argument, including a lambda whose body this pass cannot type (one reading
 // an unannotated module `val`, or ending in an `if`, a `match` or a block).
-// A binding this pass inferred itself is kept, unless it is a narrower numeric type than the
-// checker's (#7791).
+// A binding this pass inferred itself is kept.
 func fillCheckedTypeArgsMono(
   state: in MonoState,
   typeParams: in List[String],
@@ -6531,17 +6530,6 @@ func fillCheckedTypeArgsMono(
       while j < typeParams.count {
         if not subst.containsKey(typeParams[j]) {
           subst.add(typeParams[j], site.typeArgs[j])
-        } else {
-          // An argument this pass cannot unify (a record that implements a generic interface
-          // `Holder[T]`) leaves a literal to bind `T` to its own type; the checker widened it to
-          // the type the other argument fixes (`Long` for `swapIn(longBox, 7)`, #7791).
-          match mapGet(subst, typeParams[j]) {
-            case Some(own) -> if widerNumericTEMono(own, site.typeArgs[j]) {
-              subst.remove(typeParams[j])
-              subst.add(typeParams[j], site.typeArgs[j])
-            }
-            case None -> ()
-          }
         }
         j = j + 1
       }
@@ -8390,7 +8378,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                     }
                     // The type checker's resolved type arguments fill what the
                     // arguments and the context leave unbound (#7865).
-                    fillCheckedTypeArgsMono(state, typeParams, subst, fn.span)
+                    if not substIsComplete(typeParams, subst) {
+                      fillCheckedTypeArgsMono(state, typeParams, subst, fn.span)
+                    }
                     var unsafeImportedFallback = false
                     var reportedUnpinned = false
                     if not substIsComplete(typeParams, subst) {
