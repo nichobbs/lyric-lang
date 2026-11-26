@@ -18,6 +18,7 @@ import Lyric.Tir
 import Lyric.Tir.Build
 import Lyric.Tir.Verify
 import Lyric.Tir.Mono
+import Lyric.Tir.Walk
 
 record Mono {
   r: MonoResult
@@ -328,4 +329,49 @@ test "a generic impl is instantiated at each instance of its target (D860, slice
     "Holder[Int] is implemented at Box[Int]: " + joinStrings(mapKeys(m.r.unresolved), "; ") + " | " +
       joinStrings(instanceKeys(m), ",")
   )
+}
+
+func upcastTargets(m: in Mono): List[String] {
+  val acc: List[String] = newList()
+  val w = Walker(
+    pre = { e: TExpr -> None },
+    post = { e: TExpr -> noteUpcast(m, acc, e) },
+    preStmt = { st: TStmt -> None }
+  )
+  for pb in m.r.pkgs {
+    for f in pb.pkg.funcs {
+      match f.body {
+        case Some(b) -> {
+          walkExpr(w, b)
+        }
+        case None -> ()
+      }
+    }
+  }
+  acc
+}
+
+func noteUpcast(m: in Mono, acc: in List[String], e: in TExpr): TExpr {
+  match e.kind {
+    case XConvert(CvUpcast(i), _) -> {
+      acc.add(keyOf(m, i))
+    }
+    case _ -> ()
+  }
+  e
+}
+
+test "an upcast to an instance of a generic interface names the instance (D513 follow-up)" {
+  val m = monoOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc main(): Int {\n  val h: Holder[Int] = IntBox(v = 3)\n  h.get()\n}\n"
+  )
+  assertEqualInt(m.built, m.total, "every body builds")
+  assertEqualInt(m.r.unresolved.count, 0, "nothing is left generic: " + joinStrings(mapKeys(m.r.unresolved), "; "))
+  val ups = upcastTargets(m)
+  assertTrue(ups.count > 0, "the conversion is there")
+  for u in ups {
+    assertTrue(u == "App::Holder[Int]", "the upcast names the instance: " + u)
+  }
+  val v = verifyMonoBundle(m.r)
+  assertEqualInt(v.failures.count, 0, if v.failures.count > 0 { v.failures[0] } else { "verifies" })
 }
