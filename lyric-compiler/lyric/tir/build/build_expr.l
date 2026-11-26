@@ -4190,7 +4190,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SInvariant(x) -> match buildExpr(env, x) {
-      case Some(t) -> Some(value = stmtOf(s, TsInvariant(expr = t)))
+      case Some(t) -> Some(value = stmtOf(s, TsInvariant(expr = t, text = Fmt.exprInline(0, x))))
       case None -> None
     }
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")

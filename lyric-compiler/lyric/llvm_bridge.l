@@ -3263,10 +3263,11 @@ func monoTirInputs(
   // the generics are monomorphised, so an instance carries both.
   val prop = pipePropagateTir(interner, builds)
   val unsignedDone = pipeUnsignedTir(prop.pkgs)
+  val loopsDone = pipeLoopsTir(unsignedDone)
   val ownPkgs: List[TirBuild.PackageBuild] = newList()
   val stdPkgs: List[TirBuild.PackageBuild] = newList()
   // `checkedArith` has an entry for exactly the own packages (the bundled standard library's have none).
-  for pb in unsignedDone {
+  for pb in loopsDone {
     if checkedArith.containsKey(pb.pkg.name) {
       ownPkgs.add(pb)
     } else {
@@ -3281,7 +3282,7 @@ func monoTirInputs(
   val elaborated: List[TirBuild.PackageBuild] = newList()
   var oi = 0
   var si = 0
-  for pb in unsignedDone {
+  for pb in loopsDone {
     if checkedArith.containsKey(pb.pkg.name) {
       elaborated.add(ownDone[oi])
       oi = oi + 1

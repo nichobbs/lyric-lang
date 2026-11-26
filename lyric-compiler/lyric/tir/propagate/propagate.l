@@ -179,7 +179,7 @@ func propPre(c: in PCtx, e: in TExpr): Option[TExpr] {
 }
 
 func lowerBody(c: in PCtx, ret: in Ty, body: in TExpr): TExpr {
-  val w = Walker(pre = { e: TExpr -> propPre(c, e) }, post = { e: TExpr -> propPost(c, ret, e) })
+  val w = newWalker(pre = { e: TExpr -> propPre(c, e) }, post = { e: TExpr -> propPost(c, ret, e) })
   walkExpr(w, body)
 }
 

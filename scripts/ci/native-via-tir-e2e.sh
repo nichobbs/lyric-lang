@@ -286,6 +286,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/req_tir.ll" lyric-rt
 diff -u "$work/req_tir.out" "$work/req_asan.out"
 echo "record equality under AddressSanitizer: clean"
 
+# Loop `invariant:` clauses (docs/70 phase 3c, D510): checked each iteration and when a loop ends normally, not
+# after a `break`; the last call violates one at the exit of a `while` and panics with the managed targets' message.
+lpsrc=scripts/ci/native-via-tir/loops.l
+"$lyric_bin" build --target native "$lpsrc" -o "$work/lp_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$lpsrc" -o "$work/lp_tir" 2> "$work/lp_census.txt" >/dev/null
+cat "$work/lp_census.txt"
+"$work/lp_ast" > "$work/lp_ast.out" 2> "$work/lp_ast.err" || true
+"$work/lp_tir" > "$work/lp_tir.out" 2> "$work/lp_tir.err" || true
+diff -u "$work/lp_ast.out" "$work/lp_tir.out"
+printf '6\n6\n100\n2\n' | diff -u - "$work/lp_tir.out"
+grep -q 'LoopInvariantViolated: invariant i != 3' "$work/lp_tir.err" || { echo "::error::the TIR build did not panic with the loop invariant message"; cat "$work/lp_tir.err"; exit 1; }
+grep -q 'LoopInvariantViolated: invariant i != 3' "$work/lp_ast.err" || { echo "::error::the AST build did not panic with the loop invariant message"; exit 1; }
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/lp_census.txt" || {
+  echo "::error::expected every function of loops.l to be lowered from TIR"
+  exit 1
+}
+echo "loop invariants: ok"
+
 # Range-checked distinct types (docs/70 phase 4a, D538): `T.from`, derived arithmetic and a final
 # out-of-range panic with the managed targets' message.
 rgsrc=scripts/ci/native-via-tir/ranged.l
@@ -654,6 +672,22 @@ grep -o 'PreconditionViolated: .*' "$work/cv_tir.err" | head -1 > "$work/cv_tir.
 test -s "$work/cv_tir.msg" || { echo "::error::no precondition message"; cat "$work/cv_tir.err"; exit 1; }
 diff -u "$work/cv_ast.msg" "$work/cv_tir.msg"
 echo "contracts: ok"
+
+# `List.set`, wrapping integer methods and `default()` (docs/70 phase 4a part 8, D855): every function from TIR, the
+# same output.
+wsrc=scripts/ci/native-via-tir/wrapping.l
+"$lyric_bin" build --target native "$wsrc" -o "$work/w_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$wsrc" -o "$work/w_tir" 2> "$work/w_census.txt" >/dev/null
+cat "$work/w_census.txt"
+"$work/w_ast" > "$work/w_ast.out"
+"$work/w_tir" > "$work/w_tir.out"
+diff -u "$work/w_ast.out" "$work/w_tir.out"
+printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n' | diff -u - "$work/w_tir.out"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/w_census.txt" || {
+  echo "::error::expected every function of wrapping.l to be lowered from TIR"
+  exit 1
+}
+echo "wrapping: ok"
 
 # Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's
 # result check lower from TIR, the same output; a method of the record keeps the AST path.  A violated invariant
