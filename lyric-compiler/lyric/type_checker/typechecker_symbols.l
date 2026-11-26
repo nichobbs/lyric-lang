@@ -1222,6 +1222,11 @@ pub record OpenBindingSite {
 pub record ImplPair {
   target: SymbolId
   iface: SymbolId
+  /// The interface's type arguments as the impl writes them (`impl[T] Holder[T] for Box[T]`
+  /// gives `[T]`), and the target type's own (`[T]`): a generic interface's default method is
+  /// instantiated at the first, with the target's parameters taken from a receiver's arguments.
+  ifaceArgs: List[Type] = newList()
+  targetArgs: List[Type] = newList()
 }
 
 /// One method signature attached to a nominal type — a record-body method
@@ -1693,6 +1698,89 @@ pub func symTableAddImpl(tbl: in SymbolTable, target: in SymbolId, iface: in Sym
     i = i + 1
   }
   tbl.impls.add(ImplPair(target = target, iface = iface))
+}
+
+// `symTableAddImpl` for an impl that names its interface's and target's type arguments (#7791).
+pub func symTableAddImplWithArgs(
+  tbl: in SymbolTable,
+  target: in SymbolId,
+  iface: in SymbolId,
+  ifaceArgs: in List[Type],
+  targetArgs: in List[Type],
+): Unit {
+  var i = 0
+  while i < tbl.impls.count {
+    if symbolIdEq(tbl.impls[i].target, target) and symbolIdEq(tbl.impls[i].iface, iface) and typeListEquiv(tbl.impls[i].ifaceArgs, ifaceArgs) {
+      return
+    }
+    i = i + 1
+  }
+  tbl.impls.add(ImplPair(target = target, iface = iface, ifaceArgs = ifaceArgs, targetArgs = targetArgs))
+}
+
+func typeListEquiv(a: in List[Type], b: in List[Type]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if not typeEquiv(a[i], b[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// The interface arguments of `pair` at a receiver applied to `targetArgs` (see `implIfaceArgsAt`).
+pub func symTableImplIfaceArgs(pair: in ImplPair, targetArgs: in List[Type]): List[Type] {
+  if pair.ifaceArgs.count == 0 or pair.targetArgs.count != targetArgs.count {
+    return pair.ifaceArgs
+  }
+  val names: List[String] = newList()
+  for ta in pair.targetArgs {
+    names.add(match ta { case TyParam(n, _) -> n; case _ -> "" })
+  }
+  val args: List[Type] = newList()
+  for ia in pair.ifaceArgs {
+    args.add(substituteTyParams(ia, names, targetArgs))
+  }
+  args
+}
+
+// True when `target` applied to `targetArgs` implements `iface` at `ifaceArgs` (#7791): some `impl` of the
+// interface for the target gives those arguments, a type parameter standing for any.  An impl or a use of
+// the interface that names no argument accepts any (a non-generic interface, or one a restored package registers).
+pub func symTableTypeImplementsAt(
+  tbl: in SymbolTable,
+  target: in SymbolId,
+  targetArgs: in List[Type],
+  iface: in SymbolId,
+  ifaceArgs: in List[Type],
+): Bool {
+  var i = 0
+  while i < tbl.impls.count {
+    val p = tbl.impls[i]
+    if symbolIdEq(p.target, target) and symbolIdEq(p.iface, iface) {
+      if ifaceArgs.count == 0 or p.ifaceArgs.count == 0 {
+        return true
+      }
+      val have = symTableImplIfaceArgs(p, targetArgs)
+      if have.count != ifaceArgs.count or typeListEquiv(have, ifaceArgs) {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The type arguments of a user type (`Box[Int]` gives `[Int]`), none for any other.
+pub func userTypeArgsOf(t: in Type): List[Type] {
+  match unrefine(t) {
+    case TyUser(_, _, a) -> a
+    case _ -> newList()
+  }
 }
 
 // True when some `impl iface for target` was registered.

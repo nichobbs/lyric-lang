@@ -142,6 +142,83 @@ func noteFuncSymN(
   }
 }
 
+/// Record the method `sym` of the generic interface `ifaceId` that a call through a `Holder[Int]`
+/// value dispatches (#7791): its signature as declared, over the interface's own parameters (owned
+/// by the interface) and its own, so the verifier substitutes the call's `ifaceArgs` for the
+/// former.  `site.sig` is already instantiated at the receiver's arguments and cannot serve.
+func noteGenericIfaceMethodSym(
+  env: in BuildEnv,
+  sym: in SymbolId,
+  ifaceId: in SymbolId,
+  memberName: in String,
+  site: in MethodCallSite,
+): Unit {
+  if env.syms.containsKey(sym.id) {
+    return
+  }
+  val tbl = env.ctx.tbl
+  var found: Option[MethodEntry] = None
+  for en in symTableMethodSigs(tbl, ifaceId, memberName) {
+    if sameSpan(en.sig.span, site.sig.span) {
+      found = Some(value = en)
+    }
+  }
+  val entry = match found { case Some(en) -> en; case None -> return }
+  val ctx = newTyConvCtx(tbl)
+  tyConvBind(ctx, entry.ownerName, ifaceId, entry.ownerGenerics)
+  for o in entry.sig.genericOwners {
+    tyConvBind(ctx, o, sym, entry.sig.generics)
+  }
+  val ps: List[TParamTy] = newList()
+  val ownerArgs: List[Type] = newList()
+  for g in entry.ownerGenerics {
+    ownerArgs.add(TyParam(name = g, owner = entry.ownerName))
+  }
+  match tyOfType(ctx, TyUser(id = ifaceId, name = entry.ownerName, args = ownerArgs)) {
+    case Ok(t) -> ps.add(
+      TParamTy(
+        mode = match site.sig.recvMode { case Some(m) -> modeOfParam(m); case None -> TMIn },
+        ty = t
+      )
+    )
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return
+    }
+  }
+  for p in entry.sig.params {
+    match tyOfType(ctx, p.ty) {
+      case Ok(t) -> ps.add(TParamTy(mode = modeOfParam(p.mode), ty = t))
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return
+      }
+    }
+  }
+  match tyOfType(ctx, entry.sig.returnTy) {
+    case Ok(r) -> env.syms.add(
+      sym.id,
+      TSymEntry(
+        sym = sym,
+        kind = TSkInterfaceMethod,
+        typeParamCount = entry.sig.generics.count,
+        sig = Some(
+          value = TSig(
+            typeParamCount = entry.sig.generics.count,
+            params = ps,
+            ret = r,
+            isAsync = entry.sig.isAsync
+          )
+        ),
+        fields = newList(),
+        ty = None,
+        mutable = false
+      )
+    )
+    case Err(msg) -> env.errors.add(msg)
+  }
+}
+
 /// The names of the `var` fields of the record or non-generic protected type `sid` (a plain field is
 /// immutable, language reference §3.4), read from its declaration.  Every field of a `foreign record` is
 /// writable in place (T0180 judges the write, language reference §3.4).  Any other symbol has none.

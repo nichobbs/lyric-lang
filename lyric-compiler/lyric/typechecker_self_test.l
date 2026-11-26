@@ -13062,6 +13062,50 @@ test "an impl of a generic interface is conformance-checked, then T0217 (#7791)"
   assertEqualInt(countDiagCode(arity, "T0216"), 1, "argument count: " + diagCodesOf(arity))
 }
 
+// #7791: a default method of a generic interface called on an implementor takes the
+// impl's interface arguments (`Named[Int].tagged(x: T)` is `tagged(x: Int)`), also through
+// a generic impl at the receiver's own arguments.
+test "a default method of a generic interface is instantiated at the impl's arguments (#7791)" {
+  val head = "package P\ninterface Named[T] {\n  func label(self: in Self): String\n  func tagged(self: in Self, x: in T): String = label()\n}\n"
+  val concrete = parseCheck(
+    head +
+      "record L { s: String }\nimpl Named[Int] for L { func label(self: in L): String = self.s }\nfunc f(l: in L): String = l.tagged(1)\n"
+  )
+  assertEqualInt(countDiagCode(concrete, "T0043"), 0, "concrete impl: " + diagCodesOf(concrete))
+  val wrong = parseCheck(
+    head +
+      "record L { s: String }\nimpl Named[Int] for L { func label(self: in L): String = self.s }\nfunc f(l: in L): String = l.tagged(\"x\")\n"
+  )
+  assertEqualInt(countDiagCode(wrong, "T0043"), 1, "wrong argument type: " + diagCodesOf(wrong))
+  val genericImpl = parseCheck(
+    head +
+      "record B[T] { v: T }\nimpl[T] Named[T] for B[T] { func label(self: in B[T]): String = \"b\" }\nfunc f(b: in B[String]): String = b.tagged(\"s\")\nfunc g(b: in B[Int]): String = b.tagged(2)\n"
+  )
+  assertEqualInt(countDiagCode(genericImpl, "T0043"), 0, "generic impl: " + diagCodesOf(genericImpl))
+}
+
+// #7791: a value is a `Holder[Int]` only when an impl of `Holder` for its type gives `Int`: a record
+// that implements `Holder[Long]` is not accepted where a `Holder[Int]` is expected, nor is a
+// `Box[String]` of `impl[T] Holder[T] for Box[T]`.
+test "an implementor is accepted only at the interface arguments its impl gives (#7791)" {
+  val head = "package P\ninterface Holder[T] { func get(self: in Self): T }\nrecord LongBox { v: Long }\nimpl Holder[Long] for LongBox { func get(self: in LongBox): Long = self.v }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\nfunc readInt(h: in Holder[Int]): Int = h.get()\n"
+  val wrong = parseCheck(head + "func f(b: in LongBox): Int = readInt(b)\n")
+  assertEqualInt(countDiagCode(wrong, "T0043"), 1, "Holder[Long] as Holder[Int]: " + diagCodesOf(wrong))
+  val wrongGeneric = parseCheck(head + "func f(b: in Box[String]): Int = readInt(b)\n")
+  assertEqualInt(countDiagCode(wrongGeneric, "T0043"), 1, "Box[String] as Holder[Int]: " + diagCodesOf(wrongGeneric))
+  val ok = parseCheck(head + "func f(b: in Box[Int]): Int = readInt(b)\n")
+  assertEqualInt(countDiagCode(ok, "T0043"), 0, "Box[Int] as Holder[Int]: " + diagCodesOf(ok))
+}
+
+// #7791: a `where` bound naming a generic interface is T0233, not a type error in the body.
+test "a where bound naming a generic interface is T0233 (#7791)" {
+  val head = "package P\ninterface Holder[T] { func get(self: in Self): T }\ninterface Plain { func n(self: in Self): Int }\n"
+  val bad = parseCheck(head + "func f[X](x: in X): Int where X: Holder[Int] { 0 }\n")
+  assertEqualInt(countDiagCode(bad, "T0233"), 1, "generic interface bound: " + diagCodesOf(bad))
+  val ok = parseCheck(head + "func f[X](x: in X): Int where X: Plain { x.n() }\n")
+  assertEqualInt(countDiagCode(ok, "T0233"), 0, "plain interface bound: " + diagCodesOf(ok))
+}
+
 // #7791: an impl method may rename the interface method's own type parameter.
 test "an impl method renames the interface method's type parameter (#7791)" {
   val ok = parseCheck(

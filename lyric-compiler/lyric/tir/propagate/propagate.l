@@ -228,7 +228,7 @@ pub func lowerPropagateBundle(interner: in DefPathInterner, bundle: in List[Pack
     }
     res.add(
       PackageBuild(
-        pkg = TPackage(name = pb.pkg.name, symbols = pb.pkg.symbols, funcs = fns),
+        pkg = TPackage(name = pb.pkg.name, symbols = pb.pkg.symbols, funcs = fns, impls = pb.pkg.impls),
         failed = pb.failed,
         total = pb.total,
         built = pb.built,

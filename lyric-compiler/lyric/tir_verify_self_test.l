@@ -802,3 +802,52 @@ test "a host call may omit trailing parameters; a count outside the signature is
   assertTrue(rulesOf(oneFn(entries(), hostCallFn(5))).contains("host-omitted"), "more omitted than parameters")
   assertTrue(rulesOf(oneFn(entries(), hostCallFn(-1))).contains("host-omitted"), "a negative count")
 }
+
+// #7791: an impl block names a defined interface, its target and arguments are closed over its own parameters,
+// and each member it lists is declared by the package.
+func implOf(blockSym: in Int, iface: in Int, members: in List[SymbolId], ifaceArg: in Ty): TImplDecl {
+  val args: List[Ty] = newList()
+  args.add(ifaceArg)
+  TImplDecl(
+    sym = sym(blockSym),
+    typeParams = newList(),
+    target = tyInt(),
+    iface = sym(iface),
+    ifaceArgs = args,
+    members = members,
+    span = noSourceSpan()
+  )
+}
+
+test "an impl whose members are declared verifies; a missing member and an unclosed argument do not (#7791)" {
+  val es = entries()
+  es.add(
+    TSymEntry(
+      sym = sym(20),
+      kind = TSkType,
+      typeParamCount = 1,
+      sig = None,
+      fields = newList(),
+      ty = None,
+      mutable = false
+    )
+  )
+  val fns: List[TFnDecl] = newList()
+  fns.add(identityInt())
+  val ok: List[SymbolId] = newList()
+  ok.add(sym(10))
+  val good: List[TImplDecl] = newList()
+  good.add(implOf(30, 20, ok, tyInt()))
+  val pkgOk = TPackage(name = "P", symbols = es, funcs = fns, impls = good)
+  assertEqualInt(verifyPackage(pkgOk, newList()).count, 0, "a closed impl with a declared member")
+  val gone: List[SymbolId] = newList()
+  gone.add(sym(99))
+  val missing: List[TImplDecl] = newList()
+  missing.add(implOf(30, 20, gone, tyInt()))
+  val pkgMissing = TPackage(name = "P", symbols = es, funcs = fns, impls = missing)
+  assertEqual(rulesOf(verifyPackage(pkgMissing, newList())), "impl-member", "an undeclared member")
+  val open: List[TImplDecl] = newList()
+  open.add(implOf(30, 20, ok, TParam(owner = sym(31), index = 0)))
+  val pkgOpen = TPackage(name = "P", symbols = es, funcs = fns, impls = open)
+  assertEqual(rulesOf(verifyPackage(pkgOpen, newList())), "closed-type", "an argument over another owner's parameter")
+}
