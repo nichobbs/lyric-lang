@@ -3108,7 +3108,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case _ -> ()
       }
       match buildAll(env, xs) {
-        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
+        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = rangeCheckedElems(env, ts, ty))))
         case None -> None
       }
     }
@@ -7977,6 +7977,28 @@ func retypeTupleLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr]
     i = i + 1
   }
   Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XTuple(elems = converted)))
+}
+
+/// The elements of a list literal the checker typed as a `List` of a range type (`val xs: List[Int range 0 ..= 3] =
+/// [n]`): each converted to the element type, so the range check applies to it as it does to an element added or
+/// assigned later (#8031).  A literal of any other type keeps its elements.
+func rangeCheckedElems(env: in BuildEnv, ts: in List[TExpr], ty: in Ty): List[TExpr] {
+  val el = match ty {
+    case TExtern(h) -> if h.args.count == 1 and isListHostName(h.name) { h.args[0] } else { return ts }
+    case _ -> return ts
+  }
+  match el {
+    case TRefined(_, _, _, _) -> ()
+    case _ -> return ts
+  }
+  val converted: List[TExpr] = newList()
+  for x in ts {
+    match convertValue(env, x, el) {
+      case Some(c) -> converted.add(c)
+      case None -> converted.add(x)
+    }
+  }
+  converted
 }
 
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand

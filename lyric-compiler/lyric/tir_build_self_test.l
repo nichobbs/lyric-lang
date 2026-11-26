@@ -2739,6 +2739,42 @@ test "a protected invariant reads the field, not a parameter of its name (D509, 
   assertFalse(readsLocalOf(put.invariants[0], param), "the clause does not read the parameter")
 }
 
+func countRangeChecks(e: in TExpr): Int {
+  val seen: List[Int] = newList()
+  val w = newWalker(
+    { x: TExpr -> None },
+    {
+      x: TExpr ->
+      match x.kind {
+        case XConvert(CvRangeCheck, _) -> {
+          seen.add(1)
+          x
+        }
+        case _ -> x
+      }
+    }
+  )
+  walkExpr(w, e)
+  seen.count
+}
+
+test "an element of a list literal typed as a list of a range type is range checked (#8031)" {
+  val c = censusOf(
+    "package App\nfunc at(n: in Int): Int = n\nfunc f(): Int {\n  val xs: List[Int range 0 ..= 3] = [at(10), at(1)]\n  xs.count\n}\nfunc g(): Int {\n  val ys: List[Int] = [at(10)]\n  ys.count\n}\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  var total = 0
+  for fd in c.pkg.funcs {
+    match fd.body {
+      case Some(b) -> {
+        total = total + countRangeChecks(b)
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(total, 2, "each of the two elements of the range list is checked, and the plain list's is not")
+}
+
 test "a default argument that is a call is placed afresh at every call of one body" {
   val c = censusOf(
     "package App\nfunc mk(): Int { 7 }\nfunc k(a: Int, b: Int = mk()): Int { a + b }\nfunc m(): Int { k(1) + k(2) }\n"
