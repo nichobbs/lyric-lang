@@ -23399,7 +23399,7 @@ func lowerMethodCallMsil(
             cctx,
             fctx,
             insns,
-            ie.ifaceTypeName,
+            ie.ifaceTypeName + "`" + toString(ie.ifaceTypeArgs.count),
             ie.ifaceTypeArgs,
             memberName,
             callArity,
