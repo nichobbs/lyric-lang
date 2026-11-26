@@ -6,17 +6,20 @@ pub interface Holder[T] {
   func get(self: in Self): T
 }
 
-record Pair2[A, B] {
-  a: A
-  b: B
+union Wrap[T] {
+  case Full(v: T)
+  case Empty
 }
 
-impl[T] Holder[T] for Pair2[T, Int] {
-  func get(self: in Pair2[T, Int]): T = self.a
+impl[T] Holder[T] for Wrap[T] {
+  func get(self: in Wrap[T]): T = match self {
+    case Full(v) -> v
+    case Empty -> panic("empty")
+  }
 }
 
 func main(): Int {
-  val p: Pair2[String, Int] = Pair2(a = "x", b = 1)
-  println(p.get())
+  val w: Wrap[String] = Full(v = "x")
+  println(w.get())
   0
 }

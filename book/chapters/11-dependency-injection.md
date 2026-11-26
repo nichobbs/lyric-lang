@@ -81,7 +81,7 @@ func bump(h: in Holder[Int]): Int {
 }
 ```
 
-`bump` accepts an `IntBox` and a `Box[Int]`. The impl is checked against the interface with `T` replaced by the impl's argument, so `impl Holder[Int] for IntBox` with `get(): String` is **T0107** and `impl Holder[Int, Int]` is **T0216**. A default method of the interface is inherited by an impl that omits it, with its parameter types at the impl's arguments. On `--target dotnet` the interface is a generic CLR interface; on `--target jvm` it is erased and the compiler writes the bridge methods. `--target native` lays out the interface per instantiation (`Holder[Int]`) for an impl on a concrete type; an impl for a generic type (`impl[T] Holder[T] for Box[T]`) is **N0105** there, and an impl that omits another package's default method is **N0106**.
+`bump` accepts an `IntBox` and a `Box[Int]`. The impl is checked against the interface with `T` replaced by the impl's argument, so `impl Holder[Int] for IntBox` with `get(): String` is **T0107** and `impl Holder[Int, Int]` is **T0216**. A default method of the interface is inherited by an impl that omits it, with its parameter types at the impl's arguments. On `--target dotnet` the interface is a generic CLR interface; on `--target jvm` it is erased and the compiler writes the bridge methods. `--target native` lays out the interface per instantiation (`Holder[Int]`) for an impl on a concrete type; an impl for a generic record (`impl[T] Holder[T] for Box[T]`) is laid out per instance, an impl for another generic target is **N0105**, and an impl that omits another package's default method is **N0106**.
 
 ## §11.3 The wire block
 

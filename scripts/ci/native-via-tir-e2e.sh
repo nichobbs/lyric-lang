@@ -912,7 +912,7 @@ diff -u "$work/gg_tir.out" "$work/gg_asan.out"
 echo "generic interface impl for a generic record under AddressSanitizer: clean"
 
 # An impl of a generic interface whose target is not a generic record applied to the impl's own parameters
-# (`impl[T] Holder[T] for Pair2[T, Int]`) is not laid out: the build stops with N0105 rather than producing a
+# (`impl[T] Holder[T] for Wrap[T]` over a generic union) is not laid out: the build stops with N0105 rather than producing a
 # program whose interface calls have no vtable.
 if "$lyric_bin" build --target native "scripts/ci/native-via-tir/genericifaces_unsupported_impl.l" -o "$work/gi_bad" 2> "$work/gi_bad.txt" >/dev/null; then
   echo "::error::an impl of a generic interface for an unsupported generic target built on native"
