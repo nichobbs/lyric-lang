@@ -75,6 +75,13 @@ opaque type Company @projectable {
   region: Region
 }
 
+// ── Test 11: @projectable with an invariant — tryInto checks it (#9315, D511) ──
+opaque type Quota @projectable {
+  used: Int
+  limit: Int
+  invariant: used >= 0 and used <= limit
+}
+
 test "toView exposes all fields of a basic projectable" {
   val u = User(id = 7, name = "alice")
   val uv = u.toView()
@@ -85,10 +92,7 @@ test "toView exposes all fields of a basic projectable" {
 test "tryInto round-trips the opaque value" {
   val u = User(id = 7, name = "alice")
   val uv = u.toView()
-  val ok = match uv.tryInto() {
-    case Ok(u2) -> u2.id == 7 and u2.name == "alice"
-    case Err(_) -> false
-  }
+  val ok = match uv.tryInto() { case Ok(u2) -> u2.id == 7 and u2.name == "alice"; case Err(_) -> false }
   assertTrue(ok, "tryInto_ok")
 }
 
@@ -123,4 +127,17 @@ test "two-level nesting projects transitively" {
   val cv = company.toView()
   assertEqual(cv.companyName, "Acme", "company_name")
   assertEqual(cv.region.city.name, "Paris", "company_city_name")
+}
+
+test "tryInto returns Err naming the violated invariant clause instead of panicking" {
+  val bad = QuotaView(used = 5, limit = 3)
+  val msg = match bad.tryInto() { case Ok(_) -> "ok"; case Err(m) -> m }
+  assertTrue(msg.startsWith("InvariantViolated: "), "tryInto_err_prefix: " + msg)
+  assertTrue(msg.contains(".Quota invariant used >= 0 and used <= limit"), "tryInto_err_clause: " + msg)
+}
+
+test "tryInto returns Ok for a view whose values satisfy the invariant" {
+  val good = QuotaView(used = 2, limit = 3)
+  val ok = match good.tryInto() { case Ok(q) -> q.toView().used == 2; case Err(_) -> false }
+  assertTrue(ok, "tryInto_invariant_ok")
 }

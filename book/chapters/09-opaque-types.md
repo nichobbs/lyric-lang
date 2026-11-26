@@ -159,7 +159,7 @@ The `@hidden` annotation on `passwordHash` tells the compiler to exclude that fi
 
 - `exposed record UserView { id: Guid; email: String; createdAt: String }` — the non-hidden fields, with opaque field types projected to their view counterparts (a `UserId` becomes a `Guid` because `UserId` is itself `@projectable` with a `Guid` field)
 - `func User.toView(self: in User): UserView` — projects a `User` to its view
-- `func UserView.tryInto(self: in UserView): Result[User, ContractViolation]` — reconstructs a `User` from a view, running the `invariant:` clause on the way in
+- `func UserView.tryInto(self: in UserView): Result[User, String]` — reconstructs a `User` from a view, checking the `invariant:` clauses on the way in: a violated clause is an `Err` whose message names it (`InvariantViolated: Pkg.User invariant <clause>`), not a panic
 
 Using them:
 

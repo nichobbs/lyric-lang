@@ -8,6 +8,9 @@
 //!   func User.toView(self: in User): UserView = UserView(<fields>)
 //!   func UserView.tryInto(self: in UserView): Result[User, String] = Ok(User(<fields>))
 //!
+//! (when the type declares `invariant:` clauses, `tryInto` first checks each without panicking and returns
+//! `Err("InvariantViolated: Pkg.User invariant <clause>")` for the first that fails, D511)
+//!
 //! as ordinary AST, so the checker types them, the typed IR builder lowers them
 //! and no backend carries a projection twin of its own.
 //!
@@ -31,6 +34,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
+import Lyric.ContractElaborator as Elab
 import Lyric.Expand as Expand
 import Lyric.PluginExpand as PluginExpand
 
@@ -226,7 +230,7 @@ func joinWith(parts: in List[String], sep: in String): String {
 }
 
 /// The source text of the view record and its two functions for `d`.
-func expansionText(it: in Item, d: in OpaqueTypeDecl, sc: in Scope): String {
+func expansionText(it: in Item, d: in OpaqueTypeDecl, sc: in Scope, pkg: in String): String {
   val fields = fieldsOf(d, sc)
   val vis = visibilityPrefix(it)
   val view = d.name + "View"
@@ -261,11 +265,24 @@ func expansionText(it: in Item, d: in OpaqueTypeDecl, sc: in Scope): String {
       ")\n"
   )
   if eligible {
-    decls.add(
-      vis + "func " + view + ".tryInto(self: in " + view + "): Result[" + d.name + ", String] = Ok(" + d.name + "(" +
-        joinWith(tryArgs, ", ") +
-        "))\n"
-    )
+    val checks = if Elab.opaqueMembersHaveInvariant(d.members) {
+      Elab.invariantErrChecksText(pkg, d.name, d.members, "self")
+    } else {
+      newList()
+    }
+    val rebuilt = "Ok(" + d.name + "(" + joinWith(tryArgs, ", ") + "))"
+    if checks.count == 0 {
+      decls.add(
+        vis + "func " + view + ".tryInto(self: in " + view + "): Result[" + d.name + ", String] = " + rebuilt + "\n"
+      )
+    } else {
+      decls.add(
+        vis + "func " + view + ".tryInto(self: in " + view + "): Result[" + d.name + ", String] {\n" + joinWith(checks, "") +
+          "  " +
+          rebuilt +
+          "\n}\n"
+      )
+    }
   }
   joinWith(decls, "\n")
 }
@@ -414,7 +431,7 @@ pub func projectableRewriteFileIn(
       case IOpaque(d) -> if isProjectableOpaque(it, d) {
         sc.currentFile[0] = it.span.startPos.fileId
         sc.projectableFiles[it.span.startPos.fileId] = true
-        val pr = parse("package " + pkg + "\n" + expansionText(it, d, sc))
+        val pr = parse("package " + pkg + "\n" + expansionText(it, d, sc, pkg))
         if pr.diagnostics.count > 0 {
           diags.add(
             errorDiagnostic(
