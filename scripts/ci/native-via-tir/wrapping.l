@@ -43,6 +43,10 @@ func nameAt(xs: in List[String], i: in Int, v: in String): String {
   xs[i]
 }
 
+func uintBig(u: in UInt): Bool {
+  u.toDouble() > 3000000000.0
+}
+
 func later(): String {
   var s: String = default()
   s = "set later"
@@ -67,4 +71,5 @@ func main(): Unit {
   println(nameAt(names, 0, "x" + "y"))
   println(names[0] + names[1])
   println(later())
+  println(toString(uintBig(4000000000u32)))
 }

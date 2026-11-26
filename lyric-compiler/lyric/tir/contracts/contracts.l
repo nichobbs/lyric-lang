@@ -495,7 +495,7 @@ pub func elaborateFnWith(
     }
     case None -> ()
   }
-  if userPre.count == 0 and userPost.count == 0 and entryChecks.count == 0 and exitPosts.count == 0 {
+  if userPre.count == 0 and userPost.count == 0 and entryChecks.count == 0 and exitPosts.count == 0 and d.invariants.count == 0 {
     return d
   }
   val stmts: List[TStmt] = newList()
@@ -571,6 +571,13 @@ pub func elaborateFnWith(
   for p in userPost {
     posts.add(p)
   }
+  // The protected type's invariants are system checks like the boundary's: they run with contracts off too.
+  var ii = 0
+  while ii < d.invariants.count {
+    posts.add(d.invariants[ii])
+    messages.add(violation("InvariantViolated", owner, "invariant", clauseText(d.invariantTexts, ii)))
+    ii = ii + 1
+  }
   for p in exitPosts {
     posts.add(p)
   }
@@ -633,7 +640,9 @@ pub func elaborateFnWith(
     isGenerator = d.isGenerator,
     precondTexts = d.precondTexts,
     postcondTexts = d.postcondTexts,
-    isPublic = d.isPublic
+    isPublic = d.isPublic,
+    invariants = d.invariants,
+    invariantTexts = d.invariantTexts
   )
 }
 

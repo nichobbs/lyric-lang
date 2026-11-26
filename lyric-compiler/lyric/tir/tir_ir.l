@@ -406,6 +406,11 @@ pub record TFnDecl {
   /// Declared `pub`: a public function is an invariant boundary (docs/08 §7.1), where a value of a type
   /// that declares `invariant:` clauses is checked as it crosses (D507).
   isPublic: Bool = false
+  /// The `invariant:` clauses of the protected type a member belongs to, built in the member's scope (a bare field
+  /// name is a field of the receiver), and their formatter-rendered text: asserted after the member's own
+  /// postconditions at every way out of it (docs/08 §7.1, D509).
+  invariants: List[TExpr] = newList()
+  invariantTexts: List[String] = newList()
 }
 
 /// A callable's signature, as a call checks against it.

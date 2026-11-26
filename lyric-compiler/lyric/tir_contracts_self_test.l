@@ -438,3 +438,51 @@ test "a public function checks an in parameter of another package's invariant ty
   val ds = verifyPackage(done[0].pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }
+
+test "a protected type's invariant is asserted at the exit of each member, with contracts on or off (D509)" {
+  val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  entry bump(by: in Int): Unit {\n    level = level + by\n  }\n  func read(): Int {\n    level\n  }\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  assertEqualInt(pb.pkg.funcs.count, 2, "the entry and the function")
+  for f in pb.pkg.funcs {
+    assertEqualInt(f.invariants.count, 1, "each member carries the type's invariant")
+  }
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  for en in [true, false] {
+    val done = elaborateBundle(cr.symbols.interner, bundle, en)
+    for f in done[0].pkg.funcs {
+      val ms = messagesOfFn(f)
+      assertEqualInt(ms.count, 1, "one invariant check per member")
+      assertTrue(ms[0].startsWith("InvariantViolated: App.Gauge."), ms[0])
+      assertTrue(ms[0].endsWith(" invariant level >= 0"), ms[0])
+    }
+    val ds = verifyPackage(done[0].pkg, newList())
+    assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+  }
+}
+
+test "a protected member with an early return asserts the invariant at each exit (D509)" {
+  val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  func read(by: in Int): Int {\n    if by > 100 {\n      return level\n    }\n    level + by\n  }\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  val done = elaborateBundle(cr.symbols.interner, bundle, true)
+  val ms = messagesOfFn(done[0].pkg.funcs[0])
+  assertEqualInt(ms.count, 2, "one check on the early return and one at the fall-off")
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+}

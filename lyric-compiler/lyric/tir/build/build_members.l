@@ -28,6 +28,8 @@ pub record MemberSite {
   implTarget: Option[TypeExpr]
   /// The binder of the owner's type parameters (none for a type that declares none).
   owner: MemberOwner
+  /// The `invariant:` clauses of the protected type the member belongs to (D509).
+  invariants: List[InvariantClause] = newList()
 }
 
 /// An entry as the function the builder builds: its `when:` clause stays among the contracts.
@@ -105,6 +107,13 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
       case IProtected(decl) -> {
         val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
         val owner = ownerOf(decl.name, tsym, decl.generics)
+        val typeInvs: List[InvariantClause] = newList()
+        for m in decl.members {
+          match m {
+            case PMInvariant(inv) -> typeInvs.add(inv)
+            case _ -> ()
+          }
+        }
         for m in decl.members {
           match m {
             case PMFunc(fn) -> if isSome(fn.body) {
@@ -116,7 +125,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   recv = plainRecv(tsym, owner),
                   implTarget = None,
                   isEntry = false,
-                  owner = owner
+                  owner = owner,
+                  invariants = typeInvs
                 )
               )
             }
@@ -129,7 +139,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   recv = plainRecv(tsym, owner),
                   implTarget = None,
                   isEntry = true,
-                  owner = owner
+                  owner = owner,
+                  invariants = typeInvs
                 )
               )
             }
@@ -400,6 +411,9 @@ func buildMemberInner(
   }
   env.symOverride.add(sym)
   env.memberOwner.add(site.owner)
+  for inv in site.invariants {
+    env.memberInvs.add(inv)
+  }
   if mode == 1 {
     buildFnSigDecl(env, site.fn, tbl)
   } else if mode == 2 {

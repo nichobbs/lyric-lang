@@ -175,6 +175,7 @@ func mapItem(it: in Item, m: in AstMapper): Item {
           )
           case PMFunc(fn) -> members.add(PMFunc(fn = mapFunction(fn, m)))
           case PMField(pf) -> members.add(PMField(field = mapProtectedField(pf, m)))
+          case PMInvariant(inv) -> members.add(PMInvariant(inv = inv.copy(expr = mapExprWith(inv.expr, m))))
           case other -> members.add(other)
         }
         i = i + 1

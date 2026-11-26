@@ -4963,10 +4963,11 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
       c.insns.add(NFPTrunc(dest = d, value = v.value))
       return Some(value = Val(ty = NFloat, value = NLocal(name = d)))
     }
-    if from == "UInt" or from == "ULong" {
+    if from == "ULong" {
       return None
     }
-    val src = if bitsOf(v.ty) == 8 { zextTo(c, v, NI32) } else { v }
+    // A `UInt` is zero-extended to 64 bits first, so the signed conversion reads its unsigned value.
+    val src = if from == "UInt" { zextTo(c, v, NI64) } else if bitsOf(v.ty) == 8 { zextTo(c, v, NI32) } else { v }
     val d = tmp(c)
     c.insns.add(NSIToFP(dest = d, fromTy = src.ty, value = src.value, toTy = target))
     return Some(value = Val(ty = target, value = NLocal(name = d)))
@@ -6399,7 +6400,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   if fn.isGenerator {
     return fallback(fn.sym, "a generator")
   }
-  if (fn.preconds.count > 0 or fn.postconds.count > 0) and not env.contractsElaborated {
+  if (fn.preconds.count > 0 or fn.postconds.count > 0 or fn.invariants.count > 0) and not env.contractsElaborated {
     return fallback(fn.sym, "contracts that the contract pass has not elaborated")
   }
   val irName = match mapGet(if fn.isAsync { env.asyncFns } else { env.fnNames }, fn.sym.id) {
