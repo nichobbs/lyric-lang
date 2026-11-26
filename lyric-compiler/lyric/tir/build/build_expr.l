@@ -164,6 +164,32 @@ pub func declareLocal(env: in BuildEnv, name: in String, ty: in Ty, mutable: in 
   d
 }
 
+/// A protected type's invariant clause is about the type's fields: it is built with only the receiver in scope, so a
+/// parameter of the member that is named like a field does not hide the field (D509, #9432).
+func buildInvariantClause(env: in BuildEnv, inv: in InvariantClause): Option[TExpr] {
+  val saved: List[Map[String, LocalDecl]] = newList()
+  for sc in env.scopes {
+    saved.add(sc)
+  }
+  val only: Map[String, LocalDecl] = newMap()
+  match lookupLocal(env, "self") {
+    case Some(d) -> only.add("self", d)
+    case None -> ()
+  }
+  while env.scopes.count > 0 {
+    env.scopes.removeAt(env.scopes.count - 1)
+  }
+  env.scopes.add(only)
+  val built = buildExpr(env, inv.expr)
+  while env.scopes.count > 0 {
+    env.scopes.removeAt(env.scopes.count - 1)
+  }
+  for sc in saved {
+    env.scopes.add(sc)
+  }
+  built
+}
+
 func lookupLocal(env: in BuildEnv, name: in String): Option[LocalDecl] {
   var i = env.scopes.count - 1
   while i >= 0 {
@@ -4722,7 +4748,7 @@ func buildFnCore(
     }
     // The protected type's invariants, in the member's scope (D509).
     for inv in env.memberInvs {
-      match buildExpr(env, inv.expr) {
+      match buildInvariantClause(env, inv) {
         case Some(t) -> {
           // The clause is one AST node tree built in every member: each copy takes node ids of its own.
           val w = newWalker({ x: TExpr -> None }, { x: TExpr -> renumberNode(env, x) })
@@ -10064,13 +10090,21 @@ func buildCallArgs(
   }
   var reordered = false
   var last = -1
+  var defaultSeen = false
   var k = 0
   while k < srcIdx.count {
     if srcIdx[k] >= 0 {
       if srcIdx[k] < last {
         reordered = true
       }
+      // An omitted default that precedes an explicit argument is evaluated at its parameter's position, before
+      // that argument; D171 runs it after every explicit argument, so such a call is a reorder too.
+      if defaultSeen {
+        reordered = true
+      }
       last = srcIdx[k]
+    } else if sig.params[k].hasDefault {
+      defaultSeen = true
     }
     k = k + 1
   }

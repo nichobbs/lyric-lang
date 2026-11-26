@@ -1025,6 +1025,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Protected-type invariants on TIR (D509): each member carries its type's `invariant:` clauses, built in the member's scope with node ids of their own and asserted at every exit by `Lyric.Tir.Contracts`, ungated; protected-type invariant clauses are now numbered by `renumberNodeIds`.
   - Loop invariants on TIR (`Lyric.Tir.Loops`, D510): each `invariant:` clause is asserted at the head of every iteration and after a loop that ends normally, not after a `break` (a `while` becomes a `loop` with the exit check in its guard, a `for` uses a break flag); `TsInvariant` carries its text and `Lyric.Tir.Walk` gains a statement hook.
   - Public invariant boundary for methods and `impl` members (D512): a method of a `pub` record and every `impl` member take D507's entry and exit checks on TIR, as on the AST path.
+  - Mono slice 2 (D513): the monomorphiser instantiates generic interfaces (a call through one names the interface's instance and its method entry, no interface argument is left), keeps the impls of non-generic targets with their interface mapped, and instantiates each `impl[T]` block at every instance of its target, over `TPackage.impls`.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

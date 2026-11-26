@@ -19280,6 +19280,59 @@ func instArgsOf(infos: in Map[Int, TirMono.InstanceInfo]): Map[Int, List[Tir.Ty]
   table
 }
 
+/// The mark the AST path's `Lyric.Mono` puts in the name of the specialisations of a generic that shares its name
+/// with other functions of its package: `__o<i>` for the `i`-th declaration of the set (the first has none), so two
+/// overloads never share an IR name (#8461, `specBaseNameMono`).  `names` maps each declaration to its DefPath key;
+/// the declarations of a package are numbered in symbol order, which is declaration order.
+func tirOverloadMark(names: in Map[Int, String], originId: in Int): String {
+  match mapGet(names, originId) {
+    case None -> ""
+    case Some(key) -> match Str.indexOf(key, "::") {
+      case None -> ""
+      case Some(sep) -> {
+        val prefix = Str.substring(key, 0, sep + 2)
+        val bare = tirBareFnName(key, sep + 2)
+        var index = 0
+        var peers = 1
+        for id in mapKeys(names) {
+          if id != originId {
+            match mapGet(names, id) {
+              case Some(k2) -> if Str.startsWith(k2, prefix) and tirBareFnName(k2, sep + 2) == bare {
+                peers = peers + 1
+                if id < originId {
+                  index = index + 1
+                }
+              }
+              case None -> ()
+            }
+          }
+        }
+        if peers > 1 and index > 0 {
+          "__o" + index.toString()
+        } else {
+          ""
+        }
+      }
+    }
+  }
+}
+
+/// The name a DefPath key starts with after its package: up to the type or parameter list.
+func tirBareFnName(key: in String, from: in Int): String {
+  var stop = key.length
+  var i = from
+  while i < key.length {
+    val c = Str.substring(key, i, 1)
+    if c == "[" or c == "(" {
+      stop = i
+      i = key.length
+    } else {
+      i = i + 1
+    }
+  }
+  Str.substring(key, from, stop - from)
+}
+
 /// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR
 /// name of the AST copy stands for the instance, so a call from TIR reaches it, and the copy is lowered
 /// from the instance's TIR body (`tirTry` finds it by `instFns`).  An instance whose AST copy is not
@@ -19347,7 +19400,7 @@ func registerTirInstanceFns(
                 intrinsics.add(f.sym.id, bare)
               }
               if not Str.contains(bare, "::") and not f.isAsync {
-                var astName = bare
+                var astName = bare + tirOverloadMark(names, ii.origin.id)
                 var ok = true
                 for a in ii.args {
                   match LlvmTir.tirAstTypeKey(names, byInst, a) {

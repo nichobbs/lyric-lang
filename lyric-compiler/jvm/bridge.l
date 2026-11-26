@@ -4099,6 +4099,24 @@ pub func compileProjectToJarBundledWithRestored(
     )
   }
 
+  // An impl of an interface another package declares has that interface's default
+  // methods on its type, for the user's package and every source package of the
+  // bundle (#9428); every file is registered by now.
+  registerHeadOnlyImplsJvm(
+    userFile,
+    registry,
+    externSeedForFileCached(userFile, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+  )
+  var hoi = 0
+  while hoi < stdlibFiles.count {
+    registerHeadOnlyImplsJvm(
+      stdlibFiles[hoi],
+      registry,
+      externSeedForFileCached(stdlibFiles[hoi], extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+    )
+    hoi = hoi + 1
+  }
+
   // Transitive import closure: the stdlib packages whose bytecode must be
   // bundled because the user (directly or indirectly) imports them.
   val toBundle = jvmBundleClosure(fe, restoredArtifacts)
