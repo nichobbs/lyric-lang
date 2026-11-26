@@ -182,3 +182,23 @@ test "a labelled break from an inner loop sets the outer for loop's flag" {
   assertEqualInt(c.asserts, 2, "the iteration check and the guarded exit check")
   assertEqualInt(c.vars, 2, "the accumulator and the outer loop's break flag")
 }
+
+test "a labelled continue from an inner loop is not a break and sets no flag (D510)" {
+  val l = lowerOf(
+    "package App\nfunc f(n: Int): Int {\n  var s = 0\n  outer: for i in 0 ..< n\n    invariant: s >= 0\n  {\n    for k in 0 ..< 3 {\n      if k == 1 { continue outer }\n      s = s + k\n    }\n  }\n  s\n}\n"
+  )
+  assertLowered(l, "labelled continue")
+  val c = count(l.pb)
+  assertEqualInt(c.asserts, 2, "the iteration check and the unguarded exit check")
+  assertEqualInt(c.vars, 1, "only the accumulator: no break flag")
+}
+
+test "a break inside a lambda's own loop leaves the enclosing for loop's flag alone (D510)" {
+  val l = lowerOf(
+    "package App\nfunc f(n: Int): Int {\n  var s = 0\n  for i in 0 ..< n\n    invariant: s >= 0\n  {\n    val g = { x: Int ->\n      var j = 0\n      while true {\n        if j > x { break }\n        j = j + 1\n      }\n      j\n    }\n    s = s + g(i)\n  }\n  s\n}\n"
+  )
+  assertLowered(l, "lambda loop")
+  val c = count(l.pb)
+  assertEqualInt(c.asserts, 2, "the for's iteration and exit checks: the lambda's loop has no clause")
+  assertEqualInt(c.vars, 2, "the accumulator and the lambda's counter: no break flag")
+}
