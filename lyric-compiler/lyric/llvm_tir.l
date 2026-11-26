@@ -1903,6 +1903,9 @@ func opName(op: in IntrinsicOp): String {
 func lowerBinary(
   c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue, b: in NValue, line: in Int
 ): Val {
+  if isAggN(nty) {
+    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
   val flt = isFloatTy(ty)
   val uns = isUnsignedTy(ty)
   match icmpPred(op, uns) {
@@ -3547,11 +3550,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   // placeholder a later `out` argument or assignment replaces, releasing nothing).
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
-      case Some(nt) -> match nt {
-        case NPtr(_) -> return Val(ty = nt, value = zeroOf(nt))
-        case NDouble -> return Val(ty = nt, value = zeroOf(nt))
-        case NFloat -> return Val(ty = nt, value = zeroOf(nt))
-        case _ -> if isIntegerN(nt) or isScalarN(nt) { return Val(ty = nt, value = zeroOf(nt)) }
+      case Some(nt) -> {
+        // A scalar, or the null `String` placeholder; a record, list or union has no zero value here.
+        if isScalarN(nt) or isStringN(nt) {
+          return Val(ty = nt, value = zeroOf(nt))
+        }
       }
       case None -> ()
     }
@@ -3586,6 +3589,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return unitVal()
   }
   if name == "toString" or Str.endsWith(name, ".toString") {
+    // An enum prints its case name, which the AST path's name table supplies; the ordinal is not it.
+    match arg.ty {
+      case TNamed(sym, _) -> if c.env.enums.containsKey(sym.id) { return unsupported(c, "toString of an enum") }
+      case _ -> ()
+    }
     val a = lowerExpr(c, arg)
     if isStringN(a.ty) {
       return a
