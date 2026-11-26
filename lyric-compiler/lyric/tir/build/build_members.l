@@ -175,6 +175,76 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
   res
 }
 
+/// The `impl` blocks of `file` as TIR (#7791, D860): each block's DefPath symbol, its own type parameters, the
+/// target type and the interface with its arguments, all written over `TParam(owner = the block's symbol, i)`,
+/// and the members it declares (`membersByBlock`: the symbols of its built members, keyed by the checker's
+/// `implOwnerKey`).  A block with no member has no symbol of its own and is left out, as is one whose types
+/// cannot be converted: a pass that needs the block then finds the interface through its members' paths.
+pub func buildImplDecls(
+  ctx: in TyConvCtx,
+  tbl: in SymbolTable,
+  file: in SourceFile,
+  membersByBlock: in Map[String, List[SymbolId]],
+): List[TImplDecl] {
+  val res: List[TImplDecl] = newList()
+  val pkg = modulePathJoin(file.packageDecl.path.segments)
+  for it in file.items {
+    match it.kind {
+      case IImpl(decl) -> {
+        val members = match mapGet(membersByBlock, implOwnerKey(decl)) { case Some(ms) -> ms; case None -> newList() }
+        if members.count > 0 {
+          match buildImplDecl(tbl, pkg, decl, members) {
+            case Some(d) -> res.add(d)
+            case None -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  res
+}
+
+func buildImplDecl(
+  tbl: in SymbolTable, pkg: in String, decl: in ImplDecl, members: in List[SymbolId]
+): Option[TImplDecl] {
+  val blockKey = implOwnerKey(decl)
+  val blockSym = internDefPath(tbl.interner, implDefPath(pkg, decl))
+  val names = extractGenericNames(decl.generics)
+  val conv = newTyConvCtx(tbl)
+  tyConvBind(conv, blockKey, blockSym, names)
+  val gc = newGenericContext()
+  gctxPushOwned(gc, names, blockKey)
+  val diag: List[Diagnostic] = newList()
+  val targetTy = match tyOfType(conv, resolveType(tbl, gc, diag, decl.target)) {
+    case Ok(t) -> t
+    case Err(_) -> return None
+  }
+  val ifaceTy = resolveType(tbl, gc, diag, TypeExpr(kind = TRef(path = decl.iface.head), span = decl.span))
+  val ifaceSym = match ifaceTy { case TyUser(id, _, _) -> id; case _ -> return None }
+  val ifaceArgs: List[Ty] = newList()
+  for ia in decl.iface.args {
+    match ia {
+      case TAType(te) -> match tyOfType(conv, resolveType(tbl, gc, diag, te)) {
+        case Ok(t) -> ifaceArgs.add(t)
+        case Err(_) -> return None
+      }
+      case TAValue(_) -> return None
+    }
+  }
+  Some(
+    value = TImplDecl(
+      sym = blockSym,
+      typeParams = names,
+      target = targetTy,
+      iface = ifaceSym,
+      ifaceArgs = ifaceArgs,
+      members = members,
+      span = decl.span
+    )
+  )
+}
+
 /// The interface methods of `file` that declare a default for a parameter, as body-less member sites:
 /// the defaults a call through the interface takes (D442).  A generic interface is left out.
 pub func interfaceDefaultSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): List[MemberSite] {

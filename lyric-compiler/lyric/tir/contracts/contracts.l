@@ -806,7 +806,7 @@ pub func elaborateBundleWith(
     }
     res.add(
       PackageBuild(
-        pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns),
+        pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns, impls = pb.pkg.impls),
         failed = pb.failed,
         total = pb.total,
         built = pb.built,

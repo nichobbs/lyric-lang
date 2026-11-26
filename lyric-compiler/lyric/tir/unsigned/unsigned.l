@@ -196,7 +196,7 @@ pub func lowerUnsignedBundle(bundle: in List[PackageBuild]): List[PackageBuild] 
     }
     res.add(
       PackageBuild(
-        pkg = TPackage(name = pb.pkg.name, symbols = pb.pkg.symbols, funcs = fns),
+        pkg = TPackage(name = pb.pkg.name, symbols = pb.pkg.symbols, funcs = fns, impls = pb.pkg.impls),
         failed = pb.failed,
         total = pb.total,
         built = pb.built,

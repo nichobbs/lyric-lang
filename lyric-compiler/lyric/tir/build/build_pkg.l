@@ -198,6 +198,8 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
   val memberFns: List[TFnDecl] = newList()
   val sigOnlyFns: List[TFnDecl] = newList()
   val entryFns: Map[Int, Bool] = newMap()
+  // The members of each `impl` block, by block (`buildImplDecls`).
+  val implMembers: Map[String, List[SymbolId]] = newMap()
   for site in memberSites(ctx, tbl, file) {
     total = total + 1
     val env = newBuildEnvSharing(ctx, counter)
@@ -206,6 +208,16 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
         built = built + 1
         funcs.add(fd)
         memberFns.add(fd)
+        if isSome(site.implTarget) {
+          match mapGet(implMembers, site.owner.key) {
+            case Some(ms) -> ms.add(fd.sym)
+            case None -> {
+              val ms: List[SymbolId] = newList()
+              ms.add(fd.sym)
+              implMembers.add(site.owner.key, ms)
+            }
+          }
+        }
         // Two sites can share a symbol (a stub impl shares its member's span), and a map add of a
         // key already present would fail.
         if site.isEntry and not entryFns.containsKey(fd.sym.id) {
@@ -333,7 +345,7 @@ pub func buildPackage(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFil
     }
   }
   PackageBuild(
-    pkg = TPackage(name = name, symbols = entries, funcs = funcs),
+    pkg = TPackage(name = name, symbols = entries, funcs = funcs, impls = buildImplDecls(ctx, tbl, file, implMembers)),
     failed = failed,
     total = total,
     built = built,

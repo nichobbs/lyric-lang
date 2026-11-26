@@ -1307,7 +1307,43 @@ pub func verifyPackage(pkg: in TPackage, deps: in List[TSymEntry]): List[VerifyD
     requireSym(shared, NodeId(id = 0), f.sym, "function " + toString(f.sym.id))
     verifyFn(shared, f)
   }
+  val declared: Map[Int, Bool] = newMap()
+  for f in pkg.funcs {
+    declared.add(f.sym.id, true)
+  }
+  for im in pkg.impls {
+    verifyImpl(shared, im, declared)
+  }
   shared.diags
+}
+
+/// An `impl` block names an interface the loaded packages define, its target and arguments are well formed, and each
+/// member it lists is a function the package declares or a callable it describes (#7791).
+func verifyImpl(c: in Ctx, im: in TImplDecl, declared: in Map[Int, Bool]): Unit {
+  val at = NodeId(id = 0)
+  // The block's own parameters are in scope for its target and arguments.
+  val ic = c.copy(fnSym = im.sym, tpCount = im.typeParams.count)
+  requireSym(ic, at, im.iface, "interface of an impl")
+  checkTy(ic, at, im.target, "impl target")
+  for a in im.ifaceArgs {
+    checkTy(ic, at, a, "impl interface argument")
+  }
+  for m in im.members {
+    if not declared.containsKey(m.id) {
+      match lookupSym(ic, m) {
+        case Some(entry) -> match entry.sig {
+          case Some(_) -> ()
+          case None -> report(
+            ic,
+            at,
+            "impl-member",
+            "impl member #" + toString(m.id) + " is not a callable"
+          )
+        }
+        case None -> report(ic, at, "impl-member", "impl member #" + toString(m.id) + " is not declared by the package")
+      }
+    }
+  }
 }
 
 /// `a` and `b` are the signed and unsigned integer of one width (`Int`/`UInt`, `Long`/`ULong`), in either order.

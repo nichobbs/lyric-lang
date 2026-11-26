@@ -4192,3 +4192,45 @@ test "a method-generic interface method builds (#7791)" {
     3
   )
 }
+
+// #7791, D860: the package records each `impl` block's interface and arguments.
+test "an impl of a concrete instantiation is recorded with the interface and its arguments (#7791)" {
+  val c = censusOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\n"
+  )
+  assertEqualInt(c.pkg.impls.count, 1, "one impl block")
+  val im = c.pkg.impls[0]
+  assertEqualInt(im.typeParams.count, 0, "no impl parameters")
+  assertEqualInt(im.ifaceArgs.count, 1, "one interface argument")
+  assertTrue(tyEq(im.ifaceArgs[0], TPrim(kind = TPInt)), "Holder[Int]")
+  assertEqualInt(im.members.count, 1, "its one member")
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a generic impl is recorded over its own parameters (#7791)" {
+  val c = censusOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\n"
+  )
+  assertEqualInt(c.pkg.impls.count, 1, "one impl block")
+  val im = c.pkg.impls[0]
+  assertEqualInt(im.typeParams.count, 1, "the impl's T")
+  match im.ifaceArgs[0] {
+    case TParam(owner, index) -> {
+      assertEqualInt(index, 0, "T is the first parameter")
+      assertEqualInt(owner.id, im.sym.id, "owned by the impl block")
+    }
+    case _ -> assertTrue(false, "the argument is the impl's own parameter")
+  }
+  match im.target {
+    case TNamed(_, args) -> match args[0] {
+      case TParam(owner, _) -> assertEqualInt(
+        owner.id,
+        im.sym.id,
+        "the target's argument is the same parameter"
+      )
+      case _ -> assertTrue(false, "Box[T]")
+    }
+    case _ -> assertTrue(false, "a named target")
+  }
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
