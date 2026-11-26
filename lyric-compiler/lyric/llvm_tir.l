@@ -3511,6 +3511,10 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     case Some(v) -> return v
     case None -> ()
   }
+  match lowerWrapping(c, name, ins) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   match lowerNumericConversion(c, name, ins, line) {
     case Some(v) -> return v
     case None -> ()
@@ -3522,6 +3526,20 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
       arg2(NI32, NLitInt(v = 1i64, ty = NI32), lyricStringNType(), stringLiteral(c, "").value)
     )
     return unitVal()
+  }
+  // `default()` is the zero value of the expected type: 0, false, 0.0, or null for a reference (the
+  // placeholder a later `out` argument or assignment replaces, releasing nothing).
+  if name == "default" and ins.count == 0 {
+    match tyToN(c.env, rty) {
+      case Some(nt) -> match nt {
+        case NPtr(_) -> return Val(ty = nt, value = zeroOf(nt))
+        case NDouble -> return Val(ty = nt, value = zeroOf(nt))
+        case NFloat -> return Val(ty = nt, value = zeroOf(nt))
+        case _ -> if isIntegerN(nt) or isScalarN(nt) { return Val(ty = nt, value = zeroOf(nt)) }
+      }
+      case None -> ()
+    }
+    return unsupported(c, "the zero value of " + renderTyIn(c.env, rty))
   }
   if ins.count != 1 {
     return unsupported(c, "builtin " + name + " with " + toString(ins.count) + " arguments")
@@ -4179,13 +4197,14 @@ func lowerCollectionBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): O
   val isLen = (name == "slice.length" or name == "List.count") and ins.count == 1
   val isAdd = name == "List.add" and ins.count == 2
   val isInsert = name == "List.add" and ins.count == 3
+  val isSet = name == "List.set" and ins.count == 3
   val isRemoveAt = name == "List.removeAt" and ins.count == 2
   val isClear = name == "List.clear" and ins.count == 1
   val isCopy = (name == "List.toArray" or name == "slice.toList") and ins.count == 1
   val isSlice = name == "slice.slice" and ins.count == 3
   val isConcat = name == "slice.concat" and ins.count == 2
   val isAppend = name == "slice.append" and ins.count == 2
-  if not (isLen or isAdd or isInsert or isRemoveAt or isClear or isCopy or isSlice or isConcat or isAppend) {
+  if not (isLen or isAdd or isInsert or isSet or isRemoveAt or isClear or isCopy or isSlice or isConcat or isAppend) {
     return None
   }
   if not tyLowers(c.env, recvTy) {
@@ -4210,6 +4229,16 @@ func lowerCollectionBuiltin(c: in LCtx, name: in String, ins: in List[TExpr]): O
     args.add(NArg(ty = NI64, value = idx))
     args.add(NArg(ty = NI64, value = slotOf(c, v)))
     callRtVoid(c, "lyric_list_insert", args)
+    return Some(value = unitVal())
+  }
+  if isSet {
+    val idx = wideIndex(c, ins[1])
+    val v = borrow(c, lowerExpr(c, ins[2]))
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = i8ptr(), value = listAsI8(c, l)))
+    args.add(NArg(ty = NI64, value = idx))
+    args.add(NArg(ty = NI64, value = slotOf(c, v)))
+    callRtVoid(c, "lyric_list_set", args)
     return Some(value = unitVal())
   }
   if isRemoveAt {
@@ -4760,6 +4789,37 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
     return Some(value = Val(ty = NI1, value = icmpV(c, INe, NI32, raw, intLit(NI32, 0i64))))
   }
   None
+}
+
+/// `a.wrappingAdd(b)`, `.wrappingSub`, `.wrappingMul` and `.wrappingNeg()` on an integer: the plain two's
+/// complement operation whatever the build profile (D163), so none of the overflow checks `lowerBinary` adds.
+func lowerWrapping(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
+  val dot = match Str.indexOf(name, ".") { case Some(i) -> i; case None -> return None }
+  val method = Str.substring(name, dot + 1)
+  val isNeg = method == "wrappingNeg" and ins.count == 1
+  val isBin = (method == "wrappingAdd" or method == "wrappingSub" or method == "wrappingMul") and ins.count == 2
+  if not (isNeg or isBin) {
+    return None
+  }
+  val nty = match tyToN(c.env, ins[0].ty) { case Some(t) -> t; case None -> return None }
+  if not isIntegerN(nty) {
+    return None
+  }
+  val a = borrow(c, lowerExpr(c, ins[0]))
+  val d = tmp(c)
+  if isNeg {
+    c.insns.add(NSub(dest = d, ty = nty, a = zeroOf(nty), b = a.value))
+  } else {
+    val b = borrow(c, lowerExpr(c, ins[1]))
+    if method == "wrappingAdd" {
+      c.insns.add(NAdd(dest = d, ty = nty, a = a.value, b = b.value))
+    } else if method == "wrappingSub" {
+      c.insns.add(NSub(dest = d, ty = nty, a = a.value, b = b.value))
+    } else {
+      c.insns.add(NMul(dest = d, ty = nty, a = a.value, b = b.value))
+    }
+  }
+  Some(value = Val(ty = nty, value = NLocal(name = d)))
 }
 
 /// The numeric conversions between `Int`, `Long`, `Byte` and `Double` whose semantics do not depend
