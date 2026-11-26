@@ -9,6 +9,8 @@ Decision: D860.
 - `Lyric.ImplDefaults` copies a generic interface's default methods into an impl with the arguments substituted (`Lyric.Mono.substGenericsInDecl`).
 - MSIL: reified generic interface TypeDefs (arity suffix, GenericParam rows, VAR signatures), InterfaceImpl over a TypeSpec, TypeSpec-parented calls; restored generic interfaces register like restored generic records.
 - JVM: bridges that box and unbox for primitive-typed impl methods, narrowing of generic-interface receivers, and cross-package impls.
+- `TPackage.impls` (`TImplDecl`): every impl block's interface, arguments and members, built, verified and kept by the TIR passes, for the TIR monomorphiser (docs/70 phase 3c, slice 2).
+- The AST monomorphiser takes the checker's wider numeric type argument over a literal's (`swapIn(longBox, 7)`).
 - Tests: `generic_interface_self_test.l` (both targets, and ILVerify), four tir_build cases, a typechecker case, and `testdata/reject/generic_interface_*`.
 
 ## Remaining
