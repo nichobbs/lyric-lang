@@ -23612,17 +23612,7 @@ func lowerMethodCallMsil(
             for ia in ie.ifaceTypeArgs {
               ifaceArgs.add(substituteTypeVarsMsil(ia, typeArgs))
             }
-            match lowerGenericRecvCallMsil(
-              cctx,
-              fctx,
-              insns,
-              ie.ifaceTypeName + "`" + toString(ifaceArgs.count),
-              ifaceArgs,
-              memberName,
-              callArity,
-              args,
-              callTarget
-            ) {
+            match lowerGenericRecvCallMsil(cctx, fctx, insns, ie.ifaceTypeName + "`" + toString(ifaceArgs.count), ifaceArgs, memberName, callArity, args, callTarget) {
               case Some(t) -> return t
               case None -> ()
             }
