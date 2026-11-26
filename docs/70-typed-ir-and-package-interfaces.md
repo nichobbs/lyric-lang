@@ -1022,6 +1022,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Public-boundary invariant checks on TIR (D507): a `pub` function's `in`/`inout` parameters of another package's invariant type are checked on entry and its `inout`/`out` parameters and result at every exit through the types' `__lyric_checked_T`, ungated by the contracts switch; methods, generic types and protected-type invariants are the next slices.
   - Record `==`/`!=` on TIR, array and Float leaves (D506): an array leaf is compared element by element in a loop (D167) and a Float/Double leaf with the NaN rule (D172); records holding a tuple or union that holds an array still keep one `IoEq`.
   - `ULong.toLong`/`toDouble`/`toFloat` on TIR (`Lyric.Tir.Unsigned`, D508): one general same-width signed/unsigned reinterpretation `ConvKind` (`CvReinterpret`) with its Verify rule and native lowering, and D278's checked and corrected blocks over it.
+  - Loop invariants on TIR (`Lyric.Tir.Loops`, D510): each `invariant:` clause is asserted at the head of every iteration and after a loop that ends normally, not after a `break` (a `while` becomes a `loop` with the exit check in its guard, a `for` uses a break flag); `TsInvariant` carries its text and `Lyric.Tir.Walk` gains a statement hook.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

@@ -286,6 +286,24 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/req_tir.ll" lyric-rt
 diff -u "$work/req_tir.out" "$work/req_asan.out"
 echo "record equality under AddressSanitizer: clean"
 
+# Loop `invariant:` clauses (docs/70 phase 3c, D510): checked each iteration and when a loop ends normally, not
+# after a `break`; the last call violates one at the exit of a `while` and panics with the managed targets' message.
+lpsrc=scripts/ci/native-via-tir/loops.l
+"$lyric_bin" build --target native "$lpsrc" -o "$work/lp_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$lpsrc" -o "$work/lp_tir" 2> "$work/lp_census.txt" >/dev/null
+cat "$work/lp_census.txt"
+"$work/lp_ast" > "$work/lp_ast.out" 2> "$work/lp_ast.err" || true
+"$work/lp_tir" > "$work/lp_tir.out" 2> "$work/lp_tir.err" || true
+diff -u "$work/lp_ast.out" "$work/lp_tir.out"
+printf '6\n6\n100\n2\n' | diff -u - "$work/lp_tir.out"
+grep -q 'LoopInvariantViolated: invariant i != 3' "$work/lp_tir.err" || { echo "::error::the TIR build did not panic with the loop invariant message"; cat "$work/lp_tir.err"; exit 1; }
+grep -q 'LoopInvariantViolated: invariant i != 3' "$work/lp_ast.err" || { echo "::error::the AST build did not panic with the loop invariant message"; exit 1; }
+grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/lp_census.txt" || {
+  echo "::error::expected every function of loops.l to be lowered from TIR"
+  exit 1
+}
+echo "loop invariants: ok"
+
 # Range-checked distinct types (docs/70 phase 4a, D538): `T.from`, derived arithmetic and a final
 # out-of-range panic with the managed targets' message.
 rgsrc=scripts/ci/native-via-tir/ranged.l

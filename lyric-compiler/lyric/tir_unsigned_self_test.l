@@ -47,7 +47,7 @@ func count(pb: in PackageBuild): Counts {
   acc.add(0)
   acc.add(0)
   acc.add(0)
-  val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> tally(acc, e) })
+  val w = newWalker(pre = { e: TExpr -> None }, post = { e: TExpr -> tally(acc, e) })
   for f in pb.pkg.funcs {
     match f.body {
       case Some(b) -> {
@@ -130,7 +130,7 @@ test "CvReinterpret verifies between a signed and an unsigned integer of one wid
   val f = l.pb.pkg.funcs[0]
   val body = match f.body { case Some(b) -> b; case None -> panic("body") }
   // Re-type the node a reinterpret produces to an unrelated type: the verifier rejects it.
-  val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> retype(e) })
+  val w = newWalker(pre = { e: TExpr -> None }, post = { e: TExpr -> retype(e) })
   val bad = walkExpr(w, body)
   val broken = TPackage(name = l.pb.pkg.name, symbols = l.pb.pkg.symbols, funcs = [f.copy(body = Some(value = bad))])
   val ds = verifyPackage(broken, newList())
