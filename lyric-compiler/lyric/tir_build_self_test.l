@@ -2682,6 +2682,28 @@ test "named arguments that reorder effects are bound to temporaries in source or
   assertEqualInt(most, 2, "f binds both reordered arguments (n() before m()); g binds none")
 }
 
+test "an omitted default between two explicit arguments is evaluated after both (D171)" {
+  val c = censusOf(
+    "package App\nfunc d(): Int { 4 }\nfunc n(): Int { 3 }\nfunc m(): Int { 5 }\nfunc mid(a: Int, e: Int = d(), b: Int): Int { a + e + b }\nfunc f(): Int { mid(a = n(), b = m()) }\nfunc g(x: Int): Int { mid(a = x, b = 1) }\n"
+  )
+  assertEqualInt(c.built, 6, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  var most = 0
+  for fd in c.pkg.funcs {
+    match fd.body {
+      case Some(b) -> {
+        val k = hoistedStmtCount(b)
+        if k > most {
+          most = k
+        }
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(most, 2, "f binds n() and m() to temporaries so the default runs after both; g binds none")
+}
+
 test "a default argument that is a call is placed afresh at every call of one body" {
   val c = censusOf(
     "package App\nfunc mk(): Int { 7 }\nfunc k(a: Int, b: Int = mk()): Int { a + b }\nfunc m(): Int { k(1) + k(2) }\n"
