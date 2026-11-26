@@ -723,6 +723,17 @@ test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
 
+# Generic functions of one name that differ in their defaults (docs/70 phase 3c, #9431): each instance takes the
+# AST path's overload-qualified name, so every call runs its own declaration's body.
+osrc=scripts/ci/native-via-tir/overloads.l
+"$lyric_bin" build --target native "$osrc" -o "$work/ov_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$osrc" -o "$work/ov_tir" 2> "$work/ov_census.txt" >/dev/null
+"$work/ov_ast" > "$work/ov_ast.out"
+"$work/ov_tir" > "$work/ov_tir.out"
+diff -u "$work/ov_ast.out" "$work/ov_tir.out"
+printf '100\n300\n7\n' | diff -u - "$work/ov_tir.out"
+echo "overloads: ok"
+
 # A `pub` function that writes an `inout` parameter of an invariant type (docs/70 phase 3c, D507) and a protected
 # type's invariant (D509): the same output on both paths, and a violation panics with the same message.
 for case in boundary protectedinv; do
