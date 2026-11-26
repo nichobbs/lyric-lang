@@ -1914,7 +1914,7 @@ invariant: keyAccountLimitOk(tier, creditLimit) @message("Key accounts need a cr
 - generic types, aliased/renamed types, and types wrapped in `Option`, `Result`, or a collection at a public boundary;
 - construction inside a generic function body that another package specialises;
 - construction in a restored package built before invariant checking;
-- construction in code synthesized after type checking (derived `@generate` deserializers);
+- construction in code synthesized after type checking (derived `@generate` deserializers).
 
 ### 6.3 Contract expression sublanguage
 
