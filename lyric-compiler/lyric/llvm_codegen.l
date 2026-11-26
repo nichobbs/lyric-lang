@@ -19288,8 +19288,8 @@ func instArgsOf(infos: in Map[Int, TirMono.InstanceInfo]): Map[Int, List[Tir.Ty]
 /// with other functions of its package: `__o<i>` for the `i`-th declaration of the set (the first has none), so two
 /// overloads never share an IR name (#8461, `specBaseNameMono`).  `names` maps each declaration to its DefPath key;
 /// the declarations of a package are numbered in symbol order, which is declaration order.
-func tirOverloadMark(names: in Map[Int, String], origin: in Tir.SymbolId): String {
-  match mapGet(names, origin.id) {
+func tirOverloadMark(names: in Map[Int, String], originId: in Int): String {
+  match mapGet(names, originId) {
     case None -> ""
     case Some(key) -> match Str.indexOf(key, "::") {
       case None -> ""
@@ -19299,11 +19299,11 @@ func tirOverloadMark(names: in Map[Int, String], origin: in Tir.SymbolId): Strin
         var index = 0
         var peers = 1
         for id in mapKeys(names) {
-          if id != origin.id {
+          if id != originId {
             match mapGet(names, id) {
               case Some(k2) -> if Str.startsWith(k2, prefix) and tirBareFnName(k2, sep + 2) == bare {
                 peers = peers + 1
-                if id < origin.id {
+                if id < originId {
                   index = index + 1
                 }
               }
@@ -19396,7 +19396,7 @@ func registerTirInstanceFns(
                 intrinsics.add(f.sym.id, bare)
               }
               if not Str.contains(bare, "::") and not f.isAsync {
-                var astName = bare + tirOverloadMark(names, ii.origin)
+                var astName = bare + tirOverloadMark(names, ii.origin.id)
                 var ok = true
                 for a in ii.args {
                   match LlvmTir.tirAstTypeKey(names, byInst, a) {
