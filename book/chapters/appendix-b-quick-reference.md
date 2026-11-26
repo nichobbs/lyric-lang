@@ -207,7 +207,7 @@ opaque type User @projectable {
 }
 // Generates: exposed record UserView { ... }
 //            User.toView(self): UserView
-//            UserView.tryInto(self): Result[User, ContractViolation]
+//            UserView.tryInto(self): Result[User, String]
 ```
 
 ### Exposed records

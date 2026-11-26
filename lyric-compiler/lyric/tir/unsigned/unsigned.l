@@ -180,7 +180,7 @@ pub func lowerUnsignedFn(d: in TFnDecl, nextNode: in List[Int]): TFnDecl {
   val nl: List[Int] = newList()
   nl.add(firstUnsignedLocalId())
   val c = UCtx(nextNode = nextNode, nextLocal = nl)
-  val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> unsignedPost(c, e) })
+  val w = newWalker(pre = { e: TExpr -> None }, post = { e: TExpr -> unsignedPost(c, e) })
   d.copy(body = Some(value = walkExpr(w, body)))
 }
 
