@@ -22898,6 +22898,112 @@ func tryLowerDistinctFactoryCallMsil(
   None
 }
 
+// A call of `memberName` on a receiver of the closed generic type `fqn[typeArgs]` (an instantiation of
+// an in-bundle or restored generic record or interface): a `callvirt` of a TypeSpec-parented MemberRef
+// built from the instantiation (ECMA-335 III.4.21), returning the call's result type.  None when no
+// method of that name is registered on the type, so the caller falls through to the other dispatch.
+func lowerGenericRecvCallMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  fqn: in String,
+  typeArgs: in List[MsilType],
+  memberName: in String,
+  callArity: in Int,
+  args: in List[CallArg],
+  callTarget: in MethodCallTarget,
+): Option[MsilType] {
+  val plainFqn = stripGenericArity(fqn)
+  val garityKey = plainFqn + "/" + memberName + "/" + toString(callArity)
+  val gbareKey = plainFqn + "/" + memberName
+  val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
+  if not callTarget.dotNamed and cctx.methodRetTypes.containsKey(gDispatchKey) {
+    val gargs = methodArgsWithDefaultsMsil(cctx, gDispatchKey, args)
+    val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
+    val openParamTypes: List[MsilType] = newList()
+    val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
+    val byrefPendingG: List[ByrefWriteBackMsil] = newList()
+    var gi = 0
+    while gi < gargs.count {
+      val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
+        case Some(pt) -> pt
+        case None -> MObject
+      }
+      val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
+      // The MemberRef signature must match the MethodDef's, where an
+      // `out`/`inout` parameter is a managed pointer `!0&` (#8182).
+      openParamTypes.add(if isByrefArgG { MByRef(inner = openParamTy) } else { openParamTy })
+      if isByrefArgG {
+        // The argument is passed at THIS instantiation's pointee type: a
+        // temp or cell element typed by the open `!0` would name a type
+        // parameter the (non-generic) caller does not have (#8189 review).
+        emitByrefArgCheckedMsil(
+          cctx,
+          fctx,
+          insns,
+          callArgExpr(gargs[gi]),
+          Some(value = substituteTypeVarsMsil(openParamTy, typeArgs)),
+          byrefPendingG
+        )
+      } else {
+        val aTyG = lowerCallArgForParamMsil(cctx, fctx, insns, gargs[gi], substituteTypeVarsMsil(openParamTy, typeArgs))
+        // An `object` argument (a closure result whose type the checker
+        // left unknown, #7671) is converted to this instantiation's
+        // parameter type.
+        coerceObjectToSlotMsil(cctx, insns, aTyG, substituteTypeVarsMsil(openParamTy, typeArgs))
+        // A VAR-form parameter's runtime representation (boxed vs.
+        // unboxed) depends entirely on THIS call's instantiation, exactly
+        // like a generic ctor's field arguments (`buildInBundleGenericCtorTok`
+        // callers never box VAR-form ctor params either) — never box here
+        // regardless of the argument's own value/reference-type shape.
+        val paramIsTypeVarG = match openParamTy { case MTypeVar(_) -> true; case _ -> false }
+        if not isValueType(openParamTy) and not paramIsTypeVarG {
+          boxIfNeededMsil(cctx, insns, aTyG)
+        }
+      }
+      gi = gi + 1
+    }
+    insns.add(
+      MCallvirtGeneric(
+        baseClassName = fqn,
+        typeArgs = typeArgs,
+        methodName = memberName,
+        paramTypes = openParamTypes,
+        retType = openRetTy
+      )
+    )
+    emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPendingG)
+    // A `Self`-declared return narrows to the receiver's own CLOSED
+    // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
+    // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
+    // analog of `narrowSelfCallResultMsil`'s `MClass(cls)` narrowing,
+    // keyed off the same `methodRetIsSelf` marker
+    // (`registerMethodRetTyG` populates it for record-body methods).
+    // Without this, the result tracked the erased `MObject` and a
+    // chained call / member access re-hit the unsupported-method throw.
+    val gRetIsSelf = match mapGet(cctx.methodRetIsSelf, gDispatchKey) { case Some(b) -> b; case None -> false }
+    if gRetIsSelf {
+      // The erased descriptor left an `object`; narrow it to the closed
+      // instantiation the result is tracked as (#7755, see
+      // `narrowSelfCallResultMsil`).
+      insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+      return Some(value = MGenericInstByName(headFqn = fqn, typeArgs = typeArgs))
+    }
+    // Narrow the reported result type to THIS call's concrete
+    // instantiation — a bare `MTypeVar(idx)` substitutes directly from
+    // `typeArgs`, a nested generic return (e.g. `Result[T, E]`)
+    // substitutes recursively, mirroring the `MGenericInstByName`
+    // field-read arm above.
+    return Some(
+      value = match openRetTy {
+        case MTypeVar(idx) -> if idx < typeArgs.count { unitStorageSlotType(typeArgs[idx]) } else { MObject }
+        case _ -> substituteTypeVarsMsil(openRetTy, typeArgs)
+      }
+    )
+  }
+  None
+}
+
 func lowerMethodCallMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -23285,6 +23391,27 @@ func lowerMethodCallMsil(
       // A default method of an interface declared in another package is not copied into the
       // implementing type (`Lyric.ImplDefaults` sees one file): the call dispatches on the
       // interface's slot, which the receiver implements (#9428).
+      // The same for a generic interface: the slot is the one of the interface instantiated at the
+      // arguments the impl gives it, a TypeSpec-parented MemberRef (#9441).
+      if not callTarget.dotNamed {
+        match genericIfaceDefaultEntryMsil(cctx, cls, memberName, callArity) {
+          case Some(ie) -> match lowerGenericRecvCallMsil(
+            cctx,
+            fctx,
+            insns,
+            ie.ifaceTypeName,
+            ie.ifaceTypeArgs,
+            memberName,
+            callArity,
+            args,
+            callTarget
+          ) {
+            case Some(t) -> return t
+            case None -> ()
+          }
+          case None -> ()
+        }
+      }
       val dispatchCls = interfaceDefaultOwnerMsil(cctx, cls, memberName, callArity)
       val arityDispatchKey = dispatchCls + "/" + memberName + "/" + toString(callArity)
       val dispatchKey = if cctx.methodTokens.containsKey(arityDispatchKey) {
@@ -23477,91 +23604,9 @@ func lowerMethodCallMsil(
       // so the call routes through `MCallvirtGeneric`, which builds a
       // TypeSpec-parented MemberRef at lowering (mirroring `MLdfldGeneric`'s
       // field-read pattern) instead of reusing the plain `methodTokens` row.
-      val plainFqn = stripGenericArity(fqn)
-      val garityKey = plainFqn + "/" + memberName + "/" + toString(callArity)
-      val gbareKey = plainFqn + "/" + memberName
-      val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
-      if not callTarget.dotNamed and cctx.methodRetTypes.containsKey(gDispatchKey) {
-        val gargs = methodArgsWithDefaultsMsil(cctx, gDispatchKey, args)
-        val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
-        val openParamTypes: List[MsilType] = newList()
-        val methodModesG = match mapGet(cctx.methodParamModes, gDispatchKey) { case Some(ms) -> ms; case None -> newList() }
-        val byrefPendingG: List[ByrefWriteBackMsil] = newList()
-        var gi = 0
-        while gi < gargs.count {
-          val openParamTy = match mapGet(cctx.methodParamTypes, gDispatchKey + "#" + toString(gi)) {
-            case Some(pt) -> pt
-            case None -> MObject
-          }
-          val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
-          // The MemberRef signature must match the MethodDef's, where an
-          // `out`/`inout` parameter is a managed pointer `!0&` (#8182).
-          openParamTypes.add(if isByrefArgG { MByRef(inner = openParamTy) } else { openParamTy })
-          if isByrefArgG {
-            // The argument is passed at THIS instantiation's pointee type: a
-            // temp or cell element typed by the open `!0` would name a type
-            // parameter the (non-generic) caller does not have (#8189 review).
-            emitByrefArgCheckedMsil(
-              cctx,
-              fctx,
-              insns,
-              callArgExpr(gargs[gi]),
-              Some(value = substituteTypeVarsMsil(openParamTy, typeArgs)),
-              byrefPendingG
-            )
-          } else {
-            val aTyG = lowerCallArgForParamMsil(cctx, fctx, insns, gargs[gi], substituteTypeVarsMsil(openParamTy, typeArgs))
-            // An `object` argument (a closure result whose type the checker
-            // left unknown, #7671) is converted to this instantiation's
-            // parameter type.
-            coerceObjectToSlotMsil(cctx, insns, aTyG, substituteTypeVarsMsil(openParamTy, typeArgs))
-            // A VAR-form parameter's runtime representation (boxed vs.
-            // unboxed) depends entirely on THIS call's instantiation, exactly
-            // like a generic ctor's field arguments (`buildInBundleGenericCtorTok`
-            // callers never box VAR-form ctor params either) — never box here
-            // regardless of the argument's own value/reference-type shape.
-            val paramIsTypeVarG = match openParamTy { case MTypeVar(_) -> true; case _ -> false }
-            if not isValueType(openParamTy) and not paramIsTypeVarG {
-              boxIfNeededMsil(cctx, insns, aTyG)
-            }
-          }
-          gi = gi + 1
-        }
-        insns.add(
-          MCallvirtGeneric(
-            baseClassName = fqn,
-            typeArgs = typeArgs,
-            methodName = memberName,
-            paramTypes = openParamTypes,
-            retType = openRetTy
-          )
-        )
-        emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPendingG)
-        // A `Self`-declared return narrows to the receiver's own CLOSED
-        // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
-        // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
-        // analog of `narrowSelfCallResultMsil`'s `MClass(cls)` narrowing,
-        // keyed off the same `methodRetIsSelf` marker
-        // (`registerMethodRetTyG` populates it for record-body methods).
-        // Without this, the result tracked the erased `MObject` and a
-        // chained call / member access re-hit the unsupported-method throw.
-        val gRetIsSelf = match mapGet(cctx.methodRetIsSelf, gDispatchKey) { case Some(b) -> b; case None -> false }
-        if gRetIsSelf {
-          // The erased descriptor left an `object`; narrow it to the closed
-          // instantiation the result is tracked as (#7755, see
-          // `narrowSelfCallResultMsil`).
-          insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
-          return MGenericInstByName(headFqn = fqn, typeArgs = typeArgs)
-        }
-        // Narrow the reported result type to THIS call's concrete
-        // instantiation — a bare `MTypeVar(idx)` substitutes directly from
-        // `typeArgs`, a nested generic return (e.g. `Result[T, E]`)
-        // substitutes recursively, mirroring the `MGenericInstByName`
-        // field-read arm above.
-        return match openRetTy {
-          case MTypeVar(idx) -> if idx < typeArgs.count { unitStorageSlotType(typeArgs[idx]) } else { MObject }
-          case _ -> substituteTypeVarsMsil(openRetTy, typeArgs)
-        }
+      match lowerGenericRecvCallMsil(cctx, fctx, insns, fqn, typeArgs, memberName, callArity, args, callTarget) {
+        case Some(t) -> return t
+        case None -> ()
       }
     }
     case _ -> {
@@ -46917,7 +46962,7 @@ func implSelfSpellingMsil(
 
 // The interface `cls` implements whose method `memberName` the type itself does not declare, so a call on
 // the type dispatches on that interface's slot (#9428); `cls` when the type declares it or no implemented
-// interface does.  A generic interface is left out: its slot needs the impl's type arguments.  When several implemented
+// interface does.  A generic interface is left to `genericIfaceDefaultEntryMsil`, whose slot needs the impl's type arguments.  When several implemented
 // interfaces declare the method, the first impl block in source order wins; a type that needs another
 // writes the method itself (`T0117` reports that conflict within one file).
 func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int): String {
@@ -46932,6 +46977,23 @@ func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: 
     }
   }
   cls
+}
+
+// The impl of a generic interface that `cls` implements whose method `memberName` the type itself does
+// not declare, so a call on the type dispatches on that interface instantiated at the impl's arguments
+// (#9441); None when the type declares it or no implemented generic interface does.
+func genericIfaceDefaultEntryMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int): Option[ImplEntryMsil] {
+  if cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(callArity)) or cctx.methodTokens.containsKey(cls + "/" + memberName) {
+    return None
+  }
+  for ie in cctx.implEntries {
+    if ie.targetTypeName == cls and ie.ifaceTypeArgs.count > 0 {
+      if cctx.methodRetTypes.containsKey(ie.ifaceTypeName + "/" + memberName + "/" + toString(callArity)) or cctx.methodRetTypes.containsKey(ie.ifaceTypeName + "/" + memberName) {
+        return Some(value = ie)
+      }
+    }
+  }
+  None
 }
 
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl

@@ -9109,11 +9109,11 @@ func isMemberExpr(x: in Expr): Bool {
   }
 }
 
-/// The non-generic interface that declares the method `sym`, when `sym`'s DefPath is
+/// The interface that declares the method `sym` (a generic one at the arguments the receiver's impl gives it), when `sym`'s DefPath is
 /// `Pkg::Iface::member`.  A call of a method that a restored package's record implements resolves
 /// to the interface's declaration (the package interface keeps no `impl` member of its own), so
 /// the call is a dispatch on that interface from the receiver, converted up to it.
-func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
+func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId, recvTy: in Type): Option[Type] {
   val tbl = env.ctx.tbl
   val key = match symTableDefPathKeyOf(tbl, sym) { case Some(k) -> k; case None -> return None }
   var cut = -1
@@ -9131,13 +9131,31 @@ func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(ts) -> match ts.kind {
       case DKInterface(_, decl) -> if isSome(decl.generics) {
-        None
+        genericIfaceOfImpl(env, tid, ts.name, recvTy)
       } else {
         Some(value = TyUser(id = tid, name = ts.name, args = newList()))
       }
       case _ -> None
     }
     case None -> None
+  }
+}
+
+/// The generic interface `tid` at the arguments the receiver type's `impl` gives it
+/// (`impl Holder[Int] for IntBox` gives `Holder[Int]`): a default method called on a concrete
+/// implementor is a dispatch on that instance, converted up to it (#9441).  None when the
+/// receiver is not a named type with such an impl.
+func genericIfaceOfImpl(env: in BuildEnv, tid: in SymbolId, name: in String, recvTy: in Type): Option[Type] {
+  match unrefine(recvTy) {
+    case TyUser(rid, _, rargs) -> {
+      for pair in env.ctx.tbl.impls {
+        if symbolIdEq(pair.target, rid) and symbolIdEq(pair.iface, tid) {
+          return Some(value = TyUser(id = tid, name = name, args = symTableImplIfaceArgs(pair, rargs)))
+        }
+      }
+      None
+    }
+    case _ -> None
   }
 }
 
@@ -9191,7 +9209,7 @@ func buildMethodCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
-  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0, site.recvTy)) {
     None
   } else {
     ifaceOfImplMember(env, sym0)
@@ -9209,7 +9227,7 @@ func buildMethodCall(
     case None -> if isSome(site.iface) {
       boundParamIfaceTy(env, site)
     } else {
-      ifaceOwnerOfMethod(env, sym)
+      ifaceOwnerOfMethod(env, sym, site.recvTy)
     }
   }
   val ifaceSym: Option[SymbolId] = match ifaceTy {
