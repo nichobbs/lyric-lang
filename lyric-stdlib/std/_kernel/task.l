@@ -161,7 +161,10 @@ pub func makeCancelSource(): CancellationTokenSource {
 /// Same as `makeCancelSource` but auto-cancels the resulting
 /// source after `ms` milliseconds — convenient for deadline-
 /// shaped scopes.  Routes through the `(int millisecondsDelay)`
-/// constructor overload.
+/// constructor overload.  The BCL timer runs on a millisecond tick clock, so
+/// the token can read as cancelled a few milliseconds before `ms` have
+/// elapsed on a high-resolution clock (#9419); the JVM and native kernels
+/// compare against the monotonic clock and never fire early.
 @experimental
 pub func makeCancelSourceTimeout(ms: in Int): CancellationTokenSource {
   CancellationTokenSource.new(ms)
