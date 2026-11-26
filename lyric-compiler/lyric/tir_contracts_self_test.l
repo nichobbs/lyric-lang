@@ -467,3 +467,38 @@ test "a protected type's invariant is asserted at the exit of each member, with 
     assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
   }
 }
+
+val memberSrc: String = "package App\nrecord Span {\n  lo: Int\n  hi: Int\n  invariant: lo <= hi\n}\ninterface Fixer {\n  func fix(self: in Self, s: inout Span): Unit\n}\npub record Holder {\n  n: Int\n  func fix(self: in Holder, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\nrecord Hidden {\n  n: Int\n  func fix(self: in Hidden, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\nrecord Plain {\n  n: Int\n}\nimpl Fixer for Plain {\n  func fix(self: in Plain, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\n"
+
+test "a method of a pub record and an impl member are public boundaries, a method of a record that is not pub is not (D512)" {
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(memberSrc).file)).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  val done = elaborateBundle(cr.symbols.interner, bundle, true)
+  var holder = 0
+  var hidden = 0
+  var impl = 0
+  for f in done[0].pkg.funcs {
+    val key = match mapGet(done[0].names, f.sym.id) { case Some(k) -> k; case None -> "" }
+    val ms = messagesOfFn(f)
+    if key.startsWith("App::Holder::fix") {
+      holder = ms.count
+    } else if key.startsWith("App::Hidden::fix") {
+      hidden = ms.count
+    } else if key.contains("$impl(Fixer)") {
+      impl = ms.count
+    }
+  }
+  assertEqualInt(holder, 1, "the pub record's method re-checks its inout parameter")
+  assertEqualInt(hidden, 0, "a record that is not pub is no boundary")
+  assertEqualInt(impl, 1, "an impl member re-checks its inout parameter")
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+}
