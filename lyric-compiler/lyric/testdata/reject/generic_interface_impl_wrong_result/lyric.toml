@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-impl-wrong-result"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceImplWrongResult"
+[project.packages]
+"App" = "app"

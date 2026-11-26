@@ -2380,6 +2380,20 @@ func bridgeCastTargetJvm(t: in JvmType): Option[String] {
   }
 }
 
+func isPrimitiveJvm(t: in JvmType): Bool {
+  match t {
+    case JInt -> true
+    case JLong -> true
+    case JDouble -> true
+    case JFloat -> true
+    case JBoolean -> true
+    case JChar -> true
+    case JByte -> true
+    case JShort -> true
+    case _ -> false
+  }
+}
+
 func isReferenceJvm(t: in JvmType): Bool {
   match t {
     case JRef(_) -> true
@@ -2481,13 +2495,15 @@ func implBridgeFromSlotJvm(
   while i < target.params.count {
     if typeDescriptor(slotParams[i]) != typeDescriptor(target.params[i]) {
       differs = true
-      if not (isReferenceJvm(slotParams[i]) and isReferenceJvm(target.params[i])) {
+      // A reference slot (an erased generic parameter) reached by a primitive-typed impl
+      // parameter is unboxed; any other difference must be a reference-to-reference cast.
+      if not (isReferenceJvm(slotParams[i]) and (isReferenceJvm(target.params[i]) or isPrimitiveJvm(target.params[i]))) {
         castable = false
       }
     }
     i = i + 1
   }
-  if typeDescriptor(slotRet) != typeDescriptor(target.ret) and not (isReferenceJvm(slotRet) and isReferenceJvm(target.ret)) {
+  if typeDescriptor(slotRet) != typeDescriptor(target.ret) and not (isReferenceJvm(slotRet) and (isReferenceJvm(target.ret) or isPrimitiveJvm(target.ret))) {
     castable = false
   }
   if not differs or not castable {
@@ -2500,15 +2516,24 @@ func implBridgeFromSlotJvm(
   while pi < target.params.count {
     insns.add(bridgeLoadInsnJvm(slotParams[pi], local))
     if typeDescriptor(slotParams[pi]) != typeDescriptor(target.params[pi]) {
-      match bridgeCastTargetJvm(target.params[pi]) {
-        case Some(c) -> insns.add(LCheckcast(className = c))
-        case None -> ()
+      if isPrimitiveJvm(target.params[pi]) {
+        val _ = emitUnboxObjectTo(insns, target.params[pi])
+      } else {
+        match bridgeCastTargetJvm(target.params[pi]) {
+          case Some(c) -> insns.add(LCheckcast(className = c))
+          case None -> ()
+        }
       }
     }
     local = local + bridgeSlotWidthJvm(slotParams[pi])
     pi = pi + 1
   }
   insns.add(LInvokevirtual(owner = targetClass, name = target.name, params = target.params, ret = target.ret))
+  if isPrimitiveJvm(target.ret) and isReferenceJvm(slotRet) {
+    // The impl method returns a primitive where the erased slot returns `Object`: box it as
+    // its own type, as every read of an erased generic slot unboxes it.
+    boxForErasedSlot(insns, target.ret, JVoid)
+  }
   insns.add(bridgeReturnInsnJvm(slotRet))
   Some(
     value = LFunc(
@@ -4437,7 +4462,10 @@ func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String, externTyp
   if cr.head.segments.count == 1 {
     match mapGet(externTypes, cr.head.segments[0]) {
       case Some(javaFqn) -> javaFqn.replace(".", "/")
-      case None -> pkgName + "/" + cr.head.segments[0]
+      case None -> match mapGet(externTypes, "~iface~" + cr.head.segments[0]) {
+        case Some(javaFqn) -> javaFqn.replace(".", "/")
+        case None -> pkgName + "/" + cr.head.segments[0]
+      }
     }
   } else {
     segmentsToJvmPath(cr.head.segments)
@@ -5011,7 +5039,10 @@ func implIfaceClassJvm(iface: in ConstraintRef, owner: in String, externTypes: i
   val name = if segs.count == 1 { segs[0] } else { "" }
   match mapGet(externTypes, name) {
     case Some(dotted) -> String.replace(dotted, ".", "/")
-    case None -> owner + "/" + name
+    case None -> match mapGet(externTypes, "~iface~" + name) {
+      case Some(dotted) -> String.replace(dotted, ".", "/")
+      case None -> owner + "/" + name
+    }
   }
 }
 
@@ -7296,7 +7327,14 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
               into.add(decl.name, pkgDotted + "." + decl.name)
             }
           }
-          case Some(_) -> ()
+          // A generic interface erases in every signature (a bare reference to one is `Object`),
+          // so it is not seeded under its bare name; `impl Holder[Int] for X` finds its class
+          // under `~iface~` (`implIfaceClassJvm`, #7791).
+          case Some(_) -> {
+            if not into.containsKey("~iface~" + decl.name) {
+              into.add("~iface~" + decl.name, pkgDotted + "." + decl.name)
+            }
+          }
         }
       }
       // A distinct/range-subtype type is emitted as its own wrapper class

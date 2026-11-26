@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-call-wrong-argument"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceCallWrongArgument"
+[project.packages]
+"App" = "app"

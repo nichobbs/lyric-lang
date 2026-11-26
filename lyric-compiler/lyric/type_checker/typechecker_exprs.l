@@ -5328,6 +5328,11 @@ func methodImplementedBy(own: in List[MethodEntry], member: in MethodEntry): Boo
   false
 }
 
+// The interface arguments of `impl` at a receiver whose type arguments are `recvArgs`: the impl's
+// own, with the target's type parameters (`impl[T] Holder[T] for Box[T]`) replaced by the receiver's
+// (`Box[Int]`).  Empty for an impl of a non-generic interface (#7791).
+func implIfaceArgsAt(pair: in ImplPair, recvArgs: in List[Type]): List[Type] = symTableImplIfaceArgs(pair, recvArgs)
+
 // Every method signature reachable on a value of type `recv` (an unrefined
 // `TyUser`) under `name`: the type's own record-body/impl methods, plus the
 // members of every interface it implements that the type does not implement
@@ -5346,7 +5351,6 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
         acc.add(substituteMethodSig(entries[i], recv, targs))
         i = i + 1
       }
-      val noTargs: List[Type] = newList()
       var pi = 0
       while pi < tbl.impls.count {
         if symbolIdEq(tbl.impls[pi].target, tid) {
@@ -5354,7 +5358,7 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
           var q = 0
           while q < ientries.count {
             if not methodImplementedBy(entries, ientries[q]) {
-              acc.add(substituteMethodSig(ientries[q], recv, noTargs))
+              acc.add(substituteMethodSig(ientries[q], recv, implIfaceArgsAt(tbl.impls[pi], targs)))
             }
             q = q + 1
           }
@@ -6341,8 +6345,8 @@ func recordMethodCalleeNode(
 // its generics (D580: the owner's parameters then its own, instantiated from the
 // receiver's type arguments).  A dot-named function that is generic, or whose receiver is an
 // instance of a generic type, is recorded with its full signature (`full`): the call is that
-// function called with the receiver first.  A generic interface receiver waits for the
-// generic-call step.
+// function called with the receiver first.  A generic interface receiver is recorded with its
+// arguments in `recvTy` (#7791).
 func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
   val recv = unrefine(recvTy)
   var iface: Option[SymbolId] = None
@@ -6373,11 +6377,9 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
   if mp.fullSig.isSome() {
     iface = None
   }
-  // A generic interface's call carries the interface's arguments, which the site does not record yet; a
-  // method with type parameters of its own on a non-generic interface is built from the call's instantiation.
-  if iface.isSome() and recvArgs > 0 {
-    return
-  }
+  // A generic interface's call carries the interface's arguments in the receiver's type (`recvTy`); the
+  // signature is already instantiated at them.  A method with type parameters of its own is built from the
+  // call's instantiation.
   val declared = match mp.fullSig {
     case Some(f) -> if f.params.count > 0 { f.params[0].ty } else { recv }
     case None -> recv
@@ -20536,6 +20538,9 @@ func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in Symbo
         case DKUnion(_, _) -> true
         case DKOpaque(_, _) -> true
         case DKProtected(_, _) -> true
+        // A generic interface is erased on the JVM, so a value of one narrows to its interface
+        // before a method call (#7791); a non-generic interface is its own descriptor type.
+        case DKInterface(_, idecl) -> isSome(idecl.generics)
         // A distinct value is a wrapper class on dotnet and the JVM
         // (docs/01 §2.3), so an erased one narrows to it before `.value`.
         case DKDistinctType(_, _) -> true
@@ -25578,7 +25583,13 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) {
-      case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId)
+      case Some(argId) -> symTableTypeImplementsAt(
+        tbl,
+        argId,
+        userTypeArgsOf(argTy),
+        ifaceId,
+        userTypeArgsOf(paramTy)
+      )
       case None -> false
     }
     case None -> false
@@ -25637,7 +25648,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
           }
           return true
         }
-        symTableTypeImplements(tbl, aid, eid)
+        symTableTypeImplementsAt(tbl, aid, aargs, eid, eargs)
       }
       case _ -> false
     }
