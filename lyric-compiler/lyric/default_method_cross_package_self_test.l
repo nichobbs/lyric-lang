@@ -56,7 +56,7 @@ func appSource(): String {
   "package App\nimport HLib\nimport Std.Core\nrecord L { s: String }\nimpl Named for L { func label(self: in L): String = self.s }\nfunc main(): Int {\n  println(L(s = \"x\").tagged(2))\n  val n: Named = L(s = \"y\")\n  println(n.tagged(3))\n  0\n}\n"
 }
 
-func runFor(target: in String): Capture.CaptureResult {
+func runFor(target: in String, lib: in String, app: in String): Capture.CaptureResult {
   val dir = tempDir(target)
   defer {
     match File.deleteDirRecursive(dir) {
@@ -65,9 +65,9 @@ func runFor(target: in String): Capture.CaptureResult {
     }
   }
   write(Path.join(dir, "lib/lyric.toml"), libToml())
-  write(Path.join(dir, "lib/src/h.l"), libSource())
+  write(Path.join(dir, "lib/src/h.l"), lib)
   write(Path.join(dir, "app/lyric.toml"), appToml())
-  write(Path.join(dir, "app/src/main.l"), appSource())
+  write(Path.join(dir, "app/src/main.l"), app)
   val build: List[String] = newList()
   build.add("build")
   build.add("--target")
@@ -88,8 +88,22 @@ func runFor(target: in String): Capture.CaptureResult {
   r
 }
 
+func genericLibSource(): String {
+  "package HLib\npub interface Holder[T] {\n  func get(self: in Self): T\n  func twice(self: in Self, x: in T): T = x\n}\n"
+}
+
+func genericAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc main(): Int {\n  println(toString(IntBox(v = 1).twice(9)))\n  val h: Holder[Int] = IntBox(v = 2)\n  println(toString(h.twice(5)))\n  0\n}\n"
+}
+
+func expectGenericOutput(target: in String): Unit {
+  val r = runFor(target, genericLibSource(), genericAppSource())
+  assertEqualInt(r.exitCode, 0, "the generic consumer runs on " + target + ":\n" + r.stderr)
+  assertTrue(Str.contains(r.stdout, "9\n5\n"), "the generic consumer's output on " + target + ", got:\n" + r.stdout)
+}
+
 func expectOutput(target: in String): Unit {
-  val r = runFor(target)
+  val r = runFor(target, libSource(), appSource())
   assertEqualInt(r.exitCode, 0, "the consumer runs on " + target + ":\n" + r.stderr)
   assertTrue(Str.contains(r.stdout, "x:2\ny:3\n"), "the consumer's output on " + target + ", got:\n" + r.stdout)
 }
@@ -100,4 +114,12 @@ test "a default method of another package's interface is called on a concrete im
 
 test "a default method of another package's interface is called on a concrete implementor on the JVM" {
   expectOutput("jvm")
+}
+
+test "a default method of another package's generic interface is called on a concrete implementor on dotnet" {
+  expectGenericOutput("dotnet")
+}
+
+test "a default method of another package's generic interface is called on a concrete implementor on the JVM" {
+  expectGenericOutput("jvm")
 }
