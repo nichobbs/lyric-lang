@@ -78,6 +78,9 @@ pub record BuildEnv {
   defaultFloor: List[Int] = newList()
   /// The `invariant:` clauses of the protected type the member being built belongs to (D509).
   memberInvs: List[InvariantClause] = newList()
+  /// Holds `true` while a member whose owner makes it part of the public boundary is built (D512): a method of a
+  /// `pub` record, or an `impl` member.
+  memberPublic: List[Bool] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -4950,7 +4953,8 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           isGenerator = functionIsGenerator(fn),
           precondTexts = c.preTexts,
           postcondTexts = c.postTexts,
-          isPublic = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false },
+          isPublic = env.memberPublic.count > 0 or
+            (match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }),
           invariants = c.invs,
           invariantTexts = c.invTexts
         )
