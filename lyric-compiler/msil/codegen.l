@@ -23282,11 +23282,15 @@ func lowerMethodCallMsil(
       // different-arity overload through the bare key would silently bind the
       // wrong MethodDef.  The registration side writes `class/name/arity`
       // for every overload; prefer it when present.
-      val arityDispatchKey = cls + "/" + memberName + "/" + toString(callArity)
+      // A default method of an interface declared in another package is not copied into the
+      // implementing type (`Lyric.ImplDefaults` sees one file): the call dispatches on the
+      // interface's slot, which the receiver implements (#9428).
+      val dispatchCls = interfaceDefaultOwnerMsil(cctx, cls, memberName, callArity)
+      val arityDispatchKey = dispatchCls + "/" + memberName + "/" + toString(callArity)
       val dispatchKey = if cctx.methodTokens.containsKey(arityDispatchKey) {
         arityDispatchKey
       } else {
-        cls + "/" + memberName
+        dispatchCls + "/" + memberName
       }
       // A call the checker resolved to a dot-named function skips the type's
       // own same-named methods (#8098).
@@ -46909,6 +46913,25 @@ func implSelfSpellingMsil(
   } else {
     fn
   }
+}
+
+// The interface `cls` implements whose method `memberName` the type itself does not declare, so a call on
+// the type dispatches on that interface's slot (#9428); `cls` when the type declares it or no implemented
+// interface does.  A generic interface is left out: its slot needs the impl's type arguments.  When several implemented
+// interfaces declare the method, the first impl block in source order wins; a type that needs another
+// writes the method itself (`T0117` reports that conflict within one file).
+func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int): String {
+  if cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(callArity)) or cctx.methodTokens.containsKey(cls + "/" + memberName) {
+    return cls
+  }
+  for ie in cctx.implEntries {
+    if ie.targetTypeName == cls and ie.ifaceTypeArgs.count == 0 {
+      if cctx.methodTokens.containsKey(ie.ifaceTypeName + "/" + memberName + "/" + toString(callArity)) or cctx.methodTokens.containsKey(ie.ifaceTypeName + "/" + memberName) {
+        return ie.ifaceTypeName
+      }
+    }
+  }
+  cls
 }
 
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
