@@ -723,6 +723,17 @@ test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
 
+# Generic functions of one name that differ in their defaults (docs/70 phase 3c, #9431): each instance takes the
+# AST path's overload-qualified name, so every call runs its own declaration's body.
+osrc=scripts/ci/native-via-tir/overloads.l
+"$lyric_bin" build --target native "$osrc" -o "$work/ov_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$osrc" -o "$work/ov_tir" 2> "$work/ov_census.txt" >/dev/null
+"$work/ov_ast" > "$work/ov_ast.out"
+"$work/ov_tir" > "$work/ov_tir.out"
+diff -u "$work/ov_ast.out" "$work/ov_tir.out"
+printf '100\n300\n7\n' | diff -u - "$work/ov_tir.out"
+echo "overloads: ok"
+
 # A record with `invariant:` clauses declared in a bundled package (docs/70 phase 4a part 8, D856): its construction
 # checker has no AST copy and is lowered from TIR on the first call that names it.  The same output as the AST path,
 # every function from TIR, and a violated invariant panics.
