@@ -79,6 +79,16 @@ record MCtx {
   cur: List[Int]
   /// Output functions that call a generic function the bundle has no declaration of.
   tainted: Map[Int, Bool]
+  /// Every `impl` block of the input (D860), generic or not.
+  implDecls: List[TImplDecl] = newList()
+  /// The impl blocks the pass produced: each instance of a generic impl, in the instances package.
+  outImpls: List[TImplDecl] = newList()
+  /// The generic impls already instantiated at an argument list, by `implKey`.
+  implDone: Map[String, Bool] = newMap()
+  /// The methods of each interface by its symbol id.
+  ifaceMethods: Map[Int, List[SymbolId]] = newMap()
+  /// How many entries of `work` have been produced, in slot 0.
+  workDone: List[Int] = newList()
 }
 
 /// What a body is read under: the declaration whose parameters are replaced (`owner`) by `args`.
@@ -569,4 +579,109 @@ func instCallee(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolI
       None
     }
   }
+}
+
+/// The part of a member's DefPath key from its name on: `get(Self)` of `App::Holder::get(Self)`.
+func memberSuffix(key: in String): String {
+  var open = -1
+  var i = 0
+  while i < key.length and open < 0 {
+    if key.substring(i, 1) == "(" {
+      open = i
+    }
+    i = i + 1
+  }
+  if open < 0 {
+    return lastSegment(key)
+  }
+  lastSegment(key.substring(0, open)) + key.substring(open, key.length - open)
+}
+
+/// The methods the interface `iface` declares: the interface-method entries whose key is the interface's key
+/// and one name.  In symbol order, which is declaration order.
+func ifaceMethodsOf(c: in MCtx, iface: in SymbolId): List[SymbolId] {
+  match mapGet(c.ifaceMethods, iface.id) {
+    case Some(l) -> return l
+    case None -> ()
+  }
+  val prefix = symKey(c, iface) + "::"
+  val ids: List[Int] = newList()
+  for id in mapKeys(c.entries) {
+    match mapGet(c.entries, id) {
+      case Some(en) -> match en.kind {
+        case TSkInterfaceMethod -> {
+          val k = symKey(c, en.sym)
+          if k.startsWith(prefix) {
+            val rest = k.substring(prefix.length, k.length - prefix.length)
+            var open = rest.length
+            var i = 0
+            while i < rest.length and open == rest.length {
+              if rest.substring(i, 1) == "(" {
+                open = i
+              }
+              i = i + 1
+            }
+            if open > 0 and not rest.substring(0, open).contains("::") {
+              ids.add(id)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+  }
+  var a = 1
+  while a < ids.count {
+    val x = ids[a]
+    var b = a - 1
+    while b >= 0 and ids[b] > x {
+      ids[b + 1] = ids[b]
+      b = b - 1
+    }
+    ids[b + 1] = x
+    a = a + 1
+  }
+  val res: List[SymbolId] = newList()
+  for id in ids {
+    res.add(SymbolId(id = id))
+  }
+  c.ifaceMethods.add(iface.id, res)
+  res
+}
+
+/// The method `method` of the generic interface `iface` at the closed `args`: an interface-method entry under the
+/// instance of the interface, its signature over the arguments.  `None` when the interface cannot be instantiated.
+func instIfaceMethod(c: in MCtx, iface: in SymbolId, args: in List[Ty], method: in SymbolId): Option[SymbolId] {
+  val ifaceInst = match instType(c, iface, args) { case Some(i) -> i; case None -> return None }
+  val en = match mapGet(c.entries, method.id) { case Some(e) -> e; case None -> return None }
+  val sg = match en.sig { case Some(g) -> g; case None -> return None }
+  val key = symKey(c, ifaceInst) + "::" + memberSuffix(symKey(c, method))
+  match mapGet(c.insts, key) {
+    case Some(i) -> return Some(value = i)
+    case None -> ()
+  }
+  val inst = internDefPathKey(c.interner, key)
+  c.insts.add(key, inst)
+  c.outNames.add(inst.id, key)
+  val sub = Subst(owner = iface, args = args, fresh = false)
+  c.outSyms.add(
+    TSymEntry(
+      sym = inst,
+      kind = TSkInterfaceMethod,
+      typeParamCount = en.typeParamCount,
+      sig = Some(
+        value = TSig(
+          typeParamCount = sg.typeParamCount,
+          params = mParamTys(c, sub, sg.params),
+          ret = mTy(c, sub, sg.ret),
+          isAsync = sg.isAsync
+        )
+      ),
+      fields = newList(),
+      ty = None,
+      mutable = false
+    )
+  )
+  Some(value = inst)
 }

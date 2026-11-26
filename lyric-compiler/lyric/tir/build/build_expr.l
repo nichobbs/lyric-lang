@@ -10104,13 +10104,21 @@ func buildCallArgs(
   }
   var reordered = false
   var last = -1
+  var defaultSeen = false
   var k = 0
   while k < srcIdx.count {
     if srcIdx[k] >= 0 {
       if srcIdx[k] < last {
         reordered = true
       }
+      // An omitted default that precedes an explicit argument is evaluated at its parameter's position, before
+      // that argument; D171 runs it after every explicit argument, so such a call is a reorder too.
+      if defaultSeen {
+        reordered = true
+      }
       last = srcIdx[k]
+    } else if sig.params[k].hasDefault {
+      defaultSeen = true
     }
     k = k + 1
   }

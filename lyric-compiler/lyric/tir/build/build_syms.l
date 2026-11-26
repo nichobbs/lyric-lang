@@ -675,6 +675,8 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
               val n = match parentUnionDeclOf(tbl, sid) { case Some(d) -> unionDeclGenericNames(d).count; case None -> 0 }
               res.add(typeEntry(sid, n, newList()))
             }
+            // An interface's parameters are what its instances are made at (docs/70 phase 3c, mono slice 2).
+            case DKInterface(_, d) -> res.add(typeEntry(sid, extractGenericNames(d.generics).count, newList()))
             case _ -> res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
           }
         }
