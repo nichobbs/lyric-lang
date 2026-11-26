@@ -182,7 +182,12 @@ pub func tirImplMember(key: in String): Option[TirImplMember] {
           match Str.indexOf(tail, ")::") {
             case None -> None
             case Some(close) -> {
-              val iface = Str.substring(tail, 0, close)
+              // The AST path names an impl method by the interface's bare name: `Holder[Int]` is `Holder` (#7791).
+              val ifaceFull = Str.substring(tail, 0, close)
+              val iface = match Str.indexOf(ifaceFull, "[") {
+                case Some(b) -> Str.substring(ifaceFull, 0, b)
+                case None -> ifaceFull
+              }
               val fnPart = Str.substring(tail, close + 3)
               match Str.indexOf(fnPart, "(") {
                 case None -> None

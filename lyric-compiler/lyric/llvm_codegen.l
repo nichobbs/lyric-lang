@@ -19991,6 +19991,7 @@ func tirUnitMaps(
         case None -> ()
       }
     }
+    registerTirIfaceInstances(ctx, inputs[1], recs, unions, enums, distincts, ifaces, ifaceMethods, ifaceVts, ifaceInfoById, recIrById)
   }
   TirUnitMaps(
     fnNames = fnNames,
@@ -20016,6 +20017,89 @@ func tirUnitMaps(
     checkedArith = input.checkedArith,
     contractsElaborated = input.contractsElaborated
   )
+}
+
+/// The generic interfaces the monomorphised bundle instantiates (`Holder[Int]`, #7791): each instance's symbol
+/// gets the layout the AST path lays out for the interface at those arguments, its method entries their vtable
+/// slots, and each heap record the AST path built a vtable of it for the vtable's constant.  An instance whose
+/// arguments have no native layout stays unregistered, and its users stay on the AST path with a census reason.
+func registerTirIfaceInstances(
+  ctx: in Ctx,
+  inst: in LlvmTir.TirUnitInput,
+  recs: in Map[Int, LlvmTir.TirRecLayout],
+  unions: in Map[Int, LlvmTir.TirUnionLayout],
+  enums: in Map[Int, Bool],
+  distincts: in Map[Int, NType],
+  ifaces: in Map[Int, LlvmTir.TirIfaceLayout],
+  ifaceMethods: in Map[Int, LlvmTir.TirIfaceMethodRef],
+  ifaceVts: in Map[String, String],
+  ifaceInfoById: in Map[Int, NIfaceInfo],
+  recIrById: in Map[Int, String],
+): Unit {
+  val known = tirKnownTypes(recs, unions, enums, distincts)
+  for kid in mapKeys(ctx.tirKnownAll) {
+    match mapGet(ctx.tirKnownAll, kid) {
+      case Some(kt) -> if not known.containsKey(kid) { known.add(kid, kt) }
+      case None -> ()
+    }
+  }
+  for ii in inst.instances {
+    val key = match mapGet(inst.names, ii.inst.id) { case Some(k) -> k; case None -> "" }
+    val head = match Str.indexOf(key, "[") { case Some(b) -> Str.substring(key, 0, b); case None -> "" }
+    val gkey = match Str.indexOf(head, "::") {
+      case Some(sep) -> Str.substring(head, 0, sep) + "." + Str.substring(head, sep + 2)
+      case None -> ""
+    }
+    if gkey.length == 0 or not ctx.genericIfaceDefs.containsKey(gkey) {
+      continue
+    }
+    val argTys: List[NType] = newList()
+    var ok = true
+    for a in ii.args {
+      match tirInstArg(ctx, known, a) {
+        case Some(n) -> argTys.add(n)
+        case None -> {
+          ok = false
+        }
+      }
+    }
+    if not ok {
+      continue
+    }
+    match instantiateGenericIfaceOpt(ctx, genericQualifiedKey(ctx, gkey), argTys) {
+      case None -> ()
+      case Some(info) -> {
+        ifaces.add(ii.inst.id, tirIfaceLayout(info))
+        ifaceInfoById.add(ii.inst.id, info)
+        // The instance's method entries are `<instance key>::<method>(...)`.
+        val prefix = key + "::"
+        for id in mapKeys(inst.names) {
+          match mapGet(inst.names, id) {
+            case Some(mk) -> if Str.startsWith(mk, prefix) {
+              match Str.indexOf(Str.substring(mk, prefix.length), "(") {
+                case Some(open) -> {
+                  val slot = ifaceMethodSlot(info, Str.substring(mk, prefix.length, open))
+                  if slot >= 0 {
+                    ifaceMethods.add(id, LlvmTir.TirIfaceMethodRef(ifaceId = ii.inst.id, slot = slot))
+                  }
+                }
+                case None -> ()
+              }
+            }
+            case None -> ()
+          }
+        }
+        for rid in mapKeys(recIrById) {
+          match mapGet(recIrById, rid) {
+            case Some(rir) -> if ctx.ifaceVtables.containsKey(rir + "|" + info.key) {
+              ifaceVts.add(rid.toString() + "|" + ii.inst.id.toString(), ifaceVtableGlobalName(rir, info))
+            }
+            case None -> ()
+          }
+        }
+      }
+    }
+  }
 }
 
 /// The text of an initialiser that is a plain string literal, possibly parenthesised.
