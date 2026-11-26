@@ -92,7 +92,11 @@ func newMCtx(interner: in DefPathInterner, pkgs: in List[PackageBuild]): MCtx {
   )
   c.nextNode.add(firstInstanceNodeId())
   c.cur.add(0)
+  c.workDone.add(0)
   for pb in pkgs {
+    for im in pb.pkg.impls {
+      c.implDecls.add(im)
+    }
     for f in pb.pkg.funcs {
       if not c.decls.containsKey(f.sym.id) {
         c.decls.add(f.sym.id, f)
@@ -120,13 +124,188 @@ func newMCtx(interner: in DefPathInterner, pkgs: in List[PackageBuild]): MCtx {
 
 /// Produce the body of every instance asked for, and of every instance those ask for.
 func drainWork(c: in MCtx): Unit {
-  var i = 0
+  var i = c.workDone[0]
   while i < c.work.count {
     val p = c.work[i]
     val s = Subst(owner = p.origin.sym, args = p.args, fresh = true)
     c.outFns.add(mFnDecl(c, s, p.inst, p.origin))
     i = i + 1
+    c.workDone[0] = i
   }
+}
+
+/// An `impl` block of a non-generic target as the pass leaves it: its target and interface arguments mapped, an
+/// interface with arguments replaced by its instance (which also makes the instance's method entries), its members
+/// as they are (a block with its own type parameters is instantiated by `instantiateImpls`).
+func mImpl(c: in MCtx, im: in TImplDecl): TImplDecl {
+  val s = noSubst()
+  var iface = im.iface
+  var args: List[Ty] = mTys(c, s, im.ifaceArgs)
+  if args.count > 0 and not anyParam(args) {
+    match instType(c, im.iface, args) {
+      case Some(ii) -> {
+        iface = ii
+        args = newList()
+        for m in ifaceMethodsOf(c, im.iface) {
+          val _ = instIfaceMethod(c, im.iface, mTys(c, s, im.ifaceArgs), m)
+        }
+      }
+      case None -> noteUnresolved(c, "generic interface impl")
+    }
+  }
+  TImplDecl(
+    sym = im.sym,
+    typeParams = im.typeParams,
+    target = mTy(c, s, im.target),
+    iface = iface,
+    ifaceArgs = args,
+    members = im.members,
+    span = im.span
+  )
+}
+
+/// Binds the parameters of the impl `owner` by matching the pattern `pat` against the closed type `actual`: slot
+/// `i` of `binds` is the type `TParam(owner, i)` stands for.  False when they do not match.
+func matchImplTy(pat: in Ty, actual: in Ty, owner: in SymbolId, binds: in List[Option[Ty]]): Bool {
+  match pat {
+    case TParam(o, i) -> {
+      if not symbolIdEq(o, owner) or i < 0 or i >= binds.count {
+        return tyEq(pat, actual)
+      }
+      match binds[i] {
+        case Some(b) -> tyEq(b, actual)
+        case None -> {
+          binds[i] = Some(value = actual)
+          true
+        }
+      }
+    }
+    case TNamed(ps, pargs) -> match actual {
+      case TNamed(asym, aargs) -> symbolIdEq(ps, asym) and
+        matchImplTys(pargs, aargs, owner, binds)
+      case _ -> false
+    }
+    case TTuple(pxs) -> match actual { case TTuple(axs) -> matchImplTys(pxs, axs, owner, binds); case _ -> false }
+    case TNullable(pi) -> match actual { case TNullable(ai) -> matchImplTy(pi, ai, owner, binds); case _ -> false }
+    case TSlice(pe) -> match actual { case TSlice(ae) -> matchImplTy(pe, ae, owner, binds); case _ -> false }
+    case _ -> tyEq(pat, actual)
+  }
+}
+
+func matchImplTys(ps: in List[Ty], xs: in List[Ty], owner: in SymbolId, binds: in List[Option[Ty]]): Bool {
+  if ps.count != xs.count {
+    return false
+  }
+  var i = 0
+  while i < ps.count {
+    if not matchImplTy(ps[i], xs[i], owner, binds) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Instantiates every generic `impl` block at each instance of its target type: the block's members are instantiated
+/// at the arguments the target's instance binds, and an impl of the instance is recorded over the instance of the
+/// target and the instance of the interface.  Runs to a fixpoint, since an instantiated member can ask for more
+/// instances.
+func instantiateImpls(c: in MCtx): Unit {
+  var again = true
+  while again {
+    again = false
+    var gi = 0
+    while gi < c.implDecls.count {
+      val im = c.implDecls[gi]
+      if im.typeParams.count > 0 {
+        match im.target {
+          case TNamed(tsym, targs) -> {
+            var k = 0
+            while k < c.instList.count {
+              val ii = c.instList[k]
+              k = k + 1
+              if symbolIdEq(ii.origin, tsym) and ii.args.count == targs.count {
+                val binds: List[Option[Ty]] = newList()
+                var q = 0
+                while q < im.typeParams.count {
+                  binds.add(None)
+                  q = q + 1
+                }
+                val args: List[Ty] = newList()
+                var ok = matchImplTys(targs, ii.args, im.sym, binds)
+                for b in binds {
+                  match b {
+                    case Some(t) -> args.add(t)
+                    case None -> {
+                      ok = false
+                    }
+                  }
+                }
+                val key = symKey(c, im.sym) + "[" + tyKeys(c, args) + "]"
+                if ok and not c.implDone.containsKey(key) {
+                  c.implDone.add(key, true)
+                  again = true
+                  instantiateImpl(c, im, args, key)
+                }
+              }
+            }
+          }
+          case _ -> {
+            if not c.implDone.containsKey("#" + toString(im.sym.id)) {
+              c.implDone.add("#" + toString(im.sym.id), true)
+              noteUnresolved(c, "generic impl of a target that is not a named type")
+            }
+          }
+        }
+      }
+      gi = gi + 1
+    }
+    drainWork(c)
+  }
+}
+
+func instantiateImpl(c: in MCtx, im: in TImplDecl, args: in List[Ty], key: in String): Unit {
+  val sub = Subst(owner = im.sym, args = args, fresh = false)
+  val members: List[SymbolId] = newList()
+  for m in im.members {
+    match mapGet(c.decls, m.id) {
+      case Some(d) -> if d.typeParams.count == args.count {
+        match instFn(c, d, args) {
+          case Some(i) -> members.add(i)
+          case None -> ()
+        }
+      } else {
+        noteUnresolved(c, "impl member with type parameters of its own")
+      }
+      case None -> noteUnresolved(c, "impl member without a declaration")
+    }
+  }
+  var iface = im.iface
+  val iargs = mTys(c, sub, im.ifaceArgs)
+  if iargs.count > 0 {
+    match instType(c, im.iface, iargs) {
+      case Some(ii) -> {
+        iface = ii
+        for m in ifaceMethodsOf(c, im.iface) {
+          val _ = instIfaceMethod(c, im.iface, iargs, m)
+        }
+      }
+      case None -> noteUnresolved(c, "generic interface impl")
+    }
+  }
+  val sym = internDefPathKey(c.interner, key)
+  c.outNames.add(sym.id, key)
+  c.outImpls.add(
+    TImplDecl(
+      sym = sym,
+      typeParams = newList(),
+      target = mTy(c, sub, im.target),
+      iface = iface,
+      ifaceArgs = if iface.id == im.iface.id { iargs } else { newList() },
+      members = members,
+      span = im.span
+    )
+  )
 }
 
 /// `bundle` with nothing generic left.  A non-generic function is rewritten in place; a generic one
@@ -159,9 +338,15 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
         }
       }
     }
+    val impls: List[TImplDecl] = newList()
+    for im in pb.pkg.impls {
+      if im.typeParams.count == 0 {
+        impls.add(mImpl(c, im))
+      }
+    }
     res.add(
       PackageBuild(
-        pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns),
+        pkg = TPackage(name = pb.pkg.name, symbols = syms, funcs = fns, impls = impls),
         failed = pb.failed,
         total = pb.total,
         built = pb.built,
@@ -173,9 +358,10 @@ pub func monoBundle(interner: in DefPathInterner, bundle: in List[PackageBuild])
     )
   }
   drainWork(c)
+  instantiateImpls(c)
   res.add(
     PackageBuild(
-      pkg = TPackage(name = instancesPackageName(), symbols = c.outSyms, funcs = c.outFns),
+      pkg = TPackage(name = instancesPackageName(), symbols = c.outSyms, funcs = c.outFns, impls = c.outImpls),
       failed = newList(),
       total = c.outFns.count,
       built = c.outFns.count,
