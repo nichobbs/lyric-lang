@@ -5483,7 +5483,13 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
     } else if ifaceDefRow > 0 {
       tdrTypeDef(ifaceDefRow)
     } else {
-      val ifaceRefRow = findTypeRefRowByName(ctx, d.ifaceTypeName)
+      // A generic interface's TypeRef carries the arity suffix; the plain name may also be a row.
+      val arityRefRow = if d.ifaceTypeArgs.count > 0 {
+        findTypeRefRowByName(ctx, d.ifaceTypeName + "`" + toString(d.ifaceTypeArgs.count))
+      } else {
+        0
+      }
+      val ifaceRefRow = if arityRefRow > 0 { arityRefRow } else { findTypeRefRowByName(ctx, d.ifaceTypeName) }
       if ifaceRefRow == 0 {
         panic("Msil.Lowering: MPImpl interface type '" + d.ifaceTypeName + "' has no TypeDef or TypeRef row")
       }
