@@ -2268,7 +2268,7 @@ func lowerImplMethod(
   // The impl's own type parameters for a generic target (`impl[T] I for
   // Box[T]`, #7704): they erase to `Object` in the descriptor and in body
   // annotations (`FuncCtx.typeParams`) exactly as in `lowerRecordMethod`.
-  // Empty for a non-generic target and an interface default method.
+  // Empty for a non-generic target; an interface default method passes its interface's parameters.
   implTypeParams: in List[String],
 ): LFunc {
   // The method's own type parameters erase too (`withOwnGenericsJvm`).
@@ -10250,7 +10250,10 @@ pub func codegenPackageWithSigsSeeded(
                   // extern-interface impl (#5931's `implTypeExprToJvm`
                   // narrowing only applies to a real `impl <Extern> for X`).
                   false,
-                  newList()
+                  // The interface's own type parameters erase to `Object` in
+                  // the default method's descriptor exactly as the abstract
+                  // methods' do (`ifaceEmitTps`, #9441).
+                  ifaceEmitTps
                 )
               )
             }
