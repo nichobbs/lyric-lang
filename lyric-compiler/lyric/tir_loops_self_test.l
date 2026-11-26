@@ -172,3 +172,13 @@ test "a break of an inner loop leaves the outer for loop's flag alone" {
   assertEqualInt(c.asserts, 4, "the for's iteration and exit checks and the while's")
   assertEqualInt(c.vars, 2, "the accumulator and the inner counter: no flag, the break is the inner loop's")
 }
+
+test "a labelled break from an inner loop sets the outer for loop's flag" {
+  val l = lowerOf(
+    "package App\nfunc f(n: Int): Int {\n  var s = 0\n  outer: for i in 0 ..< n\n    invariant: s >= 0\n  {\n    for k in 0 ..< 3 {\n      if k == 1 { break outer }\n      s = s + k\n    }\n  }\n  s\n}\n"
+  )
+  assertLowered(l, "labelled break")
+  val c = count(l.pb)
+  assertEqualInt(c.asserts, 2, "the iteration check and the guarded exit check")
+  assertEqualInt(c.vars, 2, "the accumulator and the outer loop's break flag")
+}
