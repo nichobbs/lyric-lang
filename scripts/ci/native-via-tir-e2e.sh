@@ -729,6 +729,23 @@ fi
 grep -q 'InvariantViolated: Std.HttpEngine.Hpack.DynamicTable' "$work/siv_tir.err" || { echo "::error::no invariant message"; cat "$work/siv_tir.err"; exit 1; }
 echo "std invariants: ok"
 
+# An opaque type wrapping a raw handle (`@nativeDtor`, docs/70 phase 4a part 8, D856): every function from TIR, the
+# same exit status, and no leak, double release or release in the wrong order under AddressSanitizer.
+dsrc=scripts/ci/native-via-tir/nativedtor.l
+"$lyric_bin" build --target native "$dsrc" -o "$work/d_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$dsrc" -o "$work/d_tir" 2> "$work/d_census.txt" >/dev/null
+cat "$work/d_census.txt"
+"$work/d_ast"
+"$work/d_tir"
+if grep -q '^  fallback:' "$work/d_census.txt"; then
+  echo "::error::nativedtor.l has a TIR fallback"
+  exit 1
+fi
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/d_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/d_asan"
+"$work/d_asan"
+echo "nativedtor under AddressSanitizer: clean"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
