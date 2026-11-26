@@ -257,7 +257,7 @@ func cStmt(c: in CCtx, st: in TStmt): List[TStmt] {
       body = cExpr(c, body)
     )
     case TsLoop(label, body) -> TsLoop(label = label, body = cExpr(c, body))
-    case TsInvariant(e) -> TsInvariant(expr = cExpr(c, e))
+    case TsInvariant(e, t) -> TsInvariant(expr = cExpr(c, e), text = t)
   }
   emitted.add(TStmt(id = cNid(c, st.id), span = st.span, kind = k))
   emitted

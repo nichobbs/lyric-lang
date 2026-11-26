@@ -359,7 +359,9 @@ pub union TStmtKind {
   case TsFor(label: Option[String], pat: TPat, iter: TExpr, body: TExpr)
   case TsWhile(label: Option[String], cond: TExpr, body: TExpr)
   case TsLoop(label: Option[String], body: TExpr)
-  case TsInvariant(expr: TExpr)
+  /// A loop `invariant:` clause, at the head of the loop body, with its formatter-rendered text for the violation
+  /// message (`LoopInvariantViolated: invariant <text>`).
+  case TsInvariant(expr: TExpr, text: String)
 }
 
 /// A generic parameter of a declaration.  A value parameter has `valueTy`.

@@ -261,7 +261,7 @@ func mStmt(c: in MCtx, s: in Subst, st: in TStmt): TStmt {
       body = mExpr(c, s, body)
     )
     case TsLoop(label, body) -> TsLoop(label = label, body = mExpr(c, s, body))
-    case TsInvariant(e) -> TsInvariant(expr = mExpr(c, s, e))
+    case TsInvariant(e, t) -> TsInvariant(expr = mExpr(c, s, e), text = t)
   }
   TStmt(id = nid(c, s, st.id), span = st.span, kind = k)
 }

@@ -709,7 +709,7 @@ func visitStmt(c: in Ctx, s: in TStmt): Unit {
       visitExpr(c, body)
     }
     case TsLoop(_, body) -> visitExpr(c, body)
-    case TsInvariant(e) -> {
+    case TsInvariant(e, _) -> {
       visitExpr(c, e)
       expectTy(c, s.id, e.ty, tyBool(), "condition-type", "invariant")
     }

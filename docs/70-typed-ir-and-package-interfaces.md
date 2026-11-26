@@ -1023,6 +1023,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Record `==`/`!=` on TIR, array and Float leaves (D506): an array leaf is compared element by element in a loop (D167) and a Float/Double leaf with the NaN rule (D172); records holding a tuple or union that holds an array still keep one `IoEq`.
   - `ULong.toLong`/`toDouble`/`toFloat` on TIR (`Lyric.Tir.Unsigned`, D508): one general same-width signed/unsigned reinterpretation `ConvKind` (`CvReinterpret`) with its Verify rule and native lowering, and D278's checked and corrected blocks over it.
   - Protected-type invariants on TIR (D509): each member carries its type's `invariant:` clauses, built in the member's scope with node ids of their own and asserted at every exit by `Lyric.Tir.Contracts`, ungated; protected-type invariant clauses are now numbered by `renumberNodeIds`.
+  - Loop invariants on TIR (`Lyric.Tir.Loops`, D510): each `invariant:` clause is asserted at the head of every iteration and after a loop that ends normally, not after a `break` (a `while` becomes a `loop` with the exit check in its guard, a `for` uses a break flag); `TsInvariant` carries its text and `Lyric.Tir.Walk` gains a statement hook.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

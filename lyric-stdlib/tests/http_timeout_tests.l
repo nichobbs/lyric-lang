@@ -139,7 +139,13 @@ test "headers followed by a stalled body end at the deadline as HttpError.Timeou
   val l = listenLoopback()
   val sc = Task.makeScope()
   Task.scopeSpawn(sc, { -> acceptSendAndStall(l, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial") })
-  // The clock starts before the deadline timer does, so the elapsed time can never read below the deadline.
+  // The clock starts before the deadline timer does. The dotnet timer behind `makeCancelSourceTimeout`
+  // (`CancellationTokenSource(int)`) runs on a millisecond tick clock and can fire up to a few ms
+  // before the deadline against a high-resolution clock (#9419: 399 ms for a 400 ms deadline), so the
+  // lower bound allows `timerSlackMs`; the JVM and native deadlines are checked on the measuring
+  // clock and never fire early. The slack is far below the 400 ms deadline, so a send ended by
+  // anything but the deadline still fails the bound.
+  val timerSlackMs = 10i64
   val started = Time.monotonicNanos()
   val src = Task.makeCancelSourceTimeout(400)
   val tok = Task.sourceToken(src)
@@ -150,7 +156,7 @@ test "headers followed by a stalled body end at the deadline as HttpError.Timeou
     case Err(e) -> assertTrue(isTimeout(e), "the error is HttpError.Timeout: " + HttpError.message(e))
   }
   assertTrue(Task.isCancelled(tok), "the token reads as cancelled")
-  assertTrue(elapsedMs >= 400i64, "not reported before the deadline: " + elapsedMs.toString() + " ms")
+  assertTrue(elapsedMs >= 400i64 - timerSlackMs, "not reported before the deadline: " + elapsedMs.toString() + " ms")
   assertTrue(
     elapsedMs < 4000i64,
     "reported at the deadline, not when the peer gives up: " + elapsedMs.toString() + " ms"

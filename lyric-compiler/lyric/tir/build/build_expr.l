@@ -4193,7 +4193,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SInvariant(x) -> match buildExpr(env, x) {
-      case Some(t) -> Some(value = stmtOf(s, TsInvariant(expr = t)))
+      case Some(t) -> Some(value = stmtOf(s, TsInvariant(expr = t, text = Fmt.exprInline(0, x))))
       case None -> None
     }
     case SRule(_, _) -> uncoveredStmt(env, s, "a rule")
@@ -4722,7 +4722,7 @@ func buildFnCore(
       match buildExpr(env, inv.expr) {
         case Some(t) -> {
           // The clause is one AST node tree built in every member: each copy takes node ids of its own.
-          val w = Walker(pre = { x: TExpr -> None }, post = { x: TExpr -> renumberNode(env, x) })
+          val w = newWalker({ x: TExpr -> None }, { x: TExpr -> renumberNode(env, x) })
           invs.add(walkExpr(w, t))
           invTexts.add(Fmt.exprInline(0, inv.expr))
         }
