@@ -1028,6 +1028,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Mono slice 2 (D513): the monomorphiser instantiates generic interfaces (a call through one names the interface's instance and its method entry, no interface argument is left), keeps the impls of non-generic targets with their interface mapped, and instantiates each `impl[T]` block at every instance of its target, over `TPackage.impls`.
   - Mono (D516): an upcast to an instance of a generic interface names the instance, as `Callee.Interface` does.
   - Equality (D515): `==`/`!=` on a tuple or union holding an array, in a record leaf or directly, is a match over its parts and cases on TIR; only a leaf path through a generic record keeps the single `IoEq`.
+  - Verifier (D517): `CvUpcast` must name the interface its node's type is, before and after monomorphisation.
 
 3b can run in parallel with 3a; 3c needs 3a.
 
