@@ -4927,7 +4927,8 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           isGenerator = functionIsGenerator(fn),
           precondTexts = c.preTexts,
           postcondTexts = c.postTexts,
-          isPublic = env.memberPublic.count > 0 or (match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }),
+          isPublic = env.memberPublic.count > 0 or
+            (match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }),
           invariants = c.invs,
           invariantTexts = c.invTexts
         )

@@ -484,7 +484,7 @@ test "a method of a pub record and an impl member are public boundaries, a metho
   val done = elaborateBundle(cr.symbols.interner, bundle, true)
   var holder = 0
   var hidden = 0
-  var impl = 0
+  var implMs = 0
   for f in done[0].pkg.funcs {
     val key = match mapGet(done[0].names, f.sym.id) { case Some(k) -> k; case None -> "" }
     val ms = messagesOfFn(f)
@@ -493,12 +493,12 @@ test "a method of a pub record and an impl member are public boundaries, a metho
     } else if key.startsWith("App::Hidden::fix") {
       hidden = ms.count
     } else if key.contains("$impl(Fixer)") {
-      impl = ms.count
+      implMs = ms.count
     }
   }
   assertEqualInt(holder, 1, "the pub record's method re-checks its inout parameter")
   assertEqualInt(hidden, 0, "a record that is not pub is no boundary")
-  assertEqualInt(impl, 1, "an impl member re-checks its inout parameter")
+  assertEqualInt(implMs, 1, "an impl member re-checks its inout parameter")
   val ds = verifyPackage(done[0].pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }
