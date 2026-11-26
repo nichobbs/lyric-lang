@@ -709,10 +709,10 @@ func recordEqStep(env: in BuildEnv, e: in Expr, cur: in TExpr, seg: in String): 
 /// compared leaf by leaf along the paths the checker recorded (a nested record expanded into its fields, a
 /// distinct type through its value), the conjunction negated for `!=`.  An array leaf is compared element by
 /// element (D167) and a `Float`/`Double` leaf is equal when `==` holds or both are `NaN` (D172), as the AST pass
-/// states them (`arrayEqBlock`, `floatEqExpr`).  A record with a tuple or union leaf holding an array (the
-/// checker's `wrapLeaves`), and a leaf path the builder cannot read (through a generic record), keep the one
-/// `IoEq`/`IoNeq` on the record type that the builder produced before, until their own steps exist; the
-/// backends that lower the operator by type are unaffected.
+/// states them (`arrayEqBlock`, `floatEqExpr`).  A tuple or union leaf holding an array (the checker's
+/// `wrapLeaves`) is compared by its `EqShape` (D167), a case at a time.  A leaf path the builder cannot read
+/// (through a generic record) keeps the one `IoEq`/`IoNeq` on the record type; the backends that lower the
+/// operator by type are unaffected.
 func buildRecordEq(
   env: in BuildEnv, e: in Expr, ty: in Ty, site: in RecordEqSite, lhs: in Expr, rhs: in Expr
 ): Option[TExpr] {
@@ -720,9 +720,6 @@ func buildRecordEq(
   val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
   // Every fallback below reuses the operands built above, so nothing is built or evaluated twice.
   val iop = if site.negate { IoNeq } else { IoEq }
-  if site.wrapLeaves.count > 0 {
-    return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
-  }
   val rt = if tyEq(lt.ty, rt0.ty) {
     rt0
   } else {
@@ -732,6 +729,30 @@ func buildRecordEq(
     }
   }
   val all = match recordEqCore(env, e, site, lt, rt) {
+    case Some(c) -> c
+    case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
+  }
+  val result = if site.negate { boolNot(env, e, all) } else { all }
+  Some(value = mkExpr(e, ty, result.kind))
+}
+
+/// `a == b` and `a != b` on a tuple, union or distinct value holding an array (D167): compared part by part by the
+/// `EqShape` the checker recorded.  A shape with no step the builder can read keeps the one `IoEq`/`IoNeq`.
+func buildWrapEq(
+  env: in BuildEnv, e: in Expr, ty: in Ty, site: in WrapEqSite, lhs: in Expr, rhs: in Expr
+): Option[TExpr] {
+  val lt = match buildExpr(env, lhs) { case Some(t) -> t; case None -> return None }
+  val rt0 = match buildExpr(env, rhs) { case Some(t) -> t; case None -> return None }
+  val iop = if site.negate { IoNeq } else { IoEq }
+  val rt = if tyEq(lt.ty, rt0.ty) {
+    rt0
+  } else {
+    match convertValue(env, rt0, lt.ty) {
+      case Some(c) -> c
+      case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt0)
+    }
+  }
+  val all = match shapeEqCore(env, e, site.shape, lt, rt) {
     case Some(c) -> c
     case None -> return buildDeclaredBinary(env, e, ty, iop, lt, rt)
   }
@@ -794,10 +815,6 @@ func floatEqCore(env: in BuildEnv, e: in Expr, a: in TExpr, b: in TExpr): TExpr 
 /// The leaves of the structural record `site` compared, un-negated: the operands `lt` and `rt` (of one type) are
 /// bound to locals and the leaves joined with `and`.  None when a leaf path cannot be read.
 func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TExpr, rt: in TExpr): Option[TExpr] {
-  // A tuple or union leaf holding an array has no step yet, at any depth: the caller keeps one `IoEq`.
-  if site.wrapLeaves.count > 0 {
-    return None
-  }
   val ld = declareLocal(env, "__req_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
   val rd = declareLocal(env, "__req_r" + toString(env.nextLocal[0] + 1), rt.ty, false)
   val stmts: List[TStmt] = newList()
@@ -817,10 +834,16 @@ func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TE
     }
     val leaf = match mapGet(site.arrayLeaves, joined) {
       case Some(arr) -> match arrayEqCore(env, e, arr, l, r) { case Some(x) -> x; case None -> return None }
-      case None -> match mapGet(site.floatLeaves, joined) {
-        // Presence is what matters: the map's flag only says `Float` against `Double`.
-        case Some(_) -> floatEqCore(env, e, l, r)
-        case None -> eqIntrinsic(env, e, l, r)
+      case None -> match mapGet(site.wrapLeaves, joined) {
+        case Some(sh) -> match shapeEqCore(env, e, sh, l, r) {
+          case Some(x) -> x
+          case None -> return None
+        }
+        case None -> match mapGet(site.floatLeaves, joined) {
+          // Presence is what matters: the map's flag only says `Float` against `Double`.
+          case Some(_) -> floatEqCore(env, e, l, r)
+          case None -> eqIntrinsic(env, e, l, r)
+        }
       }
     }
     cmp = match cmp {
@@ -847,7 +870,7 @@ func recordEqCore(env: in BuildEnv, e: in Expr, site: in RecordEqSite, lt: in TE
 }
 
 /// Two values compared by the `EqShape` the checker recorded (D167): plainly, with the `NaN` rule, as an array, as a
-/// structural record, or through a distinct type's `value`.  None for a tuple or union shape, which have no step yet.
+/// structural record, or through a distinct type's `value`.  A tuple is a match over its parts and a union a match per case.
 func shapeEqCore(env: in BuildEnv, e: in Expr, shape: in EqShape, a: in TExpr, b: in TExpr): Option[TExpr] {
   match shape {
     case ESPlain -> Some(value = eqIntrinsic(env, e, a, b))
@@ -859,15 +882,174 @@ func shapeEqCore(env: in BuildEnv, e: in Expr, shape: in EqShape, a: in TExpr, b
       val bv = match recordEqStep(env, e, b, "value") { case Some(x) -> x; case None -> return None }
       shapeEqCore(env, e, inner, av, bv)
     }
-    case ESTuple(_) -> None
-    case ESUnion(_) -> None
+    case ESTuple(elems) -> tupleEqCore(env, e, elems, a, b)
+    case ESUnion(cases) -> unionEqCore(env, e, cases, a, b)
   }
+}
+
+record EqBinds {
+  decls: List[LocalDecl]
+  pats: List[TPat]
+}
+
+/// One fresh local per type, each bound by a `TpBind` pattern.
+func eqBinds(env: in BuildEnv, e: in Expr, tag: in String, tys: in List[Ty]): EqBinds {
+  val ds: List[LocalDecl] = newList()
+  val ps: List[TPat] = newList()
+  var i = 0
+  while i < tys.count {
+    val d = declareLocal(env, tag + toString(env.nextLocal[0] + 1), tys[i], false)
+    ds.add(d)
+    ps.add(TPat(id = freshNodeId(env), ty = tys[i], span = e.span, kind = TpBind(decl = d, inner = None)))
+    i = i + 1
+  }
+  EqBinds(decls = ds, pats = ps)
+}
+
+/// The conjunction of the parts' comparisons, each part compared by its shape (`true` for none).
+func eqPartsCore(
+  env: in BuildEnv, e: in Expr, shapes: in List[EqShape], xs: in List[LocalDecl], ys: in List[LocalDecl]
+): Option[TExpr] {
+  var cmp: Option[TExpr] = None
+  var k = 0
+  while k < shapes.count {
+    val part = match shapeEqCore(env, e, shapes[k], localOf(env, e, xs[k]), localOf(env, e, ys[k])) {
+      case Some(x) -> x
+      case None -> return None
+    }
+    cmp = match cmp {
+      case None -> Some(value = part)
+      case Some(acc) -> Some(
+        value = TExpr(
+          id = freshNodeId(env),
+          ty = tyBool(),
+          span = e.span,
+          kind = XShort(op = ShAnd, lhs = acc, rhs = part)
+        )
+      )
+    }
+    k = k + 1
+  }
+  match cmp {
+    case Some(c) -> Some(value = c)
+    case None -> Some(value = boolLitOf(env, e, true))
+  }
+}
+
+func eqMatch(env: in BuildEnv, e: in Expr, scrut: in TExpr, arms: in List[TArm], exhaustive: in Bool): TExpr {
+  TExpr(
+    id = freshNodeId(env),
+    ty = tyBool(),
+    span = e.span,
+    kind = XMatch(scrutinee = scrut, arms = arms, exhaustive = exhaustive)
+  )
+}
+
+func eqArm(env: in BuildEnv, e: in Expr, pat: in TPat, body: in TExpr): TArm {
+  TArm(pat = pat, guard = None, body = body)
+}
+
+/// Two tuples compared part by part (D167): `match a { case (x0, x1) -> match b { case (y0, y1) -> x0 == y0 and ... } }`,
+/// the operands matched in place so each is evaluated once, as on the AST (`eqShapeExpr`).
+func tupleEqCore(env: in BuildEnv, e: in Expr, elems: in List[EqShape], a: in TExpr, b: in TExpr): Option[TExpr] {
+  val ats = match a.ty { case TTuple(xs) -> xs; case _ -> return None }
+  val bts = match b.ty { case TTuple(xs) -> xs; case _ -> return None }
+  if ats.count != elems.count or bts.count != elems.count {
+    return None
+  }
+  val xb = eqBinds(env, e, "__teq_x", ats)
+  val yb = eqBinds(env, e, "__teq_y", bts)
+  val inner = match eqPartsCore(env, e, elems, xb.decls, yb.decls) { case Some(x) -> x; case None -> return None }
+  val yarms: List[TArm] = newList()
+  yarms.add(
+    eqArm(env, e, TPat(id = freshNodeId(env), ty = b.ty, span = e.span, kind = TpTuple(elems = yb.pats)), inner)
+  )
+  val inB = eqMatch(env, e, b, yarms, true)
+  val xarms: List[TArm] = newList()
+  xarms.add(eqArm(env, e, TPat(id = freshNodeId(env), ty = a.ty, span = e.span, kind = TpTuple(elems = xb.pats)), inB))
+  Some(value = eqMatch(env, e, a, xarms, true))
+}
+
+/// The payload types of the union case named `name` of the union type `ty`, at `ty`'s arguments; the case's symbol
+/// is noted so the signature oracle has it.
+func eqCaseOf(env: in BuildEnv, ty: in Ty, name: in String): Option[EqCaseInfo] {
+  val parent = match ty { case TNamed(p, _) -> p; case _ -> return None }
+  val targs = match ty { case TNamed(_, a) -> a; case _ -> return None }
+  val pk = match defPathKeyOf(env.ctx.tbl.interner, parent) { case Some(k) -> k; case None -> return None }
+  val cs = match symbolIdOfKey(env.ctx.tbl.interner, pk + "::" + name) { case Some(c) -> c; case None -> return None }
+  noteCaseSym(env, cs)
+  val en = match mapGet(env.syms, cs.id) { case Some(x) -> x; case None -> return None }
+  val sg = match en.sig { case Some(x) -> x; case None -> return None }
+  val tys: List[Ty] = newList()
+  for p in sg.params {
+    tys.add(substOwnerArgs(p.ty, parent, targs))
+  }
+  Some(value = EqCaseInfo(sym = cs, fields = tys))
+}
+
+record EqCaseInfo {
+  sym: SymbolId
+  fields: List[Ty]
+}
+
+/// Two unions compared case by case (D167): `match a { case C(x..) -> match b { case C(y..) -> x == y and ...; case _ -> false } ... }`.
+/// The cases are those the checker recorded, each named by the last segment of its written path.
+func unionEqCore(env: in BuildEnv, e: in Expr, cases: in List[EqUnionCase], a: in TExpr, b: in TExpr): Option[TExpr] {
+  val ld = declareLocal(env, "__ueq_l" + toString(env.nextLocal[0] + 1), a.ty, false)
+  val rd = declareLocal(env, "__ueq_r" + toString(env.nextLocal[0] + 1), b.ty, false)
+  val xarms: List[TArm] = newList()
+  for c in cases {
+    if c.head.count == 0 {
+      return None
+    }
+    val name = c.head[c.head.count - 1]
+    val ai = match eqCaseOf(env, a.ty, name) { case Some(x) -> x; case None -> return None }
+    val bi = match eqCaseOf(env, b.ty, name) { case Some(x) -> x; case None -> return None }
+    if ai.fields.count != c.fields.count or bi.fields.count != c.fields.count {
+      return None
+    }
+    val xb = eqBinds(env, e, "__ueq_x", ai.fields)
+    val yb = eqBinds(env, e, "__ueq_y", bi.fields)
+    val inner = match eqPartsCore(env, e, c.fields, xb.decls, yb.decls) { case Some(x) -> x; case None -> return None }
+    val yarms: List[TArm] = newList()
+    yarms.add(
+      eqArm(
+        env,
+        e,
+        TPat(id = freshNodeId(env), ty = b.ty, span = e.span, kind = TpCtor(sym = bi.sym, args = yb.pats)),
+        inner
+      )
+    )
+    yarms.add(
+      eqArm(env, e, TPat(id = freshNodeId(env), ty = b.ty, span = e.span, kind = TpWild), boolLitOf(env, e, false))
+    )
+    val inB = eqMatch(env, e, localOf(env, e, rd), yarms, true)
+    xarms.add(
+      eqArm(
+        env,
+        e,
+        TPat(id = freshNodeId(env), ty = a.ty, span = e.span, kind = TpCtor(sym = ai.sym, args = xb.pats)),
+        inB
+      )
+    )
+  }
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(env, ld, a))
+  stmts.add(letStmt(env, rd, b))
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = tyBool(),
+      span = e.span,
+      kind = XBlock(stmts = stmts, tail = Some(value = eqMatch(env, e, localOf(env, e, ld), xarms, true)))
+    )
+  )
 }
 
 /// Two arrays of `site.len` elements compared element by element (D167): each operand is bound once, then
 /// `while ok and i < len { if not (l[i] == r[i]) { ok = false }; i = i + 1 }`, an element that is a structural
 /// record compared field by field, a nested array in turn, a `Float` with its `NaN` rule.  None for an element
-/// shape with no step yet (a tuple or union holding an array).
+/// shape whose parts the builder cannot read.
 func arrayEqCore(env: in BuildEnv, e: in Expr, site: in ArrayEqSite, lt: in TExpr, rt: in TExpr): Option[TExpr] {
   val elemTy = match lt.ty { case TArray(_, el) -> el; case _ -> return None }
   val ld = declareLocal(env, "__aeq_l" + toString(env.nextLocal[0] + 1), lt.ty, false)
@@ -3111,7 +3293,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case _ -> ()
       }
       match buildAll(env, xs) {
-        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
+        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = rangeCheckedElems(env, ts, ty))))
         case None -> None
       }
     }
@@ -3241,6 +3423,10 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       }
       match mapGet(env.ctx.tbl.recordEqSites, recordCopySiteKey(e.span)) {
         case Some(site) -> return buildRecordEq(env, e, ty, site, lhs, rhs)
+        case None -> ()
+      }
+      match mapGet(env.ctx.tbl.wrapEqSites, recordCopySiteKey(e.span)) {
+        case Some(site) -> return buildWrapEq(env, e, ty, site, lhs, rhs)
         case None -> ()
       }
       // `None == x`: the checker leaves the bare left operand untyped, and equality takes its type
@@ -7981,6 +8167,28 @@ func retypeTupleLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr]
     i = i + 1
   }
   Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XTuple(elems = converted)))
+}
+
+/// The elements of a list literal the checker typed as a `List` of a range type (`val xs: List[Int range 0 ..= 3] =
+/// [n]`): each converted to the element type, so the range check applies to it as it does to an element added or
+/// assigned later (#8031).  A literal of any other type keeps its elements.
+func rangeCheckedElems(env: in BuildEnv, ts: in List[TExpr], ty: in Ty): List[TExpr] {
+  val el = match ty {
+    case TExtern(h) -> if h.args.count == 1 and isListHostName(h.name) { h.args[0] } else { return ts }
+    case _ -> return ts
+  }
+  match el {
+    case TRefined(_, _, _, _) -> ()
+    case _ -> return ts
+  }
+  val converted: List[TExpr] = newList()
+  for x in ts {
+    match convertValue(env, x, el) {
+      case Some(c) -> converted.add(c)
+      case None -> converted.add(x)
+    }
+  }
+  converted
 }
 
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
