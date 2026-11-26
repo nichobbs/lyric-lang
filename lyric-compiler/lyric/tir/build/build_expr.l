@@ -78,6 +78,9 @@ pub record BuildEnv {
   defaultFloor: List[Int] = newList()
   /// The `invariant:` clauses of the protected type the member being built belongs to (D509).
   memberInvs: List[InvariantClause] = newList()
+  /// Holds `true` while a member whose owner makes it part of the public boundary is built (D512): a method of a
+  /// `pub` record, or an `impl` member.
+  memberPublic: List[Bool] = newList()
 }
 
 /// A value-generic parameter a body may read by name: its position among the member's type
@@ -3108,7 +3111,7 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case _ -> ()
       }
       match buildAll(env, xs) {
-        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = ts)))
+        case Some(ts) -> Some(value = mkExpr(e, ty, XListLit(elems = rangeCheckedElems(env, ts, ty))))
         case None -> None
       }
     }
@@ -4950,7 +4953,8 @@ func buildFnDeclWith(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable,
           isGenerator = functionIsGenerator(fn),
           precondTexts = c.preTexts,
           postcondTexts = c.postTexts,
-          isPublic = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false },
+          isPublic = env.memberPublic.count > 0 or
+            (match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }),
           invariants = c.invs,
           invariantTexts = c.invTexts
         )
@@ -7979,6 +7983,28 @@ func retypeTupleLiteral(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr]
   Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XTuple(elems = converted)))
 }
 
+/// The elements of a list literal the checker typed as a `List` of a range type (`val xs: List[Int range 0 ..= 3] =
+/// [n]`): each converted to the element type, so the range check applies to it as it does to an element added or
+/// assigned later (#8031).  A literal of any other type keeps its elements.
+func rangeCheckedElems(env: in BuildEnv, ts: in List[TExpr], ty: in Ty): List[TExpr] {
+  val el = match ty {
+    case TExtern(h) -> if h.args.count == 1 and isListHostName(h.name) { h.args[0] } else { return ts }
+    case _ -> return ts
+  }
+  match el {
+    case TRefined(_, _, _, _) -> ()
+    case _ -> return ts
+  }
+  val converted: List[TExpr] = newList()
+  for x in ts {
+    match convertValue(env, x, el) {
+      case Some(c) -> converted.add(c)
+      case None -> converted.add(x)
+    }
+  }
+  converted
+}
+
 /// A list literal the checker typed as a slice (an explicit type argument or a hoisted operand
 /// gave it no array context) used where a fixed-length array is wanted: the same elements
 /// as an array literal of that type, each converted to the element type; or where a `List[T]` is
@@ -9109,11 +9135,11 @@ func isMemberExpr(x: in Expr): Bool {
   }
 }
 
-/// The non-generic interface that declares the method `sym`, when `sym`'s DefPath is
+/// The interface that declares the method `sym` (a generic one at the arguments the receiver's impl gives it), when `sym`'s DefPath is
 /// `Pkg::Iface::member`.  A call of a method that a restored package's record implements resolves
 /// to the interface's declaration (the package interface keeps no `impl` member of its own), so
 /// the call is a dispatch on that interface from the receiver, converted up to it.
-func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
+func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId, recvTy: in Type): Option[Type] {
   val tbl = env.ctx.tbl
   val key = match symTableDefPathKeyOf(tbl, sym) { case Some(k) -> k; case None -> return None }
   var cut = -1
@@ -9131,13 +9157,31 @@ func ifaceOwnerOfMethod(env: in BuildEnv, sym: in SymbolId): Option[Type] {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(ts) -> match ts.kind {
       case DKInterface(_, decl) -> if isSome(decl.generics) {
-        None
+        genericIfaceOfImpl(env, tid, ts.name, recvTy)
       } else {
         Some(value = TyUser(id = tid, name = ts.name, args = newList()))
       }
       case _ -> None
     }
     case None -> None
+  }
+}
+
+/// The generic interface `tid` at the arguments the receiver type's `impl` gives it
+/// (`impl Holder[Int] for IntBox` gives `Holder[Int]`): a default method called on a concrete
+/// implementor is a dispatch on that instance, converted up to it (#9441).  None when the
+/// receiver is not a named type with such an impl.
+func genericIfaceOfImpl(env: in BuildEnv, tid: in SymbolId, name: in String, recvTy: in Type): Option[Type] {
+  match unrefine(recvTy) {
+    case TyUser(rid, _, rargs) -> {
+      for pair in env.ctx.tbl.impls {
+        if symbolIdEq(pair.target, rid) and symbolIdEq(pair.iface, tid) {
+          return Some(value = TyUser(id = tid, name = name, args = symTableImplIfaceArgs(pair, rargs)))
+        }
+      }
+      None
+    }
+    case _ -> None
   }
 }
 
@@ -9191,7 +9235,7 @@ func buildMethodCall(
   fn: in Expr,
   args: in List[CallArg],
 ): Option[TExpr] {
-  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0)) {
+  val viaImpl: Option[ImplIface] = if isSome(site.iface) or site.sig.generics.count > 0 or isSome(ifaceOwnerOfMethod(env, sym0, site.recvTy)) {
     None
   } else {
     ifaceOfImplMember(env, sym0)
@@ -9209,7 +9253,7 @@ func buildMethodCall(
     case None -> if isSome(site.iface) {
       boundParamIfaceTy(env, site)
     } else {
-      ifaceOwnerOfMethod(env, sym)
+      ifaceOwnerOfMethod(env, sym, site.recvTy)
     }
   }
   val ifaceSym: Option[SymbolId] = match ifaceTy {

@@ -30,6 +30,9 @@ pub record MemberSite {
   owner: MemberOwner
   /// The `invariant:` clauses of the protected type the member belongs to (D509).
   invariants: List[InvariantClause] = newList()
+  /// Whether the member is part of the public invariant boundary (D512): a method of a `pub` record, or an `impl`
+  /// member (docs/08 §7.1).
+  isPublic: Bool = false
 }
 
 /// An entry as the function the builder builds: its `when:` clause stays among the contracts.
@@ -96,7 +99,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   recv = plainRecv(tsym, owner),
                   implTarget = None,
                   isEntry = false,
-                  owner = owner
+                  owner = owner,
+                  isPublic = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
                 )
               )
             }
@@ -172,7 +176,8 @@ pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
                   recv = recv,
                   implTarget = Some(value = decl.target),
                   isEntry = false,
-                  owner = owner
+                  owner = owner,
+                  isPublic = true
                 )
               )
             }
@@ -413,6 +418,9 @@ func buildMemberInner(
   env.memberOwner.add(site.owner)
   for inv in site.invariants {
     env.memberInvs.add(inv)
+  }
+  if site.isPublic {
+    env.memberPublic.add(true)
   }
   if mode == 1 {
     buildFnSigDecl(env, site.fn, tbl)

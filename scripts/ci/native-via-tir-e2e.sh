@@ -734,6 +734,19 @@ diff -u "$work/ov_ast.out" "$work/ov_tir.out"
 printf '100\n300\n7\n' | diff -u - "$work/ov_tir.out"
 echo "overloads: ok"
 
+# The same overloads with a non-generic function of the name declared first (#9431, #9444): the AST path cannot compile
+# the set (N0007), so the TIR build is checked against a fixed output and every function must lower from TIR.
+msrc=scripts/ci/native-via-tir/overloads_mixed.l
+"$lyric_bin" build --target native --via-tir "$msrc" -o "$work/ovm_tir" 2> "$work/ovm_census.txt" >/dev/null
+"$work/ovm_tir" > "$work/ovm_tir.out"
+printf '100\n300\n7\n77\n' | diff -u - "$work/ovm_tir.out"
+if grep -q '^  fallback:' "$work/ovm_census.txt"; then
+  echo "::error::overloads_mixed.l has a TIR fallback"
+  cat "$work/ovm_census.txt"
+  exit 1
+fi
+echo "overloads (mixed): ok"
+
 # A `pub` function that writes an `inout` parameter of an invariant type (docs/70 phase 3c, D507) and a protected
 # type's invariant (D509): the same output on both paths, and a violation panics with the same message.
 for case in boundary protectedinv; do
