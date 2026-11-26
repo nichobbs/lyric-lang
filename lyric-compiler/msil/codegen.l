@@ -22996,7 +22996,11 @@ func lowerGenericRecvCallMsil(
     // field-read arm above.
     return Some(
       value = match openRetTy {
-        case MTypeVar(idx) -> if idx < typeArgs.count { unitStorageSlotType(typeArgs[idx]) } else { MObject }
+        case MTypeVar(idx) -> if idx < typeArgs.count {
+          unitStorageSlotType(typeArgs[idx])
+        } else {
+          MObject
+        }
         case _ -> substituteTypeVarsMsil(openRetTy, typeArgs)
       }
     )
@@ -23395,17 +23399,7 @@ func lowerMethodCallMsil(
       // arguments the impl gives it, a TypeSpec-parented MemberRef (#9441).
       if not callTarget.dotNamed {
         match genericIfaceDefaultEntryMsil(cctx, cls, memberName, callArity) {
-          case Some(ie) -> match lowerGenericRecvCallMsil(
-            cctx,
-            fctx,
-            insns,
-            ie.ifaceTypeName + "`" + toString(ie.ifaceTypeArgs.count),
-            ie.ifaceTypeArgs,
-            memberName,
-            callArity,
-            args,
-            callTarget
-          ) {
+          case Some(ie) -> match lowerGenericRecvCallMsil(cctx, fctx, insns, ie.ifaceTypeName + "`" + toString(ie.ifaceTypeArgs.count), ie.ifaceTypeArgs, memberName, callArity, args, callTarget) {
             case Some(t) -> return t
             case None -> ()
           }
@@ -46982,7 +46976,9 @@ func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: 
 // The impl of a generic interface that `cls` implements whose method `memberName` the type itself does
 // not declare, so a call on the type dispatches on that interface instantiated at the impl's arguments
 // (#9441); None when the type declares it or no implemented generic interface does.
-func genericIfaceDefaultEntryMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int): Option[ImplEntryMsil] {
+func genericIfaceDefaultEntryMsil(
+  cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int
+): Option[ImplEntryMsil] {
   if cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(callArity)) or cctx.methodTokens.containsKey(cls + "/" + memberName) {
     return None
   }
