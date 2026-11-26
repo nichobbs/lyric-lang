@@ -1222,6 +1222,11 @@ pub record OpenBindingSite {
 pub record ImplPair {
   target: SymbolId
   iface: SymbolId
+  /// The interface's type arguments as the impl writes them (`impl[T] Holder[T] for Box[T]`
+  /// gives `[T]`), and the target type's own (`[T]`): a generic interface's default method is
+  /// instantiated at the first, with the target's parameters taken from a receiver's arguments.
+  ifaceArgs: List[Type] = newList()
+  targetArgs: List[Type] = newList()
 }
 
 /// One method signature attached to a nominal type — a record-body method
@@ -1693,6 +1698,24 @@ pub func symTableAddImpl(tbl: in SymbolTable, target: in SymbolId, iface: in Sym
     i = i + 1
   }
   tbl.impls.add(ImplPair(target = target, iface = iface))
+}
+
+// `symTableAddImpl` for an impl that names its interface's and target's type arguments (#7791).
+pub func symTableAddImplWithArgs(
+  tbl: in SymbolTable,
+  target: in SymbolId,
+  iface: in SymbolId,
+  ifaceArgs: in List[Type],
+  targetArgs: in List[Type],
+): Unit {
+  var i = 0
+  while i < tbl.impls.count {
+    if symbolIdEq(tbl.impls[i].target, target) and symbolIdEq(tbl.impls[i].iface, iface) {
+      return
+    }
+    i = i + 1
+  }
+  tbl.impls.add(ImplPair(target = target, iface = iface, ifaceArgs = ifaceArgs, targetArgs = targetArgs))
 }
 
 // True when some `impl iface for target` was registered.

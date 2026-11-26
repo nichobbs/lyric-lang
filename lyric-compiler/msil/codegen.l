@@ -968,6 +968,10 @@ pub record ImplEntryMsil {
   // entry in `methods`, in declaration order.  Zero entries mean "resolve
   // by name" (CLR name-matching for the non-generic codepath).
   slotIfaceMethodTokens: List[Int]
+  // The closed type arguments of an in-bundle generic interface (`impl Holder[Int] for IntBox`,
+  // #7791), in VAR form over the impl's own parameters, and their TypeSpec key.
+  ifaceTypeArgs: List[MsilType] = newList()
+  ifaceTypeArgsKey: String = ""
   methods: List[MFunc]
   // Build and return a fresh CodegenCtx for the named package.
   // Registers all external AssemblyRef/TypeRef/MemberRef rows in a stable order
@@ -4547,6 +4551,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
         // through the correct interface vtable slot (#878).
         val ifaceName = pkgName + "." + decl.name
         registerTypeFqnCandidate(cctx, decl.name, ifaceName)
+        // A generic interface (#7791) is reified like a generic record: its arity is registered
+        // before its members, so a member naming `Holder[T]` resolves, and its signatures
+        // register with the interface's parameters as VAR(i).
+        val ifaceGenerics = genericNamesOf(decl.generics)
+        if ifaceGenerics.count > 0 and not cctx.genericTypeArity.containsKey(ifaceName) {
+          cctx.genericTypeArity.add(ifaceName, ifaceGenerics.count)
+        }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -4558,13 +4569,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               val imsKey = ifaceName + "/" + sig.name
               if not cctx.methodTokens.containsKey(imsArityKey) {
                 cctx.methodTokens.add(imsArityKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, imsArityKey, sig.ret, pkgName, genericNamesOf(sig.generics))
-                registerMethodParamTypes(cctx, imsArityKey, imsRealParams, pkgName, genericNamesOf(sig.generics))
+                registerMethodRetTyG(cctx, imsArityKey, sig.ret, pkgName, ifaceGenerics, genericNamesOf(sig.generics))
+                registerMethodParamTypesG(cctx, imsArityKey, imsRealParams, pkgName, ifaceGenerics, genericNamesOf(sig.generics))
                 registerMethodParamModes(cctx, imsArityKey, imsRealParams)
                 if not cctx.methodTokens.containsKey(imsKey) {
                   cctx.methodTokens.add(imsKey, 0x06000000 + methodDefRow)
-                  registerMethodRetTy(cctx, imsKey, sig.ret, pkgName, genericNamesOf(sig.generics))
-                  registerMethodParamTypes(cctx, imsKey, imsRealParams, pkgName, genericNamesOf(sig.generics))
+                  registerMethodRetTyG(cctx, imsKey, sig.ret, pkgName, ifaceGenerics, genericNamesOf(sig.generics))
+                  registerMethodParamTypesG(cctx, imsKey, imsRealParams, pkgName, ifaceGenerics, genericNamesOf(sig.generics))
                   registerMethodParamModes(cctx, imsKey, imsRealParams)
                 }
               }
@@ -4578,13 +4589,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               val imfKey = ifaceName + "/" + fn.name
               if not cctx.methodTokens.containsKey(imfArityKey) {
                 cctx.methodTokens.add(imfArityKey, 0x06000000 + methodDefRow)
-                registerMethodRetTy(cctx, imfArityKey, fn.ret, pkgName, genericNamesOf(fn.generics))
-                registerMethodParamTypes(cctx, imfArityKey, imfRealParams, pkgName, genericNamesOf(fn.generics))
+                registerMethodRetTyG(cctx, imfArityKey, fn.ret, pkgName, ifaceGenerics, genericNamesOf(fn.generics))
+                registerMethodParamTypesG(cctx, imfArityKey, imfRealParams, pkgName, ifaceGenerics, genericNamesOf(fn.generics))
                 registerMethodParamModes(cctx, imfArityKey, imfRealParams)
                 if not cctx.methodTokens.containsKey(imfKey) {
                   cctx.methodTokens.add(imfKey, 0x06000000 + methodDefRow)
-                  registerMethodRetTy(cctx, imfKey, fn.ret, pkgName, genericNamesOf(fn.generics))
-                  registerMethodParamTypes(cctx, imfKey, imfRealParams, pkgName, genericNamesOf(fn.generics))
+                  registerMethodRetTyG(cctx, imfKey, fn.ret, pkgName, ifaceGenerics, genericNamesOf(fn.generics))
+                  registerMethodParamTypesG(cctx, imfKey, imfRealParams, pkgName, ifaceGenerics, genericNamesOf(fn.generics))
                   registerMethodParamModes(cctx, imfKey, imfRealParams)
                 }
               }
@@ -46976,12 +46987,23 @@ pub func collectImplEntriesMsil(
             }
           }
         }
+        val inBundleIfaceArgs: List[MsilType] = newList()
+        if not isExternal and decl.iface.args.count > 0 {
+          for ia in decl.iface.args {
+            match ia {
+              case TAType(te) -> inBundleIfaceArgs.add(memberTypeExprToMsil(cctx, te, pkgName, targetGenerics))
+              case TAValue(_) -> inBundleIfaceArgs.add(MObject)
+            }
+          }
+        }
         cctx.implEntries.add(
           ImplEntryMsil(
             targetTypeName = targetName,
             ifaceTypeName = ifaceName,
             ifaceTypeToken = ifaceTypeToken,
             slotIfaceMethodTokens = slotTokens,
+            ifaceTypeArgs = inBundleIfaceArgs,
+            ifaceTypeArgsKey = msilTypeListKey(inBundleIfaceArgs),
             methods = methods
           )
         )
@@ -48244,6 +48266,7 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
       case IInterface(decl) -> {
         val ifaceMembers: List[MIfaceItem] = newList()
         val ifaceFqn = pkgName + "." + decl.name
+        val ifaceGenerics = genericNamesOf(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -48255,11 +48278,11 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
               var pi = 0
               val sigGenerics = genericNamesOf(sig.generics)
               while pi < sigRealParams.count {
-                pTypes.add(memberSigTypeMsil(cctx, sigRealParams[pi].ty, pkgName, newList(), sigGenerics))
+                pTypes.add(memberSigTypeMsil(cctx, sigRealParams[pi].ty, pkgName, ifaceGenerics, sigGenerics))
                 pi = pi + 1
               }
               val retTy = match sig.ret {
-                case Some(te) -> memberSigTypeMsil(cctx, te, pkgName, newList(), sigGenerics)
+                case Some(te) -> memberSigTypeMsil(cctx, te, pkgName, ifaceGenerics, sigGenerics)
                 case None -> MVoid
               }
               ifaceMembers.add(
@@ -48271,14 +48294,18 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
               // a concrete DIM MethodDef (Virtual+HideBySig+NewSlot, no Abstract),
               // in the same declaration-order position so token numbers match the
               // addPackageTokens pre-pass.
-              ifaceMembers.add(MIDim(fn = lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn, newList())))
+              ifaceMembers.add(MIDim(fn = lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn, ifaceGenerics)))
             }
             case IMAssoc(_) -> {
             }
           }
           mi = mi + 1
         }
-        items.add(MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers)))
+        items.add(
+          MPInterface(
+            iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers, generics = ifaceGenerics)
+          )
+        )
       }
       case IImpl(_) -> {
         // Handled by the `collectImplEntriesMsil` pre-pass above; both the
@@ -48523,7 +48550,9 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
           ifaceTypeToken = implEntry.ifaceTypeToken,
           slots = mslots,
           targetTypeName = implTargetTypeDefName,
-          ifaceTypeName = implEntry.ifaceTypeName
+          ifaceTypeName = implEntry.ifaceTypeName,
+          ifaceTypeArgs = implEntry.ifaceTypeArgs,
+          ifaceTypeArgsKey = implEntry.ifaceTypeArgsKey
         )
       )
     )
@@ -49992,6 +50021,17 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
   if typeRefRow == 0 {
     return
   }
+  // A generic interface (#7791): its CLR name carries the arity, and a call through a value of
+  // it goes through a TypeSpec-parented MemberRef (`MCallvirtGeneric`) built from the VAR-form
+  // signatures registered here, as for a restored generic record.
+  val ifaceGenerics = genericNamesOf(decl.generics)
+  if ifaceGenerics.count > 0 {
+    val asmRefRow = ensureAssemblyRefForArtifact(cctx, packageName)
+    ctxAddTypeRef(cctx.lctx, packageName, decl.name + "`" + toString(ifaceGenerics.count), asmRefRow)
+    if not cctx.genericTypeArity.containsKey(ifaceFqn) {
+      cctx.genericTypeArity.add(ifaceFqn, ifaceGenerics.count)
+    }
+  }
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
@@ -50003,6 +50043,7 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
         sig.name,
         sig.params,
         sig.ret,
+        ifaceGenerics,
         genericNamesOf(sig.generics)
       )
       case IMFunc(fn) -> registerRestoredIfaceMethod(
@@ -50013,6 +50054,7 @@ func registerRestoredInterface(cctx: in CodegenCtx, packageName: in String, decl
         fn.name,
         fn.params,
         fn.ret,
+        ifaceGenerics,
         genericNamesOf(fn.generics)
       )
       case IMAssoc(_) -> ()
@@ -50032,10 +50074,11 @@ func registerRestoredIfaceMethod(
   methodName: in String,
   params: in List[Param],
   ret: in Option[TypeExpr],
+  ifaceGenerics: in List[String],
   methodGenerics: in List[String],
 ): Unit {
   val key = ifaceFqn + "/" + methodName
-  if cctx.methodTokens.containsKey(key) {
+  if cctx.methodTokens.containsKey(key) or (ifaceGenerics.count > 0 and cctx.methodRetTypes.containsKey(key)) {
     return
   }
 
@@ -50056,19 +50099,23 @@ func registerRestoredIfaceMethod(
   val sigParamTypes: List[MsilType] = newList()
   var spi = 0
   while spi < realParams.count {
-    sigParamTypes.add(memberSigTypeMsil(cctx, realParams[spi].ty, packageName, newList(), methodGenerics))
+    sigParamTypes.add(memberSigTypeMsil(cctx, realParams[spi].ty, packageName, ifaceGenerics, methodGenerics))
     spi = spi + 1
   }
   val sigRetType = match ret {
-    case Some(te) -> memberSigTypeMsil(cctx, te, packageName, newList(), methodGenerics)
+    case Some(te) -> memberSigTypeMsil(cctx, te, packageName, ifaceGenerics, methodGenerics)
     case None -> MVoid
   }
   // `out`/`inout` slots are managed pointers in the interface's MethodDef
   // (#8210; see `registerRestoredRecordMethod`).
-  val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
-  val sigKey = "restored_iface_" + key
-  val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
-  cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  // A generic interface has no plain MemberRef: every call goes through the closed TypeSpec's
+  // (`MCallvirtGeneric`), built from the VAR-form types registered below.
+  if ifaceGenerics.count == 0 {
+    val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
+    val sigKey = "restored_iface_" + key
+    val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
+    cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  }
   // Record the fully-resolved return type (ctx-aware, so `Result[T, E]` keeps
   // its `MGenericInst` identity) for the call site.  This is what the
   // consumer's `match` on the call result needs to emit correct isinst tests.
@@ -50098,7 +50145,7 @@ func registerRestoredIfaceMethod(
   // signature declares the unboxed primitive — invalid IL the JIT rejects with
   // InvalidProgramException (the DeadLetter aspect's `consumer.nack(id, false)`
   // shape, #5503).  Idempotent; safe for reference-arg-only methods too.
-  registerMethodParamTypes(cctx, key, realParams, packageName, methodGenerics)
+  registerMethodParamTypesG(cctx, key, realParams, packageName, ifaceGenerics, methodGenerics)
   registerMethodParamModes(cctx, key, realParams)
 }
 

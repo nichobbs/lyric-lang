@@ -5328,6 +5328,24 @@ func methodImplementedBy(own: in List[MethodEntry], member: in MethodEntry): Boo
   false
 }
 
+// The interface arguments of `impl` at a receiver whose type arguments are `recvArgs`: the impl's
+// own, with the target's type parameters (`impl[T] Holder[T] for Box[T]`) replaced by the receiver's
+// (`Box[Int]`).  Empty for an impl of a non-generic interface (#7791).
+func implIfaceArgsAt(pair: in ImplPair, recvArgs: in List[Type]): List[Type] {
+  if pair.ifaceArgs.count == 0 or pair.targetArgs.count != recvArgs.count {
+    return pair.ifaceArgs
+  }
+  val names: List[String] = newList()
+  for ta in pair.targetArgs {
+    names.add(match ta { case TyParam(n, _) -> n; case _ -> "" })
+  }
+  val args: List[Type] = newList()
+  for ia in pair.ifaceArgs {
+    args.add(substituteTyParams(ia, names, recvArgs))
+  }
+  args
+}
+
 // Every method signature reachable on a value of type `recv` (an unrefined
 // `TyUser`) under `name`: the type's own record-body/impl methods, plus the
 // members of every interface it implements that the type does not implement
@@ -5346,7 +5364,6 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
         acc.add(substituteMethodSig(entries[i], recv, targs))
         i = i + 1
       }
-      val noTargs: List[Type] = newList()
       var pi = 0
       while pi < tbl.impls.count {
         if symbolIdEq(tbl.impls[pi].target, tid) {
@@ -5354,7 +5371,7 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
           var q = 0
           while q < ientries.count {
             if not methodImplementedBy(entries, ientries[q]) {
-              acc.add(substituteMethodSig(ientries[q], recv, noTargs))
+              acc.add(substituteMethodSig(ientries[q], recv, implIfaceArgsAt(tbl.impls[pi], targs)))
             }
             q = q + 1
           }
@@ -20534,6 +20551,9 @@ func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in Symbo
         case DKUnion(_, _) -> true
         case DKOpaque(_, _) -> true
         case DKProtected(_, _) -> true
+        // A generic interface is erased on the JVM, so a value of one narrows to its interface
+        // before a method call (#7791); a non-generic interface is its own descriptor type.
+        case DKInterface(_, idecl) -> isSome(idecl.generics)
         // A distinct value is a wrapper class on dotnet and the JVM
         // (docs/01 §2.3), so an erased one narrows to it before `.value`.
         case DKDistinctType(_, _) -> true

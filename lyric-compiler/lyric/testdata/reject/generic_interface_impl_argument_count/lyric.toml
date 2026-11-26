@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-impl-argument-count"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceImplArgumentCount"
+[project.packages]
+"App" = "app"

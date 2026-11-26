@@ -51,6 +51,38 @@ One detail worth knowing: if you have a synchronous function that satisfies an `
 **Note:** Interfaces appear here in Chapter 11 because the wire block is their primary use case. They also work as ordinary polymorphism outside of wires — a function can accept an `AccountRepository` parameter directly, without a wire — but the DI context is where they matter most.
 :::
 
+### Generic interfaces
+
+An interface can take type parameters. `impl` closes them for one type, or stays generic over a generic record:
+
+```lyric
+pub interface Holder[T] {
+  func get(self: in Self): T
+  func put(self: in Self, x: in T): Unit
+}
+
+ref record IntBox { var v: Int }
+
+impl Holder[Int] for IntBox {
+  func get(self: in IntBox): Int = self.v
+  func put(self: in IntBox, x: in Int): Unit { self.v = x }
+}
+
+ref record Box[T] { var v: T }
+
+impl[T] Holder[T] for Box[T] {
+  func get(self: in Box[T]): T = self.v
+  func put(self: in Box[T], x: in T): Unit { self.v = x }
+}
+
+func bump(h: in Holder[Int]): Int {
+  h.put(h.get() + 1)
+  h.get()
+}
+```
+
+`bump` accepts an `IntBox` and a `Box[Int]`. The impl is checked against the interface with `T` replaced by the impl's argument, so `impl Holder[Int] for IntBox` with `get(): String` is **T0107** and `impl Holder[Int, Int]` is **T0216**. A default method of the interface is inherited by an impl that omits it, with its parameter types at the impl's arguments. On `--target dotnet` the interface is a generic CLR interface; on `--target jvm` it is erased and the compiler writes the bridge methods. `--target native` does not lower an impl of a generic interface yet and reports **T0217**.
+
 ## §11.3 The wire block
 
 A `wire` block declares a dependency graph. Here is the production wire from the banking example:
