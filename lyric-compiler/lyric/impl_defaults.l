@@ -127,28 +127,6 @@ func implTargetName(decl: in ImplDecl): String {
 // `tagged(x: in Int)` from `tagged(x: in T)`, #7791).  Unchanged when the
 // arguments are not all types or their count differs (the checker reports it).
 func inheritedCopy(decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl): FunctionDecl {
-  withTargetReceiver(decl, inheritedGenericsCopy(decl, ifaceDecl, fn))
-}
-
-// An impl for a generic target (`impl[T] Holder[T] for Box[T]`) takes the copy's `self: in Self` receiver as
-// the target type, as a hand-written member writes it (`self: in Box[T]`): a call on a `Box[Int]` finds a member
-// whose receiver names the target's own parameters (#9441).
-func withTargetReceiver(decl: in ImplDecl, fn: in FunctionDecl): FunctionDecl {
-  match decl.generics {
-    case None -> return fn
-    case Some(_) -> ()
-  }
-  val params: List[Param] = newList()
-  for p in fn.params {
-    match p.ty.kind {
-      case TSelf -> params.add(p.copy(ty = decl.target))
-      case _ -> params.add(p)
-    }
-  }
-  fn.copy(params = params)
-}
-
-func inheritedGenericsCopy(decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl): FunctionDecl {
   val names: List[String] = newList()
   match ifaceDecl.generics {
     case Some(gp) -> {
