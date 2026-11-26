@@ -1178,6 +1178,9 @@ pub record MInterface {
   className: String       // fully-qualified interface name
   namespace: String
   members: List[MIfaceItem]   // abstract and DIM members in declaration order
+  // Type-parameter names of a generic interface (`interface Holder[T]`, #7791): the TypeDef
+  // carries the arity suffix and GenericParam rows, and its members' signatures use VAR(i).
+  generics: List[String] = newList()
 }
 
 // Per overridden interface method slot.
@@ -1209,6 +1212,14 @@ pub record MImplData {
   slots: List[MImplSlot]
   targetTypeName: String      // fully-qualified, e.g. "Pkg.EnglishGreeter"
   ifaceTypeName: String      // fully-qualified, e.g. "Pkg.Greeter"
+  // The type arguments of an in-bundle generic interface the impl closes (`impl Holder[Int]
+  // for IntBox` gives [MInt]; `impl[T] Holder[T] for Box[T]` gives [MTypeVar(0)]), in the
+  // form `genericInstBlobWithCtx` encodes.  Non-empty with `ifaceTypeToken == 0`: the
+  // InterfaceImpl row names a TypeSpec over the interface's TypeDef, built here because its
+  // row is only known at lowering (#7791).
+  ifaceTypeArgs: List[MsilType] = newList()
+  // A key naming `ifaceTypeArgs` for TypeSpec deduplication (`msilTypeListKey`, codegen).
+  ifaceTypeArgsKey: String = ""
 }
 
 // ── MOpaque — sealed opaque type ─────────────────────────────────────────────
@@ -4625,7 +4636,12 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t = ctx.tables
 
-  val simpleNameIface = simpleNameFromFqn(iface.namespace, iface.className)
+  val simpleBaseIface = simpleNameFromFqn(iface.namespace, iface.className)
+  val simpleNameIface = if iface.generics.count > 0 {
+    simpleBaseIface + "`" + toString(iface.generics.count)
+  } else {
+    simpleBaseIface
+  }
   val sName = internString(sh, simpleNameIface)
   val sNs = internString(sh, iface.namespace)
 
@@ -4721,6 +4737,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   )
   val ifaceTypeDefRow = t.typeDefs.count
   recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, ifaceTypeDefRow)
+  emitGenericParamRows(ctx, ifaceTypeDefRow, iface.generics)
   ifaceTypeDefRow
 }
 
@@ -5457,14 +5474,32 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
     d.ifaceTypeToken
   } else {
     val ifaceDefRow = findTypeDefRowByName(ctx, d.ifaceTypeName)
-    if ifaceDefRow > 0 {
+    if ifaceDefRow > 0 and d.ifaceTypeArgs.count > 0 {
+      // A closed instantiation of an in-bundle generic interface: the CLR wires the impl's
+      // methods to the interface's slots by name and substituted signature through the
+      // TypeSpec, as it does for a generic external interface.
+      val key = "ts_inbundle_iface_" + d.ifaceTypeName + "_" + d.ifaceTypeArgsKey
+      tdrTypeSpec(ctxAddGenericInstTypeSpec(ctx, key, tdrTypeDef(ifaceDefRow), d.ifaceTypeArgs, false))
+    } else if ifaceDefRow > 0 {
       tdrTypeDef(ifaceDefRow)
     } else {
-      val ifaceRefRow = findTypeRefRowByName(ctx, d.ifaceTypeName)
+      // A generic interface's TypeRef carries the arity suffix; the plain name may also be a row.
+      val arityRefRow = if d.ifaceTypeArgs.count > 0 {
+        findTypeRefRowByName(ctx, d.ifaceTypeName + "`" + toString(d.ifaceTypeArgs.count))
+      } else {
+        0
+      }
+      val ifaceRefRow = if arityRefRow > 0 { arityRefRow } else { findTypeRefRowByName(ctx, d.ifaceTypeName) }
       if ifaceRefRow == 0 {
         panic("Msil.Lowering: MPImpl interface type '" + d.ifaceTypeName + "' has no TypeDef or TypeRef row")
       }
-      tdrTypeRef(ifaceRefRow)
+      if d.ifaceTypeArgs.count > 0 {
+        // A generic interface of a restored package, closed over the impl's arguments.
+        val key = "ts_restored_iface_" + d.ifaceTypeName + "_" + d.ifaceTypeArgsKey
+        tdrTypeSpec(ctxAddGenericInstTypeSpec(ctx, key, tdrTypeRef(ifaceRefRow), d.ifaceTypeArgs, false))
+      } else {
+        tdrTypeRef(ifaceRefRow)
+      }
     }
   }
   // InterfaceImpl row: records that targetRow implements ifaceToken.

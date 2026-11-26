@@ -58,6 +58,7 @@ for t in \
   lyric-compiler/lyric/generic_overload_arity_self_test.l \
   lyric-compiler/lyric/explicit_type_args_checked_self_test.l \
   lyric-compiler/lyric/interface_method_generic_self_test.l \
+  lyric-compiler/lyric/generic_interface_self_test.l \
   lyric-compiler/lyric/self_join_self_test.l \
   lyric-compiler/lyric/method_generic_self_test.l \
   lyric-compiler/lyric/open_receiver_self_test.l \

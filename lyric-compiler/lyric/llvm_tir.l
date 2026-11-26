@@ -4963,10 +4963,11 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
       c.insns.add(NFPTrunc(dest = d, value = v.value))
       return Some(value = Val(ty = NFloat, value = NLocal(name = d)))
     }
-    if from == "UInt" or from == "ULong" {
+    if from == "ULong" {
       return None
     }
-    val src = if bitsOf(v.ty) == 8 { zextTo(c, v, NI32) } else { v }
+    // A `UInt` is zero-extended to 64 bits first, so the signed conversion reads its unsigned value.
+    val src = if from == "UInt" { zextTo(c, v, NI64) } else if bitsOf(v.ty) == 8 { zextTo(c, v, NI32) } else { v }
     val d = tmp(c)
     c.insns.add(NSIToFP(dest = d, fromTy = src.ty, value = src.value, toTy = target))
     return Some(value = Val(ty = target, value = NLocal(name = d)))

@@ -316,6 +316,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
   lyric-compiler/lyric/slice_string_self_test.l
   lyric-compiler/lyric/tuple_inbundle_generic_self_test.l
+  lyric-compiler/lyric/generic_interface_self_test.l
 )
 st_errors=0
 st_failed=()

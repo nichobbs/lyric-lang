@@ -468,6 +468,25 @@ test "a protected type's invariant is asserted at the exit of each member, with 
   }
 }
 
+test "a protected member with an early return asserts the invariant at each exit (D509)" {
+  val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  func read(by: in Int): Int {\n    if by > 100 {\n      return level\n    }\n    level + by\n  }\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  val done = elaborateBundle(cr.symbols.interner, bundle, true)
+  val ms = messagesOfFn(done[0].pkg.funcs[0])
+  assertEqualInt(ms.count, 2, "one check on the early return and one at the fall-off")
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+}
+
 val memberSrc: String = "package App\nrecord Span {\n  lo: Int\n  hi: Int\n  invariant: lo <= hi\n}\ninterface Fixer {\n  func fix(self: in Self, s: inout Span): Unit\n}\npub record Holder {\n  n: Int\n  func fix(self: in Holder, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\nrecord Hidden {\n  n: Int\n  func fix(self: in Hidden, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\nrecord Plain {\n  n: Int\n}\nimpl Fixer for Plain {\n  func fix(self: in Plain, s: inout Span): Unit {\n    s = Span(lo = 0, hi = 1)\n  }\n}\n"
 
 test "a method of a pub record and an impl member are public boundaries, a method of a record that is not pub is not (D512)" {

@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-impl-missing-method"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceImplMissingMethod"
+[project.packages]
+"App" = "app"

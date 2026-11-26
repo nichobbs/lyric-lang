@@ -348,6 +348,7 @@ pub func compileToMsilWithVersion(
   // stdlib packages the type checker saw.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
   val singleFileOpts = MiddleEndOptions(
+    genericInterfaces = true,
     externIterResolver = msilIterResolver(newMsilHostIterIndex(newList())),
     tcFatal = true,
     tcReport = false,
@@ -1045,6 +1046,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     val projGenericItems: List[Item] = newList()
     val projIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
     val projOpts = MiddleEndOptions(
+      genericInterfaces = true,
       externIterResolver = msilIterResolver(hostIterIx),
       tcFatal = true,
       tcReport = false,
@@ -1733,6 +1735,7 @@ func checkOptions(
 ): MiddleEndOptions {
   MiddleEndOptions(
     externIterResolver = externIter,
+    genericInterfaces = true,
     tcFatal = true,
     tcReport = false,
     pkgLabel = label,

@@ -497,6 +497,21 @@ func reportDependencySurfaceError(
   }
 }
 
+// The interface type arguments an `impl` writes (`Holder[Int]` gives `[Int]`), resolved in the
+// impl's own generic scope (#7791).
+func implIfaceArgTypes(
+  tbl: in SymbolTable, ctx: in GenericContext, diag: in List[Diagnostic], decl: in ImplDecl
+): List[Type] {
+  val tys: List[Type] = newList()
+  for ia in decl.iface.args {
+    match ia {
+      case TAType(te) -> tys.add(resolveType(tbl, ctx, diag, te))
+      case TAValue(_) -> ()
+    }
+  }
+  tys
+}
+
 // Record each `impl Iface for Target` conformance keyed by resolved `SymbolId`,
 // so the argument-position interface-subtyping check (#1488) can accept a
 // `Target` value where an `Iface` parameter is expected.  Keying on `SymbolId`
@@ -518,7 +533,18 @@ func registerImplsFromItems(
         val targetTy = resolveType(tbl, declGenericContext(decl.generics, implOwnerKey(decl)), diag, decl.target)
         match typeIdOfType(ifaceTy) {
           case Some(ifaceId) -> match typeIdOfType(targetTy) {
-            case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId)
+            case Some(targetId) -> symTableAddImplWithArgs(
+              tbl,
+              targetId,
+              ifaceId,
+              implIfaceArgTypes(
+                tbl,
+                declGenericContext(decl.generics, implOwnerKey(decl)),
+                diag,
+                decl
+              ),
+              match targetTy { case TyUser(_, _, a) -> a; case _ -> newList() }
+            )
             case None -> {
             }
           }
@@ -834,6 +860,14 @@ func genericNamesContains(names: in List[String], name: in String): Bool {
   false
 }
 
+// True when the interface named `name` declares type parameters (#7791).
+func interfaceIsGeneric(tbl: in SymbolTable, name: in String): Bool {
+  match findInterfaceDecl(tbl, name) {
+    case Some(d) -> isSome(d.generics)
+    case None -> false
+  }
+}
+
 func checkWhereClause(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -866,6 +900,17 @@ func checkWhereClause(
               errorDiagnostic(
                 "T0051",
                 "unknown constraint '" + cname + "' in 'where' clause" + symTableHiddenImportHint(tbl, cname),
+                cr.span
+              )
+            )
+          } else if not known and (cr.args.count > 0 or interfaceIsGeneric(tbl, cname)) {
+            diag.add(
+              errorDiagnostic(
+                "T0233",
+                "a 'where' bound cannot name the generic interface '" + cname +
+                  "': a type parameter bounded by a generic interface is not supported (#7791); take the interface as the parameter's type (`x: in " +
+                  cname +
+                  "[...]`) instead",
                 cr.span
               )
             )

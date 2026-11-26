@@ -4339,6 +4339,43 @@ func substTypesFunctionBody(
   }
 }
 
+/// `fn` with each of `names` replaced by the matching entry of `args` in its parameter and result
+/// types and in the type annotations of its body, keeping its name, own generics, annotations and
+/// contracts.  A default method of a generic interface is copied into `impl Holder[Int] for X` this
+/// way, with the interface's parameters replaced by the impl's arguments (#7791).  `fn` itself when
+/// the counts differ.
+pub func substGenericsInDecl(fn: in FunctionDecl, names: in List[String], args: in List[TypeExpr]): FunctionDecl {
+  if names.count != args.count or names.count == 0 {
+    return fn
+  }
+  val subst: Map[String, TypeExpr] = newMap()
+  val valueSubst: Map[String, Expr] = newMap()
+  var i = 0
+  while i < names.count {
+    subst.add(names[i], args[i])
+    i = i + 1
+  }
+  val newParams: List[Param] = newList()
+  for p in fn.params {
+    newParams.add(p.copy(ty = substTypeExpr(subst, valueSubst, p.ty)))
+  }
+  var newRet: Option[TypeExpr] = None
+  match fn.ret {
+    case Some(r) -> {
+      newRet = Some(value = substTypeExpr(subst, valueSubst, r))
+    }
+    case None -> ()
+  }
+  var newBody: Option[FunctionBody] = None
+  match fn.body {
+    case Some(b) -> {
+      newBody = Some(value = substTypesFunctionBody(subst, valueSubst, b))
+    }
+    case None -> ()
+  }
+  fn.copy(params = newParams, ret = newRet, body = newBody)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────

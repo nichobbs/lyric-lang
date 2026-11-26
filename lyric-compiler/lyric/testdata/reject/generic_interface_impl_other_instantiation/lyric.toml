@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-impl-other-instantiation"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceImplOtherInstantiation"
+[project.packages]
+"App" = "app"
