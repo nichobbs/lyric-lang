@@ -4040,6 +4040,15 @@ func eqShape(e: in TExpr): String {
     case XLocal(_) -> "ok"
     case XCall(Intrinsic(IoEq), _) -> "eq"
     case XCall(Intrinsic(IoNot), args) -> match args[0] { case TArgIn(v) -> "not(" + eqShape(v) + ")"; case _ -> "?" }
+    case XLit(TLBool(false)) -> "false"
+    case XLit(TLBool(true)) -> "true"
+    case XMatch(_, arms, _) -> {
+      var parts = ""
+      for a in arms {
+        parts = if parts.length == 0 { eqShape(a.body) } else { parts + "," + eqShape(a.body) }
+      }
+      "m(" + parts + ")"
+    }
     case _ -> "?"
   }
 }
@@ -4185,17 +4194,40 @@ test "a construction of a generic record with an invariant is checked at its typ
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-test "== on a record holding a tuple with an array keeps one IoEq, also as an array element (D506)" {
+test "== on a record holding a tuple with an array compares the tuple part by part, also as an array element (D506, D167)" {
   val c = censusOf(
     "package App\nrecord Q { t: (array[2, Int], Int) }\nrecord P { qs: array[2, Q] }\nfunc f(a: in Q, b: in Q): Bool { a == b }\nfunc g(a: in P, b: in P): Bool { a == b }\n"
   )
   assertEqualInt(c.built, 2, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  var shapes = ""
   for fd in c.pkg.funcs {
     match fd.body {
-      case Some(b) -> assertTrue(eqShape(b) == "eq", eqShape(b))
+      case Some(b) -> {
+        shapes = shapes + eqShape(b) + ";"
+      }
       case None -> assertTrue(false, "body")
     }
   }
+  assertTrue(shapes == "m(m(and(ok,eq)));ok;", shapes)
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "== and != on a tuple or union holding an array are matches over their parts and cases (D167)" {
+  val c = censusOf(
+    "package App\nunion U { case A(Int)\n case B(array[2, Int]) }\nfunc t(a: in (Int, array[2, Int]), b: in (Int, array[2, Int])): Bool { a == b }\nfunc u(a: in U, b: in U): Bool { a == b }\nfunc n(a: in U, b: in U): Bool { a != b }\n"
+  )
+  assertEqualInt(c.built, 3, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  var shapes = ""
+  for fd in c.pkg.funcs {
+    match fd.body {
+      case Some(b) -> {
+        shapes = shapes + eqShape(b) + ";"
+      }
+      case None -> assertTrue(false, "body")
+    }
+  }
+  assertTrue(shapes == "m(m(and(eq,ok)));m(m(eq,false),m(ok,false));not(m(m(eq,false),m(ok,false)));", shapes)
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
