@@ -276,3 +276,52 @@ test "polymorphic recursion ends with a diagnostic" {
   }
   assertTrue(seen, "M0010 names the runaway instantiation")
 }
+
+func implKeys(m: in Mono): List[String] {
+  val ks: List[String] = newList()
+  for pb in m.r.pkgs {
+    for im in pb.pkg.impls {
+      ks.add(keyOf(m, im.iface) + " for " + toString(im.ifaceArgs.count) + " args")
+    }
+  }
+  ks
+}
+
+test "a call through a generic interface names the interface's instance and its method (D860, slice 2)" {
+  val m = monoOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc read(h: in Holder[Int]): Int = h.get()\nfunc main(): Int = read(IntBox(v = 3))\n"
+  )
+  assertEqualInt(m.diagnostics, 0, "the source checks")
+  assertEqualInt(m.built, m.total, "every body builds")
+  assertEqualInt(m.r.diags.count, 0, "no diagnostic")
+  assertEqualInt(m.r.unresolved.count, 0, "nothing is left generic")
+  val v = verifyMonoBundle(m.r)
+  assertEqualInt(v.failures.count, 0, if v.failures.count > 0 { v.failures[0] } else { "verifies" })
+  assertTrue(joinStrings(instanceKeys(m), ",").contains("App::Holder[Int]"), joinStrings(instanceKeys(m), ","))
+  val impls = implKeys(m)
+  assertEqualInt(impls.count, 1, "the impl block")
+  assertTrue(impls[0] == "App::Holder[Int] for 0 args", impls[0])
+}
+
+test "a generic impl is instantiated at each instance of its target (D860, slice 2)" {
+  val m = monoOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\nfunc read(h: in Holder[Int]): Int = h.get()\nfunc main(): Int = read(Box(v = 3))\nfunc other(): String = Box(v = \"s\").v\n"
+  )
+  assertEqualInt(m.diagnostics, 0, "the source checks")
+  assertEqualInt(m.built, m.total, "every body builds")
+  assertEqualInt(m.r.diags.count, 0, "no diagnostic")
+  val v = verifyMonoBundle(m.r)
+  assertEqualInt(v.failures.count, 0, if v.failures.count > 0 { v.failures[0] } else { "verifies" })
+  val inst = instancesOf(m)
+  assertEqualInt(inst.pkg.impls.count, 2, "one impl per instance of Box: Int and String")
+  var intImpl = false
+  for im in inst.pkg.impls {
+    assertEqualInt(im.typeParams.count, 0, "an instance has no parameters")
+    assertEqualInt(im.members.count, 1, "its get")
+    if keyOf(m, im.iface) == "App::Holder[Int]" {
+      intImpl = true
+      assertEqualInt(im.ifaceArgs.count, 0, "the interface is its instance")
+    }
+  }
+  assertTrue(intImpl, "Holder[Int] is implemented at Box[Int]")
+}

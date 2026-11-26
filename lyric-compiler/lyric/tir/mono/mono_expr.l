@@ -109,10 +109,23 @@ func mCallee(c: in MCtx, s: in Subst, callee: in Callee): Callee {
       }
     }
     case Interface(iface, ifaceArgs, method, targs) -> {
-      if ifaceArgs.count > 0 {
-        noteUnresolved(c, "generic interface call")
+      val ia = mTys(c, s, ifaceArgs)
+      val ta = mTys(c, s, targs)
+      if ia.count == 0 {
+        return Interface(iface = iface, ifaceArgs = ia, method = method, typeArgs = ta)
       }
-      Interface(iface = iface, ifaceArgs = mTys(c, s, ifaceArgs), method = method, typeArgs = mTys(c, s, targs))
+      // The call names the instance of the interface and of its method: no interface argument is left.
+      if not anyParam(ia) {
+        match instType(c, iface, ia) {
+          case Some(ii) -> match instIfaceMethod(c, iface, ia, method) {
+            case Some(mi) -> return Interface(iface = ii, ifaceArgs = newList(), method = mi, typeArgs = ta)
+            case None -> ()
+          }
+          case None -> ()
+        }
+      }
+      noteUnresolved(c, "generic interface call")
+      Interface(iface = iface, ifaceArgs = ia, method = method, typeArgs = ta)
     }
     case Indirect(fv) -> Indirect(fnValue = mExpr(c, s, fv))
     case Extern(m) -> Extern(member = mHost(c, s, m))
