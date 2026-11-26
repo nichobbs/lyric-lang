@@ -21,6 +21,7 @@ import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
 import Lyric.Tir.Verify
+import Lyric.Tir.Walk
 import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
@@ -2680,6 +2681,40 @@ test "named arguments that reorder effects are bound to temporaries in source or
     }
   }
   assertEqualInt(most, 2, "f binds both reordered arguments (n() before m()); g binds none")
+}
+
+func readsLocalOf(e: in TExpr, want: in Int): Bool {
+  val seen: List[Int] = newList()
+  val w = newWalker(
+    { x: TExpr -> None },
+    { x: TExpr -> match x.kind { case XLocal(l) -> { seen.add(l.id); x }; case _ -> x } }
+  )
+  walkExpr(w, e)
+  for id in seen {
+    if id == want {
+      return true
+    }
+  }
+  false
+}
+
+test "a protected invariant reads the field, not a parameter of its name (D509, #9432)" {
+  val c = censusOf(
+    "package App\nprotected type Guard {\n  var level: Int = 0\n  invariant: level >= 0\n  entry put(level: in Int): Int {\n    self.level = 5\n    level\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  val put = c.pkg.funcs[0]
+  assertEqualInt(put.invariants.count, 1, "the member carries the invariant")
+  var param = -1
+  for p in put.params {
+    if p.local.name == "level" {
+      param = p.local.id.id
+    }
+  }
+  assertTrue(param >= 0, "the entry has its parameter")
+  assertFalse(readsLocalOf(put.invariants[0], param), "the clause does not read the parameter")
 }
 
 test "a default argument that is a call is placed afresh at every call of one body" {
