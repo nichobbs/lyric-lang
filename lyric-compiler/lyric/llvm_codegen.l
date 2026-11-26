@@ -19280,10 +19280,6 @@ func instArgsOf(infos: in Map[Int, TirMono.InstanceInfo]): Map[Int, List[Tir.Ty]
   table
 }
 
-/// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR
-/// name of the AST copy stands for the instance, so a call from TIR reaches it, and the copy is lowered
-/// from the instance's TIR body (`tirTry` finds it by `instFns`).  An instance whose AST copy is not
-/// found by that name stays unnamed, and a caller of it stays on the AST path.
 /// The mark the AST path's `Lyric.Mono` puts in the name of the specialisations of a generic that shares its name
 /// with other functions of its package: `__o<i>` for the `i`-th declaration of the set (the first has none), so two
 /// overloads never share an IR name (#8461, `specBaseNameMono`).  `names` maps each declaration to its DefPath key;
@@ -19337,6 +19333,10 @@ func tirBareFnName(key: in String, from: in Int): String {
   Str.substring(key, from, stop - from)
 }
 
+/// The instances of generic functions the AST monomorphiser also specialised (`name__Arg`): the IR
+/// name of the AST copy stands for the instance, so a call from TIR reaches it, and the copy is lowered
+/// from the instance's TIR body (`tirTry` finds it by `instFns`).  An instance whose AST copy is not
+/// found by that name stays unnamed, and a caller of it stays on the AST path.
 func registerTirInstanceFns(
   sigs: in Map[String, NFuncSig],
   inputs: in List[LlvmTir.TirUnitInput],
