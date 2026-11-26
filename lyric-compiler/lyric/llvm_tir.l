@@ -2994,6 +2994,31 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
+          // An array element passed by reference beside another by-reference argument may alias it (the
+          // element and its array): D179 copies the element in and out around the call, which this lowering
+          // does not yet do, so the function stays on the AST path.
+          var byRefCount = 0
+          var elemByRef = false
+          for a in args {
+            val place = match a {
+              case TArgIn(_) -> None
+              case TArgOut(pl) -> Some(value = pl)
+              case TArgInout(pl) -> Some(value = pl)
+            }
+            match place {
+              case Some(pl) -> {
+                byRefCount = byRefCount + 1
+                match pl.kind {
+                  case PlIndex(_, _, how) -> match how { case IkArray -> { elemByRef = true }; case _ -> () }
+                  case _ -> ()
+                }
+              }
+              case None -> ()
+            }
+          }
+          if elemByRef and byRefCount > 1 {
+            return unsupported(c, "an array element passed by reference beside another by-reference argument")
+          }
           // A reference passed `in` beside a by-reference argument may be the very cell the callee
           // writes: it is held for the call so the write cannot free what the callee still reads.
           val held: List[Val] = newList()
