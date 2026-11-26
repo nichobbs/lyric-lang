@@ -32,6 +32,19 @@ ref record IntBox {
   var v: Int
 }
 
+interface Doubler2[T] {
+  func base(self: in Self): T
+  func twiceOf(self: in Self, x: in T): T = x
+}
+
+record Wrapped[T] {
+  w: T
+}
+
+impl[T] Doubler2[T] for Wrapped[T] {
+  func base(self: in Wrapped[T]): T = self.w
+}
+
 impl Holder[Int] for IntBox {
   func get(self: in IntBox): Int = self.v
   func put(self: in IntBox, x: in Int): Unit {
@@ -159,4 +172,11 @@ test "a generic function over a generic interface runs at each implementor's ins
   assertEqualLong(b.get(), 7, "new value")
   val i = IntBox(v = 1)
   assertEqualInt(swapIn(i, 2), 1, "Int implementor")
+}
+
+test "a default method of a generic interface runs on a concrete generic implementor" {
+  val w: Wrapped[Int] = Wrapped(w = 4)
+  assertEqualInt(w.twiceOf(9), 9, "the inherited default on Wrapped[Int]")
+  val s: Wrapped[String] = Wrapped(w = "a")
+  assertEqual(s.twiceOf("z"), "z", "the inherited default on Wrapped[String]")
 }
