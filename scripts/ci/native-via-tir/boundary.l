@@ -6,7 +6,7 @@ package BoundaryViaTir
 import Std.Core
 import Std.Console as Console
 
-pub record Span {
+pub ref record Span {
   var lo: Int
   var hi: Int
   invariant: lo <= hi
