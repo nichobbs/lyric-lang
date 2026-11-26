@@ -4988,7 +4988,10 @@ pub func registerHeadOnlyImplsJvm(
       // imported packages' Lyric types, so it reports another package's Lyric
       // interface as extern.  A host interface has no `<class>#` keys to copy.
       case IImpl(decl) -> {
-        if decl.members.count == 0 {
+        // An impl with members of an interface declared in another package gets the interface's
+        // default methods the same way (`Lyric.ImplDefaults` sees one file, #9428); the copy
+        // keeps a method the type already has.
+        if decl.members.count == 0 or not isSome(implIfaceDeclJvm(file, decl.iface)) {
           val tgtClass = typeExprToJvmClass(decl.target, owner)
           val implTps = genericParamNames(decl.generics)
           match implIfaceDeclJvm(file, decl.iface) {
