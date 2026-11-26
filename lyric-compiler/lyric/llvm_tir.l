@@ -3552,7 +3552,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     case None -> ()
   }
   match lowerStringMethod(c, name, ins) {
-    case Some(v) -> return v
+    case Some(v) -> if (name == "String.indexOf" or name == "String.lastIndexOf") and isOptionResult(c, rty) {
+      return indexAsOption(c, rty, v)
+    } else {
+      return v
+    }
     case None -> ()
   }
   match lowerWrapping(c, name, ins) {
@@ -4960,6 +4964,44 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
     return Some(value = Val(ty = NI1, value = icmpV(c, INe, NI32, raw, intLit(NI32, 0i64))))
   }
   None
+}
+
+/// Whether `t` is a registered `Option` instance (the type of `s.indexOf(x)` once `Std.String` is imported).
+func isOptionResult(c: in LCtx, t: in Ty): Bool {
+  match t {
+    case TNamed(sym, a) -> a.count == 0 and c.env.unions.containsKey(sym.id)
+    case _ -> false
+  }
+}
+
+/// `Some(i)` for a found index and `None` for the runtime's `-1` sentinel, as the `Option[Int]` instance `rty`.
+func indexAsOption(c: in LCtx, rty: in Ty, raw: in Val): Val {
+  val inst = match rty { case TNamed(sym, _) -> sym; case _ -> return raw }
+  val ul = match mapGet(c.env.unions, inst.id) { case Some(u) -> u; case None -> return raw }
+  val someRef = TirCaseRef(unionId = inst.id, index = 0)
+  val noneRef = TirCaseRef(unionId = inst.id, index = 1)
+  val miss = icmpV(c, ISlt, NI32, raw.value, intLit(NI32, 0i64))
+  val noneL = newLabel(c, "indexof.none")
+  val someL = newLabel(c, "indexof.some")
+  val joinL = newLabel(c, "indexof.join")
+  c.ticker.add(0)
+  val slot = "indexof.slot." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = slot, ty = ul.ty))
+  c.insns.add(NCondBr(cond = miss, thenLabel = noneL, elseLabel = someL))
+  startBlock(c, noneL)
+  val noneV = buildCaseFromVals(c, noneRef, ul, newList())
+  c.insns.add(NStore(ty = ul.ty, value = noneV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, someL)
+  val someVals: List[Val] = newList()
+  someVals.add(raw)
+  val someV = buildCaseFromVals(c, someRef, ul, someVals)
+  c.insns.add(NStore(ty = ul.ty, value = someV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, joinL)
+  val joined = tmp(c)
+  c.insns.add(NLoad(dest = joined, ty = ul.ty, ptr = NLocal(name = slot)))
+  Val(ty = ul.ty, value = NLocal(name = joined), owned = ul.inline == false)
 }
 
 /// `a.wrappingAdd(b)`, `.wrappingSub`, `.wrappingMul` and `.wrappingNeg()` on an integer: the plain two's
