@@ -19319,18 +19319,18 @@ func tirOverloadMark(names: in Map[Int, String], origin: in Tir.SymbolId): Strin
 
 /// The name a DefPath key starts with after its package: up to the type or parameter list.
 func tirBareFnName(key: in String, from: in Int): String {
-  var end = key.length
+  var stop = key.length
   var i = from
   while i < key.length {
     val c = Str.substring(key, i, 1)
     if c == "[" or c == "(" {
-      end = i
+      stop = i
       i = key.length
     } else {
       i = i + 1
     }
   }
-  Str.substring(key, from, end - from)
+  Str.substring(key, from, stop - from)
 }
 
 func registerTirInstanceFns(
