@@ -1027,6 +1027,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Public invariant boundary for methods and `impl` members (D512): a method of a `pub` record and every `impl` member take D507's entry and exit checks on TIR, as on the AST path.
   - Mono slice 2 (D513): the monomorphiser instantiates generic interfaces (a call through one names the interface's instance and its method entry, no interface argument is left), keeps the impls of non-generic targets with their interface mapped, and instantiates each `impl[T]` block at every instance of its target, over `TPackage.impls`.
   - Mono (D514): an `impl[T]` member with type parameters of its own is instantiated at its call and is no longer counted as unresolved; only a generic impl whose target is not a named generic type remains.
+  - Mono (D516): an upcast to an instance of a generic interface names the instance, as `Callee.Interface` does.
   - Equality (D515): `==`/`!=` on a tuple or union holding an array, in a record leaf or directly, is a match over its parts and cases on TIR; only a leaf path through a generic record keeps the single `IoEq`.
 
 3b can run in parallel with 3a; 3c needs 3a.
