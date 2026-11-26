@@ -19832,6 +19832,7 @@ func resolveTirGlobal(ctx: in Ctx, maps: in TirUnitMaps, sym: in Int): Bool {
 /// `invariant:` clauses in a bundled package, which the contracts pass adds to the TIR bundle but the AST path never
 /// synthesises for a bundled package.  It is lowered once, on the first call that asks for it, into the module.
 /// False when `fsym` is no such function or its lowering falls back (the caller then keeps the AST path).
+/// A checker lowered for a caller that later falls back to the AST path stays in the module, unused.
 func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
   val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
   val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
@@ -19850,7 +19851,10 @@ func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool
   ctx.tirOnlyFns.add(irName, true)
   maps.fnNames.add(fsym, irName)
   match lowerWithTuples(ctx, maps, decl) {
-    case Err(_) -> {
+    case Err(f) -> {
+      if LlvmTir.tirTraceRequested() {
+        Console.error("native via-TIR: " + irName + " stays off the module: " + f.reason)
+      }
       maps.fnNames.remove(fsym)
       ctx.tirOnlyFns.remove(irName)
       false
