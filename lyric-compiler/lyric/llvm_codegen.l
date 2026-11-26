@@ -19311,7 +19311,11 @@ func tirOverloadMark(names: in Map[Int, String], originId: in Int): String {
             }
           }
         }
-        if peers > 1 and index > 0 { "__o" + index.toString() } else { "" }
+        if peers > 1 and index > 0 {
+          "__o" + index.toString()
+        } else {
+          ""
+        }
       }
     }
   }
