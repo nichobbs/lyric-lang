@@ -19343,7 +19343,7 @@ func registerTirInstanceFns(
               if ipkg == "Std.CollectionsHost" and (bare == "newList" or bare == "newListWithCapacity" or bare == "newMap") {
                 intrinsics.add(f.sym.id, bare)
               }
-              if ipkg == "Std.Collections" and (bare == "mapKeys" or bare == "mapValues") {
+              if ipkg == "Std.Collections" and (bare == "mapKeys" or bare == "mapValues" or bare == "mapGet" or bare == "mapSize") {
                 intrinsics.add(f.sym.id, bare)
               }
               if not Str.contains(bare, "::") and not f.isAsync {

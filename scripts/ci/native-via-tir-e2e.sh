@@ -746,6 +746,26 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/d_tir.ll" lyric-rt/b
 "$work/d_asan"
 echo "nativedtor under AddressSanitizer: clean"
 
+# `mapGet` and `mapSize` (docs/70 phase 4a part 8, D857): every function from TIR, the same output, then under
+# AddressSanitizer (the `Some` retains the stored reference value).
+msrc=scripts/ci/native-via-tir/mapget.l
+"$lyric_bin" build --target native "$msrc" -o "$work/m_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$msrc" -o "$work/m_tir" 2> "$work/m_census.txt" >/dev/null
+cat "$work/m_census.txt"
+"$work/m_ast" > "$work/m_ast.out"
+"$work/m_tir" > "$work/m_tir.out"
+diff -u "$work/m_ast.out" "$work/m_tir.out"
+printf 'one!\nnone\n2\n7\n-1\n' | diff -u - "$work/m_tir.out"
+if grep -q '^  fallback:' "$work/m_census.txt"; then
+  echo "::error::mapget.l has a TIR fallback"
+  exit 1
+fi
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/m_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/m_asan"
+"$work/m_asan" > "$work/m_asan.out"
+diff -u "$work/m_tir.out" "$work/m_asan.out"
+echo "mapget under AddressSanitizer: clean"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
