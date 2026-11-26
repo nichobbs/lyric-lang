@@ -654,7 +654,7 @@ func upcastFn(fromTy: in Ty, toTy: in Ty, iface: in SymbolId): TFnDecl {
   fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvUpcast(iface = iface), inner = inner)))
 }
 
-test "an upcast names the interface its node's type is (D516)" {
+test "an upcast names the interface its node's type is (D517)" {
   val iface = SymbolId(id = 72)
   val inst = SymbolId(id = 73)
   val target = TNamed(sym = SymbolId(id = 74), args = newList())
@@ -665,6 +665,12 @@ test "an upcast names the interface its node's type is (D516)" {
   assertTrue(
     rulesOf(oneFn(entries(), upcastFn(target, TNamed(sym = inst, args = newList()), iface))).contains("convert-type"),
     "the generic interface against its instance's type"
+  )
+  assertFalse(
+    rulesOf(oneFn(entries(), upcastFn(target, TNullable(inner = TNamed(sym = inst, args = newList())), iface))).contains(
+      "convert-type"
+    ),
+    "a node type that is not a named type is not checked"
   )
 }
 
