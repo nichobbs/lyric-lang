@@ -508,6 +508,13 @@ record Ctx {
   /// The LLVM type of every record, union, enum and distinct type the TIR lowering has laid out in any unit
   /// so far, by symbol: a generic instance in one unit may take a type argument another unit declares.
   tirKnownAll: Map[Int, NType] = newMap()
+  /// The functions that exist only on TIR (the synthesised `__lyric_checked_T` construction checkers of the bundled
+  /// packages, D856), lowered on demand by `instantiateTirOnlyFn`, by IR name.
+  tirOnlyFns: Map[String, Bool] = newMap()
+  /// The declarations and DefPath keys of the construction checkers of every unit's TIR package, by symbol: a
+  /// call into another unit, or from a function the monomorphised bundle does not list, finds its checker here.
+  tirOnlyDecls: Map[Int, Tir.TFnDecl] = newMap()
+  tirOnlyKeys: Map[Int, String] = newMap()
   genericDeclPkg: Map[String, String]
   caseToGenericUnion: Map[String, String]
   // Module accumulators for lazy instantiation: type definitions and
@@ -17933,6 +17940,9 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     genericRecordDefs = mod.genericRecordDefs,
     genericUnionDefs = mod.genericUnionDefs,
     tirKnownAll = mod.tirKnownAll,
+    tirOnlyFns = mod.tirOnlyFns,
+    tirOnlyDecls = mod.tirOnlyDecls,
+    tirOnlyKeys = mod.tirOnlyKeys,
     genericDeclPkg = mod.genericDeclPkg,
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
@@ -19232,7 +19242,7 @@ func registerTirInstances(
       } else if ctx.genericRecordDefs.containsKey(gkey) {
         match instantiateGenericRecordOpt(ctx, gkey, argTys) {
           case Some(ri) -> {
-            if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
+            if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
               val lay = LlvmTir.TirRecLayout(
                 ty = recPtrType(ri),
                 fieldTys = ri.fieldTys,
@@ -19333,7 +19343,7 @@ func registerTirInstanceFns(
               if ipkg == "Std.CollectionsHost" and (bare == "newList" or bare == "newListWithCapacity" or bare == "newMap") {
                 intrinsics.add(f.sym.id, bare)
               }
-              if ipkg == "Std.Collections" and (bare == "mapKeys" or bare == "mapValues") {
+              if ipkg == "Std.Collections" and (bare == "mapKeys" or bare == "mapValues" or bare == "mapGet" or bare == "mapSize") {
                 intrinsics.add(f.sym.id, bare)
               }
               if not Str.contains(bare, "::") and not f.isAsync {
@@ -19538,7 +19548,7 @@ func tirUnitMaps(
                       LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
                     )
                   }
-                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
+                } else if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -19824,13 +19834,100 @@ func resolveTirGlobal(ctx: in Ctx, maps: in TirUnitMaps, sym: in Int): Bool {
   true
 }
 
+/// The IR name of a function that exists only on TIR: the construction checker `__lyric_checked_T` of a type with
+/// `invariant:` clauses in a bundled package, which the contracts pass adds to the TIR bundle but the AST path never
+/// synthesises for a bundled package.  It is lowered once, on the first call that asks for it, into the module.
+/// False when `fsym` is no such function or its lowering falls back (the caller then keeps the AST path).
+/// A checker lowered for a caller that later falls back to the AST path stays in the module, unused, as does anything
+/// a checker whose lowering then falls back added to the module (a closure, a global).
+func instantiateTirOnlyFn(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
+  val trace = LlvmTir.tirTraceRequested()
+  val key = match mapGet(maps.instKeys, fsym) {
+    case Some(x) -> x
+    case None -> match mapGet(ctx.tirOnlyKeys, fsym) { case Some(x) -> x; case None -> return false }
+  }
+  val decl = match mapGet(maps.instDecls, fsym) {
+    case Some(x) -> x
+    case None -> match mapGet(ctx.tirOnlyDecls, fsym) {
+      case Some(x) -> x
+      case None -> {
+        if trace and Str.contains(key, "__lyric_checked_") {
+          Console.error("native via-TIR: " + key + " has no declaration in the bundle")
+        }
+        return false
+      }
+    }
+  }
+  val n = match LlvmTir.tirTopLevelFn(key) {
+    case Some(x) -> x
+    case None -> {
+      if trace and Str.contains(key, "__lyric_checked_") {
+        Console.error("native via-TIR: " + key + " is not a top-level function key")
+      }
+      return false
+    }
+  }
+  if decl.isAsync or decl.typeParams.count > 0 or not Str.startsWith(n.name, "__lyric_checked_") {
+    return false
+  }
+  if maps.fnNames.containsKey(fsym) {
+    return false
+  }
+  val irName = n.pkg + "." + n.name
+  if ctx.tirOnlyFns.containsKey(irName) {
+    maps.fnNames.add(fsym, irName)
+    return true
+  }
+  ctx.tirOnlyFns.add(irName, true)
+  maps.fnNames.add(fsym, irName)
+  match lowerWithTuples(ctx, maps, decl) {
+    case Err(f) -> {
+      if LlvmTir.tirTraceRequested() {
+        Console.error("native via-TIR: " + irName + " stays off the module: " + f.reason)
+      }
+      maps.fnNames.remove(fsym)
+      ctx.tirOnlyFns.remove(irName)
+      false
+    }
+    case Ok(l) -> {
+      for g in l.globals {
+        ctx.globals.add(g)
+      }
+      for xf in l.extraFns {
+        ctx.moduleFns.add(xf)
+      }
+      for cd in l.closures {
+        ctx.moduleTypeDefs.add(NTypeDefn(name = cd.implName, fields = cd.implFields))
+        if cd.dtor.length > 0 {
+          ctx.moduleFns.add(synthClosureDtor(ctx, cd.dtor, cd.implName, cd.implFields, cd.capTys))
+        }
+      }
+      ctx.moduleFns.add(
+        NFunc(
+          name = irName,
+          params = l.fn.params,
+          retTy = l.fn.retTy,
+          isPublic = false,
+          isExtern = false,
+          body = l.fn.body,
+          attributes = l.fn.attributes
+        )
+      )
+      true
+    }
+  }
+}
+
 /// The IR name of the instance of a generic function a TIR call names, which the AST path instantiates
 /// on demand (`ensureFnInst`): `fsym` is looked up among the bundle's instances, its type arguments are
 /// laid out as the AST path would lay them out, and the instantiation is registered under the
 /// symbol.  False when `fsym` is no instance of a generic function the code generator holds, or an
 /// argument is outside what `LlvmTir.tirInstArgN` covers.
 func instantiateTirFnInst(ctx: in Ctx, maps: in TirUnitMaps, fsym: in Int): Bool {
-  val ii = match mapGet(maps.instInfos, fsym) { case Some(x) -> x; case None -> return false }
+  val ii = match mapGet(maps.instInfos, fsym) {
+    case Some(x) -> x
+    case None -> return instantiateTirOnlyFn(ctx, maps, fsym)
+  }
   val decl = match mapGet(maps.instDecls, fsym) { case Some(x) -> x; case None -> return false }
   val key = match mapGet(maps.instKeys, fsym) { case Some(x) -> x; case None -> return false }
   if decl.isAsync {
@@ -20394,6 +20491,20 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       declaredExterns.add(rtDecls[di].name, true)
     }
     di = di + 1
+  }
+  for tu in units {
+    if tu.tir.count > 0 {
+      val tin = tu.tir[0]
+      for tf in tin.pkg.funcs {
+        match mapGet(tin.names, tf.sym.id) {
+          case Some(tk) -> if Str.contains(tk, "::__lyric_checked_") and not ctx.tirOnlyDecls.containsKey(tf.sym.id) {
+            ctx.tirOnlyDecls.add(tf.sym.id, tf)
+            ctx.tirOnlyKeys.add(tf.sym.id, tk)
+          }
+          case None -> ()
+        }
+      }
+    }
   }
   var mainRet = NVoid
   var mainIr = ""

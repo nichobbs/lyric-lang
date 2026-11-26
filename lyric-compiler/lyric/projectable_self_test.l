@@ -57,6 +57,14 @@ test "a flat projectable gets a view, toView and tryInto" {
   assertTrue(hasFunc(r.file, "UserView.tryInto"), "tryInto")
 }
 
+test "a projectable with an invariant gets a tryInto that checks it and returns Err" {
+  val r = expand(
+    "package P\nopaque type Quota @projectable {\n  used: Int\n  limit: Int\n  invariant: used >= 0 and used <= limit\n}\n"
+  )
+  assertEqualInt(r.diagnostics.count, 0, "no diagnostics")
+  assertTrue(hasFunc(r.file, "QuotaView.tryInto"), "tryInto")
+}
+
 test "a hidden field leaves the view and suppresses tryInto" {
   val r = expand("package P\nopaque type Account @projectable {\n  accountId: Int\n  passwordHash: String @hidden\n}\n")
   assertEqualInt(viewFieldCount(r.file, "AccountView"), 1, "hidden field omitted")

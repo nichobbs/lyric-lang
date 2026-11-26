@@ -277,6 +277,11 @@ pub func tirCensusLines(c: in TirCensus, label: in String = ""): List[String] {
     lines.add("  fallback: " + best + " x " + toString(bestN))
     round = round + 1
   }
+  if tirTraceRequested() {
+    for f in c.fallbacks {
+      lines.add("    fallback fn " + f)
+    }
+  }
   lines
 }
 
@@ -2953,7 +2958,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           if not listContainsInt(c.env.needFns, sym.id) {
             c.env.needFns.add(sym.id)
           }
-          unsupported(c, "a call with no IR name (symbol #" + toString(sym.id) + ")")
+          unsupported(
+            c,
+            "a call with no IR name (symbol #" + toString(sym.id) + " " +
+              (match mapGet(c.env.symNames, sym.id) { case Some(k) -> k; case None -> "" }) +
+              ")"
+          )
         }
         case Some(irName) -> {
           if c.coro {
@@ -4092,6 +4102,83 @@ func lowerMapSnapshot(c: in LCtx, e: in TExpr, name: in String, arg: in TArg): V
   Val(ty = lt, value = NLocal(name = d), owned = true)
 }
 
+/// `mapSize(m)` is the runtime's length of the map; `mapGet(m, k)` is `Some(v)` of a stored value or `None`: the
+/// kernel's `lyric_map_get` writes the value's slot into a stack cell and answers whether the key was present
+/// (the borrowed element is retained by the `Some` it is stored in).
+func lowerMapSizeOrGet(c: in LCtx, e: in TExpr, name: in String, args: in List[TArg]): Val {
+  val m0 = match args[0] { case TArgIn(v) -> v; case _ -> return unsupported(c, "an out argument of " + name) }
+  if not isMapTy(m0.ty) or not tyLowers(c.env, m0.ty) {
+    return unsupported(c, name + " of " + renderTy(m0.ty))
+  }
+  val kv = match mapKeyVal(c, m0.ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "a map " + renderTy(m0.ty))
+  }
+  val m = borrow(c, lowerExpr(c, m0))
+  val mp = listAsI8(c, m)
+  if name == "mapSize" {
+    val n = callRt(c, "lyric_map_len", NI64, arg1(i8ptr(), mp))
+    val d = tmp(c)
+    c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
+    return Val(ty = NI32, value = NLocal(name = d))
+  }
+  val key = match args[1] { case TArgIn(v) -> v; case _ -> return unsupported(c, "an out argument of mapGet") }
+  val usym = match e.ty {
+    case TNamed(sym, _) -> sym
+    case _ -> return unsupported(c, "mapGet producing " + renderTy(e.ty))
+  }
+  val isOption = match mapGet(c.env.symNames, usym.id) {
+    case Some(k) -> Str.startsWith(k, "Std.Core::Option")
+    case None -> false
+  }
+  val ul = match mapGet(c.env.unions, usym.id) {
+    case Some(u) -> u
+    case None -> return unsupported(c, "mapGet producing " + renderTy(e.ty))
+  }
+  if not isOption or ul.cases.count != 2 {
+    return unsupported(c, "mapGet producing " + renderTy(e.ty))
+  }
+  val someIdx = if ul.cases[0].fieldTys.count == 1 { 0 } else { 1 }
+  val noneIdx = 1 - someIdx
+  if ul.cases[someIdx].fieldTys.count != 1 or ul.cases[noneIdx].fieldTys.count != 0 {
+    return unsupported(c, "mapGet producing " + renderTy(e.ty))
+  }
+  val k = borrow(c, lowerExpr(c, key))
+  c.ticker.add(0)
+  val outSlot = "mapget.out." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = outSlot, ty = NI64))
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = i8ptr(), value = mp))
+  gArgs.add(NArg(ty = NI64, value = slotOf(c, k)))
+  gArgs.add(NArg(ty = NPtr(pointee = NI64), value = NLocal(name = outSlot)))
+  val found = callRt(c, "lyric_map_get", NI32, gArgs)
+  val hit = tmp(c)
+  c.insns.add(NICmp(dest = hit, pred = INe, ty = NI32, a = found, b = NLitInt(v = 0i64, ty = NI32)))
+  val someL = newLabel(c, "mapget.some")
+  val noneL = newLabel(c, "mapget.none")
+  val mergeL = newLabel(c, "mapget.merge")
+  val resSlot = "mapget.res." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = resSlot, ty = ul.ty))
+  c.insns.add(NCondBr(cond = NLocal(name = hit), thenLabel = someL, elseLabel = noneL))
+  startBlock(c, someL)
+  val raw = tmp(c)
+  c.insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
+  val elem = fromSlot(c, NLocal(name = raw), kv[1])
+  val someVals: List[Val] = newList()
+  someVals.add(elem)
+  val someV = buildCaseFromVals(c, TirCaseRef(unionId = usym.id, index = someIdx), ul, someVals)
+  c.insns.add(NStore(ty = ul.ty, value = someV.value, ptr = NLocal(name = resSlot)))
+  c.insns.add(NBr(label = mergeL))
+  startBlock(c, noneL)
+  val noneV = buildCaseFromVals(c, TirCaseRef(unionId = usym.id, index = noneIdx), ul, newList())
+  c.insns.add(NStore(ty = ul.ty, value = noneV.value, ptr = NLocal(name = resSlot)))
+  c.insns.add(NBr(label = mergeL))
+  startBlock(c, mergeL)
+  val result = tmp(c)
+  c.insns.add(NLoad(dest = result, ty = ul.ty, ptr = NLocal(name = resSlot)))
+  Val(ty = ul.ty, value = NLocal(name = result), owned = not ul.inline)
+}
+
 /// `newList()` and `newListWithCapacity(n)`.
 func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in List[TArg]): Val {
   if name == "newMap" and isMapTy(e.ty) {
@@ -4099,6 +4186,9 @@ func lowerCollectionIntrinsic(c: in LCtx, e: in TExpr, name: in String, args: in
   }
   if (name == "mapKeys" or name == "mapValues") and isListTy(e.ty) and args.count == 1 {
     return lowerMapSnapshot(c, e, name, args[0])
+  }
+  if (name == "mapSize" and args.count == 1) or (name == "mapGet" and args.count == 2) {
+    return lowerMapSizeOrGet(c, e, name, args)
   }
   if not isListTy(e.ty) {
     return unsupported(c, name + " producing " + renderTy(e.ty))

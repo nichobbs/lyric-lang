@@ -563,7 +563,7 @@ The `@projectable` annotation directs the compiler to generate a sibling `expose
 - All non-`@hidden` fields, recursively projected if their types are also `@projectable`
 - Opaque field types kept as opaque handles if not `@projectable`
 - A projection function `User.toView(self): UserView`
-- A reverse function `UserView.tryInto(self): Result[User, String]`, emitted when the type has no `@hidden` field and no nested projectable field; it rebuilds the value through the constructor, so the invariant runs as it does at any construction (D761)
+- A reverse function `UserView.tryInto(self): Result[User, String]`, emitted when the type has no `@hidden` field and no nested projectable field; when the type declares `invariant:` clauses it first checks each one on the view's values without panicking and returns `Err("InvariantViolated: Pkg.User invariant <clause>")` (the construction checker's message, naming the first clause that fails), and otherwise rebuilds the value through the constructor (D761, D511). `ContractViolation` is not a type: the error is a `String`.
 
 The view, `toView` and `tryInto` are ordinary declarations the compiler adds before the type check (D761): they are checked, documented and resolved like declarations written by hand. A generic opaque type is not projected, and a field projects to `<FieldType>View` when its type names another non-generic `@projectable` opaque type of the build: declared in the same package, or in another source package of the build and imported by name (`import P.Inner`, `import P.{Inner}`) or written qualified (`P.Inner`). The other package's `<Name>View` is imported for the view. A field of a wrapped type (`Option[Other]`) or of a type from a restored (binary) dependency keeps its written type.
 
@@ -1898,7 +1898,7 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 - *`inout` and `out` in the declaring package:* a `pub` top-level function, a method of a `pub` record or exposed record, or an `impl` method of the type's own package re-checks its `inout` and `out` parameters of the type on exit. A non-`pub` function may leave the value broken; the next public crossing catches it.
 - *Not checked:* a write to a `var` field (it is caught at the next boundary), a field read, and an intra-package call.
 
-Checked today for non-generic types named directly (or as `Self`) in a signature. Generic types, a type named through an `alias` or imported under another name, a type held inside `Option`, `Result` or a collection, and the `@projectable` `tryInto` result are tracked under #7222.
+Checked today for non-generic types named directly (or as `Self`) in a signature. Generic types, a type named through an `alias` or imported under another name, a type held inside `Option`, `Result` or a collection, and the `@projectable` `tryInto` result's own type are tracked under #7222 (`tryInto` itself checks the invariant, §2.9, D511).
 
 An invariant may carry a message for the user, written after its expression on the same line:
 
@@ -1914,8 +1914,7 @@ invariant: keyAccountLimitOk(tier, creditLimit) @message("Key accounts need a cr
 - generic types, aliased/renamed types, and types wrapped in `Option`, `Result`, or a collection at a public boundary;
 - construction inside a generic function body that another package specialises;
 - construction in a restored package built before invariant checking;
-- construction in code synthesized after type checking (derived `@generate` deserializers);
-- the `@projectable` `tryInto` check.
+- construction in code synthesized after type checking (derived `@generate` deserializers).
 
 ### 6.3 Contract expression sublanguage
 

@@ -73,6 +73,13 @@ opaque type Company @projectable {
   region: Region
 }
 
+// ── Test 11: @projectable with an invariant — tryInto checks it (#9315, D511) ──
+opaque type Quota @projectable {
+  used: Int
+  limit: Int
+  invariant: used >= 0 and used <= limit
+}
+
 test "toView exposes all fields of a basic projectable" {
   val u = User(id = 7, name = "alice")
   val uv = u.toView()
@@ -192,4 +199,17 @@ test "opaque type's mutable field passed directly as an inout call argument (#59
   bumpInout(h.count)
   assertEqualInt(mutableCounterCount(h), 3, "opaque field bumped 3 times through direct inout-argument passing")
   assertEqual(h.label, "c", "immutable opaque field still readable after the holder-arg mutation")
+}
+
+test "tryInto returns Err naming the violated invariant clause instead of panicking" {
+  val bad = QuotaView(used = 5, limit = 3)
+  val msg = match bad.tryInto() { case Ok(_) -> "ok"; case Err(m) -> m }
+  assertTrue(msg.startsWith("InvariantViolated: "), "tryInto_err_prefix: " + msg)
+  assertTrue(msg.contains(".Quota invariant used >= 0 and used <= limit"), "tryInto_err_clause: " + msg)
+}
+
+test "tryInto returns Ok for a view whose values satisfy the invariant" {
+  val good = QuotaView(used = 2, limit = 3)
+  val ok = match good.tryInto() { case Ok(q) -> q.toView().used == 2; case Err(_) -> false }
+  assertTrue(ok, "tryInto_invariant_ok")
 }
