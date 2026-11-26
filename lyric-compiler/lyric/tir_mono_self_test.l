@@ -348,6 +348,7 @@ test "an impl member with type parameters of its own is instantiated per call (D
   for im in inst.pkg.impls {
     assertEqualInt(im.members.count, 1, "only get is an interface method; pick is instantiated per call")
   }
+}
 
 func upcastTargets(m: in Mono): List[String] {
   val acc: List[String] = newList()
