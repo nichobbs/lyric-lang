@@ -3622,6 +3622,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/generic_interface_native_gate_self_test.l
 
+      # A generic interface of another package, implemented and called from a consumer on dotnet
+      # (a restored DLL) and the JVM (#7791, D860).  Spawns ./bin/lyric builds and runs, so it is
+      # exclusive too.
+      - name: Generic-interface restored-package self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/generic_interface_restored_self_test.l
+
       # docs/63 §9.7 / #6284: the JVM backend now emits a real JVMS §4.7.10
       # SourceFile attribute naming the real path, for both the plain
       # single-file build and the common single-package-project manifest

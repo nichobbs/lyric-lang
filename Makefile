@@ -426,6 +426,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/sort_self_test.l \
 	lyric-compiler/lyric/source_path_diagnostics_self_test.l \
 	lyric-compiler/lyric/generic_interface_native_gate_self_test.l \
+	lyric-compiler/lyric/generic_interface_restored_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_iface_self_test.l \
 	lyric-compiler/lyric/stdlib_builders_self_test.l \
 	lyric-compiler/lyric/stdlib_generic_mono_self_test.l \
