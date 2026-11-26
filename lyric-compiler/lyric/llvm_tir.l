@@ -6406,7 +6406,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
   if fn.isGenerator {
     return fallback(fn.sym, "a generator")
   }
-  if (fn.preconds.count > 0 or fn.postconds.count > 0) and not env.contractsElaborated {
+  if (fn.preconds.count > 0 or fn.postconds.count > 0 or fn.invariants.count > 0) and not env.contractsElaborated {
     return fallback(fn.sym, "contracts that the contract pass has not elaborated")
   }
   val irName = match mapGet(if fn.isAsync { env.asyncFns } else { env.fnNames }, fn.sym.id) {
