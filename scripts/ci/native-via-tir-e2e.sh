@@ -700,6 +700,30 @@ test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
 
+# A record with `invariant:` clauses declared in a bundled package (docs/70 phase 4a part 8, D856): its construction
+# checker has no AST copy and is lowered from TIR on the first call that names it.  The same output as the AST path,
+# every function from TIR, and a violated invariant panics.
+ssrc=scripts/ci/native-via-tir/stdinvariants.l
+"$lyric_bin" build --target native "$ssrc" -o "$work/si_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$ssrc" -o "$work/si_tir" 2> "$work/si_census.txt" >/dev/null
+cat "$work/si_census.txt"
+"$work/si_ast" > "$work/si_ast.out"
+"$work/si_tir" > "$work/si_tir.out"
+diff -u "$work/si_ast.out" "$work/si_tir.out"
+printf '100\n7\n' | diff -u - "$work/si_tir.out"
+if grep -q '^  fallback:' "$work/si_census.txt"; then
+  echo "::error::stdinvariants.l has a TIR fallback"
+  exit 1
+fi
+sed -e 's|maxSize = 7)|maxSize = 7)\n  println(toString(sizeOf(DynamicTable(entries = e, size = 9, maxSize = 7))))|' "$ssrc" > "$work/stdinvariants_violated.l"
+"$lyric_bin" build --target native --via-tir "$work/stdinvariants_violated.l" -o "$work/siv_tir" >/dev/null 2>&1
+if "$work/siv_tir" > /dev/null 2> "$work/siv_tir.err"; then
+  echo "::error::the TIR build did not panic on a violated bundled-package invariant"
+  exit 1
+fi
+grep -q 'InvariantViolated: Std.HttpEngine.Hpack.DynamicTable' "$work/siv_tir.err" || { echo "::error::no invariant message"; cat "$work/siv_tir.err"; exit 1; }
+echo "std invariants: ok"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
