@@ -102,6 +102,19 @@ func expectGenericOutput(target: in String): Unit {
   assertTrue(Str.contains(r.stdout, "9\n5\n"), "the generic consumer's output on " + target + ", got:\n" + r.stdout)
 }
 
+func genericImplAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\nfunc main(): Int {\n  val b: Box[Int] = Box(v = 1)\n  println(toString(b.twice(9)))\n  val s: Box[String] = Box(v = \"a\")\n  println(s.twice(\"z\"))\n  0\n}\n"
+}
+
+func expectGenericImplOutput(target: in String): Unit {
+  val r = runFor(target, genericLibSource(), genericImplAppSource())
+  assertEqualInt(r.exitCode, 0, "the generic-implementor consumer runs on " + target + ":\n" + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "9\nz\n"),
+    "the generic-implementor consumer's output on " + target + ", got:\n" + r.stdout
+  )
+}
+
 func expectOutput(target: in String): Unit {
   val r = runFor(target, libSource(), appSource())
   assertEqualInt(r.exitCode, 0, "the consumer runs on " + target + ":\n" + r.stderr)
@@ -122,4 +135,12 @@ test "a default method of another package's generic interface is called on a con
 
 test "a default method of another package's generic interface is called on a concrete implementor on the JVM" {
   expectGenericOutput("jvm")
+}
+
+test "a default method of another package's generic interface is called on a generic implementor on dotnet" {
+  expectGenericImplOutput("dotnet")
+}
+
+test "a default method of another package's generic interface is called on a generic implementor on the JVM" {
+  expectGenericImplOutput("jvm")
 }
