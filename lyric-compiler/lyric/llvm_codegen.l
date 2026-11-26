@@ -24299,6 +24299,39 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   Some(value = vtName)
 }
 
+/// Every method of the interface needs a function in the impl: `Lyric.ImplDefaults` copies a default method into an
+/// impl of an interface declared in the same file, but an interface declared in another package keeps its default
+/// out of the impl, and the vtable slot would name a function that does not exist (a clang `undefined value`).  That is
+/// `N0106` here, naming the method; protected types take their methods as entries and are skipped.
+func checkImplDefinesEveryMethod(ctx: in Ctx, pkg: in String, recordName: in String, decl: in ImplDecl, info: in NIfaceInfo): Unit {
+  if ctx.protectedRecNames.containsKey(pkg + "." + recordName) {
+    return
+  }
+  val defined: List[String] = newList()
+  for m in decl.members {
+    match m {
+      case IMplFunc(fn) -> defined.add(fn.name)
+      case IMplAssoc(_) -> ()
+    }
+  }
+  for name in info.methodNames {
+    var found = false
+    for d in defined {
+      if d == name {
+        found = true
+      }
+    }
+    if not found {
+      panic(
+        "error[N0106] " + decl.span.startPos.line.toString() + ":" + decl.span.startPos.column.toString() +
+          ": this impl of '" + implIfaceName(decl.iface) + "' for '" + recordName + "' does not define '" + name +
+          "', a default method of an interface declared in another package: --target native does not inherit another package's default methods yet, so define '" +
+          name + "' in the impl"
+      )
+    }
+  }
+}
+
 /// An `impl` of a generic interface this backend cannot lay out is `N0105`, so the build stops instead of
 /// producing a program whose interface calls have no vtable (#7791): the checker's `T0217` is dropped for
 /// native, which lays out the impls it reports nothing for.
@@ -24376,6 +24409,7 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
                 case None -> {
                 }
                 case Some(info) -> {
+                  checkImplDefinesEveryMethod(ctx, u.pkgName, recordName, decl, info)
                   // The impl's own package's record of that name before
                   // the first one declared anywhere.
                   val target = match mapGet(ctx.recordDefs, u.pkgName + "." + recordName) {

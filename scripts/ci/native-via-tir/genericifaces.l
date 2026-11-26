@@ -15,6 +15,7 @@ pub interface Pair[A, B] {
 
 record IntBox {
   v: Int
+  tag: String
 }
 
 record StrBox {
@@ -46,13 +47,13 @@ func useInt(h: in Holder[Int]): Int = h.get() + h.twice(10) + h.put(1)
 func useStr(h: in Holder[String]): String = h.get() + h.twice("!")
 
 func main(): Int {
-  println(toString(useInt(IntBox(v = 4))))
+  println(toString(useInt(IntBox(v = 4, tag = "a"))))
   println(useStr(StrBox(s = "ab")))
   val p: Pair[Int, String] = Both(a = 7, b = "x")
   println(toString(p.first()) + p.second())
   val hs: Holder[String] = StrBox(s = "qq")
   println(toString(hs.put("four")))
-  println(toString(IntBox(v = 2).twice(9)))
+  println(toString(IntBox(v = 2, tag = "b").twice(9)))
   println(StrBox(s = "z").twice("w"))
   0
 }

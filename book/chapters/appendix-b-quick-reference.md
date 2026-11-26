@@ -1655,7 +1655,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0212` | A `pub` or `internal` declaration exposes a type of its own package that is less visible than itself (a parameter, return, field, case payload, interface method, alias target or `pub val` type); mark the type, or narrow the declaration (#7214) |
 | `T0214` | A record method's `out` or `inout` parameter whose type mentions one of the method's own type parameters (`func bump[U](self: in R, x: inout U)`). A method's type parameters are erased in its body, so the reference cannot be passed; take the value with `in` and return the result, or declare the function outside the record (#8241). |
 | `T0216` | An `impl` of a generic interface that gives a different number of type arguments than the interface declares (`impl Holder[Int, Int] for IntBox` for `interface Holder[T]`). |
-| `T0217` | An `impl` of a generic interface (`impl Holder[Int] for IntBox`, `interface Holder[T]`) on `--target native`, which does not lower generic interfaces yet (#7791); `--target dotnet` and `--target jvm` run it. |
+| `T0217` | An `impl` of a generic interface (`impl Holder[Int] for IntBox`, `interface Holder[T]`) on a target whose code generator does not lay out generic interfaces. `--target dotnet`, `--target jvm` and `--target native` all do (#7791), so a build reports it on none of them. |
 | `T0233` | A `where` bound names a generic interface (`where T: Holder[Int]`). A type parameter bounded by one is not supported (#7791); take the interface as the parameter's type. |
 | `T0218` | A call to a function or method of a restored package leaves out a parameter whose default the package could not export, because its type names a type parameter or `Self`. Pass the argument explicitly (#8076). |
 | `T0219` | A file of a package uses a name (bare, qualified, a type, an alias or a renamed import) that only a sibling file's import makes visible. Imports are per file (docs/70 §4.1); the message names the sibling file and the import. Fix: add that import to this file (D300). |
@@ -1786,6 +1786,8 @@ span, exactly like `T0120`/`J008`.
 | `N0028` | `--shape plugin` builds a trusted plugin library from a package with a `@plugin` record, and the package declares none (D231). |
 | `N0029` | A native build found no standard library sources (#8455). The message names every location searched: `$LYRIC_STD_PATH`, `lyric-stdlib/std` in the directory of the `lyric` binary and each of its parents, and `lyric-stdlib/std` in the current directory and each of its parents. Set `LYRIC_STD_PATH` to the `lyric-stdlib/std` directory of a Lyric checkout or install, or run `lyric` from inside one. |
 | `N0030` | A native build imports a `Std.*` package that no file of the standard library it found declares (#8455): a misspelt name, or a `LYRIC_STD_PATH` that does not match this compiler. |
+| `N0105` | On `--target native`, an `impl` of a generic interface for a generic type (`impl[T] Holder[T] for Box[T]`), or one whose interface argument has no native layout (#7791). Implement it for a concrete instantiation. |
+| `N0106` | On `--target native`, an `impl` of an interface declared in another package that does not define one of the interface's default methods: native does not inherit another package's default methods yet (#9451). Define the method in the impl. |
 
 ### Custom source generators (X-series)
 
