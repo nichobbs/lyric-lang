@@ -21,7 +21,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/via-tir.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 src=scripts/ci/native-via-tir/scalars.l
 
-"$lyric_bin" build --target native "$src" -o "$work/ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$src" -o "$work/ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$src" -o "$work/tir" 2> "$work/census.txt" >/dev/null
 cat "$work/census.txt"
 
@@ -45,7 +45,7 @@ printf '10\n20\n500\n0\n10\n7\n20\n5\nfalse\n' | diff -u - "$work/tir.out"
 # IR again under AddressSanitizer against an ASan-built runtime, so a leaked, double-released or
 # prematurely released string fails the run.
 strsrc=scripts/ci/native-via-tir/strings.l
-"$lyric_bin" build --target native "$strsrc" -o "$work/s_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$strsrc" -o "$work/s_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$strsrc" -o "$work/s_tir" 2> "$work/s_census.txt" >/dev/null
 cat "$work/s_census.txt"
 "$work/s_ast" > "$work/s_ast.out"
@@ -66,7 +66,7 @@ echo "strings under AddressSanitizer: clean"
 # By-value records (docs/70 phase 4a): construction, field reads, nested records and `.copy`
 # lowered from TIR, the same comparison.  No ARC is involved, so there is no sanitizer stage.
 recsrc=scripts/ci/native-via-tir/records.l
-"$lyric_bin" build --target native "$recsrc" -o "$work/r_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$recsrc" -o "$work/r_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$recsrc" -o "$work/r_tir" 2> "$work/r_census.txt" >/dev/null
 cat "$work/r_census.txt"
 "$work/r_ast" > "$work/r_ast.out"
@@ -81,7 +81,7 @@ grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/r_census.txt
 # Heap records (docs/70 phase 4a): allocation with a destructor, owned reference fields and `.copy`
 # as a new object, lowered from TIR, then the same IR under AddressSanitizer.
 hsrc=scripts/ci/native-via-tir/heaprecords.l
-"$lyric_bin" build --target native "$hsrc" -o "$work/h_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$hsrc" -o "$work/h_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$hsrc" -o "$work/h_tir" 2> "$work/h_census.txt" >/dev/null
 cat "$work/h_census.txt"
 "$work/h_ast" > "$work/h_ast.out"
@@ -100,7 +100,7 @@ echo "heap records under AddressSanitizer: clean"
 # Unions (docs/70 phase 4a): an inline tagged value and a heap object with reference payloads,
 # built and matched from TIR, then the same IR under AddressSanitizer.
 usrc=scripts/ci/native-via-tir/unions.l
-"$lyric_bin" build --target native "$usrc" -o "$work/u_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$usrc" -o "$work/u_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$usrc" -o "$work/u_tir" 2> "$work/u_census.txt" >/dev/null
 cat "$work/u_census.txt"
 "$work/u_ast" > "$work/u_ast.out"
@@ -119,7 +119,7 @@ echo "unions under AddressSanitizer: clean"
 # Text (docs/70 phase 4a): interpolation, matching a String against literals, a Double literal
 # pattern and string indexing from TIR, then the same IR under AddressSanitizer.
 xsrc=scripts/ci/native-via-tir/text.l
-"$lyric_bin" build --target native "$xsrc" -o "$work/x_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$xsrc" -o "$work/x_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$xsrc" -o "$work/x_tir" 2> "$work/x_census.txt" >/dev/null
 cat "$work/x_census.txt"
 "$work/x_ast" > "$work/x_ast.out"
@@ -137,7 +137,7 @@ echo "text under AddressSanitizer: clean"
 
 # Enums (docs/70 phase 4a): an enum is its ordinal and a case pattern compares it.
 esrc=scripts/ci/native-via-tir/enums.l
-"$lyric_bin" build --target native "$esrc" -o "$work/e_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$esrc" -o "$work/e_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
 cat "$work/e_census.txt"
 "$work/e_ast" > "$work/e_ast.out"
@@ -152,7 +152,7 @@ grep -q '^native via-TIR: 3 of 3 functions lowered from TIR' "$work/e_census.txt
 # Tuples (docs/70 phase 4a): construction, destructuring lets and tuple patterns, then the same
 # IR under AddressSanitizer.
 tsrc=scripts/ci/native-via-tir/tuples.l
-"$lyric_bin" build --target native "$tsrc" -o "$work/t_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$tsrc" -o "$work/t_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$tsrc" -o "$work/t_tir" 2> "$work/t_census.txt" >/dev/null
 cat "$work/t_census.txt"
 "$work/t_ast" > "$work/t_ast.out"
@@ -171,7 +171,7 @@ echo "tuples under AddressSanitizer: clean"
 # Closures (docs/70 phase 4a): function types, lambdas with reference and scalar captures and calls
 # through function values, then the same IR under AddressSanitizer.
 csrc=scripts/ci/native-via-tir/closures.l
-"$lyric_bin" build --target native "$csrc" -o "$work/c_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$csrc" -o "$work/c_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$csrc" -o "$work/c_tir" 2> "$work/c_census.txt" >/dev/null
 cat "$work/c_census.txt"
 "$work/c_ast" > "$work/c_ast.out"
@@ -190,7 +190,7 @@ echo "closures under AddressSanitizer: clean"
 # out/inout parameters and assignment to record fields (docs/70 phase 4a), then the same IR under
 # AddressSanitizer.
 isrc=scripts/ci/native-via-tir/inout.l
-"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$isrc" -o "$work/i_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
 cat "$work/i_census.txt"
 "$work/i_ast" > "$work/i_ast.out"
@@ -209,7 +209,7 @@ echo "inout under AddressSanitizer: clean"
 # Project builds (docs/70 phase 4a): every own package is lowered from TIR, including a call, a
 # record, a union and a generic function (D533) that cross the package boundary.
 pmf=scripts/ci/native-via-tir/project/lyric.toml
-"$lyric_bin" build --manifest "$pmf" --target native -o "$work/p_ast" >/dev/null
+"$lyric_bin" build --manifest "$pmf" --target native --no-via-tir -o "$work/p_ast" >/dev/null
 "$lyric_bin" build --manifest "$pmf" --target native --via-tir -o "$work/p_tir" 2> "$work/p_census.txt" >/dev/null
 cat "$work/p_census.txt"
 "$work/p_ast" > "$work/p_ast.out"
@@ -226,7 +226,7 @@ grep -q '^native via-TIR: 5 of 5 functions lowered from TIR' "$work/p_census.txt
 # and names the AST path gives them, and every function lowers from TIR.  Output is the AST path's,
 # and the build runs clean under AddressSanitizer.
 fsrc=scripts/ci/native-via-tir/fallback.l
-"$lyric_bin" build --target native "$fsrc" -o "$work/f_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$fsrc" -o "$work/f_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$fsrc" -o "$work/f_tir" 2> "$work/f_census.txt" >/dev/null
 cat "$work/f_census.txt"
 "$work/f_ast" > "$work/f_ast.out"
@@ -248,7 +248,7 @@ echo "generic fallback under AddressSanitizer: clean"
 
 # Unit parameters, locals and arguments (docs/70 phase 4a, D536).
 unsrc=scripts/ci/native-via-tir/unit.l
-"$lyric_bin" build --target native "$unsrc" -o "$work/un_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$unsrc" -o "$work/un_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$unsrc" -o "$work/un_tir" 2> "$work/un_census.txt" >/dev/null
 cat "$work/un_census.txt"
 "$work/un_ast" > "$work/un_ast.out"
@@ -270,7 +270,7 @@ echo "unit under AddressSanitizer: clean"
 
 # `==` on records with array and Float leaves (docs/70 phase 3c, D506): elementwise arrays, NaN equal to itself.
 reqsrc=scripts/ci/native-via-tir/recordeq.l
-"$lyric_bin" build --target native "$reqsrc" -o "$work/req_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$reqsrc" -o "$work/req_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$reqsrc" -o "$work/req_tir" 2> "$work/req_census.txt" >/dev/null
 cat "$work/req_census.txt"
 "$work/req_ast" > "$work/req_ast.out"
@@ -289,7 +289,7 @@ echo "record equality under AddressSanitizer: clean"
 # Loop `invariant:` clauses (docs/70 phase 3c, D510): checked each iteration and when a loop ends normally, not
 # after a `break`; the last call violates one at the exit of a `while` and panics with the managed targets' message.
 lpsrc=scripts/ci/native-via-tir/loops.l
-"$lyric_bin" build --target native "$lpsrc" -o "$work/lp_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$lpsrc" -o "$work/lp_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$lpsrc" -o "$work/lp_tir" 2> "$work/lp_census.txt" >/dev/null
 cat "$work/lp_census.txt"
 "$work/lp_ast" > "$work/lp_ast.out" 2> "$work/lp_ast.err" || true
@@ -307,7 +307,7 @@ echo "loop invariants: ok"
 # Range-checked distinct types (docs/70 phase 4a, D538): `T.from`, derived arithmetic and a final
 # out-of-range panic with the managed targets' message.
 rgsrc=scripts/ci/native-via-tir/ranged.l
-"$lyric_bin" build --target native "$rgsrc" -o "$work/rg_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$rgsrc" -o "$work/rg_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$rgsrc" -o "$work/rg_tir" 2> "$work/rg_census.txt" >/dev/null
 cat "$work/rg_census.txt"
 "$work/rg_ast" > "$work/rg_ast.out" 2> "$work/rg_ast.err" || true
@@ -327,7 +327,7 @@ echo "ranged distinct types under AddressSanitizer: clean"
 
 # `nativeAddrOf` of a String local and `NativePtr[String]` parameters (docs/70 phase 4a, D537).
 spsrc=scripts/ci/native-via-tir/stringptr.l
-"$lyric_bin" build --target native "$spsrc" -o "$work/sp_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$spsrc" -o "$work/sp_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$spsrc" -o "$work/sp_tir" 2> "$work/sp_census.txt" >/dev/null
 cat "$work/sp_census.txt"
 "$work/sp_ast" > "$work/sp_ast.out"
@@ -345,7 +345,7 @@ echo "string pointers under AddressSanitizer: clean"
 
 # String methods that are one runtime call, numeric conversions and `panic`.
 bsrc=scripts/ci/native-via-tir/builtins.l
-"$lyric_bin" build --target native "$bsrc" -o "$work/b_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$bsrc" -o "$work/b_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$bsrc" -o "$work/b_tir" 2> "$work/b_census.txt" >/dev/null
 cat "$work/b_census.txt"
 "$work/b_ast" > "$work/b_ast.out" 2> "$work/b_ast.err" || true
@@ -366,7 +366,7 @@ echo "builtins under AddressSanitizer: clean"
 # Lists and slices (docs/70 phase 4a): literals, newList, add/removeAt/clear, indexing, element
 # assignment and `for` over scalar and reference elements from TIR, then under AddressSanitizer.
 lsrc=scripts/ci/native-via-tir/lists.l
-"$lyric_bin" build --target native "$lsrc" -o "$work/l_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$lsrc" -o "$work/l_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$lsrc" -o "$work/l_tir" 2> "$work/l_census.txt" >/dev/null
 cat "$work/l_census.txt"
 "$work/l_ast" > "$work/l_ast.out"
@@ -385,7 +385,7 @@ echo "lists under AddressSanitizer: clean"
 # Maps (docs/70 phase 4a): newMap, add, containsKey, remove, count, `m[k]` and `m[k] = v` from TIR,
 # then under AddressSanitizer.
 msrc=scripts/ci/native-via-tir/maps.l
-"$lyric_bin" build --target native "$msrc" -o "$work/m_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$msrc" -o "$work/m_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$msrc" -o "$work/m_tir" 2> "$work/m_census.txt" >/dev/null
 cat "$work/m_census.txt"
 "$work/m_ast" > "$work/m_ast.out"
@@ -405,7 +405,7 @@ echo "maps under AddressSanitizer: clean"
 # that await in place, `spawn` in a `scope` with `await` on the handle, from TIR, then the same IR
 # under AddressSanitizer.
 asrc=scripts/ci/native-via-tir/async.l
-"$lyric_bin" build --target native "$asrc" -o "$work/a_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$asrc" -o "$work/a_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$asrc" -o "$work/a_tir" 2> "$work/a_census.txt" >/dev/null
 cat "$work/a_census.txt"
 "$work/a_ast" > "$work/a_ast.out"
@@ -425,7 +425,7 @@ echo "async under AddressSanitizer: clean"
 # from TIR, then under AddressSanitizer.  The impl methods lower too, and so does `pick`, whose branches
 # are converted to the interface (D483): 10 of 10 lower.
 isrc=scripts/ci/native-via-tir/ifaces.l
-"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$isrc" -o "$work/i_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
 cat "$work/i_census.txt"
 "$work/i_ast" > "$work/i_ast.out"
@@ -444,7 +444,7 @@ echo "interfaces under AddressSanitizer: clean"
 # Methods declared in a record's body (docs/70 phase 4a): the receiver is the first parameter and
 # direct calls lower from TIR too, then under AddressSanitizer.
 mesrc=scripts/ci/native-via-tir/methods.l
-"$lyric_bin" build --target native "$mesrc" -o "$work/me_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$mesrc" -o "$work/me_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$mesrc" -o "$work/me_tir" 2> "$work/me_census.txt" >/dev/null
 cat "$work/me_census.txt"
 "$work/me_ast" > "$work/me_ast.out"
@@ -464,7 +464,7 @@ echo "methods under AddressSanitizer: clean"
 # fields and `main` constructs the object (with its mutex) from TIR (the lock stays in the AST path's
 # wrapper), then under AddressSanitizer.
 prsrc=scripts/ci/native-via-tir/protected.l
-"$lyric_bin" build --target native "$prsrc" -o "$work/pr_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$prsrc" -o "$work/pr_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$prsrc" -o "$work/pr_tir" 2> "$work/pr_census.txt" >/dev/null
 cat "$work/pr_census.txt"
 "$work/pr_ast" > "$work/pr_ast.out"
@@ -485,7 +485,7 @@ echo "protected types under AddressSanitizer: clean"
 # `mapValues` snapshots, from TIR, then under AddressSanitizer (a leaked or doubly released box
 # fails the run).
 esrc=scripts/ci/native-via-tir/elems.l
-"$lyric_bin" build --target native "$esrc" -o "$work/e_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$esrc" -o "$work/e_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
 cat "$work/e_census.txt"
 "$work/e_ast" > "$work/e_ast.out"
@@ -522,7 +522,7 @@ echo "record patterns under AddressSanitizer: clean"
 # zero filled (`XZeroValue`), indexed with the array's own bounds check, from TIR, then under
 # AddressSanitizer (a leaked or doubly released element or list fails the run).
 arsrc=scripts/ci/native-via-tir/arrayrefs.l
-"$lyric_bin" build --target native "$arsrc" -o "$work/arr_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$arsrc" -o "$work/arr_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$arsrc" -o "$work/arr_tir" 2> "$work/arr_census.txt" >/dev/null
 cat "$work/arr_census.txt"
 "$work/arr_ast" > "$work/arr_ast.out"
@@ -542,7 +542,7 @@ echo "arrays of references under AddressSanitizer: clean"
 # compound assignment, nested arrays, arrays in by-value and heap records, `for`, `.length` and an
 # array of by-value records from TIR; an out-of-range index panics with the AST path's message.
 arrsrc=scripts/ci/native-via-tir/arrays.l
-"$lyric_bin" build --target native "$arrsrc" -o "$work/ar_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$arrsrc" -o "$work/ar_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$arrsrc" -o "$work/ar_tir" 2> "$work/ar_census.txt" >/dev/null
 cat "$work/ar_census.txt"
 "$work/ar_ast" > "$work/ar_ast.out"
@@ -569,7 +569,7 @@ func main(): Unit {
   println(toString(get([1, 2, 3], 3)))
 }
 LYRICSRC
-"$lyric_bin" build --target native "$work/oob.l" -o "$work/oob_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$work/oob.l" -o "$work/oob_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$work/oob.l" -o "$work/oob_tir" 2> "$work/oob_census.txt" >/dev/null
 if grep -q '^  fallback:' "$work/oob_census.txt"; then
   cat "$work/oob_census.txt"
@@ -594,7 +594,7 @@ echo "arrays: ok"
 # `toNat` and `toChar`, a `Float` receiver and `.and/.or/.xor/.shl/.shr` from TIR, then under
 # AddressSanitizer; a negative `toNat` and a surrogate `toChar` panic with the AST path's message.
 numsrc=scripts/ci/native-via-tir/numeric.l
-"$lyric_bin" build --target native "$numsrc" -o "$work/nu_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$numsrc" -o "$work/nu_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$numsrc" -o "$work/nu_tir" 2> "$work/nu_census.txt" >/dev/null
 cat "$work/nu_census.txt"
 "$work/nu_ast" > "$work/nu_ast.out"
@@ -619,7 +619,7 @@ func main(): Unit {
   println(toString($cexpr))
 }
 LYRICSRC
-  "$lyric_bin" build --target native "$work/numpanic_$cname.l" -o "$work/np_ast" >/dev/null
+  "$lyric_bin" build --target native --no-via-tir "$work/numpanic_$cname.l" -o "$work/np_ast" >/dev/null
   "$lyric_bin" build --target native --via-tir "$work/numpanic_$cname.l" -o "$work/np_tir" 2> "$work/np_census.txt" >/dev/null
   if grep -q '^  fallback:' "$work/np_census.txt"; then
     cat "$work/np_census.txt"
@@ -642,7 +642,7 @@ echo "numeric: ok"
 # Contract clauses and `?` (docs/70 phase 4a part 6, D502, D503): lowered on TIR before monomorphisation,
 # every function from TIR, the same output, and the same panic message when a clause is violated.
 csrc=scripts/ci/native-via-tir/contracts.l
-"$lyric_bin" build --target native "$csrc" -o "$work/c_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$csrc" -o "$work/c_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$csrc" -o "$work/c_tir" 2> "$work/c_census.txt" >/dev/null
 cat "$work/c_census.txt"
 "$work/c_ast" > "$work/c_ast.out"
@@ -654,7 +654,7 @@ grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/c_census.txt
   exit 1
 }
 sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(half(0 - 1)))|' "$csrc" > "$work/contracts_violated.l"
-"$lyric_bin" build --target native "$work/contracts_violated.l" -o "$work/cv_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$work/contracts_violated.l" -o "$work/cv_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$work/contracts_violated.l" -o "$work/cv_tir" 2> "$work/cv_census.txt" >/dev/null
 if grep -q '^  fallback:' "$work/cv_census.txt"; then
   cat "$work/cv_census.txt"
@@ -676,7 +676,7 @@ echo "contracts: ok"
 # `List.set`, wrapping integer methods and `default()` (docs/70 phase 4a part 8, D855): every function from TIR, the
 # same output.
 wsrc=scripts/ci/native-via-tir/wrapping.l
-"$lyric_bin" build --target native "$wsrc" -o "$work/w_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$wsrc" -o "$work/w_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$wsrc" -o "$work/w_tir" 2> "$work/w_census.txt" >/dev/null
 cat "$work/w_census.txt"
 "$work/w_ast" > "$work/w_ast.out"
@@ -698,7 +698,7 @@ echo "wrapping: ok"
 # result check lower from TIR, the same output; a method of the record keeps the AST path.  A violated invariant
 # panics with the same message on both paths.
 isrc=scripts/ci/native-via-tir/invariants.l
-"$lyric_bin" build --target native "$isrc" -o "$work/i_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$isrc" -o "$work/i_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$isrc" -o "$work/i_tir" 2> "$work/i_census.txt" >/dev/null
 cat "$work/i_census.txt"
 "$work/i_ast" > "$work/i_ast.out"
@@ -710,7 +710,7 @@ grep -q '^native via-TIR: 5 of 6 functions lowered from TIR' "$work/i_census.txt
   exit 1
 }
 sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(make(5, 1).hi))|' "$isrc" > "$work/invariants_violated.l"
-"$lyric_bin" build --target native "$work/invariants_violated.l" -o "$work/iv_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$work/invariants_violated.l" -o "$work/iv_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$work/invariants_violated.l" -o "$work/iv_tir" >/dev/null 2>&1
 for which in ast tir; do
   if "$work/iv_$which" > /dev/null 2> "$work/iv_$which.err"; then
@@ -727,7 +727,7 @@ echo "invariants: ok"
 # checker has no AST copy and is lowered from TIR on the first call that names it.  The same output as the AST path,
 # every function from TIR, and a violated invariant panics.
 ssrc=scripts/ci/native-via-tir/stdinvariants.l
-"$lyric_bin" build --target native "$ssrc" -o "$work/si_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$ssrc" -o "$work/si_ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$ssrc" -o "$work/si_tir" 2> "$work/si_census.txt" >/dev/null
 cat "$work/si_census.txt"
 "$work/si_ast" > "$work/si_ast.out"
@@ -750,7 +750,7 @@ echo "std invariants: ok"
 # An opaque type wrapping a raw handle (`@nativeDtor`, docs/70 phase 4a part 8, D856): every function from TIR, the
 # same exit status, and no leak, double release or release in the wrong order under AddressSanitizer.
 dsrc=scripts/ci/native-via-tir/nativedtor.l
-"$lyric_bin" build --target native "$dsrc" -o "$work/d_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$dsrc" -o "$work/d_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$dsrc" -o "$work/d_tir" 2> "$work/d_census.txt" >/dev/null
 cat "$work/d_census.txt"
 "$work/d_ast"
@@ -767,7 +767,7 @@ echo "nativedtor under AddressSanitizer: clean"
 # `mapGet` and `mapSize` (docs/70 phase 4a part 8, D857): every function from TIR, the same output, then under
 # AddressSanitizer (the `Some` retains the stored reference value).
 msrc=scripts/ci/native-via-tir/mapget.l
-"$lyric_bin" build --target native "$msrc" -o "$work/m_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$msrc" -o "$work/m_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$msrc" -o "$work/m_tir" 2> "$work/m_census.txt" >/dev/null
 cat "$work/m_census.txt"
 "$work/m_ast" > "$work/m_ast.out"
@@ -787,7 +787,7 @@ echo "mapget under AddressSanitizer: clean"
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l
-"$lyric_bin" build --target native "$gsrc" -o "$work/g_ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$gsrc" -o "$work/g_ast" >/dev/null
 LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$gsrc" -o "$work/g_tir" 2> "$work/g_census.txt" >/dev/null
 cat "$work/g_census.txt"
 "$work/g_ast" > "$work/g_ast.out"

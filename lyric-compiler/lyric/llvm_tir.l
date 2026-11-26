@@ -29,11 +29,17 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir.Mono as TirMono
 
-/// Whether the TIR lowering is requested: `lyric build --target native
-/// --via-tir` sets `LYRIC_NATIVE_VIA_TIR=1` for the build, and CI sets it
-/// directly (docs/70 phase 4a, D520).
+/// Whether the TIR lowering is on: it is the default (docs/70 phase 4a, D859), each function it does not cover
+/// staying on the AST path; `lyric build --target native --no-via-tir` or `LYRIC_NATIVE_VIA_TIR=0` turns it off
+/// for the build (the baseline of the typed-IR tests, and a bisection aid).
 pub func viaTirRequested(): Bool {
-  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1"
+  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") != "0"
+}
+
+/// Whether the census is printed after the build: `--via-tir` (`LYRIC_NATIVE_VIA_TIR=1`) or the trace asks for it;
+/// the default build keeps stderr as quiet as the AST path did.
+pub func tirCensusRequested(): Bool {
+  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1" or tirTraceRequested()
 }
 
 /// `LYRIC_NATIVE_TIR_SKIP=a,b`: the functions (bare names) that stay on the AST path, for

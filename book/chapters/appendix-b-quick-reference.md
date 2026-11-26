@@ -1093,11 +1093,14 @@ lyric build --verify-ir <file.l>       # after the check, print the typed-IR cen
                                        # verifier rule, sample sites; docs/70 §6.4); LYRIC_VERIFY_IR=1 does
                                        # the same. The build itself always builds and verifies every body
                                        # as typed IR and stops on I0002 or I0003 (D347)
-lyric build --target native --via-tir <file.l>  # lower the functions the typed IR covers from the typed IR
-                                       # (docs/70 phase 4a) and print how many functions were lowered
-                                       # that way, with each fallback to the AST path and its reason;
-                                       # the bundled standard library slice is counted separately;
-                                       # LYRIC_NATIVE_VIA_TIR=1 does the same;
+lyric build --target native --via-tir <file.l>  # the native backend lowers the functions the typed IR covers
+                                       # from the typed IR (docs/70 phase 4a); this is the default, each
+                                       # function it does not cover staying on the AST path. --via-tir
+                                       # (LYRIC_NATIVE_VIA_TIR=1) also prints how many functions were
+                                       # lowered that way, with each fallback and its reason; the bundled
+                                       # standard library slice is counted separately;
+                                       # --no-via-tir (LYRIC_NATIVE_VIA_TIR=0) keeps every function on the
+                                       # AST path, the baseline of the typed-IR tests;
                                        # LYRIC_NATIVE_TIR_TRACE=1 also lists the lowered functions and
                                        # LYRIC_NATIVE_TIR_SKIP=a,b keeps the named functions on the AST path
 lyric build --define KEY=VALUE <file.l>  # inject a compile-time String into a @build_const("KEY")
