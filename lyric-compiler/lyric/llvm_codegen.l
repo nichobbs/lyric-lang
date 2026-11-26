@@ -505,6 +505,8 @@ record Ctx {
   // inference; `genericDeclPkg` records the declaring package.
   genericRecordDefs: Map[String, RecordDecl]
   genericUnionDefs: Map[String, UnionDecl]
+  /// Generic interface declarations (#7791): `instantiateGenericIfaceOpt` lays one out per concrete argument tuple.
+  genericIfaceDefs: Map[String, InterfaceDecl] = newMap()
   /// The LLVM type of every record, union, enum and distinct type the TIR lowering has laid out in any unit
   /// so far, by symbol: a generic instance in one unit may take a type argument another unit declares.
   tirKnownAll: Map[Int, NType] = newMap()
@@ -9214,6 +9216,186 @@ func registerUnionCaseRefs(ctx: in Ctx, pkg: in String, unionName: in String, ui
 }
 
 // ── Generic type instantiation (N3.1) ────────────────────────────────────────
+/// Remember a generic interface's declaration under its package-qualified and bare names (#7791).
+func registerGenericIface(ctx: in Ctx, pkg: in String, idecl: in InterfaceDecl): Unit {
+  val qualified = pkg + "." + idecl.name
+  if not ctx.genericIfaceDefs.containsKey(qualified) {
+    ctx.genericIfaceDefs.add(qualified, idecl)
+    ctx.genericDeclPkg.add(qualified, pkg)
+  }
+  if not ctx.genericIfaceDefs.containsKey(idecl.name) {
+    ctx.genericIfaceDefs.add(idecl.name, idecl)
+    if not ctx.genericDeclPkg.containsKey(idecl.name) {
+      ctx.genericDeclPkg.add(idecl.name, pkg)
+    }
+  }
+}
+
+func resolveGenericIfaceKey(ctx: in Ctx, joined: in String, bare: in String): Option[String] {
+  if ctx.genericIfaceDefs.containsKey(joined) {
+    return Some(value = genericQualifiedKey(ctx, joined))
+  }
+  if ctx.genericIfaceDefs.containsKey(bare) {
+    return Some(value = genericQualifiedKey(ctx, bare))
+  }
+  None
+}
+
+/// The type of a parameter or result of a generic interface's method at the interface's arguments: a type the
+/// instantiation cannot lay out is None, so the interface stays uninstantiated and its users report it.
+func ifaceSigTyOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envTys: in List[NType]): Option[NType] {
+  typeToNEnvOpt(ctx, te, envNames, envTys)
+}
+
+/// A generic interface laid out at `argTys` (#7791): the box and vtable types, the box destructor and each
+/// method's erased signature with the interface's parameters replaced by the arguments, registered under the
+/// instance's name like a generic record.  Mirrors `registerInterfaceNames` and `registerInterfaceTypes`, which
+/// lay out a non-generic interface in two phases because records refer to it; an instance is laid out on first use.
+func instantiateGenericIfaceOpt(ctx: in Ctx, gkey: in String, argTys: in List[NType]): Option[NIfaceInfo] {
+  val idecl = match mapGet(ctx.genericIfaceDefs, gkey) {
+    case Some(d) -> d
+    case None -> return None
+  }
+  val instKey = instIrName(gkey, argTys)
+  match mapGet(ctx.ifaceInfos, instKey) {
+    case Some(existing) -> return Some(value = existing)
+    case None -> {
+    }
+  }
+  val envNames = genericParamNamesOf(idecl.generics)
+  if envNames.count != argTys.count {
+    return None
+  }
+  val mangled = mangleIfaceName(instKey)
+  val sigs = nonGenericVtableSigs(idecl)
+  val mnames: List[String] = newList()
+  val mretSelf: List[Bool] = newList()
+  val mparamSelf: List[List[Bool]] = newList()
+  val mparamNames: List[List[String]] = newList()
+  val mparamDefaults: List[List[Option[Expr]]] = newList()
+  for sig in sigs {
+    mnames.add(sig.name)
+    for shape in nestedSelfShapesInSig(sig) {
+      panicUnsupportedSelfShape(instKey, sig.name, shape.where_, shape.span)
+    }
+    val paramSelf: List[Bool] = newList()
+    for prm in sig.params {
+      paramSelf.add(isBareSelfTypeExpr(prm.ty))
+    }
+    mparamSelf.add(paramSelf)
+    mretSelf.add(match sig.ret { case Some(r) -> isBareSelfTypeExpr(r); case None -> false })
+    mparamNames.add(paramNamesOf(sig.params))
+    mparamDefaults.add(paramDefaultsOf(sig.params))
+  }
+  val noTys: List[List[NType]] = newList()
+  val noRets: List[NType] = newList()
+  val noAsync: List[Option[NType]] = newList()
+  val noByRef: List[List[Bool]] = newList()
+  val pre = NIfaceInfo(
+    key = instKey,
+    irName = "__iface." + mangled,
+    vtName = "__ifacevt." + mangled,
+    methodNames = mnames,
+    methodParamTys = noTys,
+    methodRetTys = noRets,
+    methodAsyncElem = noAsync,
+    methodRetIsSelf = mretSelf,
+    methodParamIsSelf = mparamSelf,
+    methodParamByRef = noByRef,
+    methodParamSelfByRef = noByRef,
+    methodParamNames = mparamNames,
+    methodParamDefaults = mparamDefaults
+  )
+  // A method that mentions the interface itself finds this placeholder, as a non-generic interface's phase A allows.
+  ctx.ifaceInfos.add(instKey, pre)
+  ctx.ifaceInfos.add(pre.irName, pre)
+  val pTys: List[List[NType]] = newList()
+  val pByRef: List[List[Bool]] = newList()
+  val pSelfByRef: List[List[Bool]] = newList()
+  val rTys: List[NType] = newList()
+  val asyncElems: List[Option[NType]] = newList()
+  var mi = 0
+  while mi < sigs.count {
+    val sig = sigs[mi]
+    val ps: List[NType] = newList()
+    val byRef: List[Bool] = newList()
+    val selfByRef: List[Bool] = newList()
+    var pi = 0
+    while pi < sig.params.count {
+      val pty = match ifaceSigTyOpt(ctx, sig.params[pi].ty, envNames, argTys) {
+        case Some(t) -> t
+        case None -> {
+          ctx.ifaceInfos.remove(instKey)
+          ctx.ifaceInfos.remove(pre.irName)
+          return None
+        }
+      }
+      val modeByRef = isByRefMode(sig.params[pi].mode) and match pty { case NVoid -> false; case _ -> true }
+      val isSelf = pre.methodParamIsSelf[mi][pi]
+      val isRef = modeByRef and not isSelf
+      ps.add(if isRef { NPtr(pointee = pty) } else { pty })
+      byRef.add(isRef)
+      selfByRef.add(modeByRef and isSelf)
+      pi = pi + 1
+    }
+    val retTy: NType = match sig.ret {
+      case Some(te) -> match ifaceSigTyOpt(ctx, te, envNames, argTys) {
+        case Some(t) -> t
+        case None -> {
+          ctx.ifaceInfos.remove(instKey)
+          ctx.ifaceInfos.remove(pre.irName)
+          return None
+        }
+      }
+      case None -> NVoid
+    }
+    pTys.add(ps)
+    pByRef.add(byRef)
+    pSelfByRef.add(selfByRef)
+    if sig.isAsync {
+      rTys.add(NPtr(pointee = NI8))
+      asyncElems.add(Some(value = retTy))
+    } else {
+      rTys.add(retTy)
+      asyncElems.add(None)
+    }
+    mi = mi + 1
+  }
+  val info = NIfaceInfo(
+    key = pre.key,
+    irName = pre.irName,
+    vtName = pre.vtName,
+    methodNames = pre.methodNames,
+    methodParamTys = pTys,
+    methodRetTys = rTys,
+    methodAsyncElem = asyncElems,
+    methodRetIsSelf = pre.methodRetIsSelf,
+    methodParamIsSelf = pre.methodParamIsSelf,
+    methodParamByRef = pByRef,
+    methodParamSelfByRef = pSelfByRef,
+    methodParamNames = pre.methodParamNames,
+    methodParamDefaults = pre.methodParamDefaults
+  )
+  ctx.ifaceInfos.remove(instKey)
+  ctx.ifaceInfos.remove(pre.irName)
+  ctx.ifaceInfos.add(instKey, info)
+  ctx.ifaceInfos.add(info.irName, info)
+  val vtFields: List[NType] = newList()
+  var vf = 0
+  while vf < info.methodNames.count {
+    vtFields.add(NPtr(pointee = NI8))
+    vf = vf + 1
+  }
+  ctx.moduleTypeDefs.add(NTypeDefn(name = info.vtName, fields = vtFields))
+  val boxFields: List[NType] = newList()
+  addArcHeader(boxFields)
+  boxFields.add(NPtr(pointee = NI8))
+  boxFields.add(NPtr(pointee = ifaceVtStructType(info)))
+  ctx.moduleTypeDefs.add(NTypeDefn(name = info.irName, fields = boxFields))
+  ctx.moduleFns.add(synthIfaceBoxDtor(ctx, info))
+  Some(value = info)
+}
+
 func registerGenericRecord(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit {
   val qualified = pkg + "." + rd.name
   if not ctx.genericRecordDefs.containsKey(qualified) {
@@ -12014,6 +12196,16 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
         case Some(gkey) -> {
           match instantiateGenericRecordOpt(ctx, gkey, argTys) {
             case Some(ri) -> return Some(value = recPtrType(ri))
+            case None -> return None
+          }
+        }
+        case None -> {
+        }
+      }
+      match resolveGenericIfaceKey(ctx, joined, bare) {
+        case Some(gkey) -> {
+          match instantiateGenericIfaceOpt(ctx, gkey, argTys) {
+            case Some(info) -> return Some(value = ifaceBoxPtrType(info))
             case None -> return None
           }
         }
@@ -17939,6 +18131,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     distinctDefs = mod.distinctDefs,
     genericRecordDefs = mod.genericRecordDefs,
     genericUnionDefs = mod.genericUnionDefs,
+    genericIfaceDefs = mod.genericIfaceDefs,
     tirKnownAll = mod.tirKnownAll,
     tirOnlyFns = mod.tirOnlyFns,
     tirOnlyDecls = mod.tirOnlyDecls,
@@ -23574,6 +23767,7 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
       val idecl = u.interfaces[ii]
       match idecl.generics {
         case Some(_) -> {
+          registerGenericIface(ctx, u.pkgName, idecl)
         }
         case None -> {
           val qualified = u.pkgName + "." + idecl.name
@@ -24021,6 +24215,60 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   Some(value = vtName)
 }
 
+/// An `impl` of a generic interface this backend cannot lay out is `N0105`, so the build stops instead of
+/// producing a program whose interface calls have no vtable (#7791): the checker's `T0217` is dropped for
+/// native, which lays out the impls it reports nothing for.
+func checkGenericIfaceImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
+  if decl.iface.args.count == 0 {
+    return
+  }
+  val bare = implIfaceName(decl.iface)
+  val joined = canonReexport(ctx, modulePathJoin(decl.iface.head.segments))
+  if not isSome(resolveGenericIfaceKey(ctx, joined, bare)) {
+    return
+  }
+  val where_ = decl.span.startPos.line.toString() + ":" + decl.span.startPos.column.toString()
+  match decl.generics {
+    case Some(_) -> panic(
+      "error[N0105] " + where_ + ": an impl of the generic interface '" + bare +
+        "' for a generic type is not supported by --target native yet (#7791); implement it for a concrete instantiation"
+    )
+    case None -> ()
+  }
+  if not isSome(implIfaceInfo(ctx, pkg, decl.iface)) {
+    panic(
+      "error[N0105] " + where_ + ": an argument of the generic interface '" + bare +
+        "' in this impl has no native layout (a value argument, or a type the backend cannot lay out) (#7791)"
+    )
+  }
+}
+
+/// The interface an `impl` names: the registered interface, or a generic one laid out at the arguments the
+/// impl gives it (`impl Holder[Int] for IntBox`, #7791).  None when it is neither, or an argument has no native
+/// layout.
+func implIfaceInfo(ctx: in Ctx, pkg: in String, iface: in ConstraintRef): Option[NIfaceInfo] {
+  val bare = implIfaceName(iface)
+  if iface.args.count == 0 {
+    return mapGet(ctx.ifaceInfos, bare)
+  }
+  val joined = canonReexport(ctx, modulePathJoin(iface.head.segments))
+  val gkey = match resolveGenericIfaceKey(ctx, joined, bare) {
+    case Some(k) -> k
+    case None -> return None
+  }
+  val argTys: List[NType] = newList()
+  for a in iface.args {
+    match a {
+      case TAType(te) -> match typeToNOptIn(ctx, pkg, te) {
+        case Some(t) -> argTys.add(t)
+        case None -> return None
+      }
+      case TAValue(_) -> return None
+    }
+  }
+  instantiateGenericIfaceOpt(ctx, gkey, argTys)
+}
+
 /// Emit a vtable constant global for every `impl I for R` and record the
 /// `<recordIr>|<ifaceKey>` -> global-name mapping consulted at upcast sites.
 func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[NFunc]): Unit {
@@ -24030,6 +24278,7 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
     var ii = 0
     while ii < u.impls.count {
       val decl = u.impls[ii]
+      checkGenericIfaceImpl(ctx, u.pkgName, decl)
       match decl.generics {
         case Some(_) -> {
         }
@@ -24039,7 +24288,7 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
             }
             case Some(recordName) -> {
               val ifaceName = implIfaceName(decl.iface)
-              match mapGet(ctx.ifaceInfos, ifaceName) {
+              match implIfaceInfo(ctx, u.pkgName, decl.iface) {
                 case None -> {
                 }
                 case Some(info) -> {
