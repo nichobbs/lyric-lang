@@ -723,6 +723,35 @@ test -s "$work/iv_tir.msg" || { echo "::error::no invariant message"; cat "$work
 diff -u "$work/iv_ast.msg" "$work/iv_tir.msg"
 echo "invariants: ok"
 
+# A `pub` function that writes an `inout` parameter of an invariant type (docs/70 phase 3c, D507) and a protected
+# type's invariant (D509): the same output on both paths, and a violation panics with the same message.
+for case in boundary protectedinv; do
+  csrc=scripts/ci/native-via-tir/$case.l
+  "$lyric_bin" build --target native "$csrc" -o "$work/${case}_ast" >/dev/null
+  "$lyric_bin" build --target native --via-tir "$csrc" -o "$work/${case}_tir" 2> "$work/${case}_census.txt" >/dev/null
+  "$work/${case}_ast" > "$work/${case}_ast.out"
+  "$work/${case}_tir" > "$work/${case}_tir.out"
+  diff -u "$work/${case}_ast.out" "$work/${case}_tir.out"
+done
+printf '7\n5\n' | diff -u - "$work/boundary_tir.out"
+printf '5\n3\n' | diff -u - "$work/protectedinv_tir.out"
+sed -e 's|^  shrink(s, 2)|  shrink(s, 9)|' scripts/ci/native-via-tir/boundary.l > "$work/boundary_violated.l"
+sed -e 's|g.lower(2)|g.lower(9)|' scripts/ci/native-via-tir/protectedinv.l > "$work/protectedinv_violated.l"
+for case in boundary protectedinv; do
+  "$lyric_bin" build --target native "$work/${case}_violated.l" -o "$work/${case}v_ast" >/dev/null
+  "$lyric_bin" build --target native --via-tir "$work/${case}_violated.l" -o "$work/${case}v_tir" >/dev/null 2>&1
+  for which in ast tir; do
+    if "$work/${case}v_$which" > /dev/null 2> "$work/${case}v_$which.err"; then
+      echo "::error::the $which build of $case did not panic on a violated invariant"
+      exit 1
+    fi
+    grep -o 'InvariantViolated: .*' "$work/${case}v_$which.err" | head -1 > "$work/${case}v_$which.msg"
+  done
+  test -s "$work/${case}v_tir.msg" || { echo "::error::no invariant message for $case"; cat "$work/${case}v_tir.err"; exit 1; }
+  diff -u "$work/${case}v_ast.msg" "$work/${case}v_tir.msg"
+done
+echo "boundary and protected invariants: ok"
+
 # A record with `invariant:` clauses declared in a bundled package (docs/70 phase 4a part 8, D856): its construction
 # checker has no AST copy and is lowered from TIR on the first call that names it.  The same output as the AST path,
 # every function from TIR, and a violated invariant panics.
