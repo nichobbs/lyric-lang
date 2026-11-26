@@ -933,6 +933,15 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
               ", which are not both spellings of a C callback's userdata slot"
           )
         }
+        case CvReinterpret -> if not isReinterpretPair(inner.ty, e.ty) {
+          report(
+            c,
+            e.id,
+            "convert-type",
+            "CvReinterpret takes " + renderTy(inner.ty) + " to " + renderTy(e.ty) +
+              ", which are not Int and UInt, or Long and ULong, one each"
+          )
+        }
         case CvNeverFn -> if not isNeverFnOf(inner.ty, e.ty) {
           report(
             c,
@@ -1299,4 +1308,15 @@ pub func verifyPackage(pkg: in TPackage, deps: in List[TSymEntry]): List[VerifyD
     verifyFn(shared, f)
   }
   shared.diags
+}
+
+/// `a` and `b` are the signed and unsigned integer of one width (`Int`/`UInt`, `Long`/`ULong`), in either order.
+func isReinterpretPair(a: in Ty, b: in Ty): Bool {
+  match a {
+    case TPrim(TPInt) -> match b { case TPrim(TPUInt) -> true; case _ -> false }
+    case TPrim(TPUInt) -> match b { case TPrim(TPInt) -> true; case _ -> false }
+    case TPrim(TPLong) -> match b { case TPrim(TPULong) -> true; case _ -> false }
+    case TPrim(TPULong) -> match b { case TPrim(TPLong) -> true; case _ -> false }
+    case _ -> false
+  }
 }

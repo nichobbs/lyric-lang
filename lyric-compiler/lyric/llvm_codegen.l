@@ -18985,6 +18985,10 @@ record TirUnitMaps {
   scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
   protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
+  /// The records that declare `invariant:` clauses (`Pkg.Name`).  TIR checks them at constructions and `.copy`
+  /// (D505) and at the boundary of a top-level `pub` function (D507); a method or `impl` member that mentions one
+  /// keeps the AST path, whose elaborator checks `self` and `Self` results.
+  invariantRecs: Map[String, Bool] = newMap()
   /// The instance functions the AST copy of which exists, keyed `pkg.name__Args/arity` as `sigs` is.
   instFns: Map[String, Tir.TFnDecl] = newMap()
   /// Every instance of a generic function: its symbol's table row, declaration and DefPath key, for
@@ -19524,9 +19528,9 @@ func tirUnitMaps(
               ()
             } else if not Str.contains(rest, "::") {
               match mapGet(ctx.recordDefs, pkg + "." + rest) {
-                // A record with an invariant is re-checked at public boundaries by the contract
-                // elaborator, whose asserts TIR does not carry yet (phase 3c): functions touching it
-                // stay on the AST path.
+                // A record with an invariant is laid out like any other: TIR carries its construction
+                // checks (D505) and the boundary checks of top-level `pub` functions (D507).  A protected
+                // one keeps the AST path (its invariants run at each entry's return).
                 case Some(ri) -> if ctx.protectedRecNames.containsKey(ri.irName) {
                   if not invariantRecs.containsKey(pkg + "." + rest) {
                     protRecs.add(
@@ -19534,7 +19538,7 @@ func tirUnitMaps(
                       LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
                     )
                   }
-                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(pkg + "." + rest) {
+                } else if ri.fieldCallbackTys.count == 0 and ri.customDtor.length == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
                   recs.add(
                     id,
                     LlvmTir.TirRecLayout(
@@ -19752,6 +19756,7 @@ func tirUnitMaps(
     instDecls = instDecls,
     instKeys = instKeys,
     symNames = input.names,
+    invariantRecs = invariantRecs,
     checkedArith = input.checkedArith,
     contractsElaborated = input.contractsElaborated
   )
@@ -19981,6 +19986,63 @@ func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
   }
 }
 
+/// Whether `t` names, anywhere inside it, a record that declares `invariant:` clauses (`invariantRecs`, keyed
+/// `Pkg.Name`); `names` maps symbols to their DefPath keys.
+func tyMentionsInvariant(names: in Map[Int, String], invariantRecs: in Map[String, Bool], t: in Tir.Ty): Bool {
+  match t {
+    case Tir.TNamed(sym, args) -> {
+      match mapGet(names, sym.id) {
+        case Some(key) -> match Str.indexOf(key, "::") {
+          case Some(sep) -> {
+            val rest = Str.substring(key, sep + 2)
+            val head = match Str.indexOf(rest, "[") { case Some(b) -> Str.substring(rest, 0, b); case None -> rest }
+            if invariantRecs.containsKey(Str.substring(key, 0, sep) + "." + head) {
+              return true
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+      for a in args {
+        if tyMentionsInvariant(names, invariantRecs, a) {
+          return true
+        }
+      }
+      false
+    }
+    case Tir.TTuple(es) -> {
+      for e in es {
+        if tyMentionsInvariant(names, invariantRecs, e) {
+          return true
+        }
+      }
+      false
+    }
+    case Tir.TNullable(i) -> tyMentionsInvariant(names, invariantRecs, i)
+    case Tir.TArray(_, e) -> tyMentionsInvariant(names, invariantRecs, e)
+    case Tir.TSlice(e) -> tyMentionsInvariant(names, invariantRecs, e)
+    case Tir.TRefined(u, _, _, _) -> tyMentionsInvariant(names, invariantRecs, u)
+    case _ -> false
+  }
+}
+
+/// Whether a member declaration (a method or `impl` member) takes or returns a record with an invariant.
+func memberMentionsInvariant(maps: in TirUnitMaps, d: in Tir.TFnDecl): Bool {
+  if maps.invariantRecs.count == 0 {
+    return false
+  }
+  if tyMentionsInvariant(maps.symNames, maps.invariantRecs, d.ret) {
+    return true
+  }
+  for p in d.params {
+    if tyMentionsInvariant(maps.symNames, maps.invariantRecs, p.local.ty) {
+      return true
+    }
+  }
+  false
+}
+
 /// The lowering of `fn` from TIR, tried before the AST lowering: `sig` is the signature the AST
 /// path would give it, and None means the function stays on the AST path (the reason is in the
 /// census).  A function the AST lowering cannot lower at all (a record pattern) is reached this way.
@@ -19994,6 +20056,7 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
   val fnNames = maps.fnNames
   val arity = fn.params.count
   var decl: Option[Tir.TFnDecl] = None
+  var isMember = false
   // An `impl` method is named `Target.Iface.name` on the AST path, a method declared in a
   // record's body `Record.name`.
   val parts = Str.split(fn.name, ".")
@@ -20009,15 +20072,18 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
               // the lock the AST path's wrapper takes; a `when:` barrier keeps the AST path.
               if parts.length == 3 and parts[2] == "__inner" and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity and not isSomeExpr(f.barrier) {
                 decl = Some(value = f)
+                isMember = true
               }
               if isBodyMethodFn(fn) and parts.length == 2 and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity {
                 decl = Some(value = f)
+                isMember = true
               }
             }
           }
           case Some(im) -> {
             if parts.length == 3 and im.pkg == u.pkgName and im.owner == parts[0] and im.iface == parts[1] and im.name == parts[2] and f.params.count == arity {
               decl = Some(value = f)
+              isMember = true
             }
           }
         }
@@ -20046,7 +20112,13 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
       None
     }
-    case Some(d) -> {
+    case Some(d) -> if isMember and memberMentionsInvariant(maps, d) {
+      census.fallbacks.add(
+        fn.name +
+          ": a method or impl member of a type with an invariant keeps the AST path (the elaborator checks self and Self results)"
+      )
+      None
+    } else {
       // The AST path's name for the function stands: the lowering finds it by symbol.
       if d.isAsync {
         if not maps.asyncFns.containsKey(d.sym.id) {

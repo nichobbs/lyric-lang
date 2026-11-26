@@ -85,6 +85,7 @@ import Lyric.Tir.Build as TirBuild
 import Lyric.Tir.Mono as TirMono
 import Lyric.Tir.Propagate as TirPropagate
 import Lyric.Tir.Loops as TirLoops
+import Lyric.Tir.Unsigned as TirUnsigned
 import Lyric.Tir.AwaitHoist as TirAwaitHoist
 import Lyric.Tir.Contracts as TirContracts
 import Lyric.Resolve as Resolve
@@ -2423,6 +2424,12 @@ pub func pipePropagateTir(interner: in DefPathInterner, bundle: in List[TirBuild
 /// that ends normally, after it (docs/70 §7.2, D510): the TIR counterpart of the AST pass's loop-invariant lowering.
 pub func pipeLoopsTir(bundle: in List[TirBuild.PackageBuild]): List[TirBuild.PackageBuild] {
   TirLoops.lowerLoopsBundle(bundle)
+}
+
+/// `bundle` with the `ULong` conversions of D278 (`toLong` checked, `toDouble` and `toFloat` corrected) lowered into
+/// blocks over a `CvReinterpret` (docs/70 §7.2, D508): the TIR counterpart of the AST pass's `ulongConversion`.
+pub func pipeUnsignedTir(bundle: in List[TirBuild.PackageBuild]): List[TirBuild.PackageBuild] {
+  TirUnsigned.lowerUnsignedBundle(bundle)
 }
 
 /// The `?`-lowering census of one built package (docs/70 §12.2, D503): lowered, then verified.
