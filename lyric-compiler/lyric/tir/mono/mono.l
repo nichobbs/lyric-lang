@@ -181,21 +181,13 @@ func matchImplTy(pat: in Ty, actual: in Ty, owner: in SymbolId, binds: in List[O
       }
     }
     case TNamed(ps, pargs) -> match actual {
-      case TNamed(asym, aargs) -> symbolIdEq(ps, asym) and matchImplTys(pargs, aargs, owner, binds)
+      case TNamed(asym, aargs) -> symbolIdEq(ps, asym) and
+        matchImplTys(pargs, aargs, owner, binds)
       case _ -> false
     }
-    case TTuple(pxs) -> match actual {
-      case TTuple(axs) -> matchImplTys(pxs, axs, owner, binds)
-      case _ -> false
-    }
-    case TNullable(pi) -> match actual {
-      case TNullable(ai) -> matchImplTy(pi, ai, owner, binds)
-      case _ -> false
-    }
-    case TSlice(pe) -> match actual {
-      case TSlice(ae) -> matchImplTy(pe, ae, owner, binds)
-      case _ -> false
-    }
+    case TTuple(pxs) -> match actual { case TTuple(axs) -> matchImplTys(pxs, axs, owner, binds); case _ -> false }
+    case TNullable(pi) -> match actual { case TNullable(ai) -> matchImplTy(pi, ai, owner, binds); case _ -> false }
+    case TSlice(pe) -> match actual { case TSlice(ae) -> matchImplTy(pe, ae, owner, binds); case _ -> false }
     case _ -> tyEq(pat, actual)
   }
 }
