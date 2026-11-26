@@ -46915,20 +46915,11 @@ func implSelfSpellingMsil(
   }
 }
 
-// Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
-// method is lowered through `lowerImplMethodMsil` so it carries virtual
-// instance-method flags and slot 0 = `this`; the methods are NOT added to
-// any record yet — that injection happens in the IRecord arm of the main
-// loop via `injectImplMethodsIntoRecord`.
-//
-// When the interface name resolves to an external CLR type (D105), this
-// pre-pass also reserves the TypeRef row via `internFfiTypeRefNested` so
-// `lowerMImpl`'s `findTypeRefRowByName` lookup finds it — an `impl` block
-// is otherwise the only place an external interface can be named without
-// any method call having already created the row.
 // The interface `cls` implements whose method `memberName` the type itself does not declare, so a call on
 // the type dispatches on that interface's slot (#9428); `cls` when the type declares it or no implemented
-// interface does.  A generic interface is left out: its slot needs the impl's type arguments.
+// interface does.  A generic interface is left out: its slot needs the impl's type arguments.  When several implemented
+// interfaces declare the method, the first impl block in source order wins; a type that needs another
+// writes the method itself (`T0117` reports that conflict within one file).
 func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: in String, callArity: in Int): String {
   if cctx.methodTokens.containsKey(cls + "/" + memberName + "/" + toString(callArity)) or cctx.methodTokens.containsKey(cls + "/" + memberName) {
     return cls
@@ -46943,6 +46934,17 @@ func interfaceDefaultOwnerMsil(cctx: in CodegenCtx, cls: in String, memberName: 
   cls
 }
 
+// Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
+// method is lowered through `lowerImplMethodMsil` so it carries virtual
+// instance-method flags and slot 0 = `this`; the methods are NOT added to
+// any record yet — that injection happens in the IRecord arm of the main
+// loop via `injectImplMethodsIntoRecord`.
+//
+// When the interface name resolves to an external CLR type (D105), this
+// pre-pass also reserves the TypeRef row via `internFfiTypeRefNested` so
+// `lowerMImpl`'s `findTypeRefRowByName` lookup finds it — an `impl` block
+// is otherwise the only place an external interface can be named without
+// any method call having already created the row.
 pub func collectImplEntriesMsil(
   cctx: in CodegenCtx, file: in SourceFile, pkgName: in String, lambdaBases: in List[Int]
 ): Unit {

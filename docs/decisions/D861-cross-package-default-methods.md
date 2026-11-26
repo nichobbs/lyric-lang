@@ -12,4 +12,4 @@ Status: accepted (#9428).
 
 ## Not done
 
-A default method of a *generic* interface from another package, called on a concrete implementor, still fails at run time (the dotnet slot needs the impl's interface arguments; D860). Through the interface type it works.
+Tracked in #9441: a default method of a *generic* interface from another package, called on a concrete implementor, still fails at run time (the dotnet slot needs the impl's interface arguments; D860). Through the interface type it works.
