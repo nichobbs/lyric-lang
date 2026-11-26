@@ -22,6 +22,7 @@ func useStr(h: in Holder[String]): String = h.get() + h.twice("!")
 func main(): Int {
   val b: Box[Int] = Box(v = 4)
   println(toString(b.get()))
+  println(toString(b.twice(9)))
   println(toString(useInt(b)))
   val s: Box[String] = Box(v = "ab")
   println(useStr(s))

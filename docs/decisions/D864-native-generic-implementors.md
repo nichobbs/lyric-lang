@@ -10,8 +10,11 @@ Status: accepted (#7791, part 2; extends D863).
 
 TIR does not lower an upcast of a generic record instance to an interface instance (the instance's vtable is built by the AST path on first use), so the functions that do it keep the AST lowering with a census reason; the output is the AST path's.
 
+## A default copied into a generic implementor (#9454)
+
+`Lyric.ImplDefaults` copied a default method into an `impl[T]` block with the interface member's own span, and a concrete call on the implementor (`b.twice(9)` on a `Box[Int]`) had no callee on any target (I0002, "no usable type for a type parameter with no registered binder"): member lookups match a signature by span, and the interface's member and the copy were one to them. The copy now gets its own span (the impl's start, the member's end). `generic_interface_self_test.l` (dotnet and JVM) and `genericifaces_generic_impl.l` (native) call the inherited default on `Wrapped[Int]`/`Box[Int]` and `Box[String]`.
+
 ## Not done
 
 - Lowering the generic impl's member instances (`Box[Int]::$impl(Holder[Int])::get`) and the upcast from TIR.
-- A same-file default method called on a concrete generic implementor (`b.twice(9)`): #9454, an I0002 on every target, not specific to native.
 - A generic interface laid out for a generic union implementor.
