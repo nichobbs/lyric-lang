@@ -273,6 +273,53 @@ func checkerItem(
   Item(docComments = noDocs, annotations = noAnns, visibility = typeItem.visibility, kind = IFunc(decl = fn), span = sp)
 }
 
+/// The `invariant:` checks of an opaque type's `members` as source text, for a function that reads the type's fields
+/// off `recv` (`self.f`) and returns a `Result[_, String]`: one `if not (<clause>) { return Err("InvariantViolated:
+/// Pkg.T invariant <clause>") }` per clause, in order, with the construction checker's message and the clauses'
+/// runtime-checkable conjuncts (a quantifier cannot run).  `@projectable`'s `tryInto` is built from them (D511).
+pub func invariantErrChecksText(
+  pkg: in String, typeName: in String, members: in List[OpaqueMember], recv: in String
+): List[String] {
+  val renames: Map[String, String] = newMap()
+  val fields = opaqueFieldNames(members)
+  var fi = 0
+  while fi < fields.count {
+    renames.add(fields[fi], recv + "." + fields[fi])
+    fi = fi + 1
+  }
+  val res: List[String] = newList()
+  val invs = opaqueInvariants(members)
+  var i = 0
+  while i < invs.count {
+    val inv = invs[i]
+    val cond = runtimeCheckableConjuncts(substResult(inv.expr, "", renames), inv.span)
+    val condText = Fmt.exprInline(0, cond)
+    if condText != "true" {
+      val message = "InvariantViolated: " + qualify(pkg, typeName) + " invariant " + Fmt.exprInline(0, inv.expr)
+      res.add("  if not (" + condText + ") {\n    return Err(\"" + escapeStringLiteral(message) + "\")\n  }\n")
+    }
+    i = i + 1
+  }
+  res
+}
+
+func escapeStringLiteral(s: in String): String {
+  var res = ""
+  var i = 0
+  while i < s.length {
+    val ch = s.substring(i, 1)
+    if ch == "\\" {
+      res = res + "\\\\"
+    } else if ch == "\"" {
+      res = res + "\\\""
+    } else {
+      res = res + ch
+    }
+    i = i + 1
+  }
+  res
+}
+
 // ─── Pass 2: construction wrapping ──────────────────────────────────────────
 /// Rewrite every construction the type checker recorded in `sites` (span key
 /// → dotted checker path) into a call through the type's checker.
