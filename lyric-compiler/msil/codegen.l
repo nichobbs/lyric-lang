@@ -23602,6 +23602,34 @@ func lowerMethodCallMsil(
         case Some(t) -> return t
         case None -> ()
       }
+      // A default method of a generic interface this generic type implements (`impl[T] Holder[T] for
+      // Box[T]`): the slot of the interface at the impl's arguments, with the type's own parameters
+      // replaced by this receiver's arguments (#9441).
+      if not callTarget.dotNamed {
+        match genericIfaceDefaultEntryMsil(cctx, stripGenericArity(fqn), memberName, callArity) {
+          case Some(ie) -> {
+            val ifaceArgs: List[MsilType] = newList()
+            for ia in ie.ifaceTypeArgs {
+              ifaceArgs.add(substituteTypeVarsMsil(ia, typeArgs))
+            }
+            match lowerGenericRecvCallMsil(
+              cctx,
+              fctx,
+              insns,
+              ie.ifaceTypeName + "`" + toString(ifaceArgs.count),
+              ifaceArgs,
+              memberName,
+              callArity,
+              args,
+              callTarget
+            ) {
+              case Some(t) -> return t
+              case None -> ()
+            }
+          }
+          case None -> ()
+        }
+      }
     }
     case _ -> {
     }
