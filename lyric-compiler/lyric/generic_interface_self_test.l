@@ -86,9 +86,9 @@ impl Holder[Long] for LongBox {
 }
 
 func swapIn[T](h: in Holder[T], x: in T): T {
-  val old = h.get()
+  val before = h.get()
   h.put(x)
-  old
+  before
 }
 
 func readIt(h: in Holder[Int]): Int = h.get()
