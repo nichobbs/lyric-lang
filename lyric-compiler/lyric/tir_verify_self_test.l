@@ -657,13 +657,13 @@ func upcastFn(fromTy: in Ty, toTy: in Ty, iface: in SymbolId): TFnDecl {
 test "an upcast names the interface its node's type is (D516)" {
   val iface = SymbolId(id = 72)
   val inst = SymbolId(id = 73)
-  val impl = TNamed(sym = SymbolId(id = 74), args = newList())
+  val target = TNamed(sym = SymbolId(id = 74), args = newList())
   assertFalse(
-    rulesOf(oneFn(entries(), upcastFn(impl, TNamed(sym = iface, args = newList()), iface))).contains("convert-type"),
+    rulesOf(oneFn(entries(), upcastFn(target, TNamed(sym = iface, args = newList()), iface))).contains("convert-type"),
     "the interface is the node's type"
   )
   assertTrue(
-    rulesOf(oneFn(entries(), upcastFn(impl, TNamed(sym = inst, args = newList()), iface))).contains("convert-type"),
+    rulesOf(oneFn(entries(), upcastFn(target, TNamed(sym = inst, args = newList()), iface))).contains("convert-type"),
     "the generic interface against its instance's type"
   )
 }
