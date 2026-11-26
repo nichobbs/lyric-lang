@@ -21,6 +21,7 @@ import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
 import Lyric.Tir.Verify
+import Lyric.Tir.Walk
 import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
@@ -2704,6 +2705,40 @@ test "an omitted default between two explicit arguments is evaluated after both 
   assertEqualInt(most, 2, "f binds n() and m() to temporaries so the default runs after both; g binds none")
 }
 
+func readsLocalOf(e: in TExpr, want: in Int): Bool {
+  val seen: List[Int] = newList()
+  val w = newWalker(
+    { x: TExpr -> None },
+    { x: TExpr -> match x.kind { case XLocal(l) -> { seen.add(l.id); x }; case _ -> x } }
+  )
+  walkExpr(w, e)
+  for id in seen {
+    if id == want {
+      return true
+    }
+  }
+  false
+}
+
+test "a protected invariant reads the field, not a parameter of its name (D509, #9432)" {
+  val c = censusOf(
+    "package App\nprotected type Guard {\n  var level: Int = 0\n  invariant: level >= 0\n  entry put(level: in Int): Int {\n    self.level = 5\n    level\n  }\n}\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+  val put = c.pkg.funcs[0]
+  assertEqualInt(put.invariants.count, 1, "the member carries the invariant")
+  var param = -1
+  for p in put.params {
+    if p.local.name == "level" {
+      param = p.local.id.id
+    }
+  }
+  assertTrue(param >= 0, "the entry has its parameter")
+  assertFalse(readsLocalOf(put.invariants[0], param), "the clause does not read the parameter")
+}
+
 test "a default argument that is a call is placed afresh at every call of one body" {
   val c = censusOf(
     "package App\nfunc mk(): Int { 7 }\nfunc k(a: Int, b: Int = mk()): Int { a + b }\nfunc m(): Int { k(1) + k(2) }\n"
@@ -4176,4 +4211,83 @@ test "== on a record with a Double leaf and a distinct-over-Float array element 
   }
   val ds = verifyPackage(c.pkg, newList())
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+// #7791: an impl of a generic interface, a call through a generic-interface-typed
+// value and a method-generic interface method all build as TIR and verify.
+func censusClean(src: in String, want: in Int): Unit {
+  val c = censusOf(src)
+  assertEqualInt(c.built, want, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "an impl of a concrete instantiation of a generic interface builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc f(b: in IntBox): Int { b.get() }\n",
+    2
+  )
+}
+
+test "a generic impl over a generic record builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\nfunc f(b: in Box[Int]): Int { b.get() }\n",
+    2
+  )
+}
+
+test "a call through a generic-interface-typed value builds (#7791)" {
+  censusClean(
+    "package App\ninterface Holder[T] { func get(self: in Self): T\n func put(self: in Self, x: in T): Unit }\nfunc f(h: in Holder[Int]): Int { h.put(3)\n h.get() }\nfunc g[U](h: in Holder[U]): U { h.get() }\n",
+    2
+  )
+}
+
+test "a method-generic interface method builds (#7791)" {
+  censusClean(
+    "package App\ninterface Echo { func id[U](self: in Self, x: in U): U }\nrecord R { n: Int }\nimpl Echo for R { func id[V](self: in R, x: in V): V = x }\nfunc f(e: in Echo): Int { e.id(4) }\nfunc g(r: in R): String { r.id(\"s\") }\n",
+    3
+  )
+}
+
+// #7791, D860: the package records each `impl` block's interface and arguments.
+test "an impl of a concrete instantiation is recorded with the interface and its arguments (#7791)" {
+  val c = censusOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\n"
+  )
+  assertEqualInt(c.pkg.impls.count, 1, "one impl block")
+  val im = c.pkg.impls[0]
+  assertEqualInt(im.typeParams.count, 0, "no impl parameters")
+  assertEqualInt(im.ifaceArgs.count, 1, "one interface argument")
+  assertTrue(tyEq(im.ifaceArgs[0], TPrim(kind = TPInt)), "Holder[Int]")
+  assertEqualInt(im.members.count, 1, "its one member")
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
+}
+
+test "a generic impl is recorded over its own parameters (#7791)" {
+  val c = censusOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] { func get(self: in Box[T]): T = self.v }\n"
+  )
+  assertEqualInt(c.pkg.impls.count, 1, "one impl block")
+  val im = c.pkg.impls[0]
+  assertEqualInt(im.typeParams.count, 1, "the impl's T")
+  match im.ifaceArgs[0] {
+    case TParam(owner, index) -> {
+      assertEqualInt(index, 0, "T is the first parameter")
+      assertEqualInt(owner.id, im.sym.id, "owned by the impl block")
+    }
+    case _ -> assertTrue(false, "the argument is the impl's own parameter")
+  }
+  match im.target {
+    case TNamed(_, args) -> match args[0] {
+      case TParam(owner, _) -> assertEqualInt(
+        owner.id,
+        im.sym.id,
+        "the target's argument is the same parameter"
+      )
+      case _ -> assertTrue(false, "Box[T]")
+    }
+    case _ -> assertTrue(false, "a named target")
+  }
+  assertEqualInt(verifyPackage(c.pkg, newList()).count, 0, "the package verifies")
 }

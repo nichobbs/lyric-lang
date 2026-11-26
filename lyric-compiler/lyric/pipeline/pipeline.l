@@ -277,6 +277,11 @@ pub record MiddleEndOptions {
   /// The target's `String` method surface (#7204): `SMSClosed` for dotnet,
   /// `SMSOpen(names)` for the JVM, `SMSUnchecked` where it is not known.
   stringSurface: StringMethodSurface = SMSUnchecked
+  /// Whether this target lowers an impl of a generic interface (`impl Holder[Int] for
+  /// IntBox`, #7791).  The checker accepts the construct and reports it as T0217; a
+  /// target that lowers it sets this and the report is dropped here, so a construct the
+  /// checker accepts is either run or rejected, never miscompiled.
+  genericInterfaces: Bool = false
 }
 
 // Report `diags`, each against the file it is in (`files`, by file id) or
@@ -2600,6 +2605,16 @@ pub func pipeTirDiagnostics(tbl: in SymbolTable, pb: in TirBuild.PackageBuild): 
   diags
 }
 
+func pipeWithoutDiagCode(diags: in List[Diagnostic], code: in String): List[Diagnostic] {
+  val kept: List[Diagnostic] = newList()
+  for d in diags {
+    if d.code != code {
+      kept.add(d)
+    }
+  }
+  kept
+}
+
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
 /// check, with its diagnostics sent to `sink`.  None after an error.
 /// `lyric prove` runs exactly this, so it rejects what a build rejects up to
@@ -2617,7 +2632,7 @@ pub func pipeCheckFront(
   // interface (docs/70 §9.2, D460) read.
   val file0 = Resolve.renumberNodeIds(file00).file
   val noIterElems: Map[String, ExternIterInfo] = newMap()
-  val tcRes = if opts.sharedInterner.count > 0 {
+  val tcRes0 = if opts.sharedInterner.count > 0 {
     checkWithImportedPackagesForTargetIterShared(
       file0,
       importedPkgs,
@@ -2636,6 +2651,11 @@ pub func pipeCheckFront(
       noIterElems,
       opts.externIterResolver
     )
+  }
+  val tcRes = if opts.genericInterfaces {
+    tcRes0.copy(diagnostics = pipeWithoutDiagCode(tcRes0.diagnostics, "T0217"))
+  } else {
+    tcRes0
   }
   if verifyIr and errorCount(tcRes.diagnostics) == 0 {
     pipeReportTirCensus(opts.pkgLabel, file0, tcRes, opts.depDefaults)

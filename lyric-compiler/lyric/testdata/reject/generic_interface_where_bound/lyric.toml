@@ -1,0 +1,7 @@
+[package]
+name = "reject-generic-interface-where-bound"
+version = "0.1.0"
+[project]
+name = "RejectGenericInterfaceWhereBound"
+[project.packages]
+"App" = "app"

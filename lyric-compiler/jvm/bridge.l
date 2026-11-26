@@ -913,6 +913,7 @@ func jvmMiddleEndOptions(
   // CLR-verifier-suspend-in-protected-region hazard (`awaitInTryIsHazard`) never fires on this target.
   MiddleEndOptions(
     externIterResolver = externIter,
+    genericInterfaces = true,
     tcFatal = tcFatal,
     tcReport = false,
     pkgLabel = pkgLabel,

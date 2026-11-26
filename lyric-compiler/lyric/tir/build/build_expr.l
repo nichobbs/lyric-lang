@@ -161,6 +161,32 @@ pub func declareLocal(env: in BuildEnv, name: in String, ty: in Ty, mutable: in 
   d
 }
 
+/// A protected type's invariant clause is about the type's fields: it is built with only the receiver in scope, so a
+/// parameter of the member that is named like a field does not hide the field (D509, #9432).
+func buildInvariantClause(env: in BuildEnv, inv: in InvariantClause): Option[TExpr] {
+  val saved: List[Map[String, LocalDecl]] = newList()
+  for sc in env.scopes {
+    saved.add(sc)
+  }
+  val only: Map[String, LocalDecl] = newMap()
+  match lookupLocal(env, "self") {
+    case Some(d) -> only.add("self", d)
+    case None -> ()
+  }
+  while env.scopes.count > 0 {
+    env.scopes.removeAt(env.scopes.count - 1)
+  }
+  env.scopes.add(only)
+  val built = buildExpr(env, inv.expr)
+  while env.scopes.count > 0 {
+    env.scopes.removeAt(env.scopes.count - 1)
+  }
+  for sc in saved {
+    env.scopes.add(sc)
+  }
+  built
+}
+
 func lookupLocal(env: in BuildEnv, name: in String): Option[LocalDecl] {
   var i = env.scopes.count - 1
   while i >= 0 {
@@ -4719,7 +4745,7 @@ func buildFnCore(
     }
     // The protected type's invariants, in the member's scope (D509).
     for inv in env.memberInvs {
-      match buildExpr(env, inv.expr) {
+      match buildInvariantClause(env, inv) {
         case Some(t) -> {
           // The clause is one AST node tree built in every member: each copy takes node ids of its own.
           val w = newWalker({ x: TExpr -> None }, { x: TExpr -> renumberNode(env, x) })
@@ -9372,23 +9398,34 @@ func buildMethodCall(
   for a in rest {
     all.add(a)
   }
+  val ifaceArgs: List[Ty] = match recvOwnedOf(Some(value = declared)) { case Some(a) -> a; case None -> newList() }
   val callee = match ifaceSym {
-    case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = inst.tyArgs)
+    case Some(i) -> Interface(iface = i, ifaceArgs = ifaceArgs, method = sym, typeArgs = inst.tyArgs)
     case None -> Direct(sym = sym, typeArgs = inst.tyArgs)
   }
-  noteFuncSymN(
-    env,
-    sym,
-    site.sig,
-    Some(value = recvTyDecl),
-    if isEntry or isImplMember or (isSome(ifaceSym) and not isSome(site.sig.recvMode)) {
-      Some(value = PMIn)
-    } else {
-      site.sig.recvMode
-    },
-    if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
-    inst.tyArgs.count
-  )
+  val genericIface: Option[SymbolId] = if ifaceArgs.count > 0 { ifaceSym } else { None }
+  match genericIface {
+    case Some(gi) -> noteGenericIfaceMethodSym(
+      env,
+      sym,
+      gi,
+      match fn.kind { case EMember(_, mname) -> mname; case _ -> "" },
+      site
+    )
+    case None -> noteFuncSymN(
+      env,
+      sym,
+      site.sig,
+      Some(value = recvTyDecl),
+      if isEntry or isImplMember or (isSome(ifaceSym) and not isSome(site.sig.recvMode)) {
+        Some(value = PMIn)
+      } else {
+        site.sig.recvMode
+      },
+      if isEntry { TSkEntry } else if isSome(ifaceSym) { TSkInterfaceMethod } else { TSkFunc },
+      inst.tyArgs.count
+    )
+  }
   Some(value = withPrelude(env, e, stmts, mkExpr(e, ty, XCall(callee = callee, args = all))))
 }
 
