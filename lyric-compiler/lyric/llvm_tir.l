@@ -4451,6 +4451,9 @@ func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option
       return None
     }
   }
+  if indexProvenInRange(c, idx, n) {
+    return Some(value = v.value)
+  }
   val ok = tmp(c)
   c.insns.add(NICmp(dest = ok, pred = IUlt, ty = NI32, a = v.value, b = NLitInt(v = n.toLong(), ty = NI32)))
   val okL = newLabel(c, "arr.in")
@@ -4461,6 +4464,23 @@ func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option
   c.insns.add(NBr(label = okL))
   startBlock(c, okL)
   Some(value = v.value)
+}
+
+/// Whether the index's own type or value proves it in `0 ..< n`: an integer literal, or a value
+/// of a range subtype whose bounds lie inside the array.  No bounds check is emitted for it.
+func indexProvenInRange(c: in LCtx, idx: in TExpr, n: in Int): Bool {
+  match idx.kind {
+    case XLit(TLInt(v)) -> return v >= 0i64 and v < n.toLong()
+    case _ -> ()
+  }
+  match idx.ty {
+    case TNamed(sym, _) -> match mapGet(c.env.distinctInfos, sym.id) {
+      case Some(d) -> d.hasRange and not d.isFloat and not d.unsigned and d.lo >= 0i64 and
+        d.hi < n.toLong()
+      case None -> false
+    }
+    case _ -> false
+  }
 }
 
 /// `&arr[idx]` for the inline array at `base`.
