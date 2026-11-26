@@ -329,3 +329,22 @@ test "a generic impl is instantiated at each instance of its target (D860, slice
       joinStrings(instanceKeys(m), ",")
   )
 }
+
+test "an impl member with type parameters of its own is instantiated per call (D513 follow-up)" {
+  val m = monoOf(
+    "package App\ninterface Holder[T] { func get(self: in Self): T }\nrecord Box[T] { v: T }\nimpl[T] Holder[T] for Box[T] {\n  func get(self: in Box[T]): T = self.v\n  func pick[U](self: in Box[T], d: in U): U = d\n}\nfunc main(): Int = Box(v = 3).pick(5)\n"
+  )
+  assertEqualInt(m.built, m.total, "every body builds")
+  assertEqualInt(m.r.diags.count, 0, "no diagnostic")
+  assertEqualInt(m.r.unresolved.count, 0, "nothing is left generic: " + joinStrings(mapKeys(m.r.unresolved), "; "))
+  val v = verifyMonoBundle(m.r)
+  assertEqualInt(v.failures.count, 0, if v.failures.count > 0 { v.failures[0] } else { "verifies" })
+  assertTrue(
+    joinStrings(instanceKeys(m), ",").contains("pick"),
+    "the member is instantiated at its call: " + joinStrings(instanceKeys(m), ",")
+  )
+  val inst = instancesOf(m)
+  for im in inst.pkg.impls {
+    assertEqualInt(im.members.count, 1, "only get is an interface method; pick is instantiated per call")
+  }
+}
