@@ -648,6 +648,26 @@ test "a covariant conversion takes a generic type to the same one at other argum
   assertTrue(rulesOf(oneFn(entries(), covariantFn(tyInt(), tyString()))).contains("convert-type"), "not generic types")
 }
 
+func upcastFn(fromTy: in Ty, toTy: in Ty, iface: in SymbolId): TFnDecl {
+  val x = local(1, "x", fromTy, false)
+  val inner = ex(3, fromTy, XLocal(local = x.id))
+  fnDecl(10, 0, params1(x), toTy, ex(2, toTy, XConvert(kind = CvUpcast(iface = iface), inner = inner)))
+}
+
+test "an upcast names the interface its node's type is (D516)" {
+  val iface = SymbolId(id = 72)
+  val inst = SymbolId(id = 73)
+  val impl = TNamed(sym = SymbolId(id = 74), args = newList())
+  assertFalse(
+    rulesOf(oneFn(entries(), upcastFn(impl, TNamed(sym = iface, args = newList()), iface))).contains("convert-type"),
+    "the interface is the node's type"
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), upcastFn(impl, TNamed(sym = inst, args = newList()), iface))).contains("convert-type"),
+    "the generic interface against its instance's type"
+  )
+}
+
 func callbackFn(fromTy: in Ty, toTy: in Ty): TFnDecl {
   val x = local(1, "x", fromTy, false)
   val inner = ex(3, fromTy, XLocal(local = x.id))
