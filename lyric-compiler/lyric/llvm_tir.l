@@ -4467,17 +4467,38 @@ func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option
 }
 
 /// Whether the index's own type or value proves it in `0 ..< n`: an integer literal, or a value
-/// of a range subtype whose bounds lie inside the array.  No bounds check is emitted for it.
+/// of a range subtype (a distinct type or a refinement, unwrapped to the integer) whose bounds lie inside the
+/// array.  No bounds check is emitted for it.
 func indexProvenInRange(c: in LCtx, idx: in TExpr, n: in Int): Bool {
   match idx.kind {
-    case XLit(TLInt(v)) -> return v >= 0i64 and v < n.toLong()
-    case _ -> ()
-  }
-  match idx.ty {
-    case TNamed(sym, _) -> match mapGet(c.env.distinctInfos, sym.id) {
-      case Some(d) -> d.hasRange and not d.isFloat and not d.unsigned and d.lo >= 0i64 and
-        d.hi < n.toLong()
-      case None -> false
+    case XLit(TLInt(v)) -> v >= 0i64 and v < n.toLong()
+    case XConvert(kind, inner) -> match kind {
+      case CvUnwrapDistinct(sym) -> match mapGet(c.env.distinctInfos, sym.id) {
+        case Some(d) -> d.hasRange and not d.isFloat and
+          not d.unsigned and
+          d.lo >= 0i64 and
+          d.hi < n.toLong()
+        case None -> false
+      }
+      case CvUnrefine -> match inner.ty {
+        case TRefined(_, lo, hi, hiInclusive) -> match lo {
+          case Some(l) -> match hi {
+            case Some(h) -> l >=
+              0i64 and
+              (
+                if hiInclusive {
+                  h < n.toLong()
+                } else {
+                  h <= n.toLong()
+                }
+              )
+            case None -> false
+          }
+          case None -> false
+        }
+        case _ -> false
+      }
+      case _ -> false
     }
     case _ -> false
   }
