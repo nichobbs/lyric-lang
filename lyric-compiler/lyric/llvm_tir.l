@@ -3551,8 +3551,9 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
       case Some(nt) -> {
-        // A scalar, or the null `String` placeholder; a record, list or union has no zero value here.
-        if isScalarN(nt) or isStringN(nt) {
+        // A numeric or boolean scalar; a `String` is the empty string, and a record, list or union has no
+        // zero value here, so those stay on the AST path.
+        if isScalarN(nt) {
           return Val(ty = nt, value = zeroOf(nt))
         }
       }

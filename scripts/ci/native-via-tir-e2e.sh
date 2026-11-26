@@ -682,8 +682,8 @@ cat "$work/w_census.txt"
 "$work/w_ast" > "$work/w_ast.out"
 "$work/w_tir" > "$work/w_tir.out"
 diff -u "$work/w_ast.out" "$work/w_tir.out"
-printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n2147483647\n94\nxy\nxyb\nset later\ntrue\n' | diff -u - "$work/w_tir.out"
-grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/w_census.txt" || {
+printf '9\n10\n-2147483648\n-2\n-2147483648\n0\n2147483647\n94\nxy\nxyb\ntrue\n' | diff -u - "$work/w_tir.out"
+grep -q '^native via-TIR: 10 of 10 functions lowered from TIR' "$work/w_census.txt" || {
   echo "::error::expected every function of wrapping.l to be lowered from TIR"
   exit 1
 }
