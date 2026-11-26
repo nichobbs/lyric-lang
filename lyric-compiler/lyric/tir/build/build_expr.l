@@ -995,6 +995,8 @@ record EqCaseInfo {
 /// Two unions compared case by case (D167): `match a { case C(x..) -> match b { case C(y..) -> x == y and ...; case _ -> false } ... }`.
 /// The cases are those the checker recorded, each named by the last segment of its written path.
 func unionEqCore(env: in BuildEnv, e: in Expr, cases: in List[EqUnionCase], a: in TExpr, b: in TExpr): Option[TExpr] {
+  val ld = declareLocal(env, "__ueq_l" + toString(env.nextLocal[0] + 1), a.ty, false)
+  val rd = declareLocal(env, "__ueq_r" + toString(env.nextLocal[0] + 1), b.ty, false)
   val xarms: List[TArm] = newList()
   for c in cases {
     if c.head.count == 0 {
@@ -1021,7 +1023,7 @@ func unionEqCore(env: in BuildEnv, e: in Expr, cases: in List[EqUnionCase], a: i
     yarms.add(
       eqArm(env, e, TPat(id = freshNodeId(env), ty = b.ty, span = e.span, kind = TpWild), boolLitOf(env, e, false))
     )
-    val inB = eqMatch(env, e, b, yarms, true)
+    val inB = eqMatch(env, e, localOf(env, e, rd), yarms, true)
     xarms.add(
       eqArm(
         env,
@@ -1031,7 +1033,17 @@ func unionEqCore(env: in BuildEnv, e: in Expr, cases: in List[EqUnionCase], a: i
       )
     )
   }
-  Some(value = eqMatch(env, e, a, xarms, true))
+  val stmts: List[TStmt] = newList()
+  stmts.add(letStmt(env, ld, a))
+  stmts.add(letStmt(env, rd, b))
+  Some(
+    value = TExpr(
+      id = freshNodeId(env),
+      ty = tyBool(),
+      span = e.span,
+      kind = XBlock(stmts = stmts, tail = Some(value = eqMatch(env, e, localOf(env, e, ld), xarms, true)))
+    )
+  )
 }
 
 /// Two arrays of `site.len` elements compared element by element (D167): each operand is bound once, then
