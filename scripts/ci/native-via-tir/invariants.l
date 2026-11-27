@@ -1,8 +1,7 @@
 //! invariants.l - records with `invariant:` clauses lowered on TIR (docs/70 phase 4a part 8, D854): constructions
 //! and `.copy` call the type's checker (D505), a top-level `pub` function re-checks its result (D507), and a method
-//! of the record keeps the AST path.  The functions that do not mention the record's methods lower from TIR and
-//! print what the AST path prints; `native-via-tir-e2e.sh` also compiles a violated invariant and compares the
-//! panic message.
+//! of the record checks `self` at its boundary (D512).  Every function lowers from TIR and prints what the AST
+//! path prints; `native-via-tir-e2e.sh` also compiles a violated invariant and compares the panic message.
 package InvariantsViaTir
 
 import Std.Core

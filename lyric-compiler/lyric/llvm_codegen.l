@@ -18995,10 +18995,6 @@ record TirUnitMaps {
   scans: Map[String, String] = newMap()
   asyncFns: Map[Int, String] = newMap()
   protRecs: Map[Int, LlvmTir.TirRecLayout] = newMap()
-  /// The records that declare `invariant:` clauses (`Pkg.Name`).  TIR checks them at constructions and `.copy`
-  /// (D505) and at the boundary of a top-level `pub` function (D507); a method or `impl` member that mentions one
-  /// keeps the AST path, whose elaborator checks `self` and `Self` results.
-  invariantRecs: Map[String, Bool] = newMap()
   /// The instance functions the AST copy of which exists, keyed `pkg.name__Args/arity` as `sigs` is.
   instFns: Map[String, Tir.TFnDecl] = newMap()
   /// Every instance of a generic function: its symbol's table row, declaration and DefPath key, for
@@ -19171,7 +19167,6 @@ func tirInstArg(ctx: in Ctx, known: in Map[Int, NType], t: in Tir.Ty): Option[NT
 func registerTirInstances(
   ctx: in Ctx,
   inst: in LlvmTir.TirUnitInput,
-  invariantRecs: in Map[String, Bool],
   recs: in Map[Int, LlvmTir.TirRecLayout],
   unions: in Map[Int, LlvmTir.TirUnionLayout],
   enums: in Map[Int, Bool],
@@ -19242,7 +19237,7 @@ func registerTirInstances(
       } else if ctx.genericRecordDefs.containsKey(gkey) {
         match instantiateGenericRecordOpt(ctx, gkey, argTys) {
           case Some(ri) -> {
-            if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) and not invariantRecs.containsKey(gkey) {
+            if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
               val lay = LlvmTir.TirRecLayout(
                 ty = recPtrType(ri),
                 fieldTys = ri.fieldTys,
@@ -19486,11 +19481,7 @@ func withInstanceNames(unit: in LlvmTir.TirUnitInput, inst: in LlvmTir.TirUnitIn
 }
 
 func tirUnitMaps(
-  ctx: in Ctx,
-  sigs: in Map[String, NFuncSig],
-  inputs: in List[LlvmTir.TirUnitInput],
-  invariantRecs: in Map[String, Bool],
-  unitPkg: in String,
+  ctx: in Ctx, sigs: in Map[String, NFuncSig], inputs: in List[LlvmTir.TirUnitInput], unitPkg: in String
 ): TirUnitMaps {
   val input = if inputs.count > 1 { withInstanceNames(inputs[0], inputs[1]) } else { inputs[0] }
   val fnNames: Map[Int, String] = newMap()
@@ -19592,15 +19583,13 @@ func tirUnitMaps(
             } else if not Str.contains(rest, "::") {
               match mapGet(ctx.recordDefs, pkg + "." + rest) {
                 // A record with an invariant is laid out like any other: TIR carries its construction
-                // checks (D505) and the boundary checks of top-level `pub` functions (D507).  A protected
-                // one keeps the AST path (its invariants run at each entry's return).
+                // checks (D505), the boundary checks of `pub` functions and members (D507, D512) and a
+                // protected type's checks at each member's exit (D509).
                 case Some(ri) -> if ctx.protectedRecNames.containsKey(ri.irName) {
-                  if not invariantRecs.containsKey(pkg + "." + rest) {
-                    protRecs.add(
-                      id,
-                      LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
-                    )
-                  }
+                  protRecs.add(
+                    id,
+                    LlvmTir.TirRecLayout(ty = recPtrType(ri), fieldTys = ri.fieldTys, byValue = false, dtor = recDtorName(ri))
+                  )
                 } else if ri.fieldCallbackTys.count == 0 and not ctx.protectedRecNames.containsKey(ri.irName) {
                   recs.add(
                     id,
@@ -19784,7 +19773,7 @@ func tirUnitMaps(
   val instDecls: Map[Int, Tir.TFnDecl] = newMap()
   val instKeys: Map[Int, String] = newMap()
   if inputs.count > 1 {
-    registerTirInstances(ctx, inputs[1], invariantRecs, recs, unions, enums, distincts, cases)
+    registerTirInstances(ctx, inputs[1], recs, unions, enums, distincts, cases)
     registerTirInstanceFns(sigs, inputs, fnNames, intrinsics, instFns, unitPkg)
     for ii in inputs[1].instances {
       instInfos.add(ii.inst.id, ii)
@@ -19819,7 +19808,6 @@ func tirUnitMaps(
     instDecls = instDecls,
     instKeys = instKeys,
     symNames = input.names,
-    invariantRecs = invariantRecs,
     checkedArith = input.checkedArith,
     contractsElaborated = input.contractsElaborated
   )
@@ -20136,63 +20124,6 @@ func isSomeExpr(o: in Option[Tir.TExpr]): Bool {
   }
 }
 
-/// Whether `t` names, anywhere inside it, a record that declares `invariant:` clauses (`invariantRecs`, keyed
-/// `Pkg.Name`); `names` maps symbols to their DefPath keys.
-func tyMentionsInvariant(names: in Map[Int, String], invariantRecs: in Map[String, Bool], t: in Tir.Ty): Bool {
-  match t {
-    case Tir.TNamed(sym, args) -> {
-      match mapGet(names, sym.id) {
-        case Some(key) -> match Str.indexOf(key, "::") {
-          case Some(sep) -> {
-            val rest = Str.substring(key, sep + 2)
-            val head = match Str.indexOf(rest, "[") { case Some(b) -> Str.substring(rest, 0, b); case None -> rest }
-            if invariantRecs.containsKey(Str.substring(key, 0, sep) + "." + head) {
-              return true
-            }
-          }
-          case None -> ()
-        }
-        case None -> ()
-      }
-      for a in args {
-        if tyMentionsInvariant(names, invariantRecs, a) {
-          return true
-        }
-      }
-      false
-    }
-    case Tir.TTuple(es) -> {
-      for e in es {
-        if tyMentionsInvariant(names, invariantRecs, e) {
-          return true
-        }
-      }
-      false
-    }
-    case Tir.TNullable(i) -> tyMentionsInvariant(names, invariantRecs, i)
-    case Tir.TArray(_, e) -> tyMentionsInvariant(names, invariantRecs, e)
-    case Tir.TSlice(e) -> tyMentionsInvariant(names, invariantRecs, e)
-    case Tir.TRefined(u, _, _, _) -> tyMentionsInvariant(names, invariantRecs, u)
-    case _ -> false
-  }
-}
-
-/// Whether a member declaration (a method or `impl` member) takes or returns a record with an invariant.
-func memberMentionsInvariant(maps: in TirUnitMaps, d: in Tir.TFnDecl): Bool {
-  if maps.invariantRecs.count == 0 {
-    return false
-  }
-  if tyMentionsInvariant(maps.symNames, maps.invariantRecs, d.ret) {
-    return true
-  }
-  for p in d.params {
-    if tyMentionsInvariant(maps.symNames, maps.invariantRecs, p.local.ty) {
-      return true
-    }
-  }
-  false
-}
-
 /// Whether some member of the protected type `owner` of `pkg` has a `when:` barrier.
 func typeHasBarrierMember(input: in LlvmTir.TirUnitInput, pkg: in String, owner: in String): Bool {
   for g in input.pkg.funcs {
@@ -20280,13 +20211,7 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
       census.fallbacks.add(fn.name + ": no TIR body (the builder did not build it)")
       None
     }
-    case Some(d) -> if isMember and memberMentionsInvariant(maps, d) {
-      census.fallbacks.add(
-        fn.name +
-          ": a method or impl member of a type with an invariant keeps the AST path (the elaborator checks self and Self results)"
-      )
-      None
-    } else {
+    case Some(d) -> {
       // The AST path's name for the function stands: the lowering finds it by symbol.
       if d.isAsync {
         if not maps.asyncFns.containsKey(d.sym.id) {
@@ -20346,21 +20271,6 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   }
   val mainPkg = units[0].pkgName
   val sigs = buildSigs(units)
-  val invariantRecs: Map[String, Bool] = newMap()
-  for iu in units {
-    for rd in iu.records {
-      for m in rd.members {
-        match m {
-          case RMInvariant(_) -> {
-            if not invariantRecs.containsKey(iu.pkgName + "." + rd.name) {
-              invariantRecs.add(iu.pkgName + "." + rd.name, true)
-            }
-          }
-          case _ -> ()
-        }
-      }
-    }
-  }
   // Module-level `val`/`const` bindings across the whole bundle (#5977 part 2),
   // keyed BOTH by qualified name (`Pkg.name`) and bare name (`name`) — the same
   // two-part scheme `buildSigs` uses for functions (and `loadLocal` looks up
@@ -20629,7 +20539,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       ei = ei + 1
     }
     val tirMaps = if u.tir.count > 0 {
-      tirUnitMaps(ctx, sigs, u.tir, invariantRecs, u.pkgName)
+      tirUnitMaps(ctx, sigs, u.tir, u.pkgName)
     } else {
       TirUnitMaps(
         fnNames = newMap(),
