@@ -897,6 +897,17 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
             report(c, e.id, "convert-type", "CvBoxToHost applied to a value already of the host type")
           }
         }
+        case CvUpcast(iface) -> match e.ty {
+          case TNamed(sym, _) -> if not symbolIdEq(sym, iface) {
+            report(
+              c,
+              e.id,
+              "convert-type",
+              "CvUpcast names interface #" + toString(iface.id) + " but the expression has type " + renderTy(e.ty)
+            )
+          }
+          case _ -> ()
+        }
         case CvCovariant -> if not sameGenericHead(inner.ty, e.ty) {
           report(
             c,

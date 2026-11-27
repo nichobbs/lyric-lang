@@ -274,8 +274,8 @@ func instantiateImpl(c: in MCtx, im: in TImplDecl, args: in List[Ty], key: in St
           case Some(i) -> members.add(i)
           case None -> ()
         }
-      } else {
-        noteUnresolved(c, "impl member with type parameters of its own")
+      } else if d.typeParams.count < args.count {
+        noteUnresolved(c, "impl member with fewer parameters than its impl")
       }
       case None -> noteUnresolved(c, "impl member without a declaration")
     }

@@ -162,6 +162,25 @@ func mConv(c: in MCtx, s: in Subst, k: in ConvKind): ConvKind {
   }
 }
 
+/// An upcast to an instance of a generic interface names the instance, as `Callee.Interface` does (D513): the node's
+/// type is the instance once mapped, so the interface the conversion carries follows it.
+func mUpcastIface(c: in MCtx, s: in Subst, k: in ConvKind, ty: in Ty): ConvKind {
+  match k {
+    case CvUpcast(i) -> match ty {
+      case TNamed(orig, oargs) -> if symbolIdEq(orig, i) and oargs.count > 0 {
+        match mTy(c, s, ty) {
+          case TNamed(inst, _) -> CvUpcast(iface = inst)
+          case _ -> k
+        }
+      } else {
+        mConv(c, s, k)
+      }
+      case _ -> mConv(c, s, k)
+    }
+    case _ -> mConv(c, s, k)
+  }
+}
+
 func mLit(c: in MCtx, s: in Subst, e: in TExpr, owner: in SymbolId, index: in Int): TExprKind {
   if symbolIdEq(owner, s.owner) and index >= 0 and index < s.args.count {
     match s.args[index] {
@@ -327,7 +346,7 @@ func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
       if box and tyEq(mi.ty, mTy(c, s, e.ty)) {
         return mi
       }
-      XConvert(kind = mConv(c, s, kind), inner = mi)
+      XConvert(kind = mUpcastIface(c, s, kind, e.ty), inner = mi)
     }
     case XTuple(elems) -> XTuple(elems = mExprs(c, s, elems))
     case XListLit(elems) -> XListLit(elems = mExprs(c, s, elems))
