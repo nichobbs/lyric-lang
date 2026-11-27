@@ -1279,3 +1279,19 @@ test "a case pattern on a value that is not an enum falls back" {
   val ir = render(lowerTirFunction(envOf(names), fnDecl(100, ps, intT(), m)))
   assertTrue(Str.startsWith(ir, "FALLBACK:"), ir)
 }
+
+test "an impl member of a generic interface instance is named by the interface's bare name" {
+  match tirImplMember("P::IntBox::$impl(Holder[Int])::get(IntBox)") {
+    case Some(m) -> {
+      assertEqual(m.pkg, "P", "package")
+      assertEqual(m.owner, "IntBox", "owner")
+      assertEqual(m.iface, "Holder", "the interface without its arguments")
+      assertEqual(m.name, "get", "member")
+    }
+    case None -> assertTrue(false, "an impl member key is read")
+  }
+  match tirImplMember("P::IntBox::$impl(Shape)::area(IntBox)") {
+    case Some(m) -> assertEqual(m.iface, "Shape", "a plain interface is unchanged")
+    case None -> assertTrue(false, "an impl member key of a plain interface is read")
+  }
+}

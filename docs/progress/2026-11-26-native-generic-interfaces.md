@@ -1,0 +1,8 @@
+# `--target native` lays out generic interfaces (#7791, D863)
+
+## What shipped
+
+- The native code generator lays out a generic interface per instantiation (`instantiateGenericIfaceOpt`): box and vtable types, destructor and the erased method signatures at the interface's arguments, registered like a generic record. Interface-typed parameters, bindings and fields, calls through the interface, calls on the concrete record and a default method inherited in the impl's own file all run (`genericifaces.l`: `Holder[Int]`, `Holder[String]`, `Pair[Int, String]`).
+- The native bridge drops the checker's T0217 (`MiddleEndOptions.genericInterfaces`), so no backend reports it now. What native cannot lay out is a compile-time diagnostic: **N0105** for an impl of a generic interface for a generic type (`impl[T] Holder[T] for Box[T]`, the next slice) or with an unlaid-out argument, **N0106** for an impl that omits a default method of an interface declared in another package (before: a clang `undefined value`; plan in #9451).
+- TIR: `registerTirIfaceInstances` gives each instance of a generic interface in the monomorphised bundle its layout, method slots and vtables; `tirImplMember` names an impl member by the interface's bare name; `lowerUpcast` reads the interface from the expression's type (Mono keeps the generic symbol in `CvUpcast.iface`). `genericifaces.l` lowers 11 of 11 functions from TIR with the AST path's output, clean under AddressSanitizer.
+- `default_method_cross_package_self_test.l` runs a cross-package generic interface (an impl that defines every method) on dotnet, the JVM and native, and the N0106 case on native. docs/01, the book's DI chapter and appendix B updated.

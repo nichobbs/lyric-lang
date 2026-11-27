@@ -85,7 +85,8 @@ for t in \
   lyric-compiler/lyric/native_missing_stdlib_self_test.l \
   lyric-compiler/lyric/llvm_config_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
-  lyric-compiler/lyric/llvm_self_test_impl_direct.l ; do
+  lyric-compiler/lyric/llvm_self_test_impl_direct.l \
+  lyric-compiler/lyric/default_method_cross_package_native_self_test.l ; do
   echo "=== $t ==="
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
 done
