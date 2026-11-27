@@ -182,7 +182,12 @@ pub func tirImplMember(key: in String): Option[TirImplMember] {
           match Str.indexOf(tail, ")::") {
             case None -> None
             case Some(close) -> {
-              val iface = Str.substring(tail, 0, close)
+              // The AST path names an impl method by the interface's bare name: `Holder[Int]` is `Holder` (#7791).
+              val ifaceFull = Str.substring(tail, 0, close)
+              val iface = match Str.indexOf(ifaceFull, "[") {
+                case Some(b) -> Str.substring(ifaceFull, 0, b)
+                case None -> ifaceFull
+              }
               val fnPart = Str.substring(tail, close + 3)
               match Str.indexOf(fnPart, "(") {
                 case None -> None
@@ -5316,7 +5321,13 @@ func calleeKind(k: in Callee): String {
 
 /// A heap record used as an interface it implements: a box holding the (retained) object and
 /// the record's vtable for the interface.  The box is owned by the caller.
-func lowerUpcast(c: in LCtx, e: in TExpr, iface: in SymbolId, inner: in TExpr): Val {
+func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr): Val {
+  // The interface is the one the expression's type names: for an instance of a generic interface that is the
+  // instance (`Holder[Int]`), where the conversion still carries the generic interface's symbol (#7791).
+  val iface = match e.ty {
+    case TNamed(sym, targs) -> if targs.count == 0 and c.env.ifaces.containsKey(sym.id) { sym } else { iface0 }
+    case _ -> iface0
+  }
   val il = match mapGet(c.env.ifaces, iface.id) {
     case Some(x) -> x
     case None -> return unsupported(c, "an upcast to " + renderTy(e.ty))

@@ -2727,6 +2727,7 @@ func nativeMiddleEndOptions(
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
+    genericInterfaces = true,
     wantTir = wantTir,
     tirOut = tirOut,
     sharedInterner = sharedInterner,
