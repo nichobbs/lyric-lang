@@ -855,6 +855,22 @@ for reason in 'toString of an enum' 'an operator on the aggregate array' 'the ze
 done
 echo "kept on the AST path: ok"
 
+# An array element passed by reference beside the array it lives in (D179): copied in and out around the call
+# on TIR, the same output as the AST path, and nothing kept on the AST path.
+esrc=scripts/ci/native-via-tir/elemcopy.l
+"$lyric_bin" build --target native --no-via-tir "$esrc" -o "$work/e_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
+cat "$work/e_census.txt"
+"$work/e_ast" > "$work/e_ast.out"
+"$work/e_tir" > "$work/e_tir.out"
+diff -u "$work/e_ast.out" "$work/e_tir.out"
+printf '102\n2\n7\n' | diff -u - "$work/e_tir.out"
+grep -q '^  fallback:' "$work/e_census.txt" && {
+  echo "::error::elemcopy.l: a function stayed on the AST path"
+  exit 1
+}
+echo "array element copy-in/copy-out: ok"
+
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.
 gsrc=scripts/ci/native-via-tir/globals.l

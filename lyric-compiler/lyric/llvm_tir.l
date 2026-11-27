@@ -2999,34 +2999,10 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
-          // An array element passed by reference beside another by-reference argument may alias it (the
-          // element and its array): D179 copies the element in and out around the call, which this lowering
-          // does not yet do, so the function stays on the AST path.
-          var byRefCount = 0
-          var elemByRef = false
-          for a in args {
-            val place = match a {
-              case TArgIn(_) -> None
-              case TArgOut(pl) -> Some(value = pl)
-              case TArgInout(pl) -> Some(value = pl)
-            }
-            match place {
-              case Some(pl) -> {
-                byRefCount = byRefCount + 1
-                match pl.kind {
-                  case PlIndex(_, _, how) -> match how { case IkArray -> { elemByRef = true }; case _ -> () }
-                  case _ -> ()
-                }
-              }
-              case None -> ()
-            }
-          }
-          if elemByRef and byRefCount > 1 {
-            return unsupported(c, "an array element passed by reference beside another by-reference argument")
-          }
           // A reference passed `in` beside a by-reference argument may be the very cell the callee
           // writes: it is held for the call so the write cannot free what the callee still reads.
           val held: List[Val] = newList()
+          val copyOuts: List[CopyOut] = newList()
           for a in args {
             match a {
               case TArgIn(v) -> {
@@ -3037,8 +3013,8 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
                 }
                 nargs.add(NArg(ty = av.ty, value = av.value))
               }
-              case TArgOut(place) -> nargs.add(byRefArg(c, place))
-              case TArgInout(place) -> nargs.add(byRefArg(c, place))
+              case TArgOut(place) -> nargs.add(byRefArgCopy(c, place, false, copyOuts))
+              case TArgInout(place) -> nargs.add(byRefArgCopy(c, place, true, copyOuts))
             }
           }
           val result = match tyToN(c.env, e.ty) {
@@ -3054,6 +3030,11 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
                 Val(ty = rt, value = NLocal(name = d), owned = isRefN(rt))
               }
             }
+          }
+          for co in copyOuts {
+            val back = tmp(c)
+            c.insns.add(NLoad(dest = back, ty = co.ty, ptr = NLocal(name = co.temp)))
+            c.insns.add(NStore(ty = co.ty, value = NLocal(name = back), ptr = co.target))
           }
           for h in held {
             releaseRef(c, h.ty, h.value)
@@ -3369,6 +3350,41 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
   val closOut = tmp(c)
   c.insns.add(NBitcast(dest = closOut, fromTy = implTy, value = obj, toTy = closTy))
   Val(ty = closTy, value = NLocal(name = closOut), owned = true)
+}
+
+/// An array element passed by reference lives in a temporary for the call (D179): `target` is the
+/// element's address, `temp` the temporary's slot the callee writes through.
+record CopyOut {
+  ty: NType
+  temp: String
+  target: NValue
+}
+
+/// `byRefArg`, except that an array element is copied into a temporary (`inout`; an `out` starts
+/// uninitialised) that is stored back into the element after the call, so a write the callee makes
+/// to the whole array beside it is not the last write.
+func byRefArgCopy(c: in LCtx, place: in TPlace, copyIn: in Bool, copyOuts: in List[CopyOut]): NArg {
+  match place.kind {
+    case PlIndex(recv, idx, how) -> match how {
+      case IkArray -> match arrayElemPlace(c, recv, idx, idx.span.startPos.line) {
+        case Some(p) -> {
+          val name = "elem.tmp" + toString(c.ticker.count + 1)
+          c.ticker.add(0)
+          c.allocas.add(NAlloca(dest = name, ty = p.ty))
+          if copyIn {
+            val cur = tmp(c)
+            c.insns.add(NLoad(dest = cur, ty = p.ty, ptr = p.value))
+            c.insns.add(NStore(ty = p.ty, value = NLocal(name = cur), ptr = NLocal(name = name)))
+          }
+          copyOuts.add(CopyOut(ty = p.ty, temp = name, target = p.value))
+          NArg(ty = NPtr(pointee = p.ty), value = NLocal(name = name))
+        }
+        case None -> NArg(ty = NI8, value = NLitInt(v = 0i64, ty = NI8))
+      }
+      case _ -> byRefArg(c, place)
+    }
+    case _ -> byRefArg(c, place)
+  }
 }
 
 /// The address of an `out` or `inout` argument's place, as the pointer argument the callee's
