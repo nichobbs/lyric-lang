@@ -32,23 +32,3 @@ test "an inout parameter of the declaring package's own type is re-checked on ex
   var c = newCounter(1)
   assertPanicsWith("local inout", "InvariantViolated: Inv.Types.Counter invariant count >= 0", { -> breakLocal(c) })
 }
-
-test "a generic invariant type crosses every boundary when valid" {
-  val c = newCell(3, "a")
-  assertEqualInt(readCell(c), 3, "generic in parameter")
-}
-
-test "a public function taking a broken generic value panics before its body" {
-  val c = newCell(1, "a")
-  c.n = -1
-  assertPanicsWith("generic in parameter", "InvariantViolated: Inv.Types.Cell", { -> val _ = readCell(c) })
-}
-
-test "a public function returning a broken generic value panics" {
-  assertPanicsWith("generic result", "InvariantViolated: Inv.Types.Cell", { -> val _ = makeBrokenCell() })
-}
-
-test "an inout generic parameter written to a broken value panics on exit" {
-  var c = newCell(1, "a")
-  assertPanicsWith("generic inout", "InvariantViolated: Inv.Types.Cell invariant n >= 0", { -> breakCell(c) })
-}

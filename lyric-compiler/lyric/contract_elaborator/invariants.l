@@ -391,7 +391,6 @@ func boundaryTypeKey(t: in TypeExpr, selfType: in Option[TypeExpr] = None): Opti
       }
       Some(value = Str.joinList(".", parts))
     }
-    case TGenericApp(head, _) -> Some(value = Str.joinList(".", head.segments))
     case TSelf -> match selfType { case Some(st) -> boundaryTypeKey(st, None); case None -> None }
     case TParen(inner) -> boundaryTypeKey(inner, selfType)
     case _ -> None

@@ -18,14 +18,3 @@ pub func newCounter(start: in Int): Counter {
 pub func breakLocal(c: inout Counter) {
   c.count = -3
 }
-
-/// A generic type: its checker takes the type argument from the value it is given.
-pub ref record Cell[T] {
-  var n: Int
-  var tag: T
-  invariant: n >= 0
-}
-
-pub func newCell(start: in Int, tag: in String): Cell[String] {
-  Cell(n = start, tag = tag)
-}

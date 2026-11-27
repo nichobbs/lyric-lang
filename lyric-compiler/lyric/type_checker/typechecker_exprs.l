@@ -11024,19 +11024,23 @@ func invariantCheckerPath(tbl: in SymbolTable, sym: in Symbol): Option[String] {
   )
 }
 
-/// A record, exposed record or opaque type, generic or not: the kinds that can carry `invariant:` clauses (whether
-/// one does is whether its checker exists).
-func symbolIsInvariantCandidate(sym: in Symbol): Bool {
+func symbolIsNonGenericInvariantType(sym: in Symbol): Bool {
   match sym.kind {
-    case DKRecord(_, _) -> true
-    case DKExposedRec(_, _) -> true
-    case DKOpaque(_, _) -> true
+    case DKRecord(_, rd) -> genericsAbsent(rd.generics)
+    case DKExposedRec(_, rd) -> genericsAbsent(rd.generics)
+    case DKOpaque(_, od) -> genericsAbsent(od.generics)
     case _ -> false
   }
 }
 
-/// The invariant-bearing types, generic ones included (the checker of a generic type takes its type arguments
-/// from the value it is given), a public function's signature can
+func genericsAbsent(g: in Option[GenericParams]): Bool {
+  match g {
+    case None -> true
+    case Some(_) -> false
+  }
+}
+
+/// The non-generic invariant-bearing types a public function's signature can
 /// name, keyed by the name a signature spells (`Url`, `Std.Http.Url`), valued
 /// by the dotted path of the type's checker.  `imported` selects the types
 /// declared in another package (the public-boundary parameter and result
@@ -11059,7 +11063,7 @@ pub func invariantBoundaryTypes(tbl: in SymbolTable, imported: in Bool): Map[Str
       i = i + 1
       continue
     }
-    if sym.isImported == imported and symbolIsInvariantCandidate(sym) {
+    if sym.isImported == imported and symbolIsNonGenericInvariantType(sym) {
       match invariantCheckerPath(tbl, sym) {
         case Some(path) -> {
           if not found.containsKey(sym.name) {

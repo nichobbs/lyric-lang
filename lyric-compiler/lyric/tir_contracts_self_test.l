@@ -439,6 +439,102 @@ test "a public function checks an in parameter of another package's invariant ty
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }
 
+val genInvSrc: String = "package App\nrecord Cell[T] {\n  n: Int\n  tag: T\n  invariant: n >= 0\n}\npub func mkCell(a: Int): Cell[Int] { Cell(n = a, tag = a) }\npub func bumpCell(c: inout Cell[Int]): Unit { c = Cell(n = 1, tag = 2) }\npub func takeCell[T](c: in Cell[T]): Int { c.n }\n"
+
+func genInvBuild(): (PackageBuild, DefPathInterner) {
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(genInvSrc).file)).file
+  val cr = check(file);
+  (buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App"), cr.symbols.interner)
+}
+
+func checkerCallTypeArgs(d: in TFnDecl): Int {
+  var found = -1
+  match d.body {
+    case Some(b) -> match b.kind {
+      case XBlock(stmts, _) -> {
+        for st in stmts {
+          match st.kind {
+            case TsExpr(x) -> match x.kind {
+              case XCall(Direct(_, targs), _) -> if found < 0 { found = targs.count }
+              case _ -> ()
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  found
+}
+
+test "a generic invariant type is checked at the exit of a public function, at the value's type arguments (D507, #7222)" {
+  val (pb, interner) = genInvBuild()
+  assertEqualInt(
+    pb.failed.count,
+    0,
+    if pb.failed.count > 0 and pb.failed[0].messages.count > 0 { pb.failed[0].messages[0] } else { "built" }
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(pb)
+  val done = elaborateBundle(interner, bundle, true)
+  val mk = match funcOf(done[0], "mkCell") { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+  val ms = messagesOfFn(mk)
+  assertEqualInt(ms.count, 1, "one exit check on mkCell")
+  assertTrue(ms[0] == "InvariantViolated: App.mkCell result", ms[0])
+  val bump = match funcOf(done[0], "bumpCell") { case Some(f) -> f; case None -> pb.pkg.funcs[0] }
+  val bs = messagesOfFn(bump)
+  assertEqualInt(bs.count, 1, "one exit check on bumpCell")
+  assertTrue(bs[0] == "InvariantViolated: App.bumpCell parameter c", bs[0])
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+}
+
+test "a public generic function checks a generic invariant parameter of another package on entry, at the value's arguments (D507, #7222)" {
+  val (pb, interner) = genInvBuild()
+  val libFns: List[TFnDecl] = newList()
+  val appFns: List[TFnDecl] = newList()
+  for f in pb.pkg.funcs {
+    val key = match mapGet(pb.names, f.sym.id) { case Some(k) -> k; case None -> "" }
+    if key.startsWith("App::__lyric_checked_") {
+      libFns.add(f)
+    } else {
+      appFns.add(f)
+    }
+  }
+  val lib = PackageBuild(
+    pkg = TPackage(name = "Lib", symbols = pb.pkg.symbols, funcs = libFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val app = PackageBuild(
+    pkg = TPackage(name = "App", symbols = pb.pkg.symbols, funcs = appFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(app)
+  val visible: List[PackageBuild] = newList()
+  visible.add(lib)
+  val done = elaborateBundleWith(interner, bundle, true, visible)
+  val take = match funcOf(done[0], "takeCell") { case Some(f) -> f; case None -> appFns[0] }
+  assertTrue(firstStmtIsDirectCall(take), "the checker is called before the body")
+  assertEqualInt(checkerCallTypeArgs(take), 1, "at the one type argument of the parameter's type")
+  val ds = verifyPackage(done[0].pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
+}
+
 test "a protected type's invariant is asserted at the exit of each member, with contracts on or off (D509)" {
   val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  entry bump(by: in Int): Unit {\n    level = level + by\n  }\n  func read(): Int {\n    level\n  }\n}\n"
   val file = renumberNodeIds(parse(src).file).file

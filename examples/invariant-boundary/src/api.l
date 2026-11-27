@@ -21,17 +21,3 @@ pub func breakInPlace(c: inout Counter) {
 pub func untouched(c: inout Counter): Int {
   c.count
 }
-
-pub func readCell[T](c: in Cell[T]): Int {
-  c.n
-}
-
-pub func makeBrokenCell(): Cell[String] {
-  val c = newCell(1, "x")
-  c.n = -4
-  c
-}
-
-pub func breakCell(c: inout Cell[String]) {
-  c.n = -6
-}
