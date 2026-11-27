@@ -9,4 +9,4 @@
 
 ## Effect
 
-`--target native` conforms to docs/01 §6.2 and docs/08 §7.1 for generic types; the other two targets follow when they lower from TIR.
+The TIR contracts pass conforms to docs/01 §6.2 and docs/08 §7.1 for generic types, verified by the TIR self-tests (the verifier accepts each call against the checker's signature). No target enforces it at run time yet: native lowers a function that mentions a generic record instance from the AST path until its TIR lowering covers those instances (#9370), and dotnet and the JVM follow when they lower from TIR.
