@@ -188,7 +188,10 @@ func withInheritedDefaults(
           // Marked, so the target's fields stay out of the copy's scope
           // (`inheritedDefaultAnnotationName`, #8264).
           val marked = withMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName(), fn.span)
-          newMembers.add(IMplFunc(fn = inheritedCopy(decl, ifaceDecl, fn).copy(annotations = marked)))
+          // The copy keeps the interface member's body but not its span: member lookups match a signature by span, and
+          // two members of one span (the interface's and this copy) are one to them (#9454).
+          val copySpan = Span(startPos = decl.span.startPos, endPos = fn.span.endPos)
+          newMembers.add(IMplFunc(fn = inheritedCopy(decl, ifaceDecl, fn).copy(annotations = marked, span = copySpan)))
           changed = true
         }
       }
