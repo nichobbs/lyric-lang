@@ -2616,7 +2616,7 @@ func patTestU(c: in LCtx, u: in UnionScrut, pat: in TPat): Val {
               case NVoid -> c.problems.add("a pattern on a Unit field")
               case _ -> {
                 val fv = loadCaseField(c, u, cr, i)
-                acc = andV(c, acc, patTest(c, args[i], fv, args[i].ty))
+                acc = andV(c, acc, patTestAny(c, args[i], fv, args[i].ty))
               }
             }
           }
@@ -2677,13 +2677,26 @@ func patBindU(c: in LCtx, u: in UnionScrut, pat: in TPat): Unit {
                 }
               }
             }
-            case _ -> ()
+            case _ -> if patBinds(args[i]) {
+              match u.lay.cases[cr.index].fieldTys[i] {
+                case NVoid -> c.problems.add("a binding under a pattern on a Unit field")
+                case _ -> patBindAny(c, args[i], loadCaseField(c, u, cr, i), args[i].ty)
+              }
+            }
           }
           i = i + 1
         }
       }
     }
     case _ -> ()
+  }
+}
+
+/// `patBind` on a value that may itself be a registered union (a case pattern under another).
+func patBindAny(c: in LCtx, pat: in TPat, v: in Val, ty: in Ty): Unit {
+  match unionOfTy(c, ty) {
+    case Some(ul) -> patBindU(c, openUnion(c, ul, v), pat)
+    case None -> patBind(c, pat, v)
   }
 }
 
