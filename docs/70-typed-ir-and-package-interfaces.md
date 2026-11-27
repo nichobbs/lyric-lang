@@ -1031,6 +1031,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Equality (D515): `==`/`!=` on a tuple or union holding an array, in a record leaf or directly, is a match over its parts and cases on TIR; only a leaf path through a generic record keeps the single `IoEq`.
   - Verifier (D517): `CvUpcast` must name the interface its node's type is, before and after monomorphisation.
   - Contracts (D519): the TIR pass checks generic invariant types at the public boundary, at the value's type arguments; no target enforces it at run time yet (native falls back for generic record instances, #9370; dotnet and JVM use the AST path).
+  - Mono (D518): each generic impl is matched against an instance once (a per-impl cursor), not once per pass.
 
 3b can run in parallel with 3a; 3c needs 3a.
 
