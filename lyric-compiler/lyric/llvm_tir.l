@@ -2608,7 +2608,30 @@ func patTestU(c: in LCtx, u: in UnionScrut, pat: in TPat): Val {
         c.insns.add(
           NICmp(dest = eq, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = cr.index.toLong(), ty = NI32))
         )
-        var acc = Val(ty = NI1, value = NLocal(name = eq))
+        // A sub-pattern that dereferences a reference field (a nested union, a string) runs only when the
+        // discriminant selected this case: another case's payload is not a pointer to such an object.
+        var guarded = false
+        var gi = 0
+        while gi < args.count {
+          if subPatTests(args[gi]) and isRefN(u.lay.cases[cr.index].fieldTys[gi]) {
+            guarded = true
+          }
+          gi = gi + 1
+        }
+        var testL = ""
+        var doneL = ""
+        var slot = ""
+        if guarded {
+          testL = newLabel(c, "pat.fields")
+          doneL = newLabel(c, "pat.done")
+          c.ticker.add(0)
+          slot = "pat.slot." + toString(c.ticker.count)
+          c.allocas.add(NAlloca(dest = slot, ty = NI1))
+          c.insns.add(NStore(ty = NI1, value = NLitInt(v = 0i64, ty = NI1), ptr = NLocal(name = slot)))
+          c.insns.add(NCondBr(cond = NLocal(name = eq), thenLabel = testL, elseLabel = doneL))
+          startBlock(c, testL)
+        }
+        var acc = if guarded { trueV() } else { Val(ty = NI1, value = NLocal(name = eq)) }
         var i = 0
         while i < args.count {
           if subPatTests(args[i]) {
@@ -2622,7 +2645,16 @@ func patTestU(c: in LCtx, u: in UnionScrut, pat: in TPat): Val {
           }
           i = i + 1
         }
-        acc
+        if guarded {
+          c.insns.add(NStore(ty = NI1, value = acc.value, ptr = NLocal(name = slot)))
+          c.insns.add(NBr(label = doneL))
+          startBlock(c, doneL)
+          val joined = tmp(c)
+          c.insns.add(NLoad(dest = joined, ty = NI1, ptr = NLocal(name = slot)))
+          Val(ty = NI1, value = NLocal(name = joined))
+        } else {
+          acc
+        }
       }
     }
     case TpOr(alts) -> {
@@ -5821,6 +5853,14 @@ func patBinds(pat: in TPat): Bool {
     }
     case TpOr(alts) -> {
       for a in alts {
+        if patBinds(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TpCtor(_, args) -> {
+      for a in args {
         if patBinds(a) {
           return true
         }
