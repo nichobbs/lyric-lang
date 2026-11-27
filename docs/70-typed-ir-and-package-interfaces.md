@@ -1030,6 +1030,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Mono (D516): an upcast to an instance of a generic interface names the instance, as `Callee.Interface` does.
   - Equality (D515): `==`/`!=` on a tuple or union holding an array, in a record leaf or directly, is a match over its parts and cases on TIR; only a leaf path through a generic record keeps the single `IoEq`.
   - Verifier (D517): `CvUpcast` must name the interface its node's type is, before and after monomorphisation.
+  - Contracts (D519): the TIR pass checks generic invariant types at the public boundary, at the value's type arguments; no target enforces it at run time yet (native falls back for generic record instances, #9370; dotnet and JVM use the AST path).
   - Mono (D518): each generic impl is matched against an instance once (a per-impl cursor), not once per pass.
   - Members (D880): methods and field defaults of an `exposed record` build as members, like a record's (D512's "not built as members yet").
 
