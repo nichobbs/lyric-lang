@@ -48,7 +48,7 @@ for c in "${cases[@]}"; do
     printf '%s\n' "$prelude"
     printf 'func main(): Unit {\n  val r: %s = %s\n  println(toString(r))\n}\n' "$ty" "$expr"
   } > "$src"
-  "$lyric_bin" build --target native "$src" -o "$work/$name.ast" >/dev/null
+  "$lyric_bin" build --target native --no-via-tir "$src" -o "$work/$name.ast" >/dev/null
   "$lyric_bin" build --target native --via-tir "$src" -o "$work/$name.tir" 2> "$work/$name.census" >/dev/null
   if grep -q '^  fallback:' "$work/$name.census"; then
     cat "$work/$name.census"
@@ -89,7 +89,7 @@ func main(): Unit {
   println(toString(-idI(2147483647)))
 }
 LYRICSRC
-"$lyric_bin" build --target native "$src" -o "$work/inrange.ast" >/dev/null
+"$lyric_bin" build --target native --no-via-tir "$src" -o "$work/inrange.ast" >/dev/null
 "$lyric_bin" build --target native --via-tir "$src" -o "$work/inrange.tir" 2> "$work/inrange.census" >/dev/null
 cat "$work/inrange.census"
 "$work/inrange.ast" > "$work/inrange.ast.out"

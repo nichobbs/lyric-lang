@@ -29,11 +29,17 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir.Mono as TirMono
 
-/// Whether the TIR lowering is requested: `lyric build --target native
-/// --via-tir` sets `LYRIC_NATIVE_VIA_TIR=1` for the build, and CI sets it
-/// directly (docs/70 phase 4a, D520).
+/// Whether the TIR lowering is on: it is the default (docs/70 phase 4a, D859), each function it does not cover
+/// staying on the AST path; `lyric build --target native --no-via-tir` or `LYRIC_NATIVE_VIA_TIR=0` turns it off
+/// for the build (the baseline of the typed-IR tests, and a bisection aid).
 pub func viaTirRequested(): Bool {
-  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1"
+  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") != "0"
+}
+
+/// Whether the census is printed after the build: `--via-tir` (`LYRIC_NATIVE_VIA_TIR=1`) or the trace asks for it;
+/// the default build keeps stderr as quiet as the AST path did.
+pub func tirCensusRequested(): Bool {
+  Environment.getVarOrDefault("LYRIC_NATIVE_VIA_TIR", "") == "1" or tirTraceRequested()
 }
 
 /// `LYRIC_NATIVE_TIR_SKIP=a,b`: the functions (bare names) that stay on the AST path, for
@@ -1897,6 +1903,9 @@ func opName(op: in IntrinsicOp): String {
 func lowerBinary(
   c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue, b: in NValue, line: in Int
 ): Val {
+  if isAggN(nty) {
+    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
   val flt = isFloatTy(ty)
   val uns = isUnsignedTy(ty)
   match icmpPred(op, uns) {
@@ -2985,6 +2994,31 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               }
             }
           }
+          // An array element passed by reference beside another by-reference argument may alias it (the
+          // element and its array): D179 copies the element in and out around the call, which this lowering
+          // does not yet do, so the function stays on the AST path.
+          var byRefCount = 0
+          var elemByRef = false
+          for a in args {
+            val place = match a {
+              case TArgIn(_) -> None
+              case TArgOut(pl) -> Some(value = pl)
+              case TArgInout(pl) -> Some(value = pl)
+            }
+            match place {
+              case Some(pl) -> {
+                byRefCount = byRefCount + 1
+                match pl.kind {
+                  case PlIndex(_, _, how) -> match how { case IkArray -> { elemByRef = true }; case _ -> () }
+                  case _ -> ()
+                }
+              }
+              case None -> ()
+            }
+          }
+          if elemByRef and byRefCount > 1 {
+            return unsupported(c, "an array element passed by reference beside another by-reference argument")
+          }
           // A reference passed `in` beside a by-reference argument may be the very cell the callee
           // writes: it is held for the call so the write cannot free what the callee still reads.
           val held: List[Val] = newList()
@@ -3518,7 +3552,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     case None -> ()
   }
   match lowerStringMethod(c, name, ins) {
-    case Some(v) -> return v
+    case Some(v) -> if (name == "String.indexOf" or name == "String.lastIndexOf") and isOptionResult(c, rty) {
+      return indexAsOption(c, rty, v)
+    } else {
+      return v
+    }
     case None -> ()
   }
   match lowerWrapping(c, name, ins) {
@@ -3541,11 +3579,12 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   // placeholder a later `out` argument or assignment replaces, releasing nothing).
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
-      case Some(nt) -> match nt {
-        case NPtr(_) -> return Val(ty = nt, value = zeroOf(nt))
-        case NDouble -> return Val(ty = nt, value = zeroOf(nt))
-        case NFloat -> return Val(ty = nt, value = zeroOf(nt))
-        case _ -> if isIntegerN(nt) or isScalarN(nt) { return Val(ty = nt, value = zeroOf(nt)) }
+      case Some(nt) -> {
+        // A numeric or boolean scalar; a `String` is the empty string, and a record, list or union has no
+        // zero value here, so those stay on the AST path.
+        if isScalarN(nt) {
+          return Val(ty = nt, value = zeroOf(nt))
+        }
       }
       case None -> ()
     }
@@ -3580,6 +3619,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return unitVal()
   }
   if name == "toString" or Str.endsWith(name, ".toString") {
+    // An enum prints its case name, which the AST path's name table supplies; the ordinal is not it.
+    match arg.ty {
+      case TNamed(sym, _) -> if c.env.enums.containsKey(sym.id) { return unsupported(c, "toString of an enum") }
+      case _ -> ()
+    }
     val a = lowerExpr(c, arg)
     if isStringN(a.ty) {
       return a
@@ -4411,6 +4455,9 @@ func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option
       return None
     }
   }
+  if indexProvenInRange(c, idx, n) {
+    return Some(value = v.value)
+  }
   val ok = tmp(c)
   c.insns.add(NICmp(dest = ok, pred = IUlt, ty = NI32, a = v.value, b = NLitInt(v = n.toLong(), ty = NI32)))
   val okL = newLabel(c, "arr.in")
@@ -4421,6 +4468,44 @@ func arrayIndexValue(c: in LCtx, idx: in TExpr, n: in Int, line: in Int): Option
   c.insns.add(NBr(label = okL))
   startBlock(c, okL)
   Some(value = v.value)
+}
+
+/// Whether the index's own type or value proves it in `0 ..< n`: an integer literal, or a value
+/// of a range subtype (a distinct type or a refinement, unwrapped to the integer) whose bounds lie inside the
+/// array.  No bounds check is emitted for it.
+func indexProvenInRange(c: in LCtx, idx: in TExpr, n: in Int): Bool {
+  match idx.kind {
+    case XLit(TLInt(v)) -> v >= 0i64 and v < n.toLong()
+    case XConvert(kind, inner) -> match kind {
+      case CvUnwrapDistinct(sym) -> match mapGet(c.env.distinctInfos, sym.id) {
+        case Some(d) -> d.hasRange and not d.isFloat and
+          not d.unsigned and
+          d.lo >= 0i64 and
+          d.hi < n.toLong()
+        case None -> false
+      }
+      case CvUnrefine -> match inner.ty {
+        case TRefined(_, lo, hi, hiInclusive) -> match lo {
+          case Some(l) -> match hi {
+            case Some(h) -> l >=
+              0i64 and
+              (
+                if hiInclusive {
+                  h < n.toLong()
+                } else {
+                  h <= n.toLong()
+                }
+              )
+            case None -> false
+          }
+          case None -> false
+        }
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 /// `&arr[idx]` for the inline array at `base`.
@@ -4881,6 +4966,44 @@ func lowerStringMethod(c: in LCtx, name: in String, ins: in List[TExpr]): Option
   None
 }
 
+/// Whether `t` is a registered `Option` instance (the type of `s.indexOf(x)` once `Std.String` is imported).
+func isOptionResult(c: in LCtx, t: in Ty): Bool {
+  match t {
+    case TNamed(sym, a) -> a.count == 0 and c.env.unions.containsKey(sym.id)
+    case _ -> false
+  }
+}
+
+/// `Some(i)` for a found index and `None` for the runtime's `-1` sentinel, as the `Option[Int]` instance `rty`.
+func indexAsOption(c: in LCtx, rty: in Ty, raw: in Val): Val {
+  val inst = match rty { case TNamed(sym, _) -> sym; case _ -> return raw }
+  val ul = match mapGet(c.env.unions, inst.id) { case Some(u) -> u; case None -> return raw }
+  val someRef = TirCaseRef(unionId = inst.id, index = 0)
+  val noneRef = TirCaseRef(unionId = inst.id, index = 1)
+  val miss = icmpV(c, ISlt, NI32, raw.value, intLit(NI32, 0i64))
+  val noneL = newLabel(c, "indexof.none")
+  val someL = newLabel(c, "indexof.some")
+  val joinL = newLabel(c, "indexof.join")
+  c.ticker.add(0)
+  val slot = "indexof.slot." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = slot, ty = ul.ty))
+  c.insns.add(NCondBr(cond = miss, thenLabel = noneL, elseLabel = someL))
+  startBlock(c, noneL)
+  val noneV = buildCaseFromVals(c, noneRef, ul, newList())
+  c.insns.add(NStore(ty = ul.ty, value = noneV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, someL)
+  val someVals: List[Val] = newList()
+  someVals.add(raw)
+  val someV = buildCaseFromVals(c, someRef, ul, someVals)
+  c.insns.add(NStore(ty = ul.ty, value = someV.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, joinL)
+  val joined = tmp(c)
+  c.insns.add(NLoad(dest = joined, ty = ul.ty, ptr = NLocal(name = slot)))
+  Val(ty = ul.ty, value = NLocal(name = joined), owned = ul.inline == false)
+}
+
 /// `a.wrappingAdd(b)`, `.wrappingSub`, `.wrappingMul` and `.wrappingNeg()` on an integer: the plain two's
 /// complement operation whatever the build profile (D163), so none of the overflow checks `lowerBinary` adds.
 func lowerWrapping(c: in LCtx, name: in String, ins: in List[TExpr]): Option[Val] {
@@ -4933,6 +5056,29 @@ func lowerNumericConversion(c: in LCtx, name: in String, ins: in List[TExpr], li
   // always on); TIR does not carry that rewrite until phase 3c, so the function stays on the AST path.
   if from == "ULong" and (method == "toLong" or method == "toDouble" or method == "toFloat") {
     return None
+  }
+  // Everything that returns None is settled before the operand is lowered: the caller lowers it again,
+  // so a lowering here would run a call in it twice.
+  val converts = method == "toFloat" or method == "toDouble" or method == "toLong" or method == "toInt" or
+    method == "toByte" or
+    method == "toULong" or
+    method == "toUInt" or
+    method == "toNat" or
+    method == "toChar"
+  if not converts {
+    return None
+  }
+  match tyToN(c.env, ins[0].ty) {
+    case None -> return None
+    case Some(pt) -> {
+      val pIsFloat = match pt { case NFloat -> true; case NDouble -> true; case _ -> false }
+      if not (pIsFloat or bitsOf(pt) > 0) {
+        return None
+      }
+      if pIsFloat and (method == "toULong" or method == "toUInt") {
+        return None
+      }
+    }
   }
   val unsigned = from == "UInt" or from == "ULong" or from == "Byte"
   val v0 = borrow(c, lowerExpr(c, ins[0]))

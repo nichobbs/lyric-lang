@@ -20193,6 +20193,22 @@ func memberMentionsInvariant(maps: in TirUnitMaps, d: in Tir.TFnDecl): Bool {
   false
 }
 
+/// Whether some member of the protected type `owner` of `pkg` has a `when:` barrier.
+func typeHasBarrierMember(input: in LlvmTir.TirUnitInput, pkg: in String, owner: in String): Bool {
+  for g in input.pkg.funcs {
+    if isSomeExpr(g.barrier) {
+      match mapGet(input.names, g.sym.id) {
+        case Some(k) -> match LlvmTir.tirTypeMember(k) {
+          case Some(m) -> if m.pkg == pkg and m.owner == owner { return true }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+  }
+  false
+}
+
 /// The lowering of `fn` from TIR, tried before the AST lowering: `sig` is the signature the AST
 /// path would give it, and None means the function stays on the AST path (the reason is in the
 /// census).  A function the AST lowering cannot lower at all (a record pattern) is reached this way.
@@ -20219,8 +20235,10 @@ func tirTry(ctx: in Ctx, u: in CodegenUnit, maps: in TirUnitMaps, fn: in Functio
             case None -> ()
             case Some(tm) -> {
               // A protected entry or function is lowered as `Type.name.__inner`, its body without
-              // the lock the AST path's wrapper takes; a `when:` barrier keeps the AST path.
-              if parts.length == 3 and parts[2] == "__inner" and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity and not isSomeExpr(f.barrier) {
+              // the lock the AST path's wrapper takes; a `when:` barrier keeps the AST path, and so does every
+              // member of a type that has one (a member's exit wakes the entries waiting on the barrier, which
+              // the AST path's elaboration adds and TIR does not carry yet).
+              if parts.length == 3 and parts[2] == "__inner" and tm.pkg == u.pkgName and tm.owner == parts[0] and tm.name == parts[1] and f.params.count == arity and not isSomeExpr(f.barrier) and not typeHasBarrierMember(input, tm.pkg, tm.owner) {
                 decl = Some(value = f)
                 isMember = true
               }
