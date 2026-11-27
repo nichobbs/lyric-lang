@@ -391,6 +391,7 @@ func boundaryTypeKey(t: in TypeExpr, selfType: in Option[TypeExpr] = None): Opti
       }
       Some(value = Str.joinList(".", parts))
     }
+    case TGenericApp(head, _) -> Some(value = Str.joinList(".", head.segments))
     case TSelf -> match selfType { case Some(st) -> boundaryTypeKey(st, None); case None -> None }
     case TParen(inner) -> boundaryTypeKey(inner, selfType)
     case _ -> None
@@ -404,7 +405,19 @@ func boundaryChecker(m: in Map[String, String], t: in TypeExpr, selfType: in Opt
   }
 }
 
-func checkerCall(checker: in String, arg: in Expr, sp: in Span): Expr {
+/// The type arguments a signature type spells (`Cell[String]` -> `[String]`), which a generic type's checker is called
+/// at: written out, the call needs nothing inferred from the value, which the elaborator's inserted call has no
+/// recorded type arguments for.
+func boundaryTypeArgs(t: in TypeExpr, selfType: in Option[TypeExpr] = None): List[TypeArg] {
+  match t.kind {
+    case TGenericApp(_, args) -> args
+    case TSelf -> match selfType { case Some(st) -> boundaryTypeArgs(st, None); case None -> newList() }
+    case TParen(inner) -> boundaryTypeArgs(inner, selfType)
+    case _ -> newList()
+  }
+}
+
+func checkerCall(checker: in String, arg: in Expr, sp: in Span, targs: in List[TypeArg]): Expr {
   val parts = Str.split(checker, ".")
   val segs: List[String] = newList()
   var i = 0
@@ -412,7 +425,8 @@ func checkerCall(checker: in String, arg: in Expr, sp: in Span): Expr {
     segs.add(parts[i])
     i = i + 1
   }
-  val callee = mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
+  val path = mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
+  val callee = if targs.count > 0 { mkExpr(ETypeApp(fn = path, args = targs), sp) } else { path }
   val args: List[CallArg] = newList()
   args.add(CAPositional(expr = arg))
   mkExpr(ECall(fn = callee, args = args), sp)
@@ -420,9 +434,9 @@ func checkerCall(checker: in String, arg: in Expr, sp: in Span): Expr {
 
 // `{ checker(arg); true }`: an ensures expression whose evaluation runs the
 // checker (which panics on a violation) and holds otherwise.
-func checkerHolds(checker: in String, arg: in Expr, sp: in Span): Expr {
+func checkerHolds(checker: in String, arg: in Expr, sp: in Span, targs: in List[TypeArg]): Expr {
   val stmts: List[Statement] = newList()
-  stmts.add(mkStmt(SExpr(expr = checkerCall(checker, arg, sp)), sp))
+  stmts.add(mkStmt(SExpr(expr = checkerCall(checker, arg, sp, targs)), sp))
   stmts.add(mkStmt(SExpr(expr = mkExpr(ELiteral(lit = LBool(value = true)), sp)), sp))
   mkExpr(EBlock(block = Block(statements = stmts, span = sp)), sp)
 }
@@ -441,7 +455,7 @@ func boundaryEntryChecks(
       match boundaryChecker(b.foreign, p.ty, selfType) {
         case Some(checker) -> {
           val arg = mkPath(p.name, p.span)
-          acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span)), p.span))
+          acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span, boundaryTypeArgs(p.ty, selfType))), p.span))
         }
         case None -> ()
       }
@@ -475,7 +489,7 @@ func boundaryExitChecks(
       match checker {
         case Some(c) -> acc.add(
           SpannedExpr(
-            expr = checkerHolds(c, mkPath(p.name, p.span), p.span),
+            expr = checkerHolds(c, mkPath(p.name, p.span), p.span, boundaryTypeArgs(p.ty, selfType)),
             span = p.span,
             message = "InvariantViolated: " + owner + " parameter " + p.name
           )
@@ -498,7 +512,7 @@ func boundaryExitChecks(
       match checker {
         case Some(c) -> acc.add(
           SpannedExpr(
-            expr = checkerHolds(c, mkExpr(EResult, sp), sp),
+            expr = checkerHolds(c, mkExpr(EResult, sp), sp, boundaryTypeArgs(rt, selfType)),
             span = sp,
             message = "InvariantViolated: " + owner + " result"
           )
