@@ -75,12 +75,8 @@ func runFor(target: in String, lib: in String, app: in String): Capture.CaptureR
   build.add("--manifest")
   build.add(Path.join(dir, "lib/lyric.toml"))
   val lyric = Path.join(Environment.currentDirectory(), "bin/lyric")
-  // A native build compiles a path dependency from source, so there is no library to build first (and a
-  // library with no `main` is not an executable).
-  if target != "native" {
-    val built = Capture.runCaptureWithDiagnosticsTimeout(lyric, build, "", 300000)
-    assertEqualInt(built.exitCode, 0, "the library builds:\n" + built.stderr)
-  }
+  val built = Capture.runCaptureWithDiagnosticsTimeout(lyric, build, "", 300000)
+  assertEqualInt(built.exitCode, 0, "the library builds:\n" + built.stderr)
   val args: List[String] = newList()
   args.add("run")
   args.add("--target")
@@ -126,7 +122,10 @@ func genericOverrideAppSource(): String {
 func expectGenericOverrideOutput(target: in String): Unit {
   val r = runFor(target, genericLibSource(), genericOverrideAppSource())
   assertEqualInt(r.exitCode, 0, "the overriding consumer runs on " + target + ":\n" + r.stderr)
-  assertTrue(Str.contains(r.stdout, "18\n10\n2\n"), "the overriding consumer's output on " + target + ", got:\n" + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "18\n10\n2\n"),
+    "the overriding consumer's output on " + target + ", got:\n" + r.stdout
+  )
 }
 
 func expectOutput(target: in String): Unit {
@@ -165,15 +164,4 @@ test "an impl of another package's generic interface that defines every method r
 
 test "an impl of another package's generic interface that defines every method runs on the JVM" {
   expectGenericOverrideOutput("jvm")
-}
-
-test "an impl of another package's generic interface that defines every method runs on native" {
-  expectGenericOverrideOutput("native")
-}
-
-test "native names a default method of another package's interface an impl does not define" {
-  val r = runFor("native", libSource(), appSource())
-  assertTrue(r.exitCode != 0, "the build stops")
-  assertTrue(Str.contains(r.stderr, "N0106"), "the diagnostic is N0106, got:\n" + r.stderr)
-  assertTrue(Str.contains(r.stderr, "tagged"), "it names the method, got:\n" + r.stderr)
 }

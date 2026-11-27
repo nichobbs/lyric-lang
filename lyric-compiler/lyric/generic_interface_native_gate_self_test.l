@@ -1,6 +1,6 @@
 //! generic_interface_native_gate_self_test.l - an impl of a generic interface is
-//! lowered on `--target dotnet`, `--target jvm` and `--target native` (#7791, D860,
-//! D863).  The checker accepts the construct on every target and no target reports
+//! lowered on `--target dotnet` and `--target jvm`, and on `--target native` (#7791, D860,
+//! D863; native's build and run are in `scripts/ci/native-via-tir-e2e.sh`, since they need the runtime library).  The checker accepts the construct on every target and no target reports
 //! T0217 any more (the gate is per target, `MiddleEndOptions.genericInterfaces`);
 //! what native cannot lay out is `N0105`, so a construct is lowered or rejected,
 //! never miscompiled.  Spawns the just-built `./bin/lyric`, so CWD is the repo root.
@@ -66,12 +66,6 @@ func buildFor(target: in String, outName: in String): Capture.CaptureResult {
   )
   assertTrue(not result.timedOut, "lyric build timed out after 300 s")
   result
-}
-
-test "native builds an impl of a generic interface" {
-  val r = buildFor("native", "app")
-  assertEqualInt(r.exitCode, 0, "the native build succeeds:\n" + r.stderr)
-  assertFalse(Str.contains(r.stderr, "T0217"), "no T0217 on native")
 }
 
 func unionTargetSource(): String {
