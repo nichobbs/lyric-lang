@@ -3847,12 +3847,12 @@ func linkAndEmitNative(
     }
     tui = tui + 1
   }
-  if anyTir {
+  if anyTir and LlvmTir.tirCensusRequested() {
     for line in LlvmTir.tirCensusLines(tirTotal) {
       Console.error(line)
     }
   }
-  if anyBundledTir {
+  if anyBundledTir and LlvmTir.tirCensusRequested() {
     for line in LlvmTir.tirCensusLines(tirBundled, " (bundled stdlib)") {
       Console.error(line)
     }

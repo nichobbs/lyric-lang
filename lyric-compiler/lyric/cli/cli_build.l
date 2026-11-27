@@ -1504,6 +1504,12 @@ func cmdBuild(argv: in slice[String]): Int {
       sawViaTir = true
       Environment.setVar("LYRIC_NATIVE_VIA_TIR", "1")
       i += 1
+    } else if arg == "--no-via-tir" {
+      // The AST lowering for every function: the comparison baseline of the typed-IR tests and the way
+      // to bisect a miscompile of the typed-IR lowering; LYRIC_NATIVE_VIA_TIR=0 does the same.
+      sawViaTir = true
+      Environment.setVar("LYRIC_NATIVE_VIA_TIR", "0")
+      i += 1
     } else if arg == "--verify-ir" {
       // docs/70 §6.4: number the nodes and report the TIR census (I0002, I0003) after
       // the check; the pipeline reads the same switch from LYRIC_VERIFY_IR.
@@ -1659,7 +1665,7 @@ func cmdBuild(argv: in slice[String]): Int {
     match target {
       case Emitter.Native -> ()
       case _ -> {
-        printErr("build: --via-tir applies to --target native")
+        printErr("build: --via-tir and --no-via-tir apply to --target native")
         return 1
       }
     }
