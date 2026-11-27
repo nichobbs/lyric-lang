@@ -79,35 +79,41 @@ func genericRecv(typeSym: in SymbolId, memberSym: in SymbolId, count: in Int): T
   TNamed(sym = typeSym, args = args)
 }
 
+/// The members with a body of a record or exposed record `decl` (declared by `it`), appended to `res`.
+func addRecordMembers(
+  tbl: in SymbolTable, pkg: in String, it: in Item, decl: in RecordDecl, res: in List[MemberSite]
+): Unit {
+  val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
+  val owner = ownerOf(decl.name, tsym, decl.generics)
+  for m in decl.members {
+    match m {
+      case RMFunc(fn) -> if isSome(fn.body) {
+        res.add(
+          MemberSite(
+            name = decl.name + "." + fn.name,
+            fn = fn,
+            ownerName = decl.name,
+            recv = plainRecv(tsym, owner),
+            implTarget = None,
+            isEntry = false,
+            owner = owner,
+            isPublic = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          )
+        )
+      }
+      case _ -> ()
+    }
+  }
+}
+
 /// Every member of `file` with a body, in source order.
 pub func memberSites(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): List[MemberSite] {
   val res: List[MemberSite] = newList()
   val pkg = modulePathJoin(file.packageDecl.path.segments)
   for it in file.items {
     match it.kind {
-      case IRecord(decl) -> {
-        val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
-        val owner = ownerOf(decl.name, tsym, decl.generics)
-        for m in decl.members {
-          match m {
-            case RMFunc(fn) -> if isSome(fn.body) {
-              res.add(
-                MemberSite(
-                  name = decl.name + "." + fn.name,
-                  fn = fn,
-                  ownerName = decl.name,
-                  recv = plainRecv(tsym, owner),
-                  implTarget = None,
-                  isEntry = false,
-                  owner = owner,
-                  isPublic = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-                )
-              )
-            }
-            case _ -> ()
-          }
-        }
-      }
+      case IRecord(decl) -> addRecordMembers(tbl, pkg, it, decl, res)
+      case IExposedRec(decl) -> addRecordMembers(tbl, pkg, it, decl, res)
       case IProtected(decl) -> {
         val tsym = symTableTypeSymbolId(tbl, pkg, decl.name)
         val owner = ownerOf(decl.name, tsym, decl.generics)

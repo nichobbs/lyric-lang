@@ -4232,6 +4232,16 @@ test "== and != on a tuple or union holding an array are matches over their part
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a method declared in an exposed record builds as a member (D512)" {
+  val c = censusOf(
+    "package App\nexposed record P {\n  x: Int\n  func twice(self: in P): Int = self.x + self.x\n}\nfunc f(p: in P): Int { p.twice() }\n"
+  )
+  assertEqualInt(c.built, c.total, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "every body builds" })
+  assertTrue(c.total >= 2, "the member and the caller")
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "== on a record with a Double leaf and a distinct-over-Float array element uses the NaN rule (D172)" {
   val c = censusOf(
     "package App\ntype Metres = Float\nrecord D { x: Double\n ms: array[2, Metres] }\nfunc f(a: in D, b: in D): Bool { a == b }\n"
