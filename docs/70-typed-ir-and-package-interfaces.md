@@ -1030,6 +1030,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Mono (D516): an upcast to an instance of a generic interface names the instance, as `Callee.Interface` does.
   - Equality (D515): `==`/`!=` on a tuple or union holding an array, in a record leaf or directly, is a match over its parts and cases on TIR; only a leaf path through a generic record keeps the single `IoEq`.
   - Verifier (D517): `CvUpcast` must name the interface its node's type is, before and after monomorphisation.
+  - Mono (D518): each generic impl is matched against an instance once (a per-impl cursor), not once per pass.
 
 3b can run in parallel with 3a; 3c needs 3a.
 
