@@ -9252,10 +9252,7 @@ func ifaceSigTyOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
 /// instance's name like a generic record.  Mirrors `registerInterfaceNames` and `registerInterfaceTypes`, which
 /// lay out a non-generic interface in two phases because records refer to it; an instance is laid out on first use.
 func instantiateGenericIfaceOpt(ctx: in Ctx, gkey: in String, argTys: in List[NType]): Option[NIfaceInfo] {
-  val idecl = match mapGet(ctx.genericIfaceDefs, gkey) {
-    case Some(d) -> d
-    case None -> return None
-  }
+  val idecl = match mapGet(ctx.genericIfaceDefs, gkey) { case Some(d) -> d; case None -> return None }
   val instKey = instIrName(gkey, argTys)
   match mapGet(ctx.ifaceInfos, instKey) {
     case Some(existing) -> return Some(value = existing)
@@ -19167,6 +19164,33 @@ func sameSignature(a: in NFunc, b: in NFunc): Bool {
 /// the TIR path's input and the TIR lowering covers `fn` (docs/70 phase 4a, D520).  The
 /// IR name, linkage and attributes stay the AST path's; every function that stays on the
 /// AST path is counted in the unit's census with the reason.
+/// The case names of the enum `Pkg.Name`, in ordinal order, from the codegen's `Pkg.Name.Case` ordinals.
+func enumCaseNames(ctx: in Ctx, enumKey: in String): List[String] {
+  val prefix = enumKey + "."
+  val byOrdinal: Map[Int, String] = newMap()
+  for k in mapKeys(ctx.enumDefs) {
+    if Str.startsWith(k, prefix) {
+      val rest = Str.substring(k, prefix.length)
+      if not Str.contains(rest, ".") and not Str.startsWith(rest, "__") {
+        match mapGet(ctx.enumDefs, k) {
+          case Some(o) -> byOrdinal.add(o, rest)
+          case None -> ()
+        }
+      }
+    }
+  }
+  val names: List[String] = newList()
+  var i = 0
+  while i < byOrdinal.count {
+    match mapGet(byOrdinal, i) {
+      case Some(n) -> names.add(n)
+      case None -> names.add("")
+    }
+    i = i + 1
+  }
+  names
+}
+
 /// What the TIR lowering needs from the code generator for one unit, built once per unit: the
 /// IR name of each function symbol, and the layout of each record it registered.
 record TirUnitMaps {
@@ -19176,6 +19200,7 @@ record TirUnitMaps {
   cases: Map[Int, LlvmTir.TirCaseRef]
   enums: Map[Int, Bool]
   enumCases: Map[Int, Int]
+  enumNames: Map[Int, List[String]] = newMap()
   /// The distinct types, by symbol, as their underlying types, and what the lowering reads of each.
   distincts: Map[Int, NType] = newMap()
   distinctInfos: Map[Int, LlvmTir.TirDistinct] = newMap()
@@ -19694,6 +19719,7 @@ func tirUnitMaps(
   val unions: Map[Int, LlvmTir.TirUnionLayout] = newMap()
   val unionIds: Map[String, Int] = newMap()
   val enums: Map[Int, Bool] = newMap()
+  val enumNames: Map[Int, List[String]] = newMap()
   val distincts: Map[Int, NType] = newMap()
   val distinctInfos: Map[Int, LlvmTir.TirDistinct] = newMap()
   val enumCases: Map[Int, Int] = newMap()
@@ -19833,6 +19859,7 @@ func tirUnitMaps(
                     }
                     case None -> if ctx.enumDefs.containsKey(pkg + "." + rest + ".__enum") {
                       enums.add(id, true)
+                      enumNames.add(id, enumCaseNames(ctx, pkg + "." + rest))
                     }
                   }
                 }
@@ -19991,7 +20018,19 @@ func tirUnitMaps(
         case None -> ()
       }
     }
-    registerTirIfaceInstances(ctx, inputs[1], recs, unions, enums, distincts, ifaces, ifaceMethods, ifaceVts, ifaceInfoById, recIrById)
+    registerTirIfaceInstances(
+      ctx,
+      inputs[1],
+      recs,
+      unions,
+      enums,
+      distincts,
+      ifaces,
+      ifaceMethods,
+      ifaceVts,
+      ifaceInfoById,
+      recIrById
+    )
   }
   TirUnitMaps(
     fnNames = fnNames,
@@ -20000,6 +20039,7 @@ func tirUnitMaps(
     cases = cases,
     enums = enums,
     enumCases = enumCases,
+    enumNames = enumNames,
     distincts = distincts,
     distinctInfos = distinctInfos,
     intrinsics = intrinsics,
@@ -20321,6 +20361,7 @@ func lowerWithTuples(
       cases = maps.cases,
       enums = maps.enums,
       enumCases = maps.enumCases,
+      enumNames = maps.enumNames,
       distincts = maps.distincts,
       distinctInfos = maps.distinctInfos,
       instArgs = instArgsOf(maps.instInfos),
@@ -24303,7 +24344,13 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
 /// impl of an interface declared in the same file, but an interface declared in another package keeps its default
 /// out of the impl, and the vtable slot would name a function that does not exist (a clang `undefined value`).  That is
 /// `N0106` here, naming the method; protected types take their methods as entries and are skipped.
-func checkImplDefinesEveryMethod(ctx: in Ctx, pkg: in String, recordName: in String, decl: in ImplDecl, info: in NIfaceInfo): Unit {
+func checkImplDefinesEveryMethod(
+  ctx: in Ctx,
+  pkg: in String,
+  recordName: in String,
+  decl: in ImplDecl,
+  info: in NIfaceInfo,
+): Unit {
   if ctx.protectedRecNames.containsKey(pkg + "." + recordName) {
     return
   }
@@ -24324,9 +24371,15 @@ func checkImplDefinesEveryMethod(ctx: in Ctx, pkg: in String, recordName: in Str
     if not found {
       panic(
         "error[N0106] " + decl.span.startPos.line.toString() + ":" + decl.span.startPos.column.toString() +
-          ": this impl of '" + implIfaceName(decl.iface) + "' for '" + recordName + "' does not define '" + name +
+          ": this impl of '" +
+          implIfaceName(decl.iface) +
+          "' for '" +
+          recordName +
+          "' does not define '" +
+          name +
           "', a default method of an interface declared in another package: --target native does not inherit another package's default methods yet, so define '" +
-          name + "' in the impl"
+          name +
+          "' in the impl"
       )
     }
   }
@@ -24369,17 +24422,11 @@ func implIfaceInfo(ctx: in Ctx, pkg: in String, iface: in ConstraintRef): Option
     return mapGet(ctx.ifaceInfos, bare)
   }
   val joined = canonReexport(ctx, modulePathJoin(iface.head.segments))
-  val gkey = match resolveGenericIfaceKey(ctx, joined, bare) {
-    case Some(k) -> k
-    case None -> return None
-  }
+  val gkey = match resolveGenericIfaceKey(ctx, joined, bare) { case Some(k) -> k; case None -> return None }
   val argTys: List[NType] = newList()
   for a in iface.args {
     match a {
-      case TAType(te) -> match typeToNOptIn(ctx, pkg, te) {
-        case Some(t) -> argTys.add(t)
-        case None -> return None
-      }
+      case TAType(te) -> match typeToNOptIn(ctx, pkg, te) { case Some(t) -> argTys.add(t); case None -> return None }
       case TAValue(_) -> return None
     }
   }
