@@ -694,8 +694,8 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/w_keep.ll" lyric-rt/
 diff -u "$work/w_tir.out" "$work/w_asan.out"
 echo "wrapping: ok"
 
-# Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's
-# result check lower from TIR, the same output; a method of the record keeps the AST path.  A violated invariant
+# Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy`, a public function's
+# result and a public method's self check all lower from TIR (D512), the same output.  A violated invariant
 # panics with the same message on both paths.
 isrc=scripts/ci/native-via-tir/invariants.l
 "$lyric_bin" build --target native --no-via-tir "$isrc" -o "$work/i_ast" >/dev/null
@@ -705,8 +705,8 @@ cat "$work/i_census.txt"
 "$work/i_tir" > "$work/i_tir.out"
 diff -u "$work/i_ast.out" "$work/i_tir.out"
 printf '9\n6\n7\n' | diff -u - "$work/i_tir.out"
-grep -q '^native via-TIR: 5 of 6 functions lowered from TIR' "$work/i_census.txt" || {
-  echo "::error::expected every function of invariants.l but the method to be lowered from TIR"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/i_census.txt" || {
+  echo "::error::expected every function of invariants.l to be lowered from TIR"
   exit 1
 }
 sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(make(5, 1).hi))|' "$isrc" > "$work/invariants_violated.l"
