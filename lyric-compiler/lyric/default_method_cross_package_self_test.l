@@ -115,6 +115,19 @@ func expectGenericImplOutput(target: in String): Unit {
   )
 }
 
+func genericOverrideAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox {\n  func get(self: in IntBox): Int = self.v\n  func twice(self: in IntBox, x: in Int): Int = x + x\n}\nfunc main(): Int {\n  println(toString(IntBox(v = 1).twice(9)))\n  val h: Holder[Int] = IntBox(v = 2)\n  println(toString(h.twice(5)))\n  println(toString(h.get()))\n  0\n}\n"
+}
+
+func expectGenericOverrideOutput(target: in String): Unit {
+  val r = runFor(target, genericLibSource(), genericOverrideAppSource())
+  assertEqualInt(r.exitCode, 0, "the overriding consumer runs on " + target + ":\n" + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "18\n10\n2\n"),
+    "the overriding consumer's output on " + target + ", got:\n" + r.stdout
+  )
+}
+
 func expectOutput(target: in String): Unit {
   val r = runFor(target, libSource(), appSource())
   assertEqualInt(r.exitCode, 0, "the consumer runs on " + target + ":\n" + r.stderr)
@@ -143,4 +156,12 @@ test "a default method of another package's generic interface is called on a gen
 
 test "a default method of another package's generic interface is called on a generic implementor on the JVM" {
   expectGenericImplOutput("jvm")
+}
+
+test "an impl of another package's generic interface that defines every method runs on dotnet" {
+  expectGenericOverrideOutput("dotnet")
+}
+
+test "an impl of another package's generic interface that defines every method runs on the JVM" {
+  expectGenericOverrideOutput("jvm")
 }

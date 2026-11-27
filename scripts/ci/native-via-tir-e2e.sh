@@ -890,6 +890,40 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/g_tir.ll" lyric-rt/b
 diff -u "$work/g_tir.out" "$work/g_asan.out"
 echo "globals under AddressSanitizer: clean"
 
+# Generic interfaces (#7791, D863): `Holder[Int]`, `Holder[String]` and `Pair[Int, String]` laid out per
+# instantiation, impls of them for records, interface-typed parameters and bindings, a default method
+# called on the concrete record and through the interface, every function from TIR, the same output,
+# then under AddressSanitizer (the interface boxes are reference counted).
+gisrc=scripts/ci/native-via-tir/genericifaces.l
+"$lyric_bin" build --target native --no-via-tir "$gisrc" -o "$work/gi_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$gisrc" -o "$work/gi_tir" 2> "$work/gi_census.txt" >/dev/null
+cat "$work/gi_census.txt"
+"$work/gi_ast" > "$work/gi_ast.out"
+"$work/gi_tir" > "$work/gi_tir.out"
+diff -u "$work/gi_ast.out" "$work/gi_tir.out"
+printf '19\nab!\n7x\n4\n9\nw\n' | diff -u - "$work/gi_tir.out"
+grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/gi_census.txt" || {
+  echo "::error::expected every function of genericifaces.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/gi_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/gi_asan"
+"$work/gi_asan" > "$work/gi_asan.out"
+diff -u "$work/gi_tir.out" "$work/gi_asan.out"
+echo "generic interfaces under AddressSanitizer: clean"
+
+# An impl of a generic interface for a generic type is not laid out yet: the build stops with N0105
+# rather than producing a program whose interface calls have no vtable.
+if "$lyric_bin" build --target native "scripts/ci/native-via-tir/genericifaces_generic_impl.l" -o "$work/gi_bad" 2> "$work/gi_bad.txt" >/dev/null; then
+  echo "::error::an impl of a generic interface for a generic type built on native"
+  exit 1
+fi
+grep -q 'N0105' "$work/gi_bad.txt" || {
+  echo "::error::expected N0105 for an impl of a generic interface for a generic type"
+  cat "$work/gi_bad.txt"
+  exit 1
+}
+echo "generic interface impl for a generic type: N0105"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 
