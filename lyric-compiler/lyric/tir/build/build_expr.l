@@ -993,7 +993,8 @@ record EqCaseInfo {
 }
 
 /// Two unions compared case by case (D167): `match a { case C(x..) -> match b { case C(y..) -> x == y and ...; case _ -> false } ... }`.
-/// The cases are those the checker recorded, each named by the last segment of its written path.
+/// The cases are those the checker recorded (it records every case of the union), each named by the last segment of
+/// its written path, so the outer match is exhaustive.
 func unionEqCore(env: in BuildEnv, e: in Expr, cases: in List[EqUnionCase], a: in TExpr, b: in TExpr): Option[TExpr] {
   val ld = declareLocal(env, "__ueq_l" + toString(env.nextLocal[0] + 1), a.ty, false)
   val rd = declareLocal(env, "__ueq_r" + toString(env.nextLocal[0] + 1), b.ty, false)

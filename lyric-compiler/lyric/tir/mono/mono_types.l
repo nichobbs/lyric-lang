@@ -85,6 +85,9 @@ record MCtx {
   outImpls: List[TImplDecl] = newList()
   /// The generic impls already instantiated at an argument list, by `implKey`.
   implDone: Map[String, Bool] = newMap()
+  /// How many entries of `instList` each generic impl (by symbol id) has been matched against: instances are only
+  /// appended and a match depends on an instance's arguments alone, so a later pass resumes from here.
+  implCursor: Map[Int, Int] = newMap()
   /// The methods of each interface by its symbol id.
   ifaceMethods: Map[Int, List[SymbolId]] = newMap()
   /// How many entries of `work` have been produced, in slot 0.
