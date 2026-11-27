@@ -4232,6 +4232,26 @@ test "== and != on a tuple or union holding an array are matches over their part
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "== on a tuple with a Float part uses the NaN rule for that part and compares the array in a loop (D167, D172)" {
+  val c = censusOf("package App\nfunc f(a: in (Float, array[2, Int]), b: in (Float, array[2, Int])): Bool { a == b }\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  match c.pkg.funcs[0].body {
+    case Some(b) -> assertTrue(eqShape(b) == "m(m(and(or(eq,and(not(eq),not(eq))),ok)))", eqShape(b))
+    case None -> assertTrue(false, "builds")
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "== on a generic record holding a tuple with an array builds and verifies, never an I0002 (D515)" {
+  val c = censusOf(
+    "package App\nrecord Box[T] { t: (T, array[2, Int]) }\nfunc f(a: in Box[Int], b: in Box[Int]): Bool { a == b }\n"
+  )
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "== on a record with a Double leaf and a distinct-over-Float array element uses the NaN rule (D172)" {
   val c = censusOf(
     "package App\ntype Metres = Float\nrecord D { x: Double\n ms: array[2, Metres] }\nfunc f(a: in D, b: in D): Bool { a == b }\n"

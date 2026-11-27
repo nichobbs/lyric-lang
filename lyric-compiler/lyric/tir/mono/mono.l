@@ -220,7 +220,7 @@ func instantiateImpls(c: in MCtx): Unit {
       if im.typeParams.count > 0 {
         match im.target {
           case TNamed(tsym, targs) -> {
-            var k = 0
+            var k = match mapGet(c.implCursor, im.sym.id) { case Some(n) -> n; case None -> 0 }
             while k < c.instList.count {
               val ii = c.instList[k]
               k = k + 1
@@ -249,6 +249,10 @@ func instantiateImpls(c: in MCtx): Unit {
                 }
               }
             }
+            if c.implCursor.containsKey(im.sym.id) {
+              c.implCursor.remove(im.sym.id)
+            }
+            c.implCursor.add(im.sym.id, k)
           }
           case _ -> {
             if not c.implDone.containsKey("#" + toString(im.sym.id)) {
