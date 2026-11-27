@@ -4242,6 +4242,29 @@ test "a method declared in an exposed record builds as a member (D512)" {
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+test "a field default of an exposed record is carried for the packages that construct it (D880)" {
+  val file = renumberNodeIds(parse("package App\nexposed record Q {\n  x: Int\n  y: Int = 7\n}\nrecord R {\n  z: Int = 3\n}\n").file).file
+  val cr = check(file)
+  val defaults = buildPackageDefaults(newTyConvCtx(cr.symbols), cr.symbols, file)
+  assertEqualInt(defaults.count, 2, "one entry per record with a default: " + joinKeys(mapKeys(defaults)))
+  var carriesY = false
+  for k in mapKeys(defaults) {
+    match mapGet(defaults, k) {
+      case Some(fields) -> if fields.containsKey("y") { carriesY = true }
+      case None -> ()
+    }
+  }
+  assertTrue(carriesY, "the exposed record's y default: " + joinKeys(mapKeys(defaults)))
+}
+
+func joinKeys(ks: in List[String]): String {
+  var text = ""
+  for k in ks {
+    text = text + k + ";"
+  }
+  text
+}
+
 test "== on a tuple with a Float part uses the NaN rule for that part and compares the array in a loop (D167, D172)" {
   val c = censusOf("package App\nfunc f(a: in (Float, array[2, Int]), b: in (Float, array[2, Int])): Bool { a == b }\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
