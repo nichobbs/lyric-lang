@@ -66,6 +66,23 @@ func genericOverrideAppSource(): String {
   "package App\nimport HLib\nimport Std.Core\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox {\n  func get(self: in IntBox): Int = self.v\n  func twice(self: in IntBox, x: in Int): Int = x + x\n}\nfunc main(): Int {\n  println(toString(IntBox(v = 1).twice(9)))\n  val h: Holder[Int] = IntBox(v = 2)\n  println(toString(h.twice(5)))\n  println(toString(h.get()))\n  0\n}\n"
 }
 
+// The `lyric` this test spawns: the repo's `bin/lyric` where `make lyric` made it, else the AOT binary the CI lane builds
+// (`bootstrap/src/Lyric.Cli.Aot/bin/<config>/lyric`).
+func lyricBinary(): String {
+  val root = Environment.currentDirectory()
+  val candidates: List[String] = newList()
+  candidates.add("bin/lyric")
+  candidates.add("bootstrap/src/Lyric.Cli.Aot/bin/Debug/lyric")
+  candidates.add("bootstrap/src/Lyric.Cli.Aot/bin/Release/lyric")
+  for rel in candidates {
+    val p = Path.join(root, rel)
+    if File.fileExists(p) {
+      return p
+    }
+  }
+  Path.join(root, "bin/lyric")
+}
+
 func runFor(lib: in String, app: in String): Capture.CaptureResult {
   val dir = tempDir("native")
   defer {
@@ -78,7 +95,7 @@ func runFor(lib: in String, app: in String): Capture.CaptureResult {
   write(Path.join(dir, "lib/src/h.l"), lib)
   write(Path.join(dir, "app/lyric.toml"), appToml())
   write(Path.join(dir, "app/src/main.l"), app)
-  val lyric = Path.join(Environment.currentDirectory(), "bin/lyric")
+  val lyric = lyricBinary()
   val args: List[String] = newList()
   args.add("run")
   args.add("--target")
