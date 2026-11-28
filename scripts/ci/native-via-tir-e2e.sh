@@ -846,17 +846,19 @@ cat "$work/k_census.txt"
 "$work/k_ast" > "$work/k_ast.out"
 "$work/k_tir" > "$work/k_tir.out"
 diff -u "$work/k_ast.out" "$work/k_tir.out"
-printf 'Green\nBlue\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
-for reason in 'an operator on the aggregate array' 'the zero value of String'; do
+printf 'Green\nBlue\ntrue\n[]\n0,0\n2\n5\n' | diff -u - "$work/k_tir.out"
+for reason in 'an operator on the aggregate array'; do
   grep -q "^  fallback: $reason" "$work/k_census.txt" || {
     echo "::error::keptast.l: expected the fallback '$reason' in the census"
     exit 1
   }
 done
-grep -q '^  fallback: toString of an enum' "$work/k_census.txt" && {
-  echo "::error::keptast.l: toString of an enum fell back to the AST path"
-  exit 1
-}
+for reason in 'toString of an enum' 'the zero value of'; do
+  grep -q "^  fallback: $reason" "$work/k_census.txt" && {
+    echo "::error::keptast.l: '$reason' fell back to the AST path"
+    exit 1
+  }
+done
 echo "kept on the AST path: ok"
 
 # An array element passed by reference beside the array it lives in (D179): copied in and out around the call
