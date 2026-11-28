@@ -7,3 +7,7 @@
 - `typechecker_self_test.l` (D881): a negated literal outside the annotated type is still T0015 (`val a: Byte = -200`), and `val n: Float = -0.1` checks clean.
 
 Not covered here: D882's `bundledTirOf` test for an `internal` cross-package call (needs the native bridge fixture; left on the inventory), and a negative case for D514's "fewer parameters" path (no program in the corpus reaches it).
+
+## Docs
+
+- docs/01 §6.2 names the real cause of the dotnet and JVM gap for generic invariant types at the public boundary: #9484 (a generic function of another package is specialised from its unelaborated source, so its contract and boundary checks are dropped on both targets), found while attempting #9466.
