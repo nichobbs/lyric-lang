@@ -855,6 +855,22 @@ for reason in 'toString of an enum' 'an operator on the aggregate array' 'the ze
 done
 echo "kept on the AST path: ok"
 
+# A case pattern under another case pattern (`Err(Malformed(at, why))`): the inner union is opened on the payload
+# on TIR, the same output as the AST path, and nothing kept on the AST path.
+npsrc=scripts/ci/native-via-tir/nestedpat.l
+"$lyric_bin" build --target native --no-via-tir "$npsrc" -o "$work/np_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$npsrc" -o "$work/np_tir" 2> "$work/np_census.txt" >/dev/null
+cat "$work/np_census.txt"
+"$work/np_ast" > "$work/np_ast.out"
+"$work/np_tir" > "$work/np_tir.out"
+diff -u "$work/np_ast.out" "$work/np_tir.out"
+printf 'ok 5\nunsupported native\nmalformed 3 bad\n12\n' | diff -u - "$work/np_tir.out"
+grep -q '^  fallback:' "$work/np_census.txt" && {
+  echo "::error::nestedpat.l: a function stayed on the AST path"
+  exit 1
+}
+echo "nested case patterns: ok"
+
 # An array element passed by reference beside the array it lives in (D179): copied in and out around the call
 # on TIR, the same output as the AST path, and nothing kept on the AST path.
 esrc=scripts/ci/native-via-tir/elemcopy.l
