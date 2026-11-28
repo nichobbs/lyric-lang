@@ -30,6 +30,10 @@ func sameFloats(a: in array[2, Double], b: in array[2, Double]): Bool {
   a == b
 }
 
+func nanValue(zero: in Double): Double {
+  zero / zero
+}
+
 func blank(): String {
   val s: String = default()
   s
@@ -51,6 +55,10 @@ func main(): Unit {
   val f1: array[2, Double] = [0.0, 1.0]
   val f2: array[2, Double] = [-0.0, 1.0]
   println(toString(sameFloats(f1, f2)))
+  val n = nanValue(0.0)
+  val g1: array[2, Double] = [n, 1.0]
+  val g2: array[2, Double] = [n, 1.0]
+  println(toString(sameFloats(g1, g2)))
   println("[" + blank() + "]")
   println(toString(plain(4)))
 }
