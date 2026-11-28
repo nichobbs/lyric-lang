@@ -20545,10 +20545,7 @@ func recordGenericIfaceResult(tbl: in SymbolTable, sp: in Span, pick: in Option[
             return
           }
           val isIface = match symTableTypeSymbolOf(tbl, tid) {
-            case Some(sym) -> match sym.kind {
-              case DKInterface(_, _) -> true
-              case _ -> false
-            }
+            case Some(sym) -> match sym.kind { case DKInterface(_, _) -> true; case _ -> false }
             case None -> false
           }
           if not isIface {

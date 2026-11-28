@@ -901,8 +901,8 @@ cat "$work/gi_census.txt"
 "$work/gi_ast" > "$work/gi_ast.out"
 "$work/gi_tir" > "$work/gi_tir.out"
 diff -u "$work/gi_ast.out" "$work/gi_tir.out"
-printf '19\nab!\n7x\n4\n9\nw\n' | diff -u - "$work/gi_tir.out"
-grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/gi_census.txt" || {
+printf '19\nab!\n7x\n4\n9\nw\nabab\n' | diff -u - "$work/gi_tir.out"
+grep -q '^native via-TIR: 12 of 12 functions lowered from TIR' "$work/gi_census.txt" || {
   echo "::error::expected every function of genericifaces.l to be lowered from TIR"
   exit 1
 }
