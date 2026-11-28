@@ -348,6 +348,19 @@ test "an impl member with type parameters of its own is instantiated per call (D
   for im in inst.pkg.impls {
     assertEqualInt(im.members.count, 1, "only get is an interface method; pick is instantiated per call")
   }
+  val keys = instanceKeys(m)
+  assertTrue(
+    keys.contains("App::Box[T]::$impl[Int,Int](Holder[T])::pick(Box[T],U)"),
+    "pick is instantiated at the impl's argument and its own: " + joinStrings(keys, ",")
+  )
+  assertTrue(
+    keys.contains("App::Box[T]::$impl[Int](Holder[T])::get(Box[T])"),
+    "get is the impl instance's member: " + joinStrings(keys, ",")
+  )
+  assertTrue(
+    not keys.contains("App::Box[T]::$impl[Int](Holder[T])::pick(Box[T],U)"),
+    "pick is not a member of the impl instance, which has only the impl's own arguments: " + joinStrings(keys, ",")
+  )
 }
 
 func upcastTargets(m: in Mono): List[String] {

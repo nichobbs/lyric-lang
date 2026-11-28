@@ -1022,6 +1022,18 @@ test "an unsuffixed literal takes the type of an assignment target (#7841)" {
   assertEqualInt(diagCount(binds), 0, "annotated bindings: " + diagCodesOf(binds))
   val badBind = parseCheck("package P\nfunc f(): UInt {\n  val a: UInt = -7\n  a\n}\n")
   assertEqualInt(countDiagCode(badBind, "T0015"), 1, "val a: UInt = -7: " + diagCodesOf(badBind))
+  val badNeg = parseCheck("package P\nfunc f(): Byte {\n  val a: Byte = -200\n  a\n}\n")
+  assertEqualInt(
+    countDiagCode(badNeg, "T0015"),
+    1,
+    "a negated literal outside the type is still T0015 (D881): " + diagCodesOf(badNeg)
+  )
+  val floatNeg = parseCheck("package P\nfunc f(): Float {\n  val n: Float = -0.1\n  n\n}\n")
+  assertEqualInt(
+    diagCount(floatNeg),
+    0,
+    "a negated Float literal under a Float expectation (D881): " + diagCodesOf(floatNeg)
+  )
   val arg = parseCheck("package P\nfunc g(u: in UInt): UInt { u }\nfunc f(): UInt { g(7) }\n")
   assertEqualInt(diagCount(arg), 0, "an argument: " + diagCodesOf(arg))
 }
