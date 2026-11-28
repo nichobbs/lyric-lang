@@ -46,6 +46,8 @@ func useInt(h: in Holder[Int]): Int = h.get() + h.twice(10) + h.put(1)
 
 func useStr(h: in Holder[String]): String = h.get() + h.twice("!")
 
+func useStrTwice(h: in Holder[String]): String = h.get() + h.get()
+
 func main(): Int {
   println(toString(useInt(IntBox(v = 4, tag = "a"))))
   println(useStr(StrBox(s = "ab")))
@@ -55,5 +57,6 @@ func main(): Int {
   println(toString(hs.put("four")))
   println(toString(IntBox(v = 2, tag = "b").twice(9)))
   println(StrBox(s = "z").twice("w"))
+  println(useStrTwice(StrBox(s = "ab")))
   0
 }
