@@ -514,6 +514,10 @@ pub record TirRecLayout {
   /// pattern: no field has a declared default.  Set by the code generator, which holds the
   /// declaration; false for a heap record or tuple.
   zeroBits: Bool = false
+  /// For a by-value record that implements an interface: the pointer to the `__box<R>` object (header, then the
+  /// record) an interface value holds it in, whose vtable slots are thunks reading the record back out (#8010).
+  /// `NVoid` when the record implements nothing.
+  valueBoxTy: NType = NVoid
 }
 
 /// Why a function stayed on the AST path.
@@ -5567,6 +5571,19 @@ func calleeKind(k: in Callee): String {
   }
 }
 
+func joinKeysTir(keys: in List[String]): String {
+  var acc = "["
+  var i = 0
+  while i < keys.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + keys[i]
+    i = i + 1
+  }
+  acc + "]"
+}
+
 /// A heap record used as an interface it implements: a box holding the (retained) object and
 /// the record's vtable for the interface.  The box is owned by the caller.
 func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr): Val {
@@ -5594,16 +5611,54 @@ func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr):
   }
   val vt = match mapGet(c.env.ifaceVts, toString(recId) + "|" + toString(iface.id)) {
     case Some(g) -> g
-    case None -> return unsupported(c, "an upcast of " + renderTy(inner.ty) + " to " + renderTy(e.ty))
+    case None -> {
+      // Name the vtables the environment does hold for this record and for this interface, so a key that was
+      // registered under another record or interface instance shows (#9477).
+      val forRec: List[String] = newList()
+      val forIface: List[String] = newList()
+      for k in mapKeys(c.env.ifaceVts) {
+        if k.startsWith(toString(recId) + "|") {
+          forRec.add(k)
+        }
+        if k.endsWith("|" + toString(iface.id)) {
+          forIface.add(k)
+        }
+      }
+      return unsupported(
+        c,
+        "an upcast of " + renderTy(inner.ty) + " to " + renderTy(e.ty) + " (vtables of the record: " +
+          joinKeysTir(forRec) +
+          ", of the interface: " +
+          joinKeysTir(forIface) +
+          ")"
+      )
+    }
   }
   val v = borrow(c, lowerExpr(c, inner))
-  if not isRefN(v.ty) {
-    return unsupported(c, "an upcast of a by-value record")
+  val objI8 = tmp(c)
+  if isRefN(v.ty) {
+    c.insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = i8ptr()))
+    callRtVoid(c, "lyric_retain", arg1(i8ptr(), NLocal(name = objI8)))
+  } else {
+    // A by-value record is copied into a fresh `__box<R>` the interface value owns (#8010), as the AST path does.
+    val boxTy = match mapGet(c.env.recs, recId) {
+      case Some(lay) -> lay.valueBoxTy
+      case None -> return unsupported(c, "an upcast of a by-value record with no box")
+    }
+    val boxSt = match boxTy {
+      case NPtr(pointee) -> pointee
+      case _ -> return unsupported(c, "an upcast of a by-value record with no box")
+    }
+    val held = allocObject(c, boxTy, boxSt, "")
+    val payload = tmp(c)
+    val gi: List[NArg] = newList()
+    gi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    gi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+    c.insns.add(NGEP(dest = payload, ty = boxSt, ptr = held, indices = gi))
+    c.insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = payload)))
+    c.insns.add(NBitcast(dest = objI8, fromTy = boxTy, value = held, toTy = i8ptr()))
   }
   val box = allocObject(c, il.boxTy, il.structTy, il.dtor)
-  val objI8 = tmp(c)
-  c.insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = i8ptr()))
-  callRtVoid(c, "lyric_retain", arg1(i8ptr(), NLocal(name = objI8)))
   val objSlot = tmp(c)
   val oi: List[NArg] = newList()
   oi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
