@@ -3247,6 +3247,13 @@ func bundledTirOf(
     }
   }
   val pb = TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, pkg)
+  if LlvmTir.tirTraceRequested() {
+    for failed in pb.failed {
+      if failed.messages.count > 0 {
+        Console.error("native via-TIR: bundled " + pkg + " cannot build " + failed.name + ": " + failed.messages[0])
+      }
+    }
+  }
   Some(value = pb)
 }
 
