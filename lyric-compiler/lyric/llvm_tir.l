@@ -3033,6 +3033,12 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
               case None -> ()
             }
           }
+          if c.coro {
+            val twin = coroAsyncTwin(irName, args.count)
+            if twin != "" {
+              return lowerAsyncCall(c, e, twin, args, false)
+            }
+          }
           if c.coro and isCoroLeaf(irName) {
             return unsupported(c, "a coroutine calling " + irName)
           }
@@ -3761,6 +3767,22 @@ func isCoroLeaf(irName: in String): Bool {
     irName == "Std.TcpHost.hostAccept" or
     irName == "Std.TcpHost.hostRead" or
     irName == "Std.TcpHost.hostWrite"
+}
+
+/// The asynchronous twin of a synchronous socket kernel function: inside a coroutine, a call of the
+/// first is an in-place await of the second, which takes the same arguments, returns the same type
+/// and parks only the calling task while the socket is not ready (the async I/O reactor, #8494).  ""
+/// when `irName` has none.  Keep in step with `nativeAsyncTwin` in llvm_codegen.l.
+func coroAsyncTwin(irName: in String, arity: in Int): String {
+  if irName == "Std.TcpHost.hostAccept" and arity == 1 {
+    "Std.TcpHost.hostAcceptAsync"
+  } else if irName == "Std.TcpHost.hostRead" and arity == 2 {
+    "Std.TcpHost.hostReadAsync"
+  } else if irName == "Std.TcpHost.hostWrite" and arity == 2 {
+    "Std.TcpHost.hostWriteAsync"
+  } else {
+    ""
+  }
 }
 
 /// An integer argument as the runtime's 64-bit (or, for an event mask, 32-bit) operand.
@@ -5606,8 +5628,142 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
         case Some(to) -> lowerWiden(c, inner.ty, v, to)
       }
     }
+    case CvUserdataSlot -> lowerExpr(c, inner)
+    case CvClosureAsPointer -> {
+      val v = borrow(c, lowerExpr(c, inner))
+      match v.ty {
+        case NPtr(_) -> {
+          val d = tmp(c)
+          c.insns.add(NBitcast(dest = d, fromTy = v.ty, value = v.value, toTy = i8ptr()))
+          Val(ty = i8ptr(), value = NLocal(name = d))
+        }
+        case _ -> unsupported(c, "a closure passed as a pointer that is no closure")
+      }
+    }
+    case CvCallback -> lowerCallback(c, e, inner)
     case _ -> unsupported(c, "a conversion")
   }
+}
+
+func isStructN(t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// A closure passed as a C callback (docs/01 section 11.6): the value is the address of a ccc
+/// trampoline that takes the callback's raw parameters, with the userdata slot holding the closure,
+/// reloads the closure's code pointer and calls it with the closure and the other parameters.  The
+/// call-duration borrow needs no retain; a C API that holds the callback keeps the closure itself
+/// through `nativeKeepCallback`.  A callback with a by-value record stays on the AST path.
+func lowerCallback(c: in LCtx, e: in TExpr, inner: in TExpr): Val {
+  val cbParams = match e.ty {
+    case TFunc(ps, _, _) -> ps
+    case _ -> return unsupported(c, "a callback of type " + renderTy(e.ty))
+  }
+  val retTy = match e.ty {
+    case TFunc(_, r, _) -> r
+    case _ -> return unsupported(c, "a callback of type " + renderTy(e.ty))
+  }
+  val clos = borrow(c, lowerExpr(c, inner))
+  val closStruct = match clos.ty {
+    case NPtr(p) -> p
+    case _ -> return unsupported(c, "a callback of a value that is no closure")
+  }
+  val rawRet = match tyToN(c.env, retTy) {
+    case Some(r) -> r
+    case None -> return unsupported(c, "a callback returning " + renderTyIn(c.env, retTy))
+  }
+  val rawParams: List[NType] = newList()
+  var udIdx = -1
+  var i = 0
+  for p in cbParams {
+    if isUserdataSlotTy(p.ty) {
+      if udIdx < 0 {
+        udIdx = i
+      }
+      rawParams.add(i8ptr())
+    } else {
+      match tyToN(c.env, p.ty) {
+        case Some(nt) -> rawParams.add(nt)
+        case None -> return unsupported(c, "a callback parameter of type " + renderTyIn(c.env, p.ty))
+      }
+    }
+    i = i + 1
+  }
+  if udIdx < 0 {
+    return unsupported(c, "a callback with no userdata slot")
+  }
+  for t in rawParams {
+    if isStructN(t) {
+      return unsupported(c, "a callback with a by-value record")
+    }
+  }
+  if isStructN(rawRet) {
+    return unsupported(c, "a callback with a by-value record")
+  }
+  val name = c.fnName + ".cb" + tmp(c)
+  val params: List[NParam] = newList()
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = i8ptr(), value = NLocal(name = "ud")))
+  var pi = 0
+  while pi < rawParams.count {
+    if pi == udIdx {
+      params.add(NParam(name = "ud", ty = i8ptr()))
+    } else {
+      params.add(NParam(name = "p" + toString(pi), ty = rawParams[pi]))
+      callArgs.add(NArg(ty = rawParams[pi], value = NLocal(name = "p" + toString(pi))))
+    }
+    pi = pi + 1
+  }
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  body.add(NBitcast(dest = "hdr", fromTy = i8ptr(), value = NLocal(name = "ud"), toTy = clos.ty))
+  val gi: List[NArg] = newList()
+  gi.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gi.add(NArg(ty = NI32, value = NLitInt(v = 3i64, ty = NI32)))
+  body.add(NGEP(dest = "slot", ty = closStruct, ptr = NLocal(name = "hdr"), indices = gi))
+  body.add(NLoad(dest = "fnraw", ty = i8ptr(), ptr = NLocal(name = "slot")))
+  val lyricParams: List[NType] = newList()
+  lyricParams.add(i8ptr())
+  var li = 0
+  while li < rawParams.count {
+    if li != udIdx {
+      lyricParams.add(rawParams[li])
+    }
+    li = li + 1
+  }
+  body.add(
+    NBitcast(
+      dest = "fn",
+      fromTy = i8ptr(),
+      value = NLocal(name = "fnraw"),
+      toTy = NFnPtr(params = lyricParams, ret = rawRet)
+    )
+  )
+  match rawRet {
+    case NVoid -> {
+      body.add(NCallVoid(fn = NLocal(name = "fn"), args = callArgs))
+      body.add(NRetVoid)
+    }
+    case rt -> {
+      body.add(NCall(dest = "r", retTy = rt, fn = NLocal(name = "fn"), args = callArgs))
+      body.add(NRet(ty = rt, value = NLocal(name = "r")))
+    }
+  }
+  c.extraFns.add(
+    NFunc(
+      name = name,
+      params = params,
+      retTy = rawRet,
+      isPublic = false,
+      isExtern = false,
+      body = body,
+      attributes = newList()
+    )
+  )
+  Val(ty = NFnPtr(params = rawParams, ret = rawRet), value = NGlobal(name = name))
 }
 
 func lowerWiden(c: in LCtx, fromTy: in Ty, v: in Val, to: in NType): Val {
