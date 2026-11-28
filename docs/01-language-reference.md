@@ -707,9 +707,11 @@ impl Repository[User, UserId] for PostgresUserRepository {
   an impl parameter the target never names is **T0145**.
 - The target of an impl may be a union: `impl Named for Shape { … }` makes every case of `Shape` a `Named`, so a
   value of any case flows into a `Named` parameter, and a default method of the interface is inherited by the
-  union. `impl[T] Holder[T] for Wrap[T]` over a generic union works the same way at each instantiation. On
-  `--target dotnet` and `--target jvm` the methods live on the union's base type (an abstract base class, a sealed
-  interface with default methods); `--target native` does not lay it out yet (D867, #9470).
+  union. `impl[T] Holder[T] for Wrap[T]` over a generic union works the same way at each instantiation on
+  `--target dotnet` and `--target jvm`, where the methods live on the union's base type (an abstract base class, a
+  sealed interface with default methods; D867). `--target native` lays out an impl for a non-generic union (the union
+  stays a heap object, its vtable is built like a record's; D868); an impl for a generic union is **N0105** there
+  (#9470).
 - An interface or impl method can be generic with the bare-bracket form
   `func name[U](x: in U): U`.  This makes the CLR method itself generic;
   call sites emit `MakeGenericMethod` with type arguments inferred from
