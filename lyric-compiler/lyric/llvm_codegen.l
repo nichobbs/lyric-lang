@@ -19835,7 +19835,12 @@ func tirUnitMaps(
                       fieldTys = ri.fieldTys,
                       byValue = ri.byValue,
                       dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" },
-                      zeroBits = ri.byValue and recHasNoDefaults(ri)
+                      zeroBits = ri.byValue and recHasNoDefaults(ri),
+                      valueBoxTy = if ri.byValue and recImplementsInterface(ctx, ri.irName) {
+                        byValueBoxType(ctx, recPtrType(ri))
+                      } else {
+                        NVoid
+                      }
                     )
                   )
                 }
@@ -19944,7 +19949,7 @@ func tirUnitMaps(
               }
               case None -> match mapGet(ctx.recordDefs, pkg + "." + rest) {
                 case Some(ri) -> match mapGet(recs, id) {
-                  case Some(lay) -> if not lay.byValue { recIrById.add(id, ri.irName) }
+                  case Some(_) -> recIrById.add(id, ri.irName)
                   case None -> ()
                 }
                 // A heap union that implements an interface (#9470) is keyed like a record.
@@ -23660,6 +23665,17 @@ func recordIrNameOfType(t: in NType): Option[String] {
     }
     case _ -> None
   }
+}
+
+/// Whether some `impl` makes the record with IR name `recordIr` an interface (a vtable was registered for it).
+func recImplementsInterface(ctx: in Ctx, recordIr: in String): Bool {
+  val prefix = recordIr + "|"
+  for k in mapKeys(ctx.ifaceVtables) {
+    if k.startsWith(prefix) {
+      return true
+    }
+  }
+  false
 }
 
 func ifaceVtableGlobalName(recordIr: in String, ii: in NIfaceInfo): String {

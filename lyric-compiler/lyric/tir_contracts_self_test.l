@@ -542,6 +542,108 @@ test "a function with a precondition returning a record as the interface it impl
   assertVerifies(e, "return of a record as its interface")
 }
 
+/// The type arguments of the checker call at the head of `fname`'s elaborated body, for a package `src` whose
+/// `__lyric_checked_*` functions are in a package the bundle sees but does not elaborate (a type of another package).
+func entryCheckTypeArgs(src: in String, fname: in String): List[Ty] {
+  val file = renumberNodeIds(synthesizeInvariantCheckers(parse(src).file)).file
+  val cr = check(file)
+  val pb = buildPackage(newTyConvCtx(cr.symbols), cr.symbols, file, "App")
+  val libFns: List[TFnDecl] = newList()
+  val appFns: List[TFnDecl] = newList()
+  for f in pb.pkg.funcs {
+    val key = match mapGet(pb.names, f.sym.id) { case Some(k) -> k; case None -> "" }
+    if key.startsWith("App::__lyric_checked_") {
+      libFns.add(f)
+    } else {
+      appFns.add(f)
+    }
+  }
+  val lib = PackageBuild(
+    pkg = TPackage(name = "Lib", symbols = pb.pkg.symbols, funcs = libFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val app = PackageBuild(
+    pkg = TPackage(name = "App", symbols = pb.pkg.symbols, funcs = appFns),
+    failed = pb.failed,
+    total = pb.total,
+    built = pb.built,
+    names = pb.names,
+    cases = pb.cases,
+    uncovered = pb.uncovered,
+    sites = pb.sites
+  )
+  val bundle: List[PackageBuild] = newList()
+  bundle.add(app)
+  val visible: List[PackageBuild] = newList()
+  visible.add(lib)
+  val done = elaborateBundleWith(cr.symbols.interner, bundle, true, visible)
+  val found: List[Ty] = newList()
+  match funcOf(done[0], fname) {
+    case Some(d) -> match d.body {
+      case Some(b) -> match b.kind {
+        case XBlock(stmts, _) -> {
+          var seen = false
+          for st in stmts {
+            match st.kind {
+              case TsExpr(x) -> match x.kind {
+                case XCall(Direct(_, targs), _) -> if not seen { seen = true; for t in targs { found.add(t) } }
+                case _ -> ()
+              }
+              case _ -> ()
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  found
+}
+
+val twoArgInvSrc: String = "package App\nrecord Pair[A, B] {\n  n: Int\n  a: A\n  b: B\n  invariant: n >= 0\n}\npub func takePair[X, Y](p: in Pair[X, Y]): Int { p.n }\npub func takeNested(p: in Pair[Int, Pair[Int, Int]]): Int { p.n }\npub func takeClosed(p: in Pair[Int, Int]): Int { p.n }\n"
+
+test "the entry check of a generic parameter is called at the function's own type parameter (D519 test gap)" {
+  val targs = entryCheckTypeArgs(genInvSrc, "takeCell")
+  assertEqualInt(targs.count, 1, "one type argument")
+  match targs[0] {
+    case TParam(_, index) -> assertEqualInt(index, 0, "the function's first type parameter, not a closed type")
+    case _ -> assertTrue(false, "a type parameter, got " + renderTy(targs[0]))
+  }
+}
+
+test "the entry check of a two-argument generic type is called at both of the parameter's arguments in order (D519 test gap)" {
+  val targs = entryCheckTypeArgs(twoArgInvSrc, "takePair")
+  assertEqualInt(targs.count, 2, "one type argument per parameter of the type")
+  match targs[0] {
+    case TParam(_, index) -> assertEqualInt(index, 0, "X first")
+    case _ -> assertTrue(false, "a type parameter, got " + renderTy(targs[0]))
+  }
+  match targs[1] {
+    case TParam(_, index) -> assertEqualInt(index, 1, "Y second")
+    case _ -> assertTrue(false, "a type parameter, got " + renderTy(targs[1]))
+  }
+}
+
+test "the entry check of a nested generic argument is called at the closed argument types (D519 test gap)" {
+  val targs = entryCheckTypeArgs(twoArgInvSrc, "takeNested")
+  val closed = entryCheckTypeArgs(twoArgInvSrc, "takeClosed")
+  assertEqualInt(closed.count, 2, "a closed instance of the type is checked too")
+  assertEqualInt(targs.count, 2, "one type argument per parameter of the type")
+  assertEqual(renderTy(targs[0]), "Int", "the first argument")
+  assertTrue(
+    renderTy(targs[1]).endsWith("[Int, Int]"),
+    "the second is the nested Pair instance over Int, Int: " + renderTy(targs[1])
+  )
+}
+
 test "a protected type's invariant is asserted at the exit of each member, with contracts on or off (D509)" {
   val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  entry bump(by: in Int): Unit {\n    level = level + by\n  }\n  func read(): Int {\n    level\n  }\n}\n"
   val file = renumberNodeIds(parse(src).file).file
