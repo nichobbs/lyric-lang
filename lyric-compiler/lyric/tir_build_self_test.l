@@ -4285,10 +4285,10 @@ test "== on a generic record holding a tuple with an array builds and verifies, 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
-func negations(pb: in PackageBuild): List[TExpr] {
+func negations(pkg: in TPackage): List[TExpr] {
   val acc: List[TExpr] = newList()
   val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> noteNeg(acc, e) }, preStmt = { st: TStmt -> None })
-  for f in pb.pkg.funcs {
+  for f in pkg.funcs {
     match f.body {
       case Some(b) -> {
         walkExpr(w, b)
