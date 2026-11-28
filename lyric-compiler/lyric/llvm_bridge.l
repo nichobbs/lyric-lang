@@ -49,6 +49,7 @@ import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.ImplDefaults as ImplDefaults
 import Lyric.IfaceBuild as IfaceBuild
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
@@ -2620,13 +2621,16 @@ func nativeProjectFrontEnd(
     wti = wti + 1
   }
   val ownFiles0: List[SourceFile] = newList()
+  // A default method of another package's interface that an impl omits becomes a member of the impl that calls the
+  // default's own function in its declaring package (#9451): native has no default interface methods.
+  val crossFiles = ImplDefaults.inheritCrossPackageDefaults(cfgFiles)
   var owi = 0
-  while owi < cfgFiles.count {
+  while owi < crossFiles.count {
     // #6824 item 3: same label/files attribution as the parse phase above
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages` is 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewriteForTo(sink, "native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgFilesAt(packages, owi)) {
+    val f0 = match pipeExpandAndRewriteForTo(sink, "native", crossFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgFilesAt(packages, owi)) {
       case Some(f) -> f
       case None -> return None
     }
