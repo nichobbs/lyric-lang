@@ -4396,8 +4396,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
       case IUnion(decl) -> {
         // lowerMUnion: protected .ctor for abstract base + one lowerMRecord/lowerMNullaryUnionCase per case.
         // Account for the protected no-arg .ctor emitted on the abstract base by lowerMUnion.
-        methodDefRow = methodDefRow + 1  // abstract base's protected .ctor
         val unionFqn = pkgName + "." + decl.name
+        // The methods of an `impl` whose target is this union sit on the abstract base, which `lowerMUnion`
+        // emits before the base's own .ctor (#9470): one MethodDef row each, registered like a record's.
+        var uni = 0
+        while uni < implImplTargets.count {
+          if implImplTargets[uni] == unionFqn {
+            cctx.methodTokens.add(unionFqn + "/" + implImplNames[uni], 0x06000000 + methodDefRow)
+            registerMethodRetTyMsil(cctx, unionFqn + "/" + implImplNames[uni], implImplRetTys[uni], implImplRetIsSelf[uni])
+            methodDefRow = methodDefRow + 1
+          }
+          uni = uni + 1
+        }
+        methodDefRow = methodDefRow + 1  // abstract base's protected .ctor
         registerTypeFqnCandidate(cctx, decl.name, unionFqn)
         // In-bundle generic union support (#2362): the union and every case are
         // reified, so register the union's arity (the cases share it).  A generic
@@ -47796,6 +47807,23 @@ pub func injectImplMethodsIntoRecord(cctx: in CodegenCtx, rec: in MRecord, targe
   )
 }
 
+// The methods of every `impl` whose target is the union `targetFqn`, added to the union's abstract base, which
+// implements the interface for each of its cases (#9470).
+pub func injectImplMethodsIntoUnion(cctx: in CodegenCtx, u: in MUnion, targetFqn: in String): MUnion {
+  val merged: List[MFunc] = newList()
+  for m in u.methods {
+    merged.add(m)
+  }
+  for implEntry in cctx.implEntries {
+    if implEntry.targetTypeName == targetFqn {
+      for m in implEntry.methods {
+        merged.add(m)
+      }
+    }
+  }
+  MUnion(baseName = u.baseName, namespace = u.namespace, cases = u.cases, methods = merged, generics = u.generics)
+}
+
 // True iff `anns` carries a `@derive(<marker>)` annotation.  Mirrors
 // `Lyric.Derives.hasDeriveMarker` (codegen can't import that package).
 func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
@@ -48140,7 +48168,9 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
         }
       }
       case IUnion(decl) -> {
-        items.add(MPUnion(u = lowerUnionMsil(cctx, decl, pkgName)))
+        items.add(
+          MPUnion(u = injectImplMethodsIntoUnion(cctx, lowerUnionMsil(cctx, decl, pkgName), pkgName + "." + decl.name))
+        )
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsilCtx(cctx, decl.underlying, pkgName)

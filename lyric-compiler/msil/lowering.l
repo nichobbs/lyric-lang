@@ -3824,7 +3824,14 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     val rvas = methodBodyRvas(ctx.bodies)
     val mRva = rvas[ctx.bodies.count - 1]
     val sN = internString(sh, m.name)
-    val mSig = buildStaticMethodSigWithCtx(m.params, m.ret, ctx)
+    // An instance method (an `impl` method of the union, #9470) has the receiver in its signature; a static
+    // one does not.
+    val isStaticBase = (m.flags.and(MDA_STATIC)) != 0
+    val mSig = if isStaticBase {
+      buildStaticMethodSigWithCtx(m.params, m.ret, ctx)
+    } else {
+      buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
+    }
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "basemeth_" + u.baseName + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp = t.params_.count + 1
