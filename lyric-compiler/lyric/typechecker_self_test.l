@@ -2383,6 +2383,40 @@ test "impl default method optional" {
   assertTrue(not hasDiagCode(cr, "T0098"), "default interface method not required: no T0098")
 }
 
+// #9471: a default body is checked once, where its interface is declared.
+test "a valid default body of a generic interface reports nothing (#9471)" {
+  val src = "package P\n" + "interface Holder[T] {\n" + "  func get(self: in Self): T\n" +
+    "  func twice(self: in Self): T {\n" +
+    "    val a: T = get()\n" +
+    "    val b: T = self.get()\n" +
+    "    b\n" +
+    "  }\n" +
+    "  func pick[U](self: in Self, u: in U): U { u }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(cr.diagnostics.count, 0, "a well-typed default of a generic interface: " + diagCodesOf(cr))
+}
+
+test "a bad default body is reported with no impl, and once with an inheriting impl (#9471)" {
+  val iface = "package P\n" + "interface Named {\n" + "  func label(self: in Self): String\n" +
+    "  func tagged(self: in Self, n: in Int): Int {\n" +
+    "    val q: Int = label()\n" +
+    "    q + n\n" +
+    "  }\n" +
+    "}\n"
+  val alone = parseCheck(iface)
+  assertEqualInt(countDiagCode(alone, "T0060"), 1, "no impl: the default is checked where it is declared")
+  val inherited = parseCheck(
+    iface + "record P { x: Int }\n" +
+      "impl Named for P { func label(self: in Self): String { \"p\" } }\n"
+  )
+  assertEqualInt(
+    countDiagCode(inherited, "T0060"),
+    1,
+    "an inheriting impl does not report the same error again: " + diagCodesOf(inherited)
+  )
+}
+
 // #6445: a default method's `Self` is the interface itself, which owns no
 // fields — but both backends ALSO lower a body-bearing interface member onto
 // the interface's own class for interface-typed dispatch (JVM D-progress-676,
