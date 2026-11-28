@@ -19929,7 +19929,11 @@ func tirUnitMaps(
                   case Some(lay) -> if not lay.byValue { recIrById.add(id, ri.irName) }
                   case None -> ()
                 }
-                case None -> ()
+                // A heap union that implements an interface (#9470) is keyed like a record.
+                case None -> match mapGet(ctx.unionDefs, pkg + "." + rest) {
+                  case Some(ui) -> if not ui.inline { recIrById.add(id, ui.irName) }
+                  case None -> ()
+                }
               }
             }
           }
@@ -24186,7 +24190,10 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   val ifDot = lastDotIndex(info.key)
   val ifaceNamed = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
   // An instance of a generic interface is keyed `Pkg.Holder<i32>`: the impl's methods are named by `Holder`.
-  val ifaceBare = match Str.indexOf(ifaceNamed, "<") { case Some(lt) -> Str.substring(ifaceNamed, 0, lt); case None -> ifaceNamed }
+  val ifaceBare = match Str.indexOf(ifaceNamed, "<") {
+    case Some(lt) -> Str.substring(ifaceNamed, 0, lt)
+    case None -> ifaceNamed
+  }
   val recDot = lastDotIndex(im.gkey)
   val recBare = if recDot > 0 { Str.substring(im.gkey, recDot + 1, im.gkey.length - recDot - 1) } else { im.gkey }
   val selfTy = recPtrType(ri)
@@ -24316,7 +24323,11 @@ func checkGenericIfaceImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit
       // order, is laid out per instance of `R` (`genericImplVtable`); any other generic impl names a family of
       // instantiations the code generator does not lay out.
       val supported = match genericImplTargetRecord(decl.target) {
-        case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and (ctx.genericRecordDefs.containsKey(pkg + "." + n) or ctx.genericRecordDefs.containsKey(n))
+        case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and
+          (
+            ctx.genericRecordDefs.containsKey(pkg + "." + n) or
+              ctx.genericRecordDefs.containsKey(n)
+          )
         case None -> false
       }
       if not supported {
@@ -24389,6 +24400,31 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
                   }
                   match target {
                     case None -> {
+                      // An impl whose target is a union (#9470): a union that is an impl target is a heap object
+                      // (`classifyInlineUnion`), so its vtable is built like a record's, over the union pointer.
+                      val unionTarget = match mapGet(ctx.unionDefs, u.pkgName + "." + recordName) {
+                        case Some(own) -> Some(value = own)
+                        case None -> mapGet(ctx.unionDefs, recordName)
+                      }
+                      match unionTarget {
+                        case None -> {
+                        }
+                        case Some(ui) -> {
+                          if not ui.inline and not ctx.ifaceVtables.containsKey(ui.irName + "|" + info.key) {
+                            val ugname = ifaceVtableGlobalName(ui.irName, info)
+                            ctx.globals.add(
+                              NGlobalDef(
+                                name = ugname,
+                                linkage = "internal constant",
+                                tyStr = nTypeToIrString(ifaceVtStructType(info)),
+                                initStr = ifaceVtableInitStr(ctx, u.pkgName, recordName, unionPtrType(ui), ifaceName, info),
+                                align = 8
+                              )
+                            )
+                            ctx.ifaceVtables.add(ui.irName + "|" + info.key, ugname)
+                          }
+                        }
+                      }
                     }
                     case Some(ri) -> {
                       val selfPtrTy = recPtrType(ri)
