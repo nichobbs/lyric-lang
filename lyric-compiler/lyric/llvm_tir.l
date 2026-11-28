@@ -3778,7 +3778,66 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
     return Val(ty = NI32, value = NLocal(name = d))
   }
+  if name == "array.toSlice" {
+    return lowerArrayToSlice(c, arg, rty)
+  }
   unsupported(c, "builtin " + name)
+}
+
+/// `a.toSlice()` on an array: a fresh slice holding a copy of the elements.  A heap array is a list, so
+/// the runtime copies it; an inline array is stored to a stack slot and each element pushed in order (an
+/// aggregate element is boxed per push, so the pushes are unrolled).
+func lowerArrayToSlice(c: in LCtx, arg: in TExpr, rty: in Ty): Val {
+  val arrTy = match tyToN(c.env, arg.ty) {
+    case Some(t) -> t
+    case None -> return unsupported(c, "toSlice of " + renderTy(arg.ty))
+  }
+  val sliceTy = match tyToN(c.env, rty) {
+    case Some(t) -> t
+    case None -> return unsupported(c, "toSlice into " + renderTy(rty))
+  }
+  match arrTy {
+    case NArray(el, n) -> {
+      if n > 256 {
+        return unsupported(c, "toSlice of an array of " + toString(n) + " elements")
+      }
+      val sliceOut = newListOf(c, rty)
+      if not isRefN(sliceOut.ty) {
+        return sliceOut
+      }
+      val base = match arrayPlaceAddr(c, arg) {
+        case Some(a) -> a
+        case None -> {
+          val v = lowerExpr(c, arg)
+          val name = "arr.tmp" + toString(c.ticker.count + 1)
+          c.ticker.add(0)
+          c.allocas.add(NAlloca(dest = name, ty = arrTy))
+          c.insns.add(NStore(ty = arrTy, value = v.value, ptr = NLocal(name = name)))
+          NLocal(name = name)
+        }
+      }
+      var i = 0
+      while i < n {
+        val ptr = arrayElemPtr(c, arrTy, base, NLitInt(v = i.toLong(), ty = NI32))
+        val d = tmp(c)
+        c.insns.add(NLoad(dest = d, ty = el, ptr = ptr))
+        val ev = Val(ty = el, value = NLocal(name = d))
+        val args: List[NArg] = newList()
+        args.add(NArg(ty = i8ptr(), value = listAsI8(c, sliceOut)))
+        args.add(NArg(ty = NI64, value = slotOf(c, ev)))
+        callRtVoid(c, "lyric_list_push", args)
+        i = i + 1
+      }
+      sliceOut
+    }
+    case _ -> {
+      val src = borrow(c, lowerExpr(c, arg))
+      val copied = callRt(c, "lyric_list_copy", i8ptr(), arg1(i8ptr(), listAsI8(c, src)))
+      val cast = tmp(c)
+      c.insns.add(NBitcast(dest = cast, fromTy = i8ptr(), value = copied, toTy = sliceTy))
+      Val(ty = sliceTy, value = NLocal(name = cast), owned = true)
+    }
+  }
 }
 
 /// `toString` of an enum value: the text of its case name, picked by the ordinal.
