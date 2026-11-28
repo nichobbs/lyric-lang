@@ -3755,6 +3755,93 @@ func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
   }
 }
 
+// #9471: the body of a default method (`IMFunc`) is checked once, in the
+// package that declares the interface, as a method whose `Self` is the
+// interface itself.  `Lyric.ImplDefaults` copies the body into each impl that
+// omits the method and the copy is checked there too (against the impl's
+// target), but an interface no impl inherits from was never checked, a bad
+// default of a library was found only in a consumer, and a typed-IR backend
+// had no typed body for the default.  An interface owns no fields, so no bare
+// name resolves to one; a bare call to another member resolves through
+// `selfType`'s method space exactly as it does in an impl.
+func checkInterfaceMemberBodies(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in InterfaceDecl,
+): Unit {
+  val ifaceGen = extractGenericNames(decl.generics)
+  val selfTy = interfaceSelfType(tbl, decl, ifaceGen)
+  val noLocals: List[LocalBinding] = newList()
+  for m in decl.members {
+    match m {
+      case IMFunc(fn) -> {
+        val combinedGenerics: List[String] = newList()
+        for g in ifaceGen {
+          combinedGenerics.add(g)
+        }
+        for g in extractGenericNames(fn.generics) {
+          combinedGenerics.add(g)
+        }
+        val sig0 = resolveMethodSigParts(
+          tbl,
+          "",
+          decl.name,
+          fn.name,
+          ifaceGen,
+          fn.generics,
+          fn.params,
+          fn.ret,
+          fn.isAsync,
+          fnHasAnnotation(fn, "pure"),
+          fnHasAnnotation(fn, "io"),
+          false,
+          fn.span
+        )
+        val sig = ResolvedSignature(
+          generics = combinedGenerics,
+          genericOwners = combinedOwners(decl.name, ifaceGen.count, sig0.genericOwners),
+          bounds = sig0.bounds,
+          params = substitutesSelfParams(sig0.params, selfTy),
+          returnTy = substitutesSelf(sig0.returnTy, selfTy),
+          isAsync = sig0.isAsync,
+          isHot = sig0.isHot,
+          isGenerator = sig0.isGenerator,
+          originPackage = sig0.originPackage,
+          span = sig0.span,
+          isPure = fnHasAnnotation(fn, "pure"),
+          isIo = sig0.isIo,
+          isEntry = sig0.isEntry,
+          isExternFunc = sig0.isExternFunc
+        )
+        val reported: List[Diagnostic] = newList()
+        checkFunctionBody(tbl, sigs, reported, fn, sig, noLocals, noLocals, true, selfTy)
+        addDiagnosticsNotYetReported(diag, reported)
+      }
+      case _ -> {
+      }
+    }
+  }
+}
+
+// The interface as a type, its own generic parameters as the arguments (as
+// `recordSelfType` does for a record).
+func interfaceSelfType(tbl: in SymbolTable, decl: in InterfaceDecl, ownerGenerics: in List[String]): Type {
+  match symTableTryFindOne(tbl, decl.name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        val targs: List[Type] = newList()
+        for g in ownerGenerics {
+          targs.add(TyParam(name = g, owner = decl.name))
+        }
+        TyUser(id = tid, name = decl.name, args = targs)
+      }
+      case None -> tyErrorSilent()
+    }
+    case None -> tyErrorSilent()
+  }
+}
+
 // An interface method's `requires:`/`ensures:` clauses are checked as `Bool`
 // in the method's parameter scope, `result` being the declared return type
 // (#8331).  An implementing method inherits the clauses after type checking,
@@ -5214,12 +5301,44 @@ func checkImplMemberBodies(
         } else {
           fieldLocals
         }
-        checkFunctionBody(tbl, sigs, diag, fn, sig, bareFieldLocals, fieldLocals, true, selfTy)
+        // The default itself is checked once where its interface is declared
+        // (`checkInterfaceMemberBodies`, #9471); the copy reports an error the
+        // two checks share only once.
+        val reported: List[Diagnostic] = newList()
+        checkFunctionBody(
+          tbl,
+          sigs,
+          if hasMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName()) { reported } else { diag },
+          fn,
+          sig,
+          bareFieldLocals,
+          fieldLocals,
+          true,
+          selfTy
+        )
+        addDiagnosticsNotYetReported(diag, reported)
       }
       case _ -> {
       }
     }
     i = i + 1
+  }
+}
+
+// Append each of `fresh` that `diag` does not already hold (same code, span
+// and message): a default body checked in its interface and again as an
+// impl's inherited copy reports one error once.
+func addDiagnosticsNotYetReported(diag: in List[Diagnostic], fresh: in List[Diagnostic]): Unit {
+  for d in fresh {
+    var seen = false
+    for o in diag {
+      if o.code == d.code and o.message == d.message and spanKey(o.span) == spanKey(d.span) {
+        seen = true
+      }
+    }
+    if not seen {
+      diag.add(d)
+    }
   }
 }
 
@@ -7781,7 +7900,10 @@ func checkWithImportedPackagesCore(
         checkSameArityMethods(diag, "impl " + implIfaceName(decl), implMethodHeads(decl.members))
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
-      case IInterface(decl) -> checkInterfaceContracts(tbl, sigs, diag, decl)
+      case IInterface(decl) -> {
+        checkInterfaceContracts(tbl, sigs, diag, decl)
+        checkInterfaceMemberBodies(tbl, sigs, diag, decl)
+      }
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
       case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
