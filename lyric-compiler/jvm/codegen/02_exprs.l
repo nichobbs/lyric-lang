@@ -919,6 +919,39 @@ func lowerBuiltinMonadAccessorJvm(
   None
 }
 
+// A call through a generic interface returns `Object` (the JVM erases the interface); the checker recorded
+// the primitive result type the instantiation fixes (`ifaceResultSiteKey`, #9459).  Narrow to it here so an
+// operator over the result (`h.get() + h.get()`) sees `String` or the unboxed number, not `Object`.
+func narrowGenericIfaceResultJvm(ctx: in FuncCtx, insns: in List[LInsn], call: in Expr, ty: in JvmType): JvmType {
+  match ty {
+    case JRef(cls) -> {
+      if cls != "java/lang/Object" {
+        return ty
+      }
+      match mapGet(ctx.externTypes, "~recv~" + ifaceResultSiteKey(call.span)) {
+        case Some(tag) -> {
+          val target = match tag {
+            case "Int" -> JInt
+            case "UInt" -> JInt
+            case "Long" -> JLong
+            case "ULong" -> JLong
+            case "Nat" -> JLong
+            case "Double" -> JDouble
+            case "Float" -> JFloat
+            case "Bool" -> JBoolean
+            case "Char" -> JChar
+            case "Byte" -> JByte
+            case _ -> JRef(className = "java/lang/String")
+          }
+          emitUnboxObjectTo(insns, target)
+        }
+        case None -> ty
+      }
+    }
+    case _ -> ty
+  }
+}
+
 // A field-access or method-call receiver that lowered to erased `Object` (an element of a
 // generic container, a generic call's result, a match binding of a generic
 // payload), narrowed to the class the type checker resolved for it
@@ -1812,7 +1845,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case JByte -> maskByteUnsigned(insns)
         case _ -> ()
       }
-      callTy
+      narrowGenericIfaceResultJvm(ctx, insns, expr, callTy)
     }
 
     // ── Member access ─────────────────────────────────────────────────────

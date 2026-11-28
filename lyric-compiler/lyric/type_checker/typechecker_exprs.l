@@ -20529,6 +20529,51 @@ func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
   }
 }
 
+// A call through a generic interface (`h.get()` on a `Holder[Int]`) returns `Object` on the JVM, which erases
+// the interface.  Record the primitive result type the instantiation fixes so the JVM backend can narrow it
+// right after the call (`ifaceResultSiteKey`, #9459).
+func recordGenericIfaceResult(tbl: in SymbolTable, sp: in Span, pick: in Option[MethodCallPick], recvTy: in Type): Unit {
+  match pick {
+    case None -> ()
+    case Some(mp) -> {
+      if mp.fullSig.isSome() {
+        return
+      }
+      match unrefine(recvTy) {
+        case TyUser(tid, _, targs) -> {
+          if targs.count == 0 {
+            return
+          }
+          val isIface = match symTableTypeSymbolOf(tbl, tid) {
+            case Some(sym) -> match sym.kind {
+              case DKInterface(_, _) -> true
+              case _ -> false
+            }
+            case None -> false
+          }
+          if not isIface {
+            return
+          }
+          match unrefine(mp.sig.returnTy) {
+            case TyPrim(pt) -> match pt {
+              case PtUnit -> ()
+              case PtNever -> ()
+              case _ -> {
+                val key = ifaceResultSiteKey(sp)
+                if not tbl.memberRecvClasses.containsKey(key) {
+                  tbl.memberRecvClasses.add(key, primName(pt))
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+}
+
 func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in SymbolId): Unit {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> {
@@ -21245,6 +21290,7 @@ func inferExprCore(
                   e.span
                 )
                 recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
+                recordGenericIfaceResult(tbl, e.span, methodPick, rt3)
                 if methodPick.isSome() {
                   reportInoutSelfThroughInterface(tbl, diag, rt3, memberName, argTypes, e.span)
                 }
