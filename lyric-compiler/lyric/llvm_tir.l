@@ -582,6 +582,9 @@ record LCtx {
   globalPrefix: String
   /// The reference locals live in each open lexical scope, released when it closes.
   refScopes: List[List[Slot]]
+  /// The `defer` blocks registered in each open lexical scope (parallel to `refScopes`), run in reverse
+  /// order at every exit from the scope before its references are released.
+  defers: List[List[TExpr]]
   /// The owned references passed on as borrowed operands in each open statement, released
   /// when it ends.
   temps: List[List[Val]]
@@ -838,6 +841,20 @@ func borrow(c: in LCtx, v: in Val): Val {
 
 func pushRefScope(c: in LCtx): Unit {
   c.refScopes.add(newList())
+  c.defers.add(newList())
+}
+
+/// Run scope `idx`'s pending `defer` blocks in reverse declaration order, before the scope's references
+/// are released.  A panic aborts without running them (no unwinding on native, D-N-003).
+func runScopeDefers(c: in LCtx, idx: in Int): Unit {
+  val ds = c.defers[idx]
+  var i = ds.count - 1
+  while i >= 0 {
+    pushTemps(c)
+    discard(c, lowerExpr(c, ds[i]))
+    popTemps(c)
+    i = i - 1
+  }
 }
 
 func releaseSlot(c: in LCtx, slot: in Slot): Unit {
@@ -847,6 +864,7 @@ func releaseSlot(c: in LCtx, slot: in Slot): Unit {
 }
 
 func popRefScope(c: in LCtx): Unit {
+  runScopeDefers(c, c.defers.count - 1)
   val top = c.refScopes[c.refScopes.count - 1]
   var i = top.count - 1
   while i >= 0 {
@@ -854,6 +872,7 @@ func popRefScope(c: in LCtx): Unit {
     i = i - 1
   }
   c.refScopes.removeAt(c.refScopes.count - 1)
+  c.defers.removeAt(c.defers.count - 1)
 }
 
 /// Release, without closing them, every temporary and local opened since the given depths:
@@ -871,6 +890,7 @@ func releaseDownTo(c: in LCtx, scopeDepth: in Int, tempDepth: in Int): Unit {
   }
   var s = c.refScopes.count - 1
   while s >= scopeDepth {
+    runScopeDefers(c, s)
     val ss = c.refScopes[s]
     var k = ss.count - 1
     while k >= 0 {
@@ -3381,6 +3401,7 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     retTy = retTy,
     globalPrefix = ".tcstr." + bodyName + ".",
     refScopes = newList(),
+    defers = newList(),
     temps = newList(),
     fnName = bodyName,
     extraFns = c.extraFns,
@@ -3767,6 +3788,21 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     val d = tmp(c)
     c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
     return Val(ty = NI32, value = NLocal(name = d))
+  }
+  // The Unicode normalization tables are not in lyric-rt: the two `Std.String` wrappers trap when they run, as
+  // on the AST path, so a program that never calls them still builds.
+  if name == "String.normalize" or name == "String.isNormalized" {
+    discard(c, lowerExpr(c, arg))
+    emitPanic(
+      c,
+      "String ." + Str.substring(name, 7, name.length - 7) +
+        "() is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)",
+      line
+    )
+    return match tyToN(c.env, rty) {
+      case Some(nt) -> Val(ty = nt, value = NUndef(ty = nt))
+      case None -> unsupported(c, "builtin " + name + " returning " + renderTy(rty))
+    }
   }
   unsupported(c, "builtin " + name)
 }
@@ -6657,6 +6693,11 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
     case TsFor(label, pat, iter, body) -> lowerFor(c, label, pat, iter, body)
     case TsBreak(label) -> jumpLoop(c, label, true)
     case TsContinue(label) -> jumpLoop(c, label, false)
+    case TsDefer(body) -> if c.coro {
+      c.problems.add("a defer in a coroutine")
+    } else {
+      c.defers[c.defers.count - 1].add(body)
+    }
     case _ -> {
       c.problems.add("statement " + stmtKindName(s.kind))
     }
@@ -6761,6 +6802,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
     retTy = retTy,
     globalPrefix = ".tcstr." + irName + ".",
     refScopes = newList(),
+    defers = newList(),
     temps = newList(),
     fnName = irName,
     extraFns = newList(),
