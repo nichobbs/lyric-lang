@@ -586,6 +586,9 @@ record LCtx {
   globalPrefix: String
   /// The reference locals live in each open lexical scope, released when it closes.
   refScopes: List[List[Slot]]
+  /// The `defer` blocks registered in each open lexical scope (parallel to `refScopes`), run in reverse
+  /// order at every exit from the scope before its references are released.
+  defers: List[List[TExpr]]
   /// The owned references passed on as borrowed operands in each open statement, released
   /// when it ends.
   temps: List[List[Val]]
@@ -842,6 +845,30 @@ func borrow(c: in LCtx, v: in Val): Val {
 
 func pushRefScope(c: in LCtx): Unit {
   c.refScopes.add(newList())
+  c.defers.add(newList())
+}
+
+/// Run scope `idx`'s pending `defer` blocks in reverse declaration order, before the scope's references
+/// are released.  A panic aborts without running them (no unwinding on native, D-N-003).
+func runScopeDefers(c: in LCtx, idx: in Int): Unit {
+  // The scope's list is emptied while its blocks run, so a `return`, `break` or `continue` inside a deferred
+  // block leaves through the same exits without running the block it is in again; the list is put back for
+  // the scope's later exits.
+  val ds: List[TExpr] = newList()
+  for d in c.defers[idx] {
+    ds.add(d)
+  }
+  c.defers[idx].clear()
+  var i = ds.count - 1
+  while i >= 0 {
+    pushTemps(c)
+    discard(c, lowerExpr(c, ds[i]))
+    popTemps(c)
+    i = i - 1
+  }
+  for d in ds {
+    c.defers[idx].add(d)
+  }
 }
 
 func releaseSlot(c: in LCtx, slot: in Slot): Unit {
@@ -851,6 +878,7 @@ func releaseSlot(c: in LCtx, slot: in Slot): Unit {
 }
 
 func popRefScope(c: in LCtx): Unit {
+  runScopeDefers(c, c.defers.count - 1)
   val top = c.refScopes[c.refScopes.count - 1]
   var i = top.count - 1
   while i >= 0 {
@@ -858,6 +886,7 @@ func popRefScope(c: in LCtx): Unit {
     i = i - 1
   }
   c.refScopes.removeAt(c.refScopes.count - 1)
+  c.defers.removeAt(c.defers.count - 1)
 }
 
 /// Release, without closing them, every temporary and local opened since the given depths:
@@ -875,6 +904,7 @@ func releaseDownTo(c: in LCtx, scopeDepth: in Int, tempDepth: in Int): Unit {
   }
   var s = c.refScopes.count - 1
   while s >= scopeDepth {
+    runScopeDefers(c, s)
     val ss = c.refScopes[s]
     var k = ss.count - 1
     while k >= 0 {
@@ -1341,7 +1371,7 @@ pub func tirMapKeyOk(nt: in NType): Bool {
 
 func listElemOk(nt: in NType): Bool {
   match nt {
-    case NVoid -> false
+    case NVoid -> true
     case _ -> isScalarN(nt) or isRefN(nt) or isAggN(nt)
   }
 }
@@ -3391,6 +3421,7 @@ func lowerLambda(c: in LCtx, e: in TExpr, params: in List[LocalDecl], captures: 
     retTy = retTy,
     globalPrefix = ".tcstr." + bodyName + ".",
     refScopes = newList(),
+    defers = newList(),
     temps = newList(),
     fnName = bodyName,
     extraFns = c.extraFns,
@@ -4207,6 +4238,7 @@ func slotOf(c: in LCtx, v: in Val): NValue {
     case NI32 -> c.insns.add(NSExt(dest = d, fromTy = NI32, value = v.value, toTy = NI64))
     case NI8 -> c.insns.add(NZExt(dest = d, fromTy = NI8, value = v.value, toTy = NI64))
     case NI1 -> c.insns.add(NZExt(dest = d, fromTy = NI1, value = v.value, toTy = NI64))
+    case NVoid -> return NLitInt(v = 0i64, ty = NI64)
     case NStruct(_, _) -> return slotOfAgg(c, v)
     case NArray(_, _) -> return slotOfAgg(c, v)
     case _ -> c.insns.add(NPtrToInt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
@@ -4245,6 +4277,7 @@ func fromBoxSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
 func fromSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
   val d = tmp(c)
   match nt {
+    case NVoid -> return unitVal()
     case NI64 -> return Val(ty = nt, value = slot)
     case NDouble -> c.insns.add(NBitcast(dest = d, fromTy = NI64, value = slot, toTy = NDouble))
     case NFloat -> {
@@ -6861,6 +6894,11 @@ func lowerStmtInner(c: in LCtx, s: in TStmt): Unit {
     case TsFor(label, pat, iter, body) -> lowerFor(c, label, pat, iter, body)
     case TsBreak(label) -> jumpLoop(c, label, true)
     case TsContinue(label) -> jumpLoop(c, label, false)
+    case TsDefer(body) -> if c.coro {
+      c.problems.add("a defer in a coroutine")
+    } else {
+      c.defers[c.defers.count - 1].add(body)
+    }
     case _ -> {
       c.problems.add("statement " + stmtKindName(s.kind))
     }
@@ -6965,6 +7003,7 @@ func lowerTirFunctionInner(env: in TirLowerEnv, fn: in TFnDecl): Result[TirLower
     retTy = retTy,
     globalPrefix = ".tcstr." + irName + ".",
     refScopes = newList(),
+    defers = newList(),
     temps = newList(),
     fnName = irName,
     extraFns = newList(),
