@@ -847,13 +847,23 @@ func pushRefScope(c: in LCtx): Unit {
 /// Run scope `idx`'s pending `defer` blocks in reverse declaration order, before the scope's references
 /// are released.  A panic aborts without running them (no unwinding on native, D-N-003).
 func runScopeDefers(c: in LCtx, idx: in Int): Unit {
-  val ds = c.defers[idx]
+  // The scope's list is emptied while its blocks run, so a `return`, `break` or `continue` inside a deferred
+  // block leaves through the same exits without running the block it is in again; the list is put back for
+  // the scope's later exits.
+  val ds: List[TExpr] = newList()
+  for d in c.defers[idx] {
+    ds.add(d)
+  }
+  c.defers[idx].clear()
   var i = ds.count - 1
   while i >= 0 {
     pushTemps(c)
     discard(c, lowerExpr(c, ds[i]))
     popTemps(c)
     i = i - 1
+  }
+  for d in ds {
+    c.defers[idx].add(d)
   }
 }
 
