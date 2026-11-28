@@ -75,7 +75,7 @@ func unionTargetSource(): String {
     "func main(): Int {\n  val w: Wrap[Int] = Full(v = 1)\n  w.get() - 1\n}\n"
 }
 
-test "native reports N0105 for an impl of a generic interface for a generic union" {
+test "native lays out an impl of a generic interface for a generic union (no N0105, D891)" {
   val dir = tempDir("union")
   defer {
     match File.deleteDirRecursive(dir) {
@@ -101,8 +101,10 @@ test "native reports N0105 for an impl of a generic interface for a generic unio
     "",
     300000
   )
-  assertTrue(r.exitCode != 0, "the native build fails")
-  assertTrue(Str.contains(r.stderr, "N0105"), "N0105 is reported, got:\n" + r.stderr)
+  // This lane has no runtime library, so the link step may fail; what it checks is that the code generator no longer
+  // rejects the impl (native's build and run are in `native-via-tir-e2e.sh`).
+  assertFalse(Str.contains(r.stderr, "N0105"), "N0105 is not reported, got:\n" + r.stderr)
+  assertFalse(Str.contains(r.stderr, "T0217"), "no T0217 on native")
 }
 
 test "dotnet builds an impl of a generic interface" {

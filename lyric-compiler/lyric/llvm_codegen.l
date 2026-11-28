@@ -7191,7 +7191,11 @@ func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit
   // over the union pointer, where an inline union is a value with no object to hand an interface box.
   for u in units {
     for decl in u.impls {
-      match implTargetRecordName(decl.target) {
+      val targetName = match implTargetRecordName(decl.target) {
+        case Some(n) -> Some(value = n)
+        case None -> genericImplTargetRecord(decl.target)
+      }
+      match targetName {
         case None -> ()
         case Some(name) -> {
           for uu in units {
@@ -24220,7 +24224,13 @@ func nonGenericImplIrs(pkg: in String, recordName: in String, ifaceName: in Stri
 /// None when `rir` is not an instance of a generic record with such an impl.
 func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option[String] {
   val im = match mapGet(ctx.instMeta, rir) { case Some(x) -> x; case None -> return None }
-  val ri = match mapGet(ctx.recordDefs, rir) { case Some(x) -> x; case None -> return None }
+  // An instance of a generic record, or of a generic union (a heap object: an impl target is never inline).
+  val recOpt = mapGet(ctx.recordDefs, rir)
+  val unionOpt = mapGet(ctx.unionDefs, rir)
+  val selfTy = match recOpt {
+    case Some(ri) -> recPtrType(ri)
+    case None -> match unionOpt { case Some(ui) -> unionPtrType(ui); case None -> return None }
+  }
   val ifDot = lastDotIndex(info.key)
   val ifaceNamed = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
   // An instance of a generic interface is keyed `Pkg.Holder<i32>`: the impl's methods are named by `Holder`.
@@ -24230,7 +24240,6 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   }
   val recDot = lastDotIndex(im.gkey)
   val recBare = if recDot > 0 { Str.substring(im.gkey, recDot + 1, im.gkey.length - recDot - 1) } else { im.gkey }
-  val selfTy = recPtrType(ri)
   val implIrs: List[String] = newList()
   var i = 0
   while i < info.methodNames.count {
@@ -24258,26 +24267,28 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   }
   val vtName = ifaceVtableGlobalName(rir, info)
   if not ctx.ifaceVtables.containsKey(rir + "|" + info.key) {
-    val initStr = if ri.byValue {
-      byValueVtableInitStr(ctx, implIrs, ri, info, ctx.moduleFns)
-    } else {
-      var acc = "{ "
-      var k = 0
-      while k < info.methodNames.count {
-        if k > 0 {
-          acc = acc + ", "
+    val byValueRec = match recOpt { case Some(ri) -> if ri.byValue { Some(value = ri) } else { None }; case None -> None }
+    val initStr = match byValueRec {
+      case Some(bri) -> byValueVtableInitStr(ctx, implIrs, bri, info, ctx.moduleFns)
+      case None -> {
+        var acc = "{ "
+        var k = 0
+        while k < info.methodNames.count {
+          if k > 0 {
+            acc = acc + ", "
+          }
+          val fnParams: List[NType] = newList()
+          fnParams.add(selfTy)
+          for pty in info.methodParamTys[k] {
+            fnParams.add(pty)
+          }
+          acc = acc + "i8* bitcast (" + nTypeToIrString(NFnPtr(params = fnParams, ret = info.methodRetTys[k])) + " @" +
+            quoteIrIdent(implIrs[k]) +
+            " to i8*)"
+          k = k + 1
         }
-        val fnParams: List[NType] = newList()
-        fnParams.add(selfTy)
-        for pty in info.methodParamTys[k] {
-          fnParams.add(pty)
-        }
-        acc = acc + "i8* bitcast (" + nTypeToIrString(NFnPtr(params = fnParams, ret = info.methodRetTys[k])) + " @" +
-          quoteIrIdent(implIrs[k]) +
-          " to i8*)"
-        k = k + 1
+        acc + " }"
       }
-      acc + " }"
     }
     ctx.globals.add(
       NGlobalDef(
@@ -24360,14 +24371,16 @@ func checkGenericIfaceImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit
         case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and
           (
             ctx.genericRecordDefs.containsKey(pkg + "." + n) or
-              ctx.genericRecordDefs.containsKey(n)
+              ctx.genericRecordDefs.containsKey(n) or
+              ctx.genericUnionDefs.containsKey(pkg + "." + n) or
+              ctx.genericUnionDefs.containsKey(n)
           )
         case None -> false
       }
       if not supported {
         panic(
           "error[N0105] " + where_ + ": an impl of the generic interface '" + bare +
-            "' for this generic target is not supported by --target native yet (#7791): the target must be a generic record applied to the impl's own type parameters, in order (`impl[T] I[T] for R[T]`)"
+            "' for this generic target is not supported by --target native yet (#7791): the target must be a generic record or union applied to the impl's own type parameters, in order (`impl[T] I[T] for R[T]`)"
         )
       }
       return
@@ -24593,7 +24606,7 @@ func registerGenericImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
   if not implTargetArgsAreParams(decl.target, implParams) {
     return
   }
-  if not (ctx.genericRecordDefs.containsKey(pkg + "." + recName) or ctx.genericRecordDefs.containsKey(recName)) {
+  if not (ctx.genericRecordDefs.containsKey(pkg + "." + recName) or ctx.genericRecordDefs.containsKey(recName) or ctx.genericUnionDefs.containsKey(pkg + "." + recName) or ctx.genericUnionDefs.containsKey(recName)) {
     return
   }
   for m in decl.members {
