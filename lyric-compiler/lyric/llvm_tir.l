@@ -323,6 +323,8 @@ pub record TirLowerEnv {
   /// A set: the value is always `true`.
   enums: Map[Int, Bool] = newMap()
   enumCases: Map[Int, Int] = newMap()
+  /// The case names of each enum, in ordinal order (`toString` of an enum is the case name).
+  enumNames: Map[Int, List[String]] = newMap()
   /// The tuple layouts the code generator has registered, keyed by `renderTy` of the tuple type.
   /// A tuple is a synthesised heap record, so the code generator cannot list them up front: a
   /// lowering that meets one that is missing records it in `needTuples`, fails, and is run
@@ -3685,9 +3687,9 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return unitVal()
   }
   if name == "toString" or Str.endsWith(name, ".toString") {
-    // An enum prints its case name, which the AST path's name table supplies; the ordinal is not it.
+    // An enum prints its case name, not its ordinal.
     match arg.ty {
-      case TNamed(sym, _) -> if c.env.enums.containsKey(sym.id) { return unsupported(c, "toString of an enum") }
+      case TNamed(sym, _) -> if c.env.enums.containsKey(sym.id) { return lowerEnumToString(c, sym, arg) }
       case _ -> ()
     }
     val a = lowerExpr(c, arg)
@@ -3704,6 +3706,47 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     return Val(ty = NI32, value = NLocal(name = d))
   }
   unsupported(c, "builtin " + name)
+}
+
+/// `toString` of an enum value: the text of its case name, picked by the ordinal.
+func lowerEnumToString(c: in LCtx, sym: in SymbolId, arg: in TExpr): Val {
+  val names = match mapGet(c.env.enumNames, sym.id) {
+    case Some(ns) -> ns
+    case None -> return unsupported(c, "toString of an enum with no case names")
+  }
+  val v = borrow(c, lowerExpr(c, arg))
+  val sTy = lyricStringNType()
+  c.ticker.add(0)
+  val slot = "enum.str." + toString(c.ticker.count)
+  c.allocas.add(NAlloca(dest = slot, ty = sTy))
+  val joinL = newLabel(c, "enum.join")
+  val labels: List[String] = newList()
+  val cases: List[NSwitchCase] = newList()
+  var i = 0
+  while i < names.count {
+    val l = newLabel(c, "enum.case")
+    labels.add(l)
+    cases.add(NSwitchCase(matchVal = i.toLong(), label = l))
+    i = i + 1
+  }
+  val defaultL = newLabel(c, "enum.none")
+  c.insns.add(NSwitch(ty = NI32, scrutinee = v.value, defaultLabel = defaultL, cases = cases))
+  var k = 0
+  while k < names.count {
+    startBlock(c, labels[k])
+    val lit = stringLiteral(c, names[k])
+    c.insns.add(NStore(ty = sTy, value = lit.value, ptr = NLocal(name = slot)))
+    c.insns.add(NBr(label = joinL))
+    k = k + 1
+  }
+  startBlock(c, defaultL)
+  val none = stringLiteral(c, "")
+  c.insns.add(NStore(ty = sTy, value = none.value, ptr = NLocal(name = slot)))
+  c.insns.add(NBr(label = joinL))
+  startBlock(c, joinL)
+  val d = tmp(c)
+  c.insns.add(NLoad(dest = d, ty = sTy, ptr = NLocal(name = slot)))
+  Val(ty = sTy, value = NLocal(name = d))
 }
 
 /// The leaves the AST path lowers specially inside a coroutine: they park the task instead of
@@ -5386,7 +5429,11 @@ func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr):
   // The interface is the one the expression's type names: for an instance of a generic interface that is the
   // instance (`Holder[Int]`), where the conversion still carries the generic interface's symbol (#7791).
   val iface = match e.ty {
-    case TNamed(sym, targs) -> if targs.count == 0 and c.env.ifaces.containsKey(sym.id) { sym } else { iface0 }
+    case TNamed(sym, targs) -> if targs.count == 0 and c.env.ifaces.containsKey(sym.id) {
+      sym
+    } else {
+      iface0
+    }
     case _ -> iface0
   }
   val il = match mapGet(c.env.ifaces, iface.id) {

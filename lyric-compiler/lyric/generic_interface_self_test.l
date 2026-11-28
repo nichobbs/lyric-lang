@@ -94,6 +94,14 @@ func firstOf(h: in Holder[Int]): Int = h.get()
 
 func firstStr(h: in Holder[String]): String = h.get()
 
+func sumTwice(h: in Holder[Int]): Int = h.get() + h.get()
+
+func joinTwice(h: in Holder[String]): String = h.get() + h.get()
+
+func lessThan(a: in Holder[Int], b: in Holder[Int]): Bool = a.get() < b.get()
+
+func scaled(h: in Holder[Long]): Long = h.get() * 3
+
 record Doubler {
   k: Int
 }
@@ -228,4 +236,22 @@ test "a generic impl over a generic union runs at two instantiations" {
   assertEqualInt(firstOf(Two(a = 4, b = 5)), 4, "Wrap[Int] case Two as Holder[Int]")
   assertEqualInt(firstOf(One(v = 7)), 7, "Wrap[Int] case One as Holder[Int]")
   assertEqual(firstStr(Two(a = "x", b = "y")), "x", "Wrap[String] as Holder[String]")
+}
+
+ref record LongBox2 {
+  var v: Long
+}
+
+impl Holder[Long] for LongBox2 {
+  func get(self: in LongBox2): Long = self.v
+  func put(self: in LongBox2, x: in Long): Unit {
+    self.v = x
+  }
+}
+
+test "an operator over two results of generic interface methods sees the instantiated type" {
+  assertEqualInt(sumTwice(IntBox(v = 21)), 42, "Int + Int through Holder[Int]")
+  assertEqual(joinTwice(Box(v = "ab")), "abab", "String + String through Holder[String]")
+  assertTrue(lessThan(IntBox(v = 1), IntBox(v = 2)), "Int < Int through Holder[Int]")
+  assertEqualLong(scaled(LongBox2(v = 5000000000)), 15000000000, "Long * literal through Holder[Long]")
 }
