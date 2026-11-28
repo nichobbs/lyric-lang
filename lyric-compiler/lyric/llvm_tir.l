@@ -5423,6 +5423,19 @@ func calleeKind(k: in Callee): String {
   }
 }
 
+func joinKeysTir(keys: in List[String]): String {
+  var acc = "["
+  var i = 0
+  while i < keys.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + keys[i]
+    i = i + 1
+  }
+  acc + "]"
+}
+
 /// A heap record used as an interface it implements: a box holding the (retained) object and
 /// the record's vtable for the interface.  The box is owned by the caller.
 func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr): Val {
@@ -5450,7 +5463,28 @@ func lowerUpcast(c: in LCtx, e: in TExpr, iface0: in SymbolId, inner: in TExpr):
   }
   val vt = match mapGet(c.env.ifaceVts, toString(recId) + "|" + toString(iface.id)) {
     case Some(g) -> g
-    case None -> return unsupported(c, "an upcast of " + renderTy(inner.ty) + " to " + renderTy(e.ty))
+    case None -> {
+      // Name the vtables the environment does hold for this record and for this interface, so a key that was
+      // registered under another record or interface instance shows (#9477).
+      val forRec: List[String] = newList()
+      val forIface: List[String] = newList()
+      for k in mapKeys(c.env.ifaceVts) {
+        if k.startsWith(toString(recId) + "|") {
+          forRec.add(k)
+        }
+        if k.endsWith("|" + toString(iface.id)) {
+          forIface.add(k)
+        }
+      }
+      return unsupported(
+        c,
+        "an upcast of " + renderTy(inner.ty) + " to " + renderTy(e.ty) + " (vtables of the record: " +
+          joinKeysTir(forRec) +
+          ", of the interface: " +
+          joinKeysTir(forIface) +
+          ")"
+      )
+    }
   }
   val v = borrow(c, lowerExpr(c, inner))
   if not isRefN(v.ty) {
