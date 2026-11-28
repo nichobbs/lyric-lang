@@ -1786,7 +1786,7 @@ span, exactly like `T0120`/`J008`.
 | `N0028` | `--shape plugin` builds a trusted plugin library from a package with a `@plugin` record, and the package declares none (D231). |
 | `N0029` | A native build found no standard library sources (#8455). The message names every location searched: `$LYRIC_STD_PATH`, `lyric-stdlib/std` in the directory of the `lyric` binary and each of its parents, and `lyric-stdlib/std` in the current directory and each of its parents. Set `LYRIC_STD_PATH` to the `lyric-stdlib/std` directory of a Lyric checkout or install, or run `lyric` from inside one. |
 | `N0030` | A native build imports a `Std.*` package that no file of the standard library it found declares (#8455): a misspelt name, or a `LYRIC_STD_PATH` that does not match this compiler. |
-| `N0105` | On `--target native`, an `impl` of a generic interface for a generic target that is not a generic record applied to the impl's own parameters (a generic union), or one whose interface argument has no native layout (#7791). Implement it for a generic record or a concrete instantiation. |
+| `N0105` | On `--target native`, an `impl` of a generic interface for a generic target that is not a generic record or union applied to the impl's own parameters, or one whose interface argument has no native layout (#7791). Implement it for a generic record or union, or a concrete instantiation. |
 | `N0106` | On `--target native`, an `impl` of an interface declared in another package that does not define a default method native cannot inherit: one with a `Self` in a parameter or result, an `async` default, or an `out`/`inout` parameter (#9451). Other defaults are inherited. Define the method in the impl. |
 
 ### Custom source generators (X-series)
