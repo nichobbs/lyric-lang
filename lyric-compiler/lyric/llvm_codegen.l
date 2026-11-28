@@ -7187,6 +7187,24 @@ func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit
       putOnce(heapOnly, u.pkgName + "." + n)
     }
   }
+  // A union that is the target of an `impl` stays a heap object (#9470): its vtable is laid out like a record's,
+  // over the union pointer, where an inline union is a value with no object to hand an interface box.
+  for u in units {
+    for decl in u.impls {
+      match implTargetRecordName(decl.target) {
+        case None -> ()
+        case Some(name) -> {
+          for uu in units {
+            for ud in uu.unions {
+              if ud.name == name {
+                putOnce(heapOnly, uu.pkgName + "." + ud.name)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
