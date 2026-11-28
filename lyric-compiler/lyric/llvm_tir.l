@@ -3021,7 +3021,9 @@ func lowerCall(c: in LCtx, e: in TExpr, callee: in Callee, args: in List[TArg]):
           return lowerStringBinary(c, op, a, b)
         }
         match tyToN(c.env, ins[0].ty) {
-          case Some(nt) -> if isStructN(nt) or isRefN(nt) {
+          case Some(nt) -> if (isStructN(nt) or isRefN(nt)) and isEqualityOp(op) and isSome(unionOfTy(c, ins[0].ty)) {
+            lowerUnionEq(c, op, ins[0].ty, a, b)
+          } else if isStructN(nt) or isRefN(nt) {
             unsupported(c, "an operator on " + renderTy(ins[0].ty))
           } else if nTypeToIrString(a.ty) != nTypeToIrString(b.ty) {
             unsupported(
@@ -5463,6 +5465,50 @@ func lowerBitwise(c: in LCtx, from: in String, method: in String, ins: in List[T
     c.insns.add(NAShr(dest = d, ty = ty, a = a.value, b = bv))
   }
   Val(ty = ty, value = NLocal(name = d))
+}
+
+func isEqualityOp(op: in IntrinsicOp): Bool {
+  match op {
+    case IoEq -> true
+    case IoNe -> true
+    case _ -> false
+  }
+}
+
+/// `a == b` and `a != b` on two borrowed values of a union: the code generator's synthesised
+/// `<union>.eq(i8*, i8*)` (the same instance, or the same case with each payload field equal by its
+/// own type's `==`), called with the operands' objects; an inline union is spilled to a stack slot
+/// first.  The function is recorded in `env.needScans` (kind `unionEq`) until the code generator
+/// has synthesised it.
+func lowerUnionEq(c: in LCtx, op: in IntrinsicOp, ty: in Ty, a: in Val, b: in Val): Val {
+  val ul = match unionOfTy(c, ty) {
+    case Some(x) -> x
+    case None -> return unsupported(c, "an equality on " + renderTy(ty))
+  }
+  val fn = match scanFnOf(c, "unionEq", ty, ul.ty) {
+    case Some(f) -> f
+    case None -> return unsupported(c, "an equality on " + renderTy(ty) + " not yet synthesised")
+  }
+  val sa = openUnion(c, ul, a)
+  val sb = openUnion(c, ul, b)
+  val ptrTy = if ul.inline { NPtr(pointee = ul.structTy) } else { ul.ty }
+  val ra = tmp(c)
+  c.insns.add(NBitcast(dest = ra, fromTy = ptrTy, value = sa.base, toTy = i8ptr()))
+  val rb = tmp(c)
+  c.insns.add(NBitcast(dest = rb, fromTy = ptrTy, value = sb.base, toTy = i8ptr()))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = i8ptr(), value = NLocal(name = ra)))
+  args.add(NArg(ty = i8ptr(), value = NLocal(name = rb)))
+  val eq = tmp(c)
+  c.insns.add(NCall(dest = eq, retTy = NI1, fn = NGlobal(name = fn), args = args))
+  match op {
+    case IoNe -> {
+      val ne = tmp(c)
+      c.insns.add(NXor(dest = ne, ty = NI1, a = NLocal(name = eq), b = NLitInt(v = 1i64, ty = NI1)))
+      Val(ty = NI1, value = NLocal(name = ne))
+    }
+    case _ -> Val(ty = NI1, value = NLocal(name = eq))
+  }
 }
 
 /// `+`, `==`, `!=` and the orderings on two borrowed strings.

@@ -15165,6 +15165,20 @@ func lowerMapEq(ctx: in Ctx, insns: in List[NInsn], valTy: in NType, a: in NVal,
   NVal(ty = NI1, value = NLocal(name = ne))
 }
 
+/// The synthesised equality function of the union whose object type is `t` (the heap pointer or the
+/// inline struct), for a TIR lowering that compares two unions (`LlvmTir.lowerUnionEq`).
+func ensureUnionEqOfType(ctx: in Ctx, t: in NType): String {
+  val name = match t {
+    case NPtr(pointee) -> match pointee { case NStruct(n, _) -> n; case _ -> "" }
+    case NStruct(n, _) -> n
+    case _ -> ""
+  }
+  match mapGet(ctx.unionDefs, name) {
+    case Some(ui) -> ensureUnionEq(ctx, ui)
+    case None -> panic("Lyric.LlvmCodegen: internal - no union '" + name + "' to compare")
+  }
+}
+
 func unionEqName(ui: in NUnionInfo): String {
   ui.irName + ".eq"
 }
@@ -20439,7 +20453,9 @@ func lowerWithTuples(
           maps.tasks.add(n.key, taskNType(ctx, n.elemTy))
         }
         for n in f.needScans {
-          val scanName = if n.kind == "remove" {
+          val scanName = if n.kind == "unionEq" {
+            ensureUnionEqOfType(ctx, n.elemTy)
+          } else if n.kind == "remove" {
             ensureListRemoveValue(ctx, n.elemTy)
           } else if n.kind == "lastIndexOf" {
             ensureListLastIndexOf(ctx, n.elemTy)
