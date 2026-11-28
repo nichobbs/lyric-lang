@@ -4307,7 +4307,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
           settleHole(env, x, env.retTy[0])
         }
         match buildExpr(env, x) {
-          case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = t))))
+          case Some(t) -> Some(value = stmtOf(s, TsReturn(value = Some(value = returnedAsDeclared(env, t)))))
           case None -> None
         }
       }
@@ -5950,6 +5950,20 @@ func buildToStringMethod(
   }
   val recv = match buildExpr(env, recvE) { case Some(t) -> t; case None -> return Some(value = None) }
   Some(value = Some(value = stringPart(env, recv)))
+}
+
+/// The value of a `return` of the function being built (not of a lambda) at the function's declared result type when
+/// that is an interface the value's type implements: the upcast is written, so the postcondition pass binds the
+/// returned value at the declared type (`return StaticFileMiddleware(...)` from a function returning `Middleware`).
+/// Any other value is returned as built.
+func returnedAsDeclared(env: in BuildEnv, t: in TExpr): TExpr {
+  if env.lambdas.count > 0 or env.retTy.count == 0 or tyEq(t.ty, env.retTy[0]) {
+    return t
+  }
+  match convertValue(env, t, env.retTy[0]) {
+    case Some(c) -> match c.kind { case XConvert(CvUpcast(_), _) -> c; case _ -> t }
+    case None -> t
+  }
 }
 
 /// `t` as a value of `ty` for the call `e`, or the counted reason it cannot be.

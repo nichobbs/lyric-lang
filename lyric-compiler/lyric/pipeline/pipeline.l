@@ -2380,7 +2380,12 @@ func pipeReportContractsCensus(label: in String, tbl: in SymbolTable, pb: in Tir
   var shown = 0
   for d in diags {
     if shown < 3 {
-      Console.error("    e.g. " + TirVerify.renderVerifyDiag("contracts", d))
+      val fnKey = match defPathKeyOf(tbl.interner, d.fnSym) { case Some(k) -> k; case None -> "?" }
+      Console.error("    e.g. " + TirVerify.renderVerifyDiag("contracts", d) + " [" + fnKey + "]")
+      val named = pipeNamedSymbols(tbl, d.message)
+      if named.length > 0 {
+        Console.error("      symbols: " + named)
+      }
       shown = shown + 1
     }
   }

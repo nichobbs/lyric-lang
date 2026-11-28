@@ -535,6 +535,13 @@ test "a public generic function checks a generic invariant parameter of another 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }
 
+test "a function with a precondition returning a record as the interface it implements verifies (D886)" {
+  val e = elabOf(
+    "package App\ninterface Named { func label(self: in Self): String }\nrecord P { x: Int }\nimpl Named for P { func label(self: in Self): String { \"p\" } }\nfunc mk(n: Int): Named\n  requires: n > 0\n  ensures: true\n{\n  return P(x = n)\n}\n"
+  )
+  assertVerifies(e, "return of a record as its interface")
+}
+
 /// The type arguments of the checker call at the head of `fname`'s elaborated body, for a package `src` whose
 /// `__lyric_checked_*` functions are in a package the bundle sees but does not elaborate (a type of another package).
 func entryCheckTypeArgs(src: in String, fname: in String): List[Ty] {
