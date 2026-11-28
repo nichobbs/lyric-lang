@@ -19191,33 +19191,6 @@ func enumCaseNames(ctx: in Ctx, enumKey: in String): List[String] {
 /// the TIR path's input and the TIR lowering covers `fn` (docs/70 phase 4a, D520).  The
 /// IR name, linkage and attributes stay the AST path's; every function that stays on the
 /// AST path is counted in the unit's census with the reason.
-/// The case names of the enum `Pkg.Name`, in ordinal order, from the codegen's `Pkg.Name.Case` ordinals.
-func enumCaseNames(ctx: in Ctx, enumKey: in String): List[String] {
-  val prefix = enumKey + "."
-  val byOrdinal: Map[Int, String] = newMap()
-  for k in mapKeys(ctx.enumDefs) {
-    if Str.startsWith(k, prefix) {
-      val rest = Str.substring(k, prefix.length)
-      if not Str.contains(rest, ".") and not Str.startsWith(rest, "__") {
-        match mapGet(ctx.enumDefs, k) {
-          case Some(o) -> byOrdinal.add(o, rest)
-          case None -> ()
-        }
-      }
-    }
-  }
-  val names: List[String] = newList()
-  var i = 0
-  while i < byOrdinal.count {
-    match mapGet(byOrdinal, i) {
-      case Some(n) -> names.add(n)
-      case None -> names.add("")
-    }
-    i = i + 1
-  }
-  names
-}
-
 /// What the TIR lowering needs from the code generator for one unit, built once per unit: the
 /// IR name of each function symbol, and the layout of each record it registered.
 record TirUnitMaps {
