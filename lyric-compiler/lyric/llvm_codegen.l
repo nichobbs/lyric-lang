@@ -19817,7 +19817,12 @@ func tirUnitMaps(
                       fieldTys = ri.fieldTys,
                       byValue = ri.byValue,
                       dtor = if not ri.byValue and recHasRefFields(ri) { recDtorName(ri) } else { "" },
-                      zeroBits = ri.byValue and recHasNoDefaults(ri)
+                      zeroBits = ri.byValue and recHasNoDefaults(ri),
+                      valueBoxTy = if ri.byValue and recImplementsInterface(ctx, ri.irName) {
+                        byValueBoxType(ctx, recPtrType(ri))
+                      } else {
+                        NVoid
+                      }
                     )
                   )
                 }
@@ -19926,7 +19931,7 @@ func tirUnitMaps(
               }
               case None -> match mapGet(ctx.recordDefs, pkg + "." + rest) {
                 case Some(ri) -> match mapGet(recs, id) {
-                  case Some(lay) -> if not lay.byValue { recIrById.add(id, ri.irName) }
+                  case Some(_) -> recIrById.add(id, ri.irName)
                   case None -> ()
                 }
                 case None -> ()
@@ -23640,6 +23645,17 @@ func recordIrNameOfType(t: in NType): Option[String] {
   }
 }
 
+/// Whether some `impl` makes the record with IR name `recordIr` an interface (a vtable was registered for it).
+func recImplementsInterface(ctx: in Ctx, recordIr: in String): Bool {
+  val prefix = recordIr + "|"
+  for k in mapKeys(ctx.ifaceVtables) {
+    if k.startsWith(prefix) {
+      return true
+    }
+  }
+  false
+}
+
 func ifaceVtableGlobalName(recordIr: in String, ii: in NIfaceInfo): String {
   "ifacevt_" + mangleIfaceName(recordIr) + "_" + mangleIfaceName(ii.key)
 }
@@ -24186,7 +24202,10 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   val ifDot = lastDotIndex(info.key)
   val ifaceNamed = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
   // An instance of a generic interface is keyed `Pkg.Holder<i32>`: the impl's methods are named by `Holder`.
-  val ifaceBare = match Str.indexOf(ifaceNamed, "<") { case Some(lt) -> Str.substring(ifaceNamed, 0, lt); case None -> ifaceNamed }
+  val ifaceBare = match Str.indexOf(ifaceNamed, "<") {
+    case Some(lt) -> Str.substring(ifaceNamed, 0, lt)
+    case None -> ifaceNamed
+  }
   val recDot = lastDotIndex(im.gkey)
   val recBare = if recDot > 0 { Str.substring(im.gkey, recDot + 1, im.gkey.length - recDot - 1) } else { im.gkey }
   val selfTy = recPtrType(ri)
@@ -24316,7 +24335,11 @@ func checkGenericIfaceImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit
       // order, is laid out per instance of `R` (`genericImplVtable`); any other generic impl names a family of
       // instantiations the code generator does not lay out.
       val supported = match genericImplTargetRecord(decl.target) {
-        case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and (ctx.genericRecordDefs.containsKey(pkg + "." + n) or ctx.genericRecordDefs.containsKey(n))
+        case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and
+          (
+            ctx.genericRecordDefs.containsKey(pkg + "." + n) or
+              ctx.genericRecordDefs.containsKey(n)
+          )
         case None -> false
       }
       if not supported {

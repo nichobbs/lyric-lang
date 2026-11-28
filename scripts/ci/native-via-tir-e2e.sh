@@ -961,6 +961,27 @@ grep -q 'N0105' "$work/gi_bad.txt" || {
 }
 echo "generic interface impl for an unsupported generic target: N0105"
 
+# A by-value record (all-scalar fields) used as an interface it implements (#9477): copied into a `__box<R>` the
+# interface value owns, whose vtable slots are thunks.  Plain and generic interfaces, called through the interface and
+# on the record, an inherited default; every function lowered from TIR, the same output from both paths, then
+# under AddressSanitizer.
+bvsrc=scripts/ci/native-via-tir/byvalueiface.l
+"$lyric_bin" build --target native --no-via-tir "$bvsrc" -o "$work/bv_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$bvsrc" -o "$work/bv_tir" 2> "$work/bv_census.txt" >/dev/null
+cat "$work/bv_census.txt"
+"$work/bv_ast" > "$work/bv_ast.out"
+"$work/bv_tir" > "$work/bv_tir.out"
+diff -u "$work/bv_ast.out" "$work/bv_tir.out"
+printf '7\n8\n10\n10\n' | diff -u - "$work/bv_tir.out"
+grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/bv_census.txt" || {
+  echo "::error::expected every function of byvalueiface.l to be lowered from TIR"
+  exit 1
+}
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/bv_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/bv_asan"
+"$work/bv_asan" > "$work/bv_asan.out"
+diff -u "$work/bv_tir.out" "$work/bv_asan.out"
+echo "by-value record used as an interface under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 
