@@ -1,7 +1,8 @@
 //! default_method_cross_package_native_self_test.l - an interface declared in another package, on `--target native`
 //! (#7791, D863, #9451).  An impl of a generic interface that defines every method runs, and an impl that omits a
-//! default method of another package's interface is `N0106` (native does not inherit it yet).  The dotnet and JVM
-//! cases are in `default_method_cross_package_self_test.l`; these two build a native executable, so they run in the
+//! default method of another package's interface runs (#9451, D867): the declaring package holds the default's body in
+//! a function of its own and the impl calls it.  A default native cannot express that way (a `Self` in a parameter)
+//! is still `N0106`.  The dotnet and JVM cases are in `default_method_cross_package_self_test.l`; these two build a native executable, so they run in the
 //! native lane (`scripts/ci/native-backend-self-tests.sh`), which has the runtime library.  Spawns the just-built
 //! `./bin/lyric`, so CWD is the repo root.
 @test_module
@@ -66,6 +67,26 @@ func genericOverrideAppSource(): String {
   "package App\nimport HLib\nimport Std.Core\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox {\n  func get(self: in IntBox): Int = self.v\n  func twice(self: in IntBox, x: in Int): Int = x + x\n}\nfunc main(): Int {\n  println(toString(IntBox(v = 1).twice(9)))\n  val h: Holder[Int] = IntBox(v = 2)\n  println(toString(h.twice(5)))\n  println(toString(h.get()))\n  0\n}\n"
 }
 
+func richLibSource(): String {
+  "package HLib\npub interface Named {\n  func label(self: in Self): String\n  func tagged(self: in Self, n: in Int): String = decorate(label()) + \":\" + toString(n)\n  func twiceTagged(self: in Self, n: in Int): String = tagged(n) + tagged(n + 1)\n}\nfunc decorate(s: in String): String = \"<\" + s + \">\"\n"
+}
+
+func richAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord L { s: String }\nimpl Named for L { func label(self: in L): String = self.s }\nfunc show(n: in Named): String = n.twiceTagged(7)\nfunc main(): Int {\n  println(L(s = \"x\").tagged(2))\n  println(show(L(s = \"y\")))\n  0\n}\n"
+}
+
+func genericDefaultAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord IntBox { v: Int }\nimpl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\nfunc main(): Int {\n  println(toString(IntBox(v = 1).twice(9)))\n  val h: Holder[Int] = IntBox(v = 2)\n  println(toString(h.twice(5)))\n  0\n}\n"
+}
+
+func selfParamLibSource(): String {
+  "package HLib\npub interface Named {\n  func label(self: in Self): String\n  func same(self: in Self, other: in Self): Bool = true\n}\n"
+}
+
+func selfParamAppSource(): String {
+  "package App\nimport HLib\nimport Std.Core\nrecord L { s: String }\nimpl Named for L { func label(self: in L): String = self.s }\nfunc main(): Int {\n  println(L(s = \"x\").label())\n  0\n}\n"
+}
+
 // The `lyric` this test spawns: the repo's `bin/lyric` where `make lyric` made it, else the AOT binary the CI lane builds
 // (`bootstrap/src/Lyric.Cli.Aot/bin/<config>/lyric`).
 func lyricBinary(): String {
@@ -114,9 +135,36 @@ test "an impl of another package's generic interface that defines every method r
   assertTrue(Str.contains(r.stdout, "18\n10\n2\n"), "the overriding consumer's output on native, got:\n" + r.stdout)
 }
 
-test "native names a default method of another package's interface an impl does not define" {
+test "an impl inherits a default method of another package's interface on native" {
   val r = runFor(libSource(), appSource())
+  assertEqualInt(r.exitCode, 0, "the consumer runs on native:\n" + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "x:2\ny:3\n"),
+    "the default runs on the concrete type and through the interface, got:\n" + r.stdout
+  )
+}
+
+test "an inherited default resolves its own names in the declaring package and may call another default" {
+  val r = runFor(richLibSource(), richAppSource())
+  assertEqualInt(r.exitCode, 0, "the consumer runs on native:\n" + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "<x>:2\n<y>:7<y>:8\n"),
+    "the helper of the declaring package and the nested default run, got:\n" + r.stdout
+  )
+}
+
+test "an impl inherits a default method of another package's generic interface on native" {
+  val r = runFor(genericLibSource(), genericDefaultAppSource())
+  assertEqualInt(r.exitCode, 0, "the consumer runs on native:\n" + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "9\n5\n"),
+    "the inherited generic default runs on the concrete type and through the interface, got:\n" + r.stdout
+  )
+}
+
+test "native names a default method it cannot inherit" {
+  val r = runFor(selfParamLibSource(), selfParamAppSource())
   assertTrue(r.exitCode != 0, "the build stops")
   assertTrue(Str.contains(r.stderr, "N0106"), "the diagnostic is N0106, got:\n" + r.stderr)
-  assertTrue(Str.contains(r.stderr, "tagged"), "it names the method, got:\n" + r.stderr)
+  assertTrue(Str.contains(r.stderr, "same"), "it names the method, got:\n" + r.stderr)
 }
