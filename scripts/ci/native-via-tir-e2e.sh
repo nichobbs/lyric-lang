@@ -982,6 +982,22 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/bv_tir.ll" lyric-rt/
 diff -u "$work/bv_tir.out" "$work/bv_asan.out"
 echo "by-value record used as an interface under AddressSanitizer: clean"
 
+# An impl whose target is a union (#9470, D868): a union that implements an interface is a heap object, its vtable is
+# laid out like a record's.  Called through the interface, on the union value and as an inherited default; the same
+# output from both paths, then under AddressSanitizer.
+uisrc=scripts/ci/native-via-tir/unionimpl.l
+"$lyric_bin" build --target native --no-via-tir "$uisrc" -o "$work/ui_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$uisrc" -o "$work/ui_tir" 2> "$work/ui_census.txt" >/dev/null
+cat "$work/ui_census.txt"
+"$work/ui_ast" > "$work/ui_ast.out"
+"$work/ui_tir" > "$work/ui_tir.out"
+diff -u "$work/ui_ast.out" "$work/ui_tir.out"
+printf '3\n16\n5\n18\n' | diff -u - "$work/ui_tir.out"
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/ui_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/ui_asan"
+"$work/ui_asan" > "$work/ui_asan.out"
+diff -u "$work/ui_tir.out" "$work/ui_asan.out"
+echo "impl for a union under AddressSanitizer: clean"
+
 # Integer overflow (D163): the checks the elaborator would have rewritten into the AST.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/native-via-tir-overflow-e2e.sh
 

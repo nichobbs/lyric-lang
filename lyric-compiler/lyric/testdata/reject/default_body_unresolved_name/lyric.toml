@@ -1,0 +1,7 @@
+[package]
+name = "reject-default_body_unresolved_name"
+version = "0.1.0"
+[project]
+name = "Reject"
+[project.packages]
+"App" = "app"

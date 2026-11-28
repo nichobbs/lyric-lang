@@ -7187,6 +7187,24 @@ func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit
       putOnce(heapOnly, u.pkgName + "." + n)
     }
   }
+  // A union that is the target of an `impl` stays a heap object (#9470): its vtable is laid out like a record's,
+  // over the union pointer, where an inline union is a value with no object to hand an interface box.
+  for u in units {
+    for decl in u.impls {
+      match implTargetRecordName(decl.target) {
+        case None -> ()
+        case Some(name) -> {
+          for uu in units {
+            for ud in uu.unions {
+              if ud.name == name {
+                putOnce(heapOnly, uu.pkgName + "." + ud.name)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
@@ -19934,7 +19952,11 @@ func tirUnitMaps(
                   case Some(_) -> recIrById.add(id, ri.irName)
                   case None -> ()
                 }
-                case None -> ()
+                // A heap union that implements an interface (#9470) is keyed like a record.
+                case None -> match mapGet(ctx.unionDefs, pkg + "." + rest) {
+                  case Some(ui) -> if not ui.inline { recIrById.add(id, ui.irName) }
+                  case None -> ()
+                }
               }
             }
           }
@@ -24412,6 +24434,31 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
                   }
                   match target {
                     case None -> {
+                      // An impl whose target is a union (#9470): a union that is an impl target is a heap object
+                      // (`classifyInlineUnion`), so its vtable is built like a record's, over the union pointer.
+                      val unionTarget = match mapGet(ctx.unionDefs, u.pkgName + "." + recordName) {
+                        case Some(own) -> Some(value = own)
+                        case None -> mapGet(ctx.unionDefs, recordName)
+                      }
+                      match unionTarget {
+                        case None -> {
+                        }
+                        case Some(ui) -> {
+                          if not ui.inline and not ctx.ifaceVtables.containsKey(ui.irName + "|" + info.key) {
+                            val ugname = ifaceVtableGlobalName(ui.irName, info)
+                            ctx.globals.add(
+                              NGlobalDef(
+                                name = ugname,
+                                linkage = "internal constant",
+                                tyStr = nTypeToIrString(ifaceVtStructType(info)),
+                                initStr = ifaceVtableInitStr(ctx, u.pkgName, recordName, unionPtrType(ui), ifaceName, info),
+                                align = 8
+                              )
+                            )
+                            ctx.ifaceVtables.add(ui.irName + "|" + info.key, ugname)
+                          }
+                        }
+                      }
                     }
                     case Some(ri) -> {
                       val selfPtrTy = recPtrType(ri)
