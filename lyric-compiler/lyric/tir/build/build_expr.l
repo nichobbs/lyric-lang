@@ -8946,10 +8946,57 @@ func buildBuiltinCall(
               }
             }
           }
+          if name == "String.split" and res.count == 2 {
+            match buildStdSplitCall(env, e, ty, res) {
+              case Some(c) -> return Some(value = c)
+              case None -> ()
+            }
+          }
           Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(res))))
         }
       }
     }
+  }
+}
+
+/// `s.split(sep)` where `Std.String.split` is visible: the plain Lyric function the standard library
+/// declares, called as it is by the AST pipeline, so a backend lowers the call from the bundled function
+/// instead of owning a `String.split` built-in.  None when the function is not in scope (the package does
+/// not import `Std.String`), which keeps the built-in.
+func buildStdSplitCall(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[TExpr]): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  val want = TirT.TSlice(element = tyString())
+  if not tyEq(ty, want) {
+    return None
+  }
+  match symTableTryFindInPackage(tbl, "Std.String", "split") {
+    case Some(s) -> match s.kind {
+      case DKFunc(decl) -> match symTableFuncSymOf(tbl, decl) {
+        case Some(id) -> {
+          if not env.syms.containsKey(id.id) {
+            val ps: List[TParamTy] = newList()
+            ps.add(TParamTy(mode = TMIn, ty = tyString()))
+            ps.add(TParamTy(mode = TMIn, ty = tyString()))
+            env.syms.add(
+              id.id,
+              TSymEntry(
+                sym = id,
+                kind = TSkFunc,
+                typeParamCount = 0,
+                sig = Some(value = TSig(typeParamCount = 0, params = ps, ret = want, isAsync = false)),
+                fields = newList(),
+                ty = None,
+                mutable = false
+              )
+            )
+          }
+          Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = id, typeArgs = newList()), args = inArgs(args))))
+        }
+        case None -> None
+      }
+      case _ -> None
+    }
+    case None -> None
   }
 }
 

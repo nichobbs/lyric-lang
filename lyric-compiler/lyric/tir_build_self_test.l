@@ -2099,6 +2099,69 @@ test "a generic union case constructs at its closed instantiation and verifies" 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+// D884: `s.split(sep)` with `Std.String` in scope is a call of the standard library's own function, so a backend
+// lowers it from the bundled function; without the import it stays the built-in.
+func buildSplitFn(importStd: in Bool): FnBuilt {
+  val lib = parse("package Std.String\npub func split(s: in String, separator: in String): slice[String] {\n  val xs: slice[String] = [s]\n  xs\n}\n").file
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(ImportedPackage(name = "Std.String", items = lib.items, imports = newList(), wholeImports = newList()))
+  val head = if importStd { "package App\nimport Std.String\n" } else { "package App\n" }
+  val file = renumberNodeIds(parse(head + "func f(s: in String): Int {\n  val p = s.split(\",\")\n  p.length\n}\n").file).file
+  val cr = if importStd { checkWithImportedPackages(file, pkgs) } else { check(file) }
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> {
+        body = buildFnBody(env, decl, cr.symbols)
+      }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
+}
+
+/// The callee of the call that initialises the first `val` of the built body: "direct", "builtin:<name>" or "other".
+func firstValInitCallee(b: in TExpr): String {
+  match b.kind {
+    case XBlock(stmts, _) -> {
+      for st in stmts {
+        match st.kind {
+          case TsLet(_, init) -> match init.kind {
+            case XCall(callee, _) -> match callee {
+              case Direct(_, _) -> return "direct"
+              case Intrinsic(IoBuiltin(n)) -> return "builtin:" + n
+              case _ -> return "other"
+            }
+            case _ -> return "not a call"
+          }
+          case _ -> ()
+        }
+      }
+      "no val"
+    }
+    case _ -> "not a block"
+  }
+}
+
+test "s.split(sep) with Std.String in scope builds as a direct call of its function (D884)" {
+  val r = buildSplitFn(true)
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> assertEqual(firstValInitCallee(b), "direct", "the stdlib function")
+    case None -> assertTrue(false, "built")
+  }
+}
+
+test "s.split(sep) without Std.String in scope stays the built-in (D884)" {
+  val r = buildSplitFn(false)
+  match r.body {
+    case Some(b) -> assertEqual(firstValInitCallee(b), "builtin:String.split", "no stdlib function to call")
+    case None -> assertTrue(false, "built")
+  }
+}
+
 test "a slice's length is a built-in property read" {
   val r = buildFirstFn("package App\nfunc f(xs: slice[Int]): Int { xs.length }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
