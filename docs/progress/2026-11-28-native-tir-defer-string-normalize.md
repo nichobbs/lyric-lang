@@ -1,3 +1,0 @@
-# native: the TIR lowering takes `defer`, the `String.normalize` trap and Unit elements (D878)
-
-docs/70 phase 4a part 10. `defer` blocks register per scope and run in reverse order at fall-off, `return`, `break` and `continue` before the scope's references are released (`LCtx.defers`, `runScopeDefers` in `llvm_tir.l`); `String.normalize`/`isNormalized` trap on TIR as on the AST path. A list or map of `Unit` stores a zero slot. The census loses the `TsDefer`, `String.normalize` and `List[Unit]`/`Dictionary[String, Unit]` fallbacks; remaining native roots of this session are callbacks with a by-value record and a `defer` in a coroutine. Covered by `llvm_self_test_defer.l` (8 cases, via TIR by default).

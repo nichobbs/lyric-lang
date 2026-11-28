@@ -3805,21 +3805,6 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
     c.insns.add(NTrunc(dest = d, fromTy = NI64, value = n, toTy = NI32))
     return Val(ty = NI32, value = NLocal(name = d))
   }
-  // The Unicode normalization tables are not in lyric-rt: the two `Std.String` wrappers trap when they run, as
-  // on the AST path, so a program that never calls them still builds.
-  if name == "String.normalize" or name == "String.isNormalized" {
-    discard(c, lowerExpr(c, arg))
-    emitPanic(
-      c,
-      "String ." + Str.substring(name, 7, name.length - 7) +
-        "() is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)",
-      line
-    )
-    return match tyToN(c.env, rty) {
-      case Some(nt) -> Val(ty = nt, value = NUndef(ty = nt))
-      case None -> unsupported(c, "builtin " + name + " returning " + renderTy(rty))
-    }
-  }
   unsupported(c, "builtin " + name)
 }
 
