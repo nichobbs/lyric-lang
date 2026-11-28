@@ -846,13 +846,17 @@ cat "$work/k_census.txt"
 "$work/k_ast" > "$work/k_ast.out"
 "$work/k_tir" > "$work/k_tir.out"
 diff -u "$work/k_ast.out" "$work/k_tir.out"
-printf 'Green\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
-for reason in 'toString of an enum' 'an operator on the aggregate array' 'the zero value of String'; do
+printf 'Green\nBlue\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
+for reason in 'an operator on the aggregate array' 'the zero value of String'; do
   grep -q "^  fallback: $reason" "$work/k_census.txt" || {
     echo "::error::keptast.l: expected the fallback '$reason' in the census"
     exit 1
   }
 done
+grep -q '^  fallback: toString of an enum' "$work/k_census.txt" && {
+  echo "::error::keptast.l: toString of an enum fell back to the AST path"
+  exit 1
+}
 echo "kept on the AST path: ok"
 
 # A case pattern under another case pattern (`Err(Malformed(at, why))`): the inner union is opened on the payload
