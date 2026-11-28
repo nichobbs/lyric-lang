@@ -5024,6 +5024,9 @@ pub func registerHeadOnlyImplsJvm(
             }
             case None -> copyIfaceSigsToClassJvm(into, implIfaceClassJvm(decl.iface, owner, externTypes), tgtClass)
           }
+          if implTargetIsFileUnionJvm(file, decl) {
+            markUnionTargetSigsIfaceJvm(into, tgtClass)
+          }
         }
       }
       case _ -> ()
@@ -5045,6 +5048,46 @@ func implIfaceClassJvm(iface: in ConstraintRef, owner: in String, externTypes: i
     case None -> match mapGet(externTypes, "~iface~" + name) {
       case Some(dotted) -> String.replace(dotted, ".", "/")
       case None -> owner + "/" + name
+    }
+  }
+}
+
+// Whether the target of `decl` is a union `file` declares: such a type is a sealed interface on the JVM, so a call
+// on it is an `invokeinterface` (#9470).
+func implTargetIsFileUnionJvm(file: in SourceFile, decl: in ImplDecl): Bool {
+  val name = match decl.target.kind {
+    case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+    case TGenericApp(h, _) -> if h.segments.count == 1 { h.segments[0] } else { "" }
+    case _ -> ""
+  }
+  if name == "" {
+    return false
+  }
+  for it in file.items {
+    match it.kind {
+      case IUnion(u) -> if u.name == name { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+// Every method registered under the union's class is an interface method (the union is a sealed interface).
+func markUnionTargetSigsIfaceJvm(into: in Map[String, JvmFuncSig], tgtClass: in String): Unit {
+  val prefix = tgtClass + "#"
+  val keys: List[String] = newList()
+  for k in mapKeys(into) {
+    if k.startsWith(prefix) {
+      keys.add(k)
+    }
+  }
+  for k in keys {
+    match mapGet(into, k) {
+      case Some(sig) -> {
+        into.remove(k)
+        into.add(k, sig.copy(isIface = true))
+      }
+      case None -> ()
     }
   }
 }
@@ -5675,6 +5718,9 @@ pub func collectFileSigsSeeded(
             case IMplAssoc(_) -> ()
           }
           mi = mi + 1
+        }
+        if implTargetIsFileUnionJvm(file, decl) {
+          markUnionTargetSigsIfaceJvm(into, tgtClass)
         }
       }
       case IInterface(decl) -> {

@@ -63,6 +63,37 @@ impl[T] Holder[T] for Box[T] {
   }
 }
 
+union Shape {
+  case Circle(r: Int)
+  case Sq(s: Int)
+}
+
+interface Sized {
+  func size(self: in Self): Int
+  func doubled(self: in Self): Int = size() * 2
+}
+
+impl Sized for Shape {
+  func size(self: in Shape): Int = match self { case Circle(r) -> r; case Sq(s) -> s * s }
+}
+
+union Wrap[T] {
+  case One(v: T)
+  case Two(a: T, b: T)
+}
+
+impl[T] Holder[T] for Wrap[T] {
+  func get(self: in Wrap[T]): T = match self { case One(v) -> v; case Two(a, _) -> a }
+  func put(self: in Wrap[T], x: in T): Unit {
+  }
+}
+
+func sizeOf(s: in Sized): Int = s.size()
+
+func firstOf(h: in Holder[Int]): Int = h.get()
+
+func firstStr(h: in Holder[String]): String = h.get()
+
 record Doubler {
   k: Int
 }
@@ -179,4 +210,22 @@ test "a default method of a generic interface runs on a concrete generic impleme
   assertEqualInt(w.twiceOf(9), 9, "the inherited default on Wrapped[Int]")
   val s: Wrapped[String] = Wrapped(w = "a")
   assertEqual(s.twiceOf("z"), "z", "the inherited default on Wrapped[String]")
+}
+
+test "an impl whose target is a union is inherited by every case" {
+  assertEqualInt(sizeOf(Circle(r = 3)), 3, "Circle as Sized")
+  assertEqualInt(sizeOf(Sq(s = 4)), 16, "Sq as Sized")
+  assertEqualInt(Circle(r = 5).size(), 5, "called on the union value")
+  assertEqualInt(sizeOf(Sq(s = 2)) + 1, 5, "the result is an Int")
+}
+
+test "a default method of an interface is inherited by a union implementor" {
+  val s: Shape = Sq(s = 3)
+  assertEqualInt(s.doubled(), 18, "the default runs on the union")
+}
+
+test "a generic impl over a generic union runs at two instantiations" {
+  assertEqualInt(firstOf(Two(a = 4, b = 5)), 4, "Wrap[Int] case Two as Holder[Int]")
+  assertEqualInt(firstOf(One(v = 7)), 7, "Wrap[Int] case One as Holder[Int]")
+  assertEqual(firstStr(Two(a = "x", b = "y")), "x", "Wrap[String] as Holder[String]")
 }
