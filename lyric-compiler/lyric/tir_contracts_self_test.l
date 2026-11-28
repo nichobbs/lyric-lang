@@ -535,6 +535,13 @@ test "a public generic function checks a generic invariant parameter of another 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("t", ds[0]) } else { "verifies" })
 }
 
+test "a function with a precondition returning a record as the interface it implements verifies (D886)" {
+  val e = elabOf(
+    "package App\ninterface Named { func label(self: in Self): String }\nrecord P { x: Int }\nimpl Named for P { func label(self: in Self): String { \"p\" } }\nfunc mk(n: Int): Named\n  requires: n > 0\n  ensures: true\n{\n  return P(x = n)\n}\n"
+  )
+  assertVerifies(e, "return of a record as its interface")
+}
+
 test "a protected type's invariant is asserted at the exit of each member, with contracts on or off (D509)" {
   val src = "package App\nprotected type Gauge {\n  var level: Int = 0\n  invariant: level >= 0\n  entry bump(by: in Int): Unit {\n    level = level + by\n  }\n  func read(): Int {\n    level\n  }\n}\n"
   val file = renumberNodeIds(parse(src).file).file
