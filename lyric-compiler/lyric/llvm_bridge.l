@@ -3229,7 +3229,19 @@ func appendBundledUnits(
 func bundledTirOf(
   pkg: in String, f: in SourceFile, stdlib: in NativeStdlib, interner: in DefPathInterner
 ): Option[TirBuild.PackageBuild] {
-  val visible = stdlibImportClosure(pkg, stdlib)
+  val closure = stdlibImportClosure(pkg, stdlib)
+  // The checker shows an importer the `internal` items of the other stdlib packages when it finds the importer's own
+  // entry, flagged as stdlib, in the list it is given (`importerIsStdlibPackage`); the closure leaves the package
+  // out, so a stdlib package calling another's `internal` function (`Tls.Identity.rawHandle`) would not resolve.
+  val visible: List[ImportedPackage] = newList()
+  for ip in closure {
+    visible.add(ip)
+  }
+  for ip in stdlib.importedPkgs {
+    if ip.name == pkg {
+      visible.add(ip)
+    }
+  }
   val file0 = Resolve.renumberNodeIds(f).file
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val noResolvers: List[ExternIterResolver] = newList()
@@ -3251,6 +3263,13 @@ func bundledTirOf(
     }
   }
   val pb = TirBuild.buildPackage(TirBuild.newTyConvCtx(tcRes.symbols), tcRes.symbols, file0, pkg)
+  if LlvmTir.tirTraceRequested() {
+    for failed in pb.failed {
+      if failed.messages.count > 0 {
+        Console.error("native via-TIR: bundled " + pkg + " cannot build " + failed.name + ": " + failed.messages[0])
+      }
+    }
+  }
   Some(value = pb)
 }
 
