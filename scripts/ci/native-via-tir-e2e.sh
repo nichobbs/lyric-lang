@@ -837,6 +837,27 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/m_tir.ll" lyric-rt/b
 diff -u "$work/m_tir.out" "$work/m_asan.out"
 echo "mapget under AddressSanitizer: clean"
 
+# A closure as a C callback (docs/70 phase 4a, D877): the start routine of `pthread_create` is a trampoline built from
+# TIR, the closure rides along as the userdata pointer; every function from TIR, the same output as the AST path, then
+# under AddressSanitizer (the thread allocates the string the main thread frees).
+cbsrc=scripts/ci/native-via-tir/callbacks.l
+"$lyric_bin" build --target native --no-via-tir "$cbsrc" -o "$work/cb_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$cbsrc" -o "$work/cb_tir" 2> "$work/cb_census.txt" >/dev/null
+cat "$work/cb_census.txt"
+"$work/cb_ast" > "$work/cb_ast.out"
+"$work/cb_tir" > "$work/cb_tir.out"
+diff -u "$work/cb_ast.out" "$work/cb_tir.out"
+printf '17\n0\n10\n' | diff -u - "$work/cb_tir.out"
+if grep -q '^  fallback:' "$work/cb_census.txt"; then
+  echo "::error::callbacks.l has a TIR fallback"
+  exit 1
+fi
+make -C lyric-rt BUILD=build-asan-tir CFLAGS="-O1 -g -std=c11 -fPIC -fsanitize=address" CC=clang build-asan-tir/lyric_rt.a
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/cb_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/cb_asan"
+"$work/cb_asan" > "$work/cb_asan.out"
+diff -u "$work/cb_tir.out" "$work/cb_asan.out"
+echo "callbacks under AddressSanitizer: clean"
+
 # Constructs the TIR lowering keeps on the AST path (docs/70 phase 4a, D859): the same output as the AST build, and
 # each fallback is reported with its reason, so a silent change of what the TIR path covers fails here.
 ksrc=scripts/ci/native-via-tir/keptast.l
