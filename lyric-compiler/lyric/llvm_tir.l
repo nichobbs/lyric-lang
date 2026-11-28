@@ -1909,13 +1909,75 @@ func opName(op: in IntrinsicOp): String {
   }
 }
 
+/// `==` and `!=` on two fixed arrays of scalars: the elements compared one by one (an unrolled `extractvalue`
+/// chain, ANDed), as the AST path's derived equality does.  Any other operator or element type stays on the AST path.
+func lowerAggregateEquality(
+  c: in LCtx,
+  op: in IntrinsicOp,
+  ty: in Ty,
+  nty: in NType,
+  a: in NValue,
+  b: in NValue,
+  line: in Int,
+): Val {
+  val isEq = match op { case IoEq -> true; case _ -> false }
+  val isNeq = match op { case IoNeq -> true; case _ -> false }
+  if not (isEq or isNeq) {
+    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+  val elemTy = match ty {
+    case TArray(_, e) -> e
+    case _ -> return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+  // The primitive a distinct element wraps: it decides integer or float comparison.
+  val elemPrim = opTy(c, elemTy)
+  match nty {
+    case NArray(el, n) -> {
+      if not isScalarN(el) or n > 64 {
+        return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+      }
+      var acc = trueV()
+      var i = 0
+      while i < n {
+        val x = tmp(c)
+        c.insns.add(NExtractValue(dest = x, aggTy = nty, agg = a, index = i))
+        val y = tmp(c)
+        c.insns.add(NExtractValue(dest = y, aggTy = nty, agg = b, index = i))
+        val r = lowerBinary(c, IoEq, elemPrim, el, NLocal(name = x), NLocal(name = y), line)
+        // Structural equality: a NaN element equals a NaN element, so a float pair is equal when ordered-equal
+        // or when both are NaN (`une x, x` holds exactly for a NaN).
+        val same = if isFloatTy(elemPrim) {
+          val xn = tmp(c)
+          c.insns.add(NFCmp(dest = xn, pred = FUne, ty = el, a = NLocal(name = x), b = NLocal(name = x)))
+          val yn = tmp(c)
+          c.insns.add(NFCmp(dest = yn, pred = FUne, ty = el, a = NLocal(name = y), b = NLocal(name = y)))
+          val bothNan = andV(c, Val(ty = NI1, value = NLocal(name = xn)), Val(ty = NI1, value = NLocal(name = yn)))
+          orV(c, r, bothNan)
+        } else {
+          r
+        }
+        acc = andV(c, acc, same)
+        i = i + 1
+      }
+      if isEq {
+        acc
+      } else {
+        val d = tmp(c)
+        c.insns.add(NXor(dest = d, ty = NI1, a = acc.value, b = NLitInt(v = 1i64, ty = NI1)))
+        Val(ty = NI1, value = NLocal(name = d))
+      }
+    }
+    case _ -> unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+}
+
 /// A binary intrinsic on two scalars of type `ty`; the result is the node's
 /// type (`resTy`), which differs from `ty` only for comparisons.
 func lowerBinary(
   c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue, b: in NValue, line: in Int
 ): Val {
   if isAggN(nty) {
-    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+    return lowerAggregateEquality(c, op, ty, nty, a, b, line)
   }
   val flt = isFloatTy(ty)
   val uns = isUnsignedTy(ty)
@@ -3652,8 +3714,9 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
       case Some(nt) -> {
-        // A numeric or boolean scalar; a `String` is the empty string, and a record, list or union has no
-        // zero value here, so those stay on the AST path.
+        // A numeric or boolean scalar.  `T.default()` of a generic specialisation is the same builtin and
+        // means each field's declared default or zero for a record, which a null or zeroed value is not, so
+        // a `String`, record, list or union stays on the AST path.
         if isScalarN(nt) {
           return Val(ty = nt, value = zeroOf(nt))
         }
