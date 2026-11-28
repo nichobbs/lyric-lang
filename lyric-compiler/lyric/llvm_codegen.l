@@ -24143,7 +24143,9 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
   val im = match mapGet(ctx.instMeta, rir) { case Some(x) -> x; case None -> return None }
   val ri = match mapGet(ctx.recordDefs, rir) { case Some(x) -> x; case None -> return None }
   val ifDot = lastDotIndex(info.key)
-  val ifaceBare = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
+  val ifaceNamed = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
+  // An instance of a generic interface is keyed `Pkg.Holder<i32>`: the impl's methods are named by `Holder`.
+  val ifaceBare = match Str.indexOf(ifaceNamed, "<") { case Some(lt) -> Str.substring(ifaceNamed, 0, lt); case None -> ifaceNamed }
   val recDot = lastDotIndex(im.gkey)
   val recBare = if recDot > 0 { Str.substring(im.gkey, recDot + 1, im.gkey.length - recDot - 1) } else { im.gkey }
   val selfTy = recPtrType(ri)
@@ -24256,10 +24258,22 @@ func checkGenericIfaceImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit
   }
   val where_ = decl.span.startPos.line.toString() + ":" + decl.span.startPos.column.toString()
   match decl.generics {
-    case Some(_) -> panic(
-      "error[N0105] " + where_ + ": an impl of the generic interface '" + bare +
-        "' for a generic type is not supported by --target native yet (#7791); implement it for a concrete instantiation"
-    )
+    case Some(gp) -> {
+      // `impl[T, ...] I[...] for R[T, ...]` over a generic record, whose arguments are the impl's own parameters in
+      // order, is laid out per instance of `R` (`genericImplVtable`); any other generic impl names a family of
+      // instantiations the code generator does not lay out.
+      val supported = match genericImplTargetRecord(decl.target) {
+        case Some(n) -> implTargetArgsAreParams(decl.target, gp.params) and (ctx.genericRecordDefs.containsKey(pkg + "." + n) or ctx.genericRecordDefs.containsKey(n))
+        case None -> false
+      }
+      if not supported {
+        panic(
+          "error[N0105] " + where_ + ": an impl of the generic interface '" + bare +
+            "' for this generic target is not supported by --target native yet (#7791): the target must be a generic record applied to the impl's own type parameters, in order (`impl[T] I[T] for R[T]`)"
+        )
+      }
+      return
+    }
     case None -> ()
   }
   if not isSome(implIfaceInfo(ctx, pkg, decl.iface)) {
