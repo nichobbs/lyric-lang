@@ -577,10 +577,35 @@ func crossResolveIface(file: in SourceFile, decl: in ImplDecl, ifaces: in Map[St
   }
 }
 
+/// A type argument as the index expression the parser reads an explicit type application from
+/// (`f[Int](x)` is `ECall(EIndex(f, [Int]), ...)`); `None` for a type with no such spelling (a tuple, a function).
+func crossTypeArgExpr(te: in TypeExpr): Option[Expr] {
+  match te.kind {
+    case TRef(path) -> Some(value = Expr(kind = EPath(path = path), span = te.span))
+    case TParen(inner) -> crossTypeArgExpr(inner)
+    case TGenericApp(head, args) -> {
+      val idx: List[Expr] = newList()
+      for a in args {
+        match a {
+          case TAType(t) -> match crossTypeArgExpr(t) { case Some(e) -> idx.add(e); case None -> return None }
+          case TAValue(e) -> idx.add(e)
+        }
+      }
+      Some(
+        value = Expr(
+          kind = EIndex(receiver = Expr(kind = EPath(path = head), span = te.span), indices = idx),
+          span = te.span
+        )
+      )
+    }
+    case _ -> None
+  }
+}
+
 /// The impl member that runs the default `fn` of `ifaceDecl` for `decl` by calling its free function.
 func crossTrampoline(
   decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl, calleeSegs: in List[String]
-): FunctionDecl {
+): Option[FunctionDecl] {
   // A span of its own, as an inherited copy has (#9454): member lookups match a signature by span, and the
   // interface member's span is not this member's.
   val sp = Span(startPos = decl.span.startPos, endPos = fn.span.endPos)
@@ -606,25 +631,34 @@ func crossTrampoline(
     callArgs.add(CAPositional(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)))
   }
   val callee0 = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = sp)), span = sp)
-  val callee = if decl.iface.args.count > 0 {
-    Expr(kind = ETypeApp(fn = callee0, args = decl.iface.args), span = sp)
+  val typeIdx: List[Expr] = newList()
+  for a in decl.iface.args {
+    match a {
+      case TAType(t) -> match crossTypeArgExpr(t) { case Some(e) -> typeIdx.add(e); case None -> return None }
+      case TAValue(_) -> return None
+    }
+  }
+  val callee = if typeIdx.count > 0 {
+    Expr(kind = EIndex(receiver = callee0, indices = typeIdx), span = sp)
   } else {
     callee0
   }
   val call = Expr(kind = ECall(fn = callee, args = callArgs), span = sp)
-  FunctionDecl(
-    docComments = newList(),
-    annotations = withMarkerAnnotation(newList(), inheritedDefaultAnnotationName(), sp),
-    visibility = None,
-    isAsync = false,
-    name = fn.name,
-    generics = None,
-    params = params,
-    ret = inherited.ret,
-    whereClause = None,
-    contracts = newList(),
-    body = Some(value = FBExpr(expr = call)),
-    span = sp
+  Some(
+    value = FunctionDecl(
+      docComments = newList(),
+      annotations = withMarkerAnnotation(newList(), inheritedDefaultAnnotationName(), sp),
+      visibility = None,
+      isAsync = false,
+      name = fn.name,
+      generics = None,
+      params = params,
+      ret = inherited.ret,
+      whereClause = None,
+      contracts = newList(),
+      body = Some(value = FBExpr(expr = call)),
+      span = sp
+    )
   )
 }
 
@@ -745,15 +779,20 @@ func crossRewriteConsumer(
                     segs.add(c)
                   }
                   segs.add(crossDefaultFnName(ci.decl.name, fn.name))
-                  added.add(IMplFunc(fn = crossTrampoline(decl, ci.decl, fn, segs)))
-                  val key = ci.pkg + "." + ci.decl.name
-                  match mapGet(needs, key) {
-                    case Some(l) -> if not listContains(l, fn.name) { l.add(fn.name) }
-                    case None -> {
-                      val l: List[String] = newList()
-                      l.add(fn.name)
-                      needs.add(key, l)
+                  match crossTrampoline(decl, ci.decl, fn, segs) {
+                    case Some(tramp) -> {
+                      added.add(IMplFunc(fn = tramp))
+                      val key = ci.pkg + "." + ci.decl.name
+                      match mapGet(needs, key) {
+                        case Some(l) -> if not listContains(l, fn.name) { l.add(fn.name) }
+                        case None -> {
+                          val l: List[String] = newList()
+                          l.add(fn.name)
+                          needs.add(key, l)
+                        }
+                      }
                     }
+                    case None -> ()
                   }
                 }
               }
