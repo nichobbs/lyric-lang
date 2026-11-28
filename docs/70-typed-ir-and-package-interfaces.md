@@ -1033,6 +1033,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Contracts (D519): the TIR pass checks generic invariant types at the public boundary, at the value's type arguments; no target enforces it at run time yet (native falls back for generic record instances, #9370; dotnet and JVM use the AST path).
   - Mono (D518): each generic impl is matched against an instance once (a per-impl cursor), not once per pass.
   - Members (D880): methods and field defaults of an `exposed record` build as members, like a record's (D512's "not built as members yet").
+  - Prefix (D881): a negated unsuffixed literal takes the type of the negation (`val n: Float = -0.1`), so the operator's result type is its operand's.
 
 3b can run in parallel with 3a; 3c needs 3a.
 

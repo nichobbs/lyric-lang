@@ -4285,6 +4285,72 @@ test "== on a generic record holding a tuple with an array builds and verifies, 
   assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
 }
 
+func negations(pkg: in TPackage): List[TExpr] {
+  val acc: List[TExpr] = newList()
+  val w = Walker(pre = { e: TExpr -> None }, post = { e: TExpr -> noteNeg(acc, e) }, preStmt = { st: TStmt -> None })
+  for f in pkg.funcs {
+    match f.body {
+      case Some(b) -> {
+        walkExpr(w, b)
+      }
+      case None -> ()
+    }
+  }
+  acc
+}
+
+func noteNeg(acc: in List[TExpr], e: in TExpr): TExpr {
+  match e.kind {
+    case XCall(Intrinsic(IoNeg), _) -> {
+      acc.add(e)
+    }
+    case _ -> ()
+  }
+  e
+}
+
+test "a negated unsuffixed literal under a Float expectation is a Float operand of a Float negation (D881)" {
+  val c = censusOf("package App\nfunc f(): Float {\n  val n: Float = -0.1\n  n\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val negs = negations(c.pkg)
+  assertEqualInt(negs.count, 1, "one negation")
+  match negs[0].kind {
+    case XCall(_, args) -> match args[0] {
+      case TArgIn(operand) -> assertTrue(
+        tyEq(operand.ty, negs[0].ty),
+        "operand " + renderTy(operand.ty) + " against result " +
+          renderTy(negs[0].ty)
+      )
+      case _ -> assertTrue(false, "an in argument")
+    }
+    case _ -> assertTrue(false, "a call")
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
+test "a negated integer literal under a wider integer expectation takes that type (D881)" {
+  val c = censusOf("package App\nfunc f(): Long {\n  val n: Long = -5\n  n\n}\n")
+  assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
+  val negs = negations(c.pkg)
+  assertEqualInt(negs.count, 1, "one negation")
+  if negs.count > 0 {
+    match negs[0].kind {
+      case XCall(_, args) -> match args[0] {
+        case TArgIn(operand) -> assertTrue(
+          tyEq(operand.ty, negs[0].ty),
+          "operand " + renderTy(operand.ty) + " against result " +
+            renderTy(negs[0].ty)
+        )
+        case _ -> assertTrue(false, "an in argument")
+      }
+      case _ -> assertTrue(false, "a call")
+    }
+  }
+  val ds = verifyPackage(c.pkg, newList())
+  assertEqualInt(ds.count, 0, if ds.count > 0 { renderVerifyDiag("test", ds[0]) } else { "verifies" })
+}
+
 test "== on a record with a Double leaf and a distinct-over-Float array element uses the NaN rule (D172)" {
   val c = censusOf(
     "package App\ntype Metres = Float\nrecord D { x: Double\n ms: array[2, Metres] }\nfunc f(a: in D, b: in D): Bool { a == b }\n"
