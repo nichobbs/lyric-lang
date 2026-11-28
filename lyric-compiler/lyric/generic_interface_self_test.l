@@ -63,6 +63,14 @@ impl[T] Holder[T] for Box[T] {
   }
 }
 
+func sumTwice(h: in Holder[Int]): Int = h.get() + h.get()
+
+func joinTwice(h: in Holder[String]): String = h.get() + h.get()
+
+func lessThan(a: in Holder[Int], b: in Holder[Int]): Bool = a.get() < b.get()
+
+func scaled(h: in Holder[Long]): Long = h.get() * 3
+
 record Doubler {
   k: Int
 }
@@ -179,4 +187,22 @@ test "a default method of a generic interface runs on a concrete generic impleme
   assertEqualInt(w.twiceOf(9), 9, "the inherited default on Wrapped[Int]")
   val s: Wrapped[String] = Wrapped(w = "a")
   assertEqual(s.twiceOf("z"), "z", "the inherited default on Wrapped[String]")
+}
+
+ref record LongBox2 {
+  var v: Long
+}
+
+impl Holder[Long] for LongBox2 {
+  func get(self: in LongBox2): Long = self.v
+  func put(self: in LongBox2, x: in Long): Unit {
+    self.v = x
+  }
+}
+
+test "an operator over two results of generic interface methods sees the instantiated type" {
+  assertEqualInt(sumTwice(IntBox(v = 21)), 42, "Int + Int through Holder[Int]")
+  assertEqual(joinTwice(Box(v = "ab")), "abab", "String + String through Holder[String]")
+  assertTrue(lessThan(IntBox(v = 1), IntBox(v = 2)), "Int < Int through Holder[Int]")
+  assertEqualLong(scaled(LongBox2(v = 5000000000)), 15000000000, "Long * literal through Holder[Long]")
 }

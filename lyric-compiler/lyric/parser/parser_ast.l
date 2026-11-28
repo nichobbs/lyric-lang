@@ -1913,6 +1913,13 @@ pub func recordCopySiteKey(sp: in Span): String = spanKey(sp)
 /// the receiver-class entry of the same span.
 pub func stdListRecvSiteKey(sp: in Span): String = "stdlist|" + spanKey(sp)
 
+/// The `SymbolTable.memberRecvClasses` key of a call through a generic interface
+/// whose result type the instantiation fixes (`Holder[Int].get()`, #9459): the
+/// value is the result's primitive name (`Int`, `String`, ...).  The JVM erases
+/// the interface method's result to `Object`; codegen narrows it to this type
+/// right after the call, so an operator over the result sees the concrete type.
+pub func ifaceResultSiteKey(sp: in Span): String = "ifaceres|" + spanKey(sp)
+
 /// The key of a method call site in `SymbolTable.methodCallArities`: the
 /// span of its callee with any parentheses or explicit type arguments
 /// removed (`o.m`, or `m` for a bare call to a sibling method), and the
