@@ -636,6 +636,7 @@ pub func buildPackageDefaults(
         }
       }
       case IRecord(decl) -> noteFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
+      case IExposedRec(decl) -> noteFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
       case IProtected(decl) -> noteProtectedFieldDefaults(ctx, tbl, pkgName, counter, acc, decl)
       case _ -> ()
     }
