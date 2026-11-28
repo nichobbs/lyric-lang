@@ -694,8 +694,8 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/w_keep.ll" lyric-rt/
 diff -u "$work/w_tir.out" "$work/w_asan.out"
 echo "wrapping: ok"
 
-# Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy` and a public function's
-# result check lower from TIR, the same output; a method of the record keeps the AST path.  A violated invariant
+# Records with `invariant:` clauses (docs/70 phase 4a part 8, D854): constructions, `.copy`, a public function's
+# result and a public method's self check all lower from TIR (D512), the same output.  A violated invariant
 # panics with the same message on both paths.
 isrc=scripts/ci/native-via-tir/invariants.l
 "$lyric_bin" build --target native --no-via-tir "$isrc" -o "$work/i_ast" >/dev/null
@@ -705,8 +705,8 @@ cat "$work/i_census.txt"
 "$work/i_tir" > "$work/i_tir.out"
 diff -u "$work/i_ast.out" "$work/i_tir.out"
 printf '9\n6\n7\n' | diff -u - "$work/i_tir.out"
-grep -q '^native via-TIR: 5 of 6 functions lowered from TIR' "$work/i_census.txt" || {
-  echo "::error::expected every function of invariants.l but the method to be lowered from TIR"
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/i_census.txt" || {
+  echo "::error::expected every function of invariants.l to be lowered from TIR"
   exit 1
 }
 sed -e 's|^func main(): Unit {|func main(): Unit {\n  println(toString(make(5, 1).hi))|' "$isrc" > "$work/invariants_violated.l"
@@ -858,6 +858,22 @@ grep -q '^  fallback: toString of an enum' "$work/k_census.txt" && {
   exit 1
 }
 echo "kept on the AST path: ok"
+
+# An array element passed by reference beside the array it lives in (D179): copied in and out around the call
+# on TIR, the same output as the AST path, and nothing kept on the AST path.
+esrc=scripts/ci/native-via-tir/elemcopy.l
+"$lyric_bin" build --target native --no-via-tir "$esrc" -o "$work/e_ast" >/dev/null
+"$lyric_bin" build --target native --via-tir "$esrc" -o "$work/e_tir" 2> "$work/e_census.txt" >/dev/null
+cat "$work/e_census.txt"
+"$work/e_ast" > "$work/e_ast.out"
+"$work/e_tir" > "$work/e_tir.out"
+diff -u "$work/e_ast.out" "$work/e_tir.out"
+printf '102\n2\n7\n' | diff -u - "$work/e_tir.out"
+grep -q '^  fallback:' "$work/e_census.txt" && {
+  echo "::error::elemcopy.l: a function stayed on the AST path"
+  exit 1
+}
+echo "array element copy-in/copy-out: ok"
 
 # Module-level `val`s (docs/70 phase 4a part 6, D535): literals inlined, strings built at the read, computed
 # values behind `mvensure`, every function from TIR, the same output, then under AddressSanitizer.

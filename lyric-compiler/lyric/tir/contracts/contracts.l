@@ -654,7 +654,7 @@ func checkerHolds(c: in CCtx, ref: in CheckerRef, arg: in TExpr, sp: in Span): T
     id = newNode(c),
     ty = arg.ty,
     span = sp,
-    kind = XCall(callee = Direct(sym = ref.sym, typeArgs = newList()), args = args)
+    kind = XCall(callee = Direct(sym = ref.sym, typeArgs = typeArgsOfTy(arg.ty)), args = args)
   )
   val stmts: List[TStmt] = newList()
   stmts.add(TStmt(id = newNode(c), span = sp, kind = TsExpr(expr = call)))
@@ -662,17 +662,26 @@ func checkerHolds(c: in CCtx, ref: in CheckerRef, arg: in TExpr, sp: in Span): T
   TExpr(id = newNode(c), ty = tyBool(), span = sp, kind = XBlock(stmts = stmts, tail = Some(value = yes)))
 }
 
+/// The type arguments of a named type: those a generic type's checker is instantiated at.
+func typeArgsOfTy(t: in Ty): List[Ty] {
+  match t {
+    case TNamed(_, targs) -> targs
+    case _ -> newList()
+  }
+}
+
 func checkerOf(b: in BoundaryCtx, t: in Ty): Option[CheckerRef] {
   match t {
-    case TNamed(s, targs) -> if targs.count == 0 { mapGet(b.checkers, s.id) } else { None }
+    case TNamed(s, _) -> mapGet(b.checkers, s.id)
     case _ -> None
   }
 }
 
 /// The public-boundary invariant checks of `d` (docs/08 §7.1, D507): the entry statements for each `in` or `inout`
 /// parameter of another package's invariant-carrying type, and the postconditions (with messages) for each
-/// `inout`/`out` parameter of any such type and for the result.  A type whose checker the bundle does not hold, a
-/// generic type, and a value inside a container are not checked here.
+/// `inout`/`out` parameter of any such type and for the result.  A generic type is checked at the arguments of the
+/// value (its checker is generic).  A type whose checker the bundle does not hold, and a value inside a container,
+/// are not checked here.
 func boundaryChecks(
   c: in CCtx,
   d: in TFnDecl,
@@ -695,7 +704,7 @@ func boundaryChecks(
             id = newNode(c),
             ty = p.local.ty,
             span = d.span,
-            kind = XCall(callee = Direct(sym = ref.sym, typeArgs = newList()), args = args)
+            kind = XCall(callee = Direct(sym = ref.sym, typeArgs = typeArgsOfTy(p.local.ty)), args = args)
           )
           entry.add(TStmt(id = newNode(c), span = d.span, kind = TsExpr(expr = call)))
           b.used.add(ref.sym.id, ref)
@@ -720,8 +729,9 @@ func boundaryChecks(
   }
 }
 
-/// The construction checkers of `pkgs`, by the `SymbolId` of the non-generic type each checks: a function named
-/// `__lyric_checked_T` of one parameter of type `T` (synthesized for each type that declares `invariant:`).
+/// The construction checkers of `pkgs`, by the `SymbolId` of the type each checks: a function named
+/// `__lyric_checked_T` of one parameter of type `T` (synthesized for each type that declares `invariant:`; a generic
+/// type's checker is generic, instantiated at the arguments of the value it is given).
 func collectCheckers(interner: in DefPathInterner, pkgs: in List[PackageBuild]): Map[Int, CheckerRef] {
   val found: Map[Int, CheckerRef] = newMap()
   for pb in pkgs {
@@ -731,7 +741,7 @@ func collectCheckers(interner: in DefPathInterner, pkgs: in List[PackageBuild]):
         val simple = simpleNameOf(key)
         if simple.startsWith("__lyric_checked_") {
           match f.params[0].local.ty {
-            case TNamed(ts, targs) -> if targs.count == 0 and not found.containsKey(ts.id) {
+            case TNamed(ts, _) -> if not found.containsKey(ts.id) {
               for en in pb.pkg.symbols {
                 if en.sym.id == f.sym.id and not found.containsKey(ts.id) {
                   found.add(ts.id, CheckerRef(sym = f.sym, symEntry = en, pkg = pb.pkg.name))
