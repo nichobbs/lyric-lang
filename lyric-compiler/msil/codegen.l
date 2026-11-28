@@ -48168,7 +48168,9 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
         }
       }
       case IUnion(decl) -> {
-        items.add(MPUnion(u = injectImplMethodsIntoUnion(cctx, lowerUnionMsil(cctx, decl, pkgName), pkgName + "." + decl.name)))
+        items.add(
+          MPUnion(u = injectImplMethodsIntoUnion(cctx, lowerUnionMsil(cctx, decl, pkgName), pkgName + "." + decl.name))
+        )
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
