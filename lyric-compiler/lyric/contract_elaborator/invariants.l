@@ -405,28 +405,34 @@ func boundaryChecker(m: in Map[String, String], t: in TypeExpr, selfType: in Opt
   }
 }
 
-/// The type arguments a signature type spells (`Cell[String]` -> `[String]`), which a generic type's checker is called
-/// at: written out, the call needs nothing inferred from the value, which the elaborator's inserted call has no
-/// recorded type arguments for.
-func boundaryTypeArgs(t: in TypeExpr, selfType: in Option[TypeExpr] = None): List[TypeArg] {
+/// The type a signature spells, `Self` replaced by the enclosing type, when it is an application of a generic type
+/// (`Cell[String]`, `Cell[T]`); None for any other.
+func boundaryGenericType(t: in TypeExpr, selfType: in Option[TypeExpr] = None): Option[TypeExpr] {
   match t.kind {
-    case TGenericApp(_, args) -> args
-    case TSelf -> match selfType { case Some(st) -> boundaryTypeArgs(st, None); case None -> newList() }
-    case TParen(inner) -> boundaryTypeArgs(inner, selfType)
-    case _ -> newList()
+    case TGenericApp(_, _) -> Some(value = t)
+    case TSelf -> match selfType { case Some(st) -> boundaryGenericType(st, None); case None -> None }
+    case TParen(inner) -> boundaryGenericType(inner, selfType)
+    case _ -> None
   }
 }
 
-func checkerCall(checker: in String, arg: in Expr, sp: in Span, targs: in List[TypeArg]): Expr {
+/// A call of `checker` on `arg`.  A generic type's checker is called by its bare name, whatever package declares it:
+/// `Lyric.Mono` specialises a call of a generic function only when the callee is a single segment, and takes the type
+/// arguments from the argument's declared type, so the call is `__lyric_checked_Cell(c)` and becomes
+/// `__lyric_checked_Cell__String(c)` (#9466).
+func checkerCall(checker: in String, arg: in Expr, sp: in Span, isGeneric: in Bool): Expr {
   val parts = Str.split(checker, ".")
   val segs: List[String] = newList()
-  var i = 0
-  while i < parts.length {
-    segs.add(parts[i])
-    i = i + 1
+  if isGeneric {
+    segs.add(parts[parts.length - 1])
+  } else {
+    var i = 0
+    while i < parts.length {
+      segs.add(parts[i])
+      i = i + 1
+    }
   }
-  val path = mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
-  val callee = if targs.count > 0 { mkExpr(ETypeApp(fn = path, args = targs), sp) } else { path }
+  val callee = mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
   val args: List[CallArg] = newList()
   args.add(CAPositional(expr = arg))
   mkExpr(ECall(fn = callee, args = args), sp)
@@ -434,11 +440,27 @@ func checkerCall(checker: in String, arg: in Expr, sp: in Span, targs: in List[T
 
 // `{ checker(arg); true }`: an ensures expression whose evaluation runs the
 // checker (which panics on a violation) and holds otherwise.
-func checkerHolds(checker: in String, arg: in Expr, sp: in Span, targs: in List[TypeArg]): Expr {
+func checkerHolds(checker: in String, arg: in Expr, sp: in Span, isGeneric: in Bool): Expr {
   val stmts: List[Statement] = newList()
-  stmts.add(mkStmt(SExpr(expr = checkerCall(checker, arg, sp, targs)), sp))
+  stmts.add(mkStmt(SExpr(expr = checkerCall(checker, arg, sp, isGeneric)), sp))
   stmts.add(mkStmt(SExpr(expr = mkExpr(ELiteral(lit = LBool(value = true)), sp)), sp))
   mkExpr(EBlock(block = Block(statements = stmts, span = sp)), sp)
+}
+
+/// `checkerHolds` on the function's result.  `result` has no type `Lyric.Mono` can read, so a generic type's result is
+/// first bound to a local declared at the signature's own type, from which the call's type arguments are read.
+func resultCheckerHolds(checker: in String, genericTy: in Option[TypeExpr], sp: in Span): Expr {
+  match genericTy {
+    case None -> checkerHolds(checker, mkExpr(EResult, sp), sp, false)
+    case Some(gt) -> {
+      val name = "__lyric_boundary_result"
+      val stmts: List[Statement] = newList()
+      stmts.add(typedLocal(name, Some(value = gt), mkExpr(EResult, sp), sp))
+      stmts.add(mkStmt(SExpr(expr = checkerCall(checker, mkPath(name, sp), sp, true)), sp))
+      stmts.add(mkStmt(SExpr(expr = mkExpr(ELiteral(lit = LBool(value = true)), sp)), sp))
+      mkExpr(EBlock(block = Block(statements = stmts, span = sp)), sp)
+    }
+  }
 }
 
 /// Entry checks of a public function: each `in` or `inout` parameter of a
@@ -455,7 +477,7 @@ func boundaryEntryChecks(
       match boundaryChecker(b.foreign, p.ty, selfType) {
         case Some(checker) -> {
           val arg = mkPath(p.name, p.span)
-          acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span, boundaryTypeArgs(p.ty, selfType))), p.span))
+          acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span, boundaryGenericType(p.ty, selfType).isSome())), p.span))
         }
         case None -> ()
       }
@@ -489,7 +511,7 @@ func boundaryExitChecks(
       match checker {
         case Some(c) -> acc.add(
           SpannedExpr(
-            expr = checkerHolds(c, mkPath(p.name, p.span), p.span, boundaryTypeArgs(p.ty, selfType)),
+            expr = checkerHolds(c, mkPath(p.name, p.span), p.span, boundaryGenericType(p.ty, selfType).isSome()),
             span = p.span,
             message = "InvariantViolated: " + owner + " parameter " + p.name
           )
@@ -512,7 +534,7 @@ func boundaryExitChecks(
       match checker {
         case Some(c) -> acc.add(
           SpannedExpr(
-            expr = checkerHolds(c, mkExpr(EResult, sp), sp, boundaryTypeArgs(rt, selfType)),
+            expr = resultCheckerHolds(c, boundaryGenericType(rt, selfType), sp),
             span = sp,
             message = "InvariantViolated: " + owner + " result"
           )
