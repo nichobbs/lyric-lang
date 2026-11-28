@@ -50,6 +50,8 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Mono
+import Lyric.Expand as Expand
+import Lyric.SelfFields as SelfFields
 
 // Last segment of the impl's interface reference — the bare interface name,
 // matching how `checkImplConformance` resolves `ifaceName`.
@@ -407,4 +409,539 @@ pub func inheritDefaultsFile(file: in SourceFile): ImplDefaultsResult {
     span = file.span
   )
   ImplDefaultsResult(file = rewritten, diagnostics = diags)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Default methods of another package's interface (`--target native`, #9451).
+//
+// dotnet and the JVM dispatch a default method that an impl omits on the interface's own method (a default
+// interface method).  Native has no such thing: every vtable slot names a function of the impl, so an impl of
+// another package's interface needs a function for each default it omits.  The interface's body cannot simply be
+// copied into the impl, since its names resolve in the declaring package and the impl's package imports something
+// else.  Instead the declaring package gets one free function per needed default,
+// `__lyric_default_<Interface>_<method>[<interface parameters>](self: in <Interface>, ...)`, whose body is the
+// default's own, type-checked in its own scope with each bare call of an interface method written `self.m(...)`,
+// and the impl gets a member that calls it with `self`, which is the same dispatch a default interface method
+// makes: the body runs on the interface value, and a call it makes on the interface goes through the vtable back
+// to the impl.  Runs over every package of the build, so it needs their sources, which a native build has.
+// A default it cannot express this way (async, a `Self` in a parameter or result, an `out`/`inout` parameter, its
+// own type parameters) is left for the native backend's `N0106`.
+// ─────────────────────────────────────────────────────────────────────────────
+/// The reserved name of the free function that holds the default method `method` of interface `ifaceName`.
+pub func crossDefaultFnName(ifaceName: in String, method: in String): String {
+  "__lyric_default_" + ifaceName + "_" + method
+}
+
+record CrossIface {
+  pkg: String
+  decl: InterfaceDecl
+  span: Span
+}
+
+func crossPkgName(file: in SourceFile): String {
+  modulePathJoin(file.packageDecl.path.segments)
+}
+
+func crossArgsMentionSelf(args: in List[TypeArg]): Bool {
+  for a in args {
+    match a {
+      case TAType(t) -> if crossTypeMentionsSelf(t) { return true }
+      case TAValue(_) -> ()
+    }
+  }
+  false
+}
+
+func crossTypeMentionsSelf(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TRef(_) -> false
+    case TUnit -> false
+    case TNever -> false
+    case TGenericApp(_, args) -> crossArgsMentionSelf(args)
+    case TArray(sz, el) -> {
+      val szs: List[TypeArg] = newList()
+      szs.add(sz)
+      crossArgsMentionSelf(szs) or crossTypeMentionsSelf(el)
+    }
+    case TSlice(el) -> crossTypeMentionsSelf(el)
+    case TNullable(inner) -> crossTypeMentionsSelf(inner)
+    case TParen(inner) -> crossTypeMentionsSelf(inner)
+    case TTuple(ts) -> {
+      for t in ts {
+        if crossTypeMentionsSelf(t) {
+          return true
+        }
+      }
+      false
+    }
+    case TFunction(ps, r) -> {
+      for t in ps {
+        if crossTypeMentionsSelf(t) {
+          return true
+        }
+      }
+      crossTypeMentionsSelf(r)
+    }
+    case _ -> true
+  }
+}
+
+func crossHasSelfParam(fn: in FunctionDecl): Bool {
+  fn.params.count > 0 and fn.params[0].name == "self"
+}
+
+/// The parameters after `self`.
+func crossRestParams(fn: in FunctionDecl): List[Param] {
+  val rest: List[Param] = newList()
+  var i = if crossHasSelfParam(fn) { 1 } else { 0 }
+  while i < fn.params.count {
+    rest.add(fn.params[i])
+    i = i + 1
+  }
+  rest
+}
+
+/// Whether the default `fn` can be held by a free function over the interface type and called from an impl
+/// member (both sides of the rewrite agree on this).
+func crossEligible(fn: in FunctionDecl): Bool {
+  if fn.isAsync or fn.body.isNone() {
+    return false
+  }
+  match fn.generics {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  for p in crossRestParams(fn) {
+    match p.mode {
+      case PMIn -> ()
+      case _ -> return false
+    }
+    if p.dflt.isSome() or crossTypeMentionsSelf(p.ty) {
+      return false
+    }
+  }
+  match fn.ret {
+    case Some(r) -> if crossTypeMentionsSelf(r) { return false }
+    case None -> ()
+  }
+  true
+}
+
+/// The interface `decl` implements when it is declared in another package of the build and named the way the
+/// file's imports make resolvable: bare through a plain `import Pkg`, or through the alias or package path it is
+/// written with.  `None` leaves the impl alone.
+func crossResolveIface(file: in SourceFile, decl: in ImplDecl, ifaces: in Map[String, CrossIface]): Option[CrossIface] {
+  val segs = decl.iface.head.segments
+  val here = crossPkgName(file)
+  if segs.count == 0 {
+    return None
+  }
+  val name = segs[segs.count - 1]
+  var found: Option[CrossIface] = None
+  var hits = 0
+  if segs.count == 1 {
+    for imp in file.imports {
+      if imp.asAlias.isNone() and imp.selector.isNone() and not imp.isExtern {
+        match mapGet(ifaces, modulePathJoin(imp.path.segments) + "." + name) {
+          case Some(ci) -> if ci.pkg != here { found = Some(value = ci); hits = hits + 1 }
+          case None -> ()
+        }
+      }
+    }
+  } else {
+    val prefix: List[String] = newList()
+    var i = 0
+    while i < segs.count - 1 {
+      prefix.add(segs[i])
+      i = i + 1
+    }
+    val written = modulePathJoin(prefix)
+    for imp in file.imports {
+      if not imp.isExtern and imp.selector.isNone() {
+        val viaAlias = match imp.asAlias { case Some(a) -> a == written; case None -> false }
+        val viaPath = imp.asAlias.isNone() and modulePathJoin(imp.path.segments) == written
+        if viaAlias or viaPath {
+          match mapGet(ifaces, modulePathJoin(imp.path.segments) + "." + name) {
+            case Some(ci) -> if ci.pkg != here { found = Some(value = ci); hits = hits + 1 }
+            case None -> ()
+          }
+        }
+      }
+    }
+  }
+  if hits == 1 {
+    found
+  } else {
+    None
+  }
+}
+
+/// A type argument as the index expression the parser reads an explicit type application from
+/// (`f[Int](x)` is `ECall(EIndex(f, [Int]), ...)`); `None` for a type with no such spelling (a tuple, a function).
+func crossTypeArgExpr(te: in TypeExpr): Option[Expr] {
+  match te.kind {
+    case TRef(path) -> Some(value = Expr(kind = EPath(path = path), span = te.span))
+    case TParen(inner) -> crossTypeArgExpr(inner)
+    case TGenericApp(head, args) -> {
+      val idx: List[Expr] = newList()
+      for a in args {
+        match a {
+          case TAType(t) -> match crossTypeArgExpr(t) { case Some(e) -> idx.add(e); case None -> return None }
+          case TAValue(e) -> idx.add(e)
+        }
+      }
+      Some(
+        value = Expr(
+          kind = EIndex(receiver = Expr(kind = EPath(path = head), span = te.span), indices = idx),
+          span = te.span
+        )
+      )
+    }
+    case _ -> None
+  }
+}
+
+/// The impl member that runs the default `fn` of `ifaceDecl` for `decl` by calling its free function.
+func crossTrampoline(
+  decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl, calleeSegs: in List[String]
+): Option[FunctionDecl] {
+  // A span of its own, as an inherited copy has (#9454): member lookups match a signature by span, and the
+  // interface member's span is not this member's.
+  val sp = Span(startPos = decl.span.startPos, endPos = fn.span.endPos)
+  val inherited = inheritedCopy(decl, ifaceDecl, fn)
+  val params: List[Param] = newList()
+  params.add(
+    Param(
+      mode = PMIn,
+      modeExplicit = true,
+      name = "self",
+      ty = TypeExpr(kind = TSelf, span = sp),
+      dflt = None,
+      annotations = newList(),
+      span = sp
+    )
+  )
+  val callArgs: List[CallArg] = newList()
+  callArgs.add(CAPositional(expr = Expr(kind = ESelf, span = sp)))
+  for p in crossRestParams(inherited) {
+    params.add(p)
+    val segs: List[String] = newList()
+    segs.add(p.name)
+    callArgs.add(CAPositional(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)))
+  }
+  val callee0 = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = sp)), span = sp)
+  val typeIdx: List[Expr] = newList()
+  for a in decl.iface.args {
+    match a {
+      case TAType(t) -> match crossTypeArgExpr(t) { case Some(e) -> typeIdx.add(e); case None -> return None }
+      case TAValue(_) -> return None
+    }
+  }
+  val callee = if typeIdx.count > 0 {
+    Expr(kind = EIndex(receiver = callee0, indices = typeIdx), span = sp)
+  } else {
+    callee0
+  }
+  val call = Expr(kind = ECall(fn = callee, args = callArgs), span = sp)
+  Some(
+    value = FunctionDecl(
+      docComments = newList(),
+      annotations = withMarkerAnnotation(newList(), inheritedDefaultAnnotationName(), sp),
+      visibility = None,
+      isAsync = false,
+      name = fn.name,
+      generics = None,
+      params = params,
+      ret = inherited.ret,
+      whereClause = None,
+      contracts = newList(),
+      body = Some(value = FBExpr(expr = call)),
+      span = sp
+    )
+  )
+}
+
+/// The free function that holds the default `fn` of `ifaceDecl`: generic over the interface's parameters, taking
+/// the interface value as `self`, with each bare call of an interface method written as a call on it.
+func crossDefaultFn(ifaceDecl: in InterfaceDecl, fn: in FunctionDecl): FunctionDecl {
+  val sp = fn.span
+  val ifacePath: List[String] = newList()
+  ifacePath.add(ifaceDecl.name)
+  val targs: List[TypeArg] = newList()
+  match ifaceDecl.generics {
+    case Some(gp) -> {
+      for g in gp.params {
+        match g {
+          case GPType(n, gsp) -> {
+            val ns: List[String] = newList()
+            ns.add(n)
+            targs.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = ns, span = gsp)), span = gsp)))
+          }
+          case GPValue(_, _, _) -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  val ifaceTy = if targs.count > 0 {
+    TypeExpr(kind = TGenericApp(head = ModulePath(segments = ifacePath, span = sp), args = targs), span = sp)
+  } else {
+    TypeExpr(kind = TRef(path = ModulePath(segments = ifacePath, span = sp)), span = sp)
+  }
+  val names: List[String] = newList()
+  names.add("Self")
+  val tys: List[TypeExpr] = newList()
+  tys.add(ifaceTy)
+  val sub = substGenericsInDecl(fn, names, tys)
+  val params: List[Param] = newList()
+  params.add(
+    Param(
+      mode = PMIn,
+      modeExplicit = true,
+      name = "self",
+      ty = ifaceTy,
+      dflt = None,
+      annotations = newList(),
+      span = sp
+    )
+  )
+  for p in crossRestParams(sub) {
+    params.add(p)
+  }
+  val methods: Map[String, Bool] = newMap()
+  for m in ifaceDecl.members {
+    match m {
+      case IMSig(sig) -> methods.add(sig.name, true)
+      case IMFunc(f) -> methods.add(f.name, true)
+      case _ -> ()
+    }
+  }
+  val noFields: Map[String, Bool] = newMap()
+  val noCases: Map[String, Bool] = newMap()
+  val body = match sub.body {
+    case Some(b) -> Some(value = SelfFields.resolveSelfMembersInBody(noFields, methods, noCases, params, b))
+    case None -> None
+  }
+  FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = Some(value = VisPub(span = sp)),
+    isAsync = false,
+    name = crossDefaultFnName(ifaceDecl.name, fn.name),
+    generics = ifaceDecl.generics,
+    params = params,
+    ret = sub.ret,
+    whereClause = ifaceDecl.whereClause,
+    contracts = sub.contracts,
+    body = body,
+    span = sp
+  )
+}
+
+/// `file` with each impl of another package's interface given a member for every default it omits (recording the
+/// default in `needs`, keyed `<Pkg>.<Interface>`).
+func crossRewriteConsumer(
+  file: in SourceFile, ifaces: in Map[String, CrossIface], needs: in Map[String, List[String]]
+): SourceFile {
+  val overridden: Map[String, Bool] = newMap()
+  val conflicted: Map[String, Bool] = newMap()
+  val scratch: List[Diagnostic] = newList()
+  collectTargetNamespace(file.items, overridden, conflicted, scratch)
+  val base = Expand.generatedSpanBase(file)
+  val origins: Map[String, Span] = newMap()
+  val items: List[Item] = newList()
+  var changed = false
+  for it in file.items {
+    match it.kind {
+      case IImpl(decl) -> match crossResolveIface(file, decl, ifaces) {
+        case Some(ci) -> {
+          val calleeSegs: List[String] = newList()
+          val head = decl.iface.head.segments
+          var hi = 0
+          while hi < head.count - 1 {
+            calleeSegs.add(head[hi])
+            hi = hi + 1
+          }
+          val members: List[ImplMember] = newList()
+          for m in decl.members {
+            members.add(m)
+          }
+          val added: List[ImplMember] = newList()
+          val tn = implTargetName(decl)
+          for im in ci.decl.members {
+            match im {
+              case IMFunc(fn) -> {
+                val blocked = overridden.containsKey(tn + "/" + fn.name)
+                if crossEligible(fn) and not implProvidesMethod(decl, fn.name) and not blocked {
+                  val segs: List[String] = newList()
+                  for c in calleeSegs {
+                    segs.add(c)
+                  }
+                  segs.add(crossDefaultFnName(ci.decl.name, fn.name))
+                  match crossTrampoline(decl, ci.decl, fn, segs) {
+                    case Some(tramp) -> {
+                      added.add(IMplFunc(fn = tramp))
+                      val key = ci.pkg + "." + ci.decl.name
+                      match mapGet(needs, key) {
+                        case Some(l) -> if not listContains(l, fn.name) { l.add(fn.name) }
+                        case None -> {
+                          val l: List[String] = newList()
+                          l.add(fn.name)
+                          needs.add(key, l)
+                        }
+                      }
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+              case _ -> ()
+            }
+          }
+          if added.count == 0 {
+            items.add(it)
+          } else {
+            // Fresh spans of their own: the checker keys a call's resolved callee by its span.
+            val probe = ImplDecl(
+              generics = decl.generics,
+              iface = decl.iface,
+              target = decl.target,
+              whereClause = decl.whereClause,
+              members = added,
+              span = decl.span
+            )
+            val batch: List[Item] = newList()
+            batch.add(
+              Item(
+                docComments = newList(),
+                annotations = newList(),
+                visibility = None,
+                kind = IImpl(decl = probe),
+                span = it.span
+              )
+            )
+            for g in Expand.respanGenerated(file, batch, base, it.span, origins) {
+              match g.kind {
+                case IImpl(gd) -> {
+                  for gm in gd.members {
+                    members.add(gm)
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            items.add(
+              Item(
+                docComments = it.docComments,
+                annotations = it.annotations,
+                visibility = it.visibility,
+                kind = IImpl(
+                  decl = ImplDecl(
+                    generics = decl.generics,
+                    iface = decl.iface,
+                    target = decl.target,
+                    whereClause = decl.whereClause,
+                    members = members,
+                    span = decl.span
+                  )
+                ),
+                span = it.span
+              )
+            )
+            changed = true
+          }
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if not changed {
+    return file
+  }
+  file.copy(items = items)
+}
+
+/// `file` with the free function of each needed default of an interface it declares.
+func crossAddDefaultFns(
+  file: in SourceFile, ifaces: in Map[String, CrossIface], needs: in Map[String, List[String]]
+): SourceFile {
+  val pk = crossPkgName(file)
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  val base = Expand.generatedSpanBase(file)
+  val origins: Map[String, Span] = newMap()
+  var changed = false
+  for it in file.items {
+    match it.kind {
+      case IInterface(id) -> match mapGet(needs, pk + "." + id.name) {
+        case Some(methods) -> {
+          val batch: List[Item] = newList()
+          for m in id.members {
+            match m {
+              case IMFunc(fn) -> if listContains(methods, fn.name) {
+                batch.add(
+                  Item(
+                    docComments = newList(),
+                    annotations = newList(),
+                    visibility = Some(value = VisPub(span = fn.span)),
+                    kind = IFunc(decl = crossDefaultFn(id, fn)),
+                    span = fn.span
+                  )
+                )
+              }
+              case _ -> ()
+            }
+          }
+          if batch.count > 0 {
+            for g in Expand.respanGenerated(file, batch, base, it.span, origins) {
+              items.add(g)
+            }
+            changed = true
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
+  if not changed {
+    return file
+  }
+  file.copy(items = items)
+}
+
+/// Every file of a native build with the default methods its impls inherit from interfaces declared in other
+/// packages of the build (#9451).  `files` holds one file per package; a file with nothing to inherit, and every
+/// file of a build with no such impl, comes back unchanged.
+pub func inheritCrossPackageDefaults(files: in List[SourceFile]): List[SourceFile] {
+  val ifaces: Map[String, CrossIface] = newMap()
+  for f in files {
+    val pk = crossPkgName(f)
+    for it in f.items {
+      match it.kind {
+        case IInterface(id) -> ifaces.add(pk + "." + id.name, CrossIface(pkg = pk, decl = id, span = it.span))
+        case _ -> ()
+      }
+    }
+  }
+  if ifaces.count == 0 {
+    return files
+  }
+  val needs: Map[String, List[String]] = newMap()
+  val rewritten: List[SourceFile] = newList()
+  for f in files {
+    rewritten.add(crossRewriteConsumer(f, ifaces, needs))
+  }
+  if needs.count == 0 {
+    return files
+  }
+  val result: List[SourceFile] = newList()
+  for f in rewritten {
+    result.add(crossAddDefaultFns(f, ifaces, needs))
+  }
+  result
 }
