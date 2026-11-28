@@ -1,8 +1,7 @@
-//! keptast.l - the construct the TIR lowering leaves on the AST path (docs/70 phase 4a, D859): `==` on a fixed array.
-//! `toString` of an enum (D874) and `default()` of a `String`, a by-value record and a list (D875) lower from TIR and
-//! are printed here to show they agree with the AST path.  The kept function falls back with its census reason and
-//! the program prints what the AST path prints; `native-via-tir-e2e.sh` runs it both ways and requires the one
-//! fallback, so the default build keeps it correct until the TIR lowering covers it.
+//! keptast.l - constructs the TIR lowering used to leave on the AST path (docs/70 phase 4a, D859): `toString` of an
+//! enum (D874), `default()` of a `String`, a by-value record and a list (D875), and `==` and `!=` on fixed arrays of
+//! scalars (D876).  The program prints what the AST path prints and `native-via-tir-e2e.sh` requires that none of
+//! them falls back, so a regression to the AST path fails there.
 package KeptAstViaTir
 
 import Std.Core
@@ -20,6 +19,10 @@ func name(c: in Colour): String {
 
 func same(a: in array[3, Int], b: in array[3, Int]): Bool {
   a == b
+}
+
+func differs(a: in array[3, Int], b: in array[3, Int]): Bool {
+  a != b
 }
 
 func blank(): String {
@@ -53,6 +56,9 @@ func main(): Unit {
   val x: array[3, Int] = [1, 2, 3]
   val y: array[3, Int] = [1, 2, 3]
   println(toString(same(x, y)))
+  val w: array[3, Int] = [1, 2, 4]
+  println(toString(same(x, w)))
+  println(toString(differs(x, w)))
   println("[" + blank() + "]")
   val z = zeroPair()
   println(toString(z.a) + "," + toString(z.b))

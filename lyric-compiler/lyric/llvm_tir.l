@@ -1914,13 +1914,61 @@ func opName(op: in IntrinsicOp): String {
   }
 }
 
+/// `==` and `!=` on two fixed arrays of scalars: the elements compared one by one (an unrolled `extractvalue`
+/// chain, ANDed), as the AST path's derived equality does.  Any other operator or element type stays on the AST path.
+func lowerAggregateEquality(
+  c: in LCtx,
+  op: in IntrinsicOp,
+  ty: in Ty,
+  nty: in NType,
+  a: in NValue,
+  b: in NValue,
+  line: in Int,
+): Val {
+  val isEq = match op { case IoEq -> true; case _ -> false }
+  val isNeq = match op { case IoNeq -> true; case _ -> false }
+  if not (isEq or isNeq) {
+    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+  val elemTy = match ty {
+    case TArray(_, e) -> e
+    case _ -> return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+  match nty {
+    case NArray(el, n) -> {
+      if not isScalarN(el) or n > 64 {
+        return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+      }
+      var acc = trueV()
+      var i = 0
+      while i < n {
+        val x = tmp(c)
+        c.insns.add(NExtractValue(dest = x, aggTy = nty, agg = a, index = i))
+        val y = tmp(c)
+        c.insns.add(NExtractValue(dest = y, aggTy = nty, agg = b, index = i))
+        val r = lowerBinary(c, IoEq, elemTy, el, NLocal(name = x), NLocal(name = y), line)
+        acc = andV(c, acc, r)
+        i = i + 1
+      }
+      if isEq {
+        acc
+      } else {
+        val d = tmp(c)
+        c.insns.add(NXor(dest = d, ty = NI1, a = acc.value, b = NLitInt(v = 1i64, ty = NI1)))
+        Val(ty = NI1, value = NLocal(name = d))
+      }
+    }
+    case _ -> unsupported(c, "an operator on the aggregate " + renderTy(ty))
+  }
+}
+
 /// A binary intrinsic on two scalars of type `ty`; the result is the node's
 /// type (`resTy`), which differs from `ty` only for comparisons.
 func lowerBinary(
   c: in LCtx, op: in IntrinsicOp, ty: in Ty, nty: in NType, a: in NValue, b: in NValue, line: in Int
 ): Val {
   if isAggN(nty) {
-    return unsupported(c, "an operator on the aggregate " + renderTy(ty))
+    return lowerAggregateEquality(c, op, ty, nty, a, b, line)
   }
   val flt = isFloatTy(ty)
   val uns = isUnsignedTy(ty)
