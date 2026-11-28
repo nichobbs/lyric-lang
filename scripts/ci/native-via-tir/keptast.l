@@ -8,6 +8,8 @@ package KeptAstViaTir
 import Std.Core
 import Std.Console as Console
 
+type Metres = Double
+
 enum Colour {
   case Red
   case Green
@@ -32,6 +34,10 @@ func sameFloats(a: in array[2, Double], b: in array[2, Double]): Bool {
 
 func nanValue(zero: in Double): Double {
   zero / zero
+}
+
+func sameMetres(a: in array[2, Metres], b: in array[2, Metres]): Bool {
+  a == b
 }
 
 func blank(): String {
@@ -59,6 +65,9 @@ func main(): Unit {
   val g1: array[2, Double] = [n, 1.0]
   val g2: array[2, Double] = [n, 1.0]
   println(toString(sameFloats(g1, g2)))
+  val m1: array[2, Metres] = [Metres.from(n), Metres.from(2.0)]
+  val m2: array[2, Metres] = [Metres.from(n), Metres.from(2.0)]
+  println(toString(sameMetres(m1, m2)))
   println("[" + blank() + "]")
   println(toString(plain(4)))
 }

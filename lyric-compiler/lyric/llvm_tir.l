@@ -1925,6 +1925,8 @@ func lowerAggregateEquality(
     case TArray(_, e) -> e
     case _ -> return unsupported(c, "an operator on the aggregate " + renderTy(ty))
   }
+  // The primitive a distinct element wraps: it decides integer or float comparison.
+  val elemPrim = opTy(c, elemTy)
   match nty {
     case NArray(el, n) -> {
       if not isScalarN(el) or n > 64 {
@@ -1937,10 +1939,10 @@ func lowerAggregateEquality(
         c.insns.add(NExtractValue(dest = x, aggTy = nty, agg = a, index = i))
         val y = tmp(c)
         c.insns.add(NExtractValue(dest = y, aggTy = nty, agg = b, index = i))
-        val r = lowerBinary(c, IoEq, elemTy, el, NLocal(name = x), NLocal(name = y), line)
+        val r = lowerBinary(c, IoEq, elemPrim, el, NLocal(name = x), NLocal(name = y), line)
         // Structural equality: a NaN element equals a NaN element, so a float pair is equal when ordered-equal
         // or when both are NaN (`une x, x` holds exactly for a NaN).
-        val same = if isFloatTy(elemTy) {
+        val same = if isFloatTy(elemPrim) {
           val xn = tmp(c)
           c.insns.add(NFCmp(dest = xn, pred = FUne, ty = el, a = NLocal(name = x), b = NLocal(name = x)))
           val yn = tmp(c)

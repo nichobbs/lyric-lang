@@ -846,7 +846,7 @@ cat "$work/k_census.txt"
 "$work/k_ast" > "$work/k_ast.out"
 "$work/k_tir" > "$work/k_tir.out"
 diff -u "$work/k_ast.out" "$work/k_tir.out"
-printf 'Green\nBlue\ntrue\nfalse\ntrue\ntrue\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
+printf 'Green\nBlue\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
 grep -q "^  fallback: the zero value of String" "$work/k_census.txt" || {
   echo "::error::keptast.l: expected the fallback 'the zero value of String' in the census"
   exit 1
