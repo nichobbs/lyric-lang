@@ -5645,13 +5645,6 @@ func lowerConvert(c: in LCtx, e: in TExpr, kind: in ConvKind, inner: in TExpr): 
   }
 }
 
-func isStructN(t: in NType): Bool {
-  match t {
-    case NStruct(_, _) -> true
-    case _ -> false
-  }
-}
-
 /// A closure passed as a C callback (docs/01 section 11.6): the value is the address of a ccc
 /// trampoline that takes the callback's raw parameters, with the userdata slot holding the closure,
 /// reloads the closure's code pointer and calls it with the closure and the other parameters.  The
