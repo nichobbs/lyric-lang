@@ -1357,7 +1357,7 @@ pub func tirMapKeyOk(nt: in NType): Bool {
 
 func listElemOk(nt: in NType): Bool {
   match nt {
-    case NVoid -> false
+    case NVoid -> true
     case _ -> isScalarN(nt) or isRefN(nt) or isAggN(nt)
   }
 }
@@ -4217,6 +4217,7 @@ func slotOf(c: in LCtx, v: in Val): NValue {
     case NI32 -> c.insns.add(NSExt(dest = d, fromTy = NI32, value = v.value, toTy = NI64))
     case NI8 -> c.insns.add(NZExt(dest = d, fromTy = NI8, value = v.value, toTy = NI64))
     case NI1 -> c.insns.add(NZExt(dest = d, fromTy = NI1, value = v.value, toTy = NI64))
+    case NVoid -> return NLitInt(v = 0i64, ty = NI64)
     case NStruct(_, _) -> return slotOfAgg(c, v)
     case NArray(_, _) -> return slotOfAgg(c, v)
     case _ -> c.insns.add(NPtrToInt(dest = d, fromTy = v.ty, value = v.value, toTy = NI64))
@@ -4255,6 +4256,7 @@ func fromBoxSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
 func fromSlot(c: in LCtx, slot: in NValue, nt: in NType): Val {
   val d = tmp(c)
   match nt {
+    case NVoid -> return unitVal()
     case NI64 -> return Val(ty = nt, value = slot)
     case NDouble -> c.insns.add(NBitcast(dest = d, fromTy = NI64, value = slot, toTy = NDouble))
     case NFloat -> {
