@@ -3814,7 +3814,9 @@ func checkInterfaceMemberBodies(
           isEntry = sig0.isEntry,
           isExternFunc = sig0.isExternFunc
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, noLocals, noLocals, true, selfTy)
+        val reported: List[Diagnostic] = newList()
+        checkFunctionBody(tbl, sigs, reported, fn, sig, noLocals, noLocals, true, selfTy)
+        addDiagnosticsNotYetReported(diag, reported)
       }
       case _ -> {
       }
@@ -5299,12 +5301,44 @@ func checkImplMemberBodies(
         } else {
           fieldLocals
         }
-        checkFunctionBody(tbl, sigs, diag, fn, sig, bareFieldLocals, fieldLocals, true, selfTy)
+        // The default itself is checked once where its interface is declared
+        // (`checkInterfaceMemberBodies`, #9471); the copy reports an error the
+        // two checks share only once.
+        val reported: List[Diagnostic] = newList()
+        checkFunctionBody(
+          tbl,
+          sigs,
+          if hasMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName()) { reported } else { diag },
+          fn,
+          sig,
+          bareFieldLocals,
+          fieldLocals,
+          true,
+          selfTy
+        )
+        addDiagnosticsNotYetReported(diag, reported)
       }
       case _ -> {
       }
     }
     i = i + 1
+  }
+}
+
+// Append each of `fresh` that `diag` does not already hold (same code, span
+// and message): a default body checked in its interface and again as an
+// impl's inherited copy reports one error once.
+func addDiagnosticsNotYetReported(diag: in List[Diagnostic], fresh: in List[Diagnostic]): Unit {
+  for d in fresh {
+    var seen = false
+    for o in diag {
+      if o.code == d.code and o.message == d.message and spanKey(o.span) == spanKey(d.span) {
+        seen = true
+      }
+    }
+    if not seen {
+      diag.add(d)
+    }
   }
 }
 
