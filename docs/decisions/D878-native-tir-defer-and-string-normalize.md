@@ -1,0 +1,11 @@
+# D878: the native TIR lowering takes `defer` and the `String.normalize` trap
+
+Status: accepted (docs/70 phase 4a, part 10; D520 slice 53).
+
+## Decision
+
+A `defer` block (`TsDefer`) registers in the innermost lexical scope. Each scope keeps its pending blocks beside its reference locals (`LCtx.defers`, pushed and popped with `refScopes`), and they run in reverse declaration order at every exit from the scope, before the scope's references are released: normal fall-off (`popRefScope`) and `return`, `break` and `continue` (`releaseDownTo`, for every scope it leaves). A `panic` still bypasses them (no unwinding on native, D-N-003). A `defer` inside a coroutine stays on the AST path ("a defer in a coroutine") until a suspend point inside a deferred block has a defined meaning.
+
+`String.normalize` and `String.isNormalized` lower to a run-time trap with the AST path's message ("not yet supported for --target native"): the Unicode normalization tables are not in lyric-rt, and the wrappers must still compile into programs that never call them. Porting the tables is tracked separately; this entry only moves the trap onto TIR.
+
+`llvm_self_test_defer.l` (eight cases: fall-off, `return`, `break`, `continue`, nesting, order, a panic before the defer) now runs these functions from TIR.
