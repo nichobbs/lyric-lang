@@ -1037,6 +1037,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   - Prefix (D881): a negated unsuffixed literal takes the type of the negation (`val n: Float = -0.1`), so the operator's result type is its operand's.
   - Builder (D884): `s.split(sep)` with `Std.String` in scope builds as a direct call of the standard library function, not the `String.split` built-in (native census).
   - Builder (D885): `format1`-`format4` with `Std.String` in scope build as a call of `Std.String.formatArgs` over the stringified arguments, as the AST pipeline rewrites them.
+  - Mono (D887): `T.default()` at a `String`, a distinct type or a non-generic record is the zero as ordinary nodes (`TFieldSig.dflt`, `TSymEntry.isRecord`); a scalar keeps the built-in.
   - Native bundle (D882): a bundled stdlib package is checked as a stdlib importer (it sees other stdlib packages' `internal` functions), and the trace names why a bundled function has no TIR body.
 
 3b can run in parallel with 3a; 3c needs 3a.

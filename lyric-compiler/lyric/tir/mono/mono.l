@@ -26,7 +26,7 @@ func mEntry(c: in MCtx, en: in TSymEntry): TSymEntry {
   val s = noSubst()
   val fs: List[TFieldSig] = newList()
   for f in en.fields {
-    fs.add(TFieldSig(name = f.name, ty = mTy(c, s, f.ty), mutable = f.mutable))
+    fs.add(TFieldSig(name = f.name, ty = mTy(c, s, f.ty), mutable = f.mutable, dflt = f.dflt))
   }
   val sg: Option[TSig] = match en.sig {
     case Some(g) -> Some(
@@ -47,7 +47,8 @@ func mEntry(c: in MCtx, en: in TSymEntry): TSymEntry {
     sig = sg,
     fields = fs,
     ty = ty,
-    mutable = en.mutable
+    mutable = en.mutable,
+    isRecord = en.isRecord
   )
 }
 
