@@ -3797,9 +3797,9 @@ func lowerArrayToSlice(c: in LCtx, arg: in TExpr, rty: in Ty): Val {
       if n > 256 {
         return unsupported(c, "toSlice of an array of " + toString(n) + " elements")
       }
-      val out = newListOf(c, rty)
-      if not isRefN(out.ty) {
-        return out
+      val sliceOut = newListOf(c, rty)
+      if not isRefN(sliceOut.ty) {
+        return sliceOut
       }
       val base = match arrayPlaceAddr(c, arg) {
         case Some(a) -> a
@@ -3819,12 +3819,12 @@ func lowerArrayToSlice(c: in LCtx, arg: in TExpr, rty: in Ty): Val {
         c.insns.add(NLoad(dest = d, ty = el, ptr = ptr))
         val ev = Val(ty = el, value = NLocal(name = d))
         val args: List[NArg] = newList()
-        args.add(NArg(ty = i8ptr(), value = listAsI8(c, out)))
+        args.add(NArg(ty = i8ptr(), value = listAsI8(c, sliceOut)))
         args.add(NArg(ty = NI64, value = slotOf(c, ev)))
         callRtVoid(c, "lyric_list_push", args)
         i = i + 1
       }
-      out
+      sliceOut
     }
     case _ -> {
       val src = borrow(c, lowerExpr(c, arg))
