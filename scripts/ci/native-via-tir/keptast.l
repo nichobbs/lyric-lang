@@ -1,7 +1,8 @@
-//! keptast.l - constructs the TIR lowering used to leave on the AST path (docs/70 phase 4a, D859): `toString` of an
-//! enum (D874), `default()` of a `String`, a by-value record and a list (D875), and `==` and `!=` on fixed arrays of
-//! scalars (D876).  The program prints what the AST path prints and `native-via-tir-e2e.sh` requires that none of
-//! them falls back, so a regression to the AST path fails there.
+//! keptast.l - constructs the TIR lowering leaves on the AST path or used to (docs/70 phase 4a, D859): `default()` of
+//! a `String` is still kept (`T.default()` of a generic specialisation is the same builtin and means each field's
+//! declared default for a record, which a null value is not), while `toString` of an enum (D874) and `==` and `!=`
+//! on fixed arrays of scalars (D876) lower from TIR.  The program prints what the AST path prints and
+//! `native-via-tir-e2e.sh` requires the one fallback and that the other two do not fall back.
 package KeptAstViaTir
 
 import Std.Core
@@ -34,22 +35,6 @@ func blank(): String {
   s
 }
 
-record Pair {
-  a: Int
-  b: Int
-}
-
-func zeroPair(): Pair {
-  val p: Pair = default()
-  p
-}
-
-func listLater(): Int {
-  var xs: List[Int] = default()
-  xs = [1, 2]
-  xs.count
-}
-
 func plain(n: in Int): Int {
   n + 1
 }
@@ -67,8 +52,5 @@ func main(): Unit {
   val f2: array[2, Double] = [-0.0, 1.0]
   println(toString(sameFloats(f1, f2)))
   println("[" + blank() + "]")
-  val z = zeroPair()
-  println(toString(z.a) + "," + toString(z.b))
-  println(toString(listLater()))
   println(toString(plain(4)))
 }

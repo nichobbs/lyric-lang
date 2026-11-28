@@ -1518,15 +1518,6 @@ func isNever(t: in Ty): Bool {
   }
 }
 
-/// `zeroOf` for any representation: a by-value struct or array is `zeroinitializer`.
-func zeroValueOfN(t: in NType): NValue {
-  match t {
-    case NStruct(_, _) -> NZeroInit(ty = t)
-    case NArray(_, _) -> NZeroInit(ty = t)
-    case _ -> zeroOf(t)
-  }
-}
-
 func zeroOf(t: in NType): NValue {
   match t {
     case NDouble -> NLitFloat(v = 0.0, ty = NDouble)
@@ -3717,12 +3708,11 @@ func lowerBuiltin(c: in LCtx, name: in String, ins: in List[TExpr], line: in Int
   if name == "default" and ins.count == 0 {
     match tyToN(c.env, rty) {
       case Some(nt) -> {
-        // The AST path's zero value of the representation: 0, false, 0.0, a null pointer for a `String`, a
-        // heap record, a list or a union object (the runtime reads a null string as empty), and a zeroed
-        // by-value aggregate.
-        match nt {
-          case NVoid -> return unitVal()
-          case _ -> return Val(ty = nt, value = zeroValueOfN(nt))
+        // A numeric or boolean scalar.  `T.default()` of a generic specialisation is the same builtin and
+        // means each field's declared default or zero for a record, which a null or zeroed value is not, so
+        // a `String`, record, list or union stays on the AST path.
+        if isScalarN(nt) {
+          return Val(ty = nt, value = zeroOf(nt))
         }
       }
       case None -> ()
