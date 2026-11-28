@@ -363,6 +363,47 @@ test "an impl member with type parameters of its own is instantiated per call (D
   )
 }
 
+func countBuiltinNamed(m: in Mono, name: in String): Int {
+  val n: List[Int] = newList()
+  n.add(0)
+  val w = Walker(
+    pre = { e: TExpr -> None },
+    post = { e: TExpr -> noteBuiltin(name, n, e) },
+    preStmt = { st: TStmt -> None }
+  )
+  for pb in m.r.pkgs {
+    for f in pb.pkg.funcs {
+      match f.body {
+        case Some(b) -> {
+          walkExpr(w, b)
+        }
+        case None -> ()
+      }
+    }
+  }
+  n[0]
+}
+
+func noteBuiltin(name: in String, n: in List[Int], e: in TExpr): TExpr {
+  match e.kind {
+    case XCall(Intrinsic(IoBuiltin(b)), _) -> if b == name { n[0] = n[0] + 1 }
+    case _ -> ()
+  }
+  e
+}
+
+val genericDefaultSrc: String = "package App\ntype Level = Int derives Default\n@derive(Default)\nrecord Slot {\n  n: Int = 7\n  label: String\n  level: Level\n}\nfunc zeroOf[T](x: in T): T\n  where T: Default\n{\n  T.default()\n}\nfunc main(): Int {\n  val a = zeroOf(Slot(n = 1, label = \"x\", level = Level.from(2)))\n  val b = zeroOf(\"s\")\n  val c = zeroOf(Level.from(3))\n  val d = zeroOf(5)\n  a.n\n}\n"
+
+test "T.default() at a record, a String and a distinct type is the zero as ordinary nodes; a scalar keeps the built-in (D887)" {
+  val m = monoOf(genericDefaultSrc)
+  assertEqualInt(m.built, m.total, "every body builds")
+  assertEqualInt(m.r.diags.count, 0, "no diagnostic")
+  assertEqualInt(m.r.unresolved.count, 0, "nothing is left generic: " + joinStrings(mapKeys(m.r.unresolved), "; "))
+  val v = verifyMonoBundle(m.r)
+  assertEqualInt(v.failures.count, 0, if v.failures.count > 0 { v.failures[0] } else { "verifies" })
+  assertEqualInt(countBuiltinNamed(m, "default"), 1, "only the Int specialisation keeps the built-in")
+}
+
 func upcastTargets(m: in Mono): List[String] {
   val acc: List[String] = newList()
   val w = Walker(

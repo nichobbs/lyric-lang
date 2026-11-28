@@ -298,7 +298,97 @@ func mStmt(c: in MCtx, s: in Subst, st: in TStmt): TStmt {
   TStmt(id = nid(c, s, st.id), span = st.span, kind = k)
 }
 
+/// A literal node of type `ty`.
+func zeroLit(c: in MCtx, ty: in Ty, sp: in Span, lit: in TLit): TExpr {
+  TExpr(id = freshNode(c), ty = ty, span = sp, kind = XLit(lit = lit))
+}
+
+/// The zero value of `ty` written as ordinary nodes: a scalar's literal, `""`, a distinct type's wrapped underlying zero,
+/// a record built with each field at its literal default or its own zero.  None for any other type (a generic record
+/// instance, a union, a collection, an extern type), and for a record whose field has none.
+func zeroExpr(c: in MCtx, ty: in Ty, sp: in Span, depth: in Int): Option[TExpr] {
+  if depth > 8 {
+    return None
+  }
+  match ty {
+    case TPrim(k) -> match k {
+      case TPString -> Some(value = zeroLit(c, ty, sp, TLString(text = "")))
+      case TPBool -> Some(value = zeroLit(c, ty, sp, TLBool(value = false)))
+      case TPChar -> Some(value = zeroLit(c, ty, sp, TLChar(codepoint = 0)))
+      case TPFloat -> Some(value = zeroLit(c, ty, sp, TLFloat(value = 0.0)))
+      case TPDouble -> Some(value = zeroLit(c, ty, sp, TLFloat(value = 0.0)))
+      case TPUnit -> None
+      case _ -> Some(value = zeroLit(c, ty, sp, TLInt(value = 0i64)))
+    }
+    case TNamed(sym, args) -> {
+      if args.count > 0 {
+        return None
+      }
+      match mapGet(c.entries, sym.id) {
+        case None -> None
+        case Some(en) -> match en.ty {
+          case Some(under) -> match zeroExpr(c, under, sp, depth + 1) {
+            case Some(inner) -> Some(
+              value = TExpr(
+                id = freshNode(c),
+                ty = ty,
+                span = sp,
+                kind = XConvert(
+                  kind = CvWrapDistinct(sym = sym),
+                  inner = inner
+                )
+              )
+            )
+            case None -> None
+          }
+          case None -> {
+            if not en.isRecord or en.typeParamCount > 0 or en.fields.count == 0 {
+              return None
+            }
+            val fields: List[TExpr] = newList()
+            for f in en.fields {
+              match f.dflt {
+                case Some(l) -> fields.add(zeroLit(c, f.ty, sp, l))
+                case None -> match zeroExpr(c, f.ty, sp, depth + 1) { case Some(z) -> fields.add(z); case None -> return None }
+              }
+            }
+            Some(value = TExpr(id = freshNode(c), ty = ty, span = sp, kind = XConstruct(sym = sym, fields = fields)))
+          }
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// `T.default()` in a generic body (the built-in `default` typed by the parameter `T`) at a type argument that is a
+/// `String`, a distinct type or a record: the zero value as ordinary nodes, as the AST monomorphiser writes it (#8531), so
+/// a backend lowers a construction, not a zero it cannot make.  A scalar argument keeps the built-in.
+func paramDefaultAt(c: in MCtx, s: in Subst, e: in TExpr): Option[TExpr] {
+  match e.kind {
+    case XCall(Intrinsic(IoBuiltin(name)), args) -> {
+      if name != "default" or args.count != 0 {
+        return None
+      }
+    }
+    case _ -> return None
+  }
+  match e.ty {
+    case TParam(_, _) -> ()
+    case _ -> return None
+  }
+  val at = mTy(c, s, e.ty)
+  match at {
+    case TPrim(k) -> match k { case TPString -> zeroExpr(c, at, e.span, 0); case _ -> None }
+    case _ -> zeroExpr(c, at, e.span, 0)
+  }
+}
+
 func mExpr(c: in MCtx, s: in Subst, e: in TExpr): TExpr {
+  match paramDefaultAt(c, s, e) {
+    case Some(z) -> return z
+    case None -> ()
+  }
   val k: TExprKind = match e.kind {
     case XLit(_) -> e.kind
     case XLocal(_) -> e.kind

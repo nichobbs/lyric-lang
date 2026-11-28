@@ -429,10 +429,19 @@ func instType(c: in MCtx, sym: in SymbolId, args: in List[Ty]): Option[SymbolId]
     case None -> {
       val fs: List[TFieldSig] = newList()
       for f in en.fields {
-        fs.add(TFieldSig(name = f.name, ty = mTy(c, sub, f.ty), mutable = f.mutable))
+        fs.add(TFieldSig(name = f.name, ty = mTy(c, sub, f.ty), mutable = f.mutable, dflt = f.dflt))
       }
       c.outSyms.add(
-        TSymEntry(sym = inst, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+        TSymEntry(
+          sym = inst,
+          kind = TSkType,
+          typeParamCount = 0,
+          sig = None,
+          fields = fs,
+          ty = None,
+          mutable = false,
+          isRecord = en.isRecord
+        )
       )
     }
   }

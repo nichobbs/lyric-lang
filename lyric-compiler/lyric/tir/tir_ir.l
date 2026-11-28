@@ -425,6 +425,9 @@ pub record TFieldSig {
   name: String
   ty: Ty
   mutable: Bool
+  /// The field's declared default when it is a literal (`n: Int = 0`), which a construction that leaves the field out
+  /// takes.  A default that is any other expression is not recorded here.
+  dflt: Option[TLit] = None
 }
 
 pub union TSymKind {
@@ -451,8 +454,12 @@ pub record TSymEntry {
   typeParamCount: Int
   sig: Option[TSig]
   fields: List[TFieldSig]
+  /// A global value's type; for a `type X = Under` (distinct) declaration the underlying type.
   ty: Option[Ty]
   mutable: Bool
+  /// True for the entry of a record or exposed record declared in a package of the build (not of an opaque or
+  /// protected type, which carry `fields` too): a pass may construct it from `fields`.
+  isRecord: Bool = false
 }
 
 /// An `impl Iface[args] for Target { ... }` block (#7791, D860): which interface a type implements at which

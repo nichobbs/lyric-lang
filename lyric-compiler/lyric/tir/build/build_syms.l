@@ -257,6 +257,66 @@ func varFieldNames(tbl: in SymbolTable, sid: in SymbolId): Map[String, Bool] {
   names
 }
 
+/// The literal a field's declared default is, as the TIR records it (`TFieldSig.dflt`), when it is one of the
+/// field's own scalar kind: an integer literal for an integer field, a float literal for a `Float` or `Double`,
+/// a `Bool`, a `Char` or a `String`.  None for any other default.
+func literalDefaultOf(fieldTy: in Ty, d: in Option[Expr]): Option[TLit] {
+  val x = match d { case Some(e) -> e; case None -> return None }
+  val lit = match x.kind { case ELiteral(l) -> l; case _ -> return None }
+  match fieldTy {
+    case TPrim(k) -> match lit {
+      case LInt(v, _, _) -> match k {
+        case TPByte -> Some(value = TLInt(value = v))
+        case TPInt -> Some(value = TLInt(value = v))
+        case TPLong -> Some(value = TLInt(value = v))
+        case TPUInt -> Some(value = TLInt(value = v))
+        case TPULong -> Some(value = TLInt(value = v))
+        case _ -> None
+      }
+      case LFloat(v, _, _) -> match k {
+        case TPFloat -> Some(value = TLFloat(value = v))
+        case TPDouble -> Some(value = TLFloat(value = v))
+        case _ -> None
+      }
+      case LBool(v) -> match k { case TPBool -> Some(value = TLBool(value = v)); case _ -> None }
+      case LString(t) -> match k { case TPString -> Some(value = TLString(text = t)); case _ -> None }
+      case LChar(cp) -> match k { case TPChar -> Some(value = TLChar(codepoint = cp)); case _ -> None }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// `en`, the entry of the type `sym`, marked as a record's when `sym` is a record or exposed record, with the
+/// literal default of each field that has one.
+func withRecordInfo(tbl: in SymbolTable, sym: in SymbolId, en: in TSymEntry): TSymEntry {
+  var members: Option[List[RecordMember]] = None
+  for s in tbl.symbols {
+    match s.kind {
+      case DKRecord(did, rd) -> if symbolIdEq(did, sym) { members = Some(value = rd.members) }
+      case DKExposedRec(did, rd) -> if symbolIdEq(did, sym) { members = Some(value = rd.members) }
+      case _ -> ()
+    }
+  }
+  match members {
+    case None -> en
+    case Some(ms) -> {
+      val fs: List[TFieldSig] = newList()
+      for f in en.fields {
+        var d: Option[TLit] = None
+        for m in ms {
+          match m {
+            case RMField(fd) -> if fd.name == f.name { d = literalDefaultOf(f.ty, fd.dflt) }
+            case _ -> ()
+          }
+        }
+        fs.add(f.copy(dflt = d))
+      }
+      en.copy(fields = fs, isRecord = true)
+    }
+  }
+}
+
 /// Record the record or case `sym` a non-generic construction builds: its
 /// fields are the constructor signature's parameters.
 func noteCtorSym(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature): Unit {
@@ -274,7 +334,11 @@ func noteCtorSym(env: in BuildEnv, sym: in SymbolId, sig: in ResolvedSignature):
   }
   env.syms.add(
     sym.id,
-    TSymEntry(sym = sym, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+    withRecordInfo(
+      env.ctx.tbl,
+      sym,
+      TSymEntry(sym = sym, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+    )
   )
 }
 
@@ -295,7 +359,11 @@ func noteRecordSym(env: in BuildEnv, sym: in SymbolId): Unit {
   }
   env.syms.add(
     sym.id,
-    TSymEntry(sym = sym, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+    withRecordInfo(
+      env.ctx.tbl,
+      sym,
+      TSymEntry(sym = sym, kind = TSkType, typeParamCount = 0, sig = None, fields = fs, ty = None, mutable = false)
+    )
   )
 }
 
@@ -659,7 +727,7 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             }
           }
           if ok {
-            res.add(typeEntry(sid, names.count, fs))
+            res.add(withRecordInfo(tbl, sid, typeEntry(sid, names.count, fs)))
           }
         } else {
           match s.kind {
@@ -677,6 +745,17 @@ pub func typeEntries(tbl: in SymbolTable): List[TSymEntry] {
             }
             // An interface's parameters are what its instances are made at (docs/70 phase 3c, mono slice 2).
             case DKInterface(_, d) -> res.add(typeEntry(sid, extractGenericNames(d.generics).count, newList()))
+            // A distinct type records its underlying type (a pass writes its zero as `X.from(zero)`).
+            case DKDistinctType(_, _) -> {
+              val bare = typeEntry(sid, 0, newList())
+              match distinctUnderlyingOf(tbl, TyUser(id = sid, name = s.name, args = newList())) {
+                case Some(u) -> match tyOfType(newTyConvCtx(tbl), u) {
+                  case Ok(t) -> res.add(bare.copy(ty = Some(value = t)))
+                  case Err(_) -> res.add(bare)
+                }
+                case None -> res.add(bare)
+              }
+            }
             case _ -> res.add(typeEntry(sid, protectedGenericNames(tbl, sid).count, protectedFieldSigs(tbl, sid)))
           }
         }
