@@ -4333,6 +4333,7 @@ test "a negated integer literal under a wider integer expectation takes that typ
   val c = censusOf("package App\nfunc f(): Long {\n  val n: Long = -5\n  n\n}\n")
   assertEqualInt(c.built, 1, if c.firstErrors.count > 0 { c.firstErrors[0] } else { "built" })
   val negs = negations(c.pkg)
+  assertEqualInt(negs.count, 1, "one negation")
   if negs.count > 0 {
     match negs[0].kind {
       case XCall(_, args) -> match args[0] {
