@@ -947,19 +947,21 @@ clang -O1 -g -fsanitize=address -Wno-override-module "$work/gg_tir.ll" lyric-rt/
 diff -u "$work/gg_tir.out" "$work/gg_asan.out"
 echo "generic interface impl for a generic record under AddressSanitizer: clean"
 
-# An impl of a generic interface whose target is not a generic record applied to the impl's own parameters
-# (`impl[T] Holder[T] for Wrap[T]` over a generic union) is not laid out: the build stops with N0105 rather than producing a
-# program whose interface calls have no vtable.
-if "$lyric_bin" build --target native "scripts/ci/native-via-tir/genericifaces_unsupported_impl.l" -o "$work/gi_bad" 2> "$work/gi_bad.txt" >/dev/null; then
-  echo "::error::an impl of a generic interface for an unsupported generic target built on native"
-  exit 1
-fi
-grep -q 'N0105' "$work/gi_bad.txt" || {
-  echo "::error::expected N0105 for an impl of a generic interface for an unsupported generic target"
-  cat "$work/gi_bad.txt"
-  exit 1
-}
-echo "generic interface impl for an unsupported generic target: N0105"
+# An impl of a generic interface over a generic union (`impl[T] Holder[T] for Wrap[T]`, D891): the union is a heap object, its
+# vtable is laid out per instance as a generic record's is.  Called through the interface at two instantiations, on the
+# union value and as an inherited default; the same output from both paths, then under AddressSanitizer.
+guisrc=scripts/ci/native-via-tir/genericifaces_union_impl.l
+"$lyric_bin" build --target native --no-via-tir "$guisrc" -o "$work/gu_ast" >/dev/null
+LYRIC_KEEP_LL=1 "$lyric_bin" build --target native --via-tir "$guisrc" -o "$work/gu_tir" 2> "$work/gu_census.txt" >/dev/null
+cat "$work/gu_census.txt"
+"$work/gu_ast" > "$work/gu_ast.out"
+"$work/gu_tir" > "$work/gu_tir.out"
+diff -u "$work/gu_ast.out" "$work/gu_tir.out"
+printf '4\n9\n14\nab!\n4\n' | diff -u - "$work/gu_tir.out"
+clang -O1 -g -fsanitize=address -Wno-override-module "$work/gu_tir.ll" lyric-rt/build-asan-tir/lyric_rt.a -lm -lpthread -ldl -o "$work/gu_asan"
+"$work/gu_asan" > "$work/gu_asan.out"
+diff -u "$work/gu_tir.out" "$work/gu_asan.out"
+echo "generic interface impl for a generic union under AddressSanitizer: clean"
 
 # An impl whose target is a union (#9470, D868): a union that implements an interface is a heap object, its vtable is
 # laid out like a record's.  Called through the interface, on the union value and as an inherited default; the same
