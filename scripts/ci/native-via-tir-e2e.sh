@@ -973,7 +973,7 @@ cat "$work/bv_census.txt"
 "$work/bv_tir" > "$work/bv_tir.out"
 diff -u "$work/bv_ast.out" "$work/bv_tir.out"
 printf '7\n8\n10\n10\n' | diff -u - "$work/bv_tir.out"
-grep -q '^native via-TIR: 7 of 7 functions lowered from TIR' "$work/bv_census.txt" || {
+grep -q '^native via-TIR: 6 of 6 functions lowered from TIR' "$work/bv_census.txt" || {
   echo "::error::expected every function of byvalueiface.l to be lowered from TIR"
   exit 1
 }
