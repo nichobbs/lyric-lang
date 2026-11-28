@@ -1217,6 +1217,22 @@ func unifyPrimOperands(env: in BuildEnv, lt: in TExpr, rt: in TExpr): List[TExpr
   res
 }
 
+/// A numeric literal re-typed to the numeric primitive `ty` it stands for; anything else as it was.
+func literalAtType(t: in TExpr, ty: in Ty): TExpr {
+  match t.kind {
+    case XLit(l) -> {
+      val numeric = match l { case TLFloat(_) -> true; case TLInt(_) -> true; case _ -> false }
+      val numericTarget = match ty { case TPrim(k) -> isNumericPrimKind(k); case _ -> false }
+      if numeric and numericTarget and not tyEq(t.ty, ty) {
+        TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind)
+      } else {
+        t
+      }
+    }
+    case _ -> t
+  }
+}
+
 func isPrimTy(t: in Ty): Bool {
   match t {
     case TPrim(_) -> true
@@ -3405,7 +3421,10 @@ func buildExprBody(env: in BuildEnv, e: in Expr): Option[TExpr] {
       match iop {
         case None -> uncoveredExpr(env, e, "a reference prefix")
         case Some(o) -> match buildExpr(env, operand) {
-          case Some(t) -> if isPrimTy(t.ty) {
+          case Some(t0) -> if isPrimTy(t0.ty) {
+            // `val n: Float = -0.1`: the checker types the negation as `Float` and the unsuffixed literal under
+            // it as `Double`, so the literal takes the type of the negation it is the operand of.
+            val t = literalAtType(t0, ty)
             val one: List[TExpr] = newList()
             one.add(t)
             Some(value = mkExpr(e, ty, intrinsicCall(o, one)))
