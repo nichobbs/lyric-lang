@@ -1,0 +1,3 @@
+# native: an impl inherits a default method of another package's interface (D869)
+
+On `--target native` an `impl` that omits a default method of an interface declared in another package now runs (#9451, part of #7791): `Lyric.ImplDefaults.inheritCrossPackageDefaults` gives the declaring package a free function holding the default's body and the impl a member that calls it, before type checking, so native lowers both from TIR. dotnet and the JVM needed nothing (D861, D862: they dispatch to the interface's own default method). A default with a `Self` in a parameter or result, an `async` default or an `out`/`inout` parameter is still N0106. Covered by `default_method_cross_package_native_self_test.l`.

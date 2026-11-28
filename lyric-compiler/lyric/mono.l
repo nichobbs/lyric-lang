@@ -1046,6 +1046,9 @@ func substTypeExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
       TypeExpr(kind = TFunction(parameters = newPs, retTy = substTypeExpr(subst, valueSubst, r)), span = s)
     }
     case TParen(inner) -> TypeExpr(kind = TParen(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
+    // `Self` is replaced by a substitution that binds the name "Self" (an interface's default method moved to a
+    // free function over the interface type, #9451).
+    case TSelf -> match mapGet(subst, "Self") { case Some(concrete) -> concrete; case None -> te }
     case _ -> te
   }
 }
