@@ -2144,6 +2144,46 @@ func firstValInitCallee(b: in TExpr): String {
   }
 }
 
+// D885: `format1(template, a)` with `Std.String` in scope is a call of `Std.String.formatArgs` with the arguments
+// stringified in a slice literal.
+func buildFormatFn(importStd: in Bool): FnBuilt {
+  val lib = parse("package Std.String\npub func formatArgs(template: in String, args: in slice[String]): String {\n  template\n}\n").file
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(ImportedPackage(name = "Std.String", items = lib.items, imports = newList(), wholeImports = newList()))
+  val head = if importStd { "package App\nimport Std.String\n" } else { "package App\n" }
+  val file = renumberNodeIds(parse(head + "func f(n: in Int): String {\n  val s = format1(\"n={0}\", n)\n  s\n}\n").file).file
+  val cr = if importStd { checkWithImportedPackages(file, pkgs) } else { check(file) }
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> {
+        body = buildFnBody(env, decl, cr.symbols)
+      }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
+}
+
+test "format1 with Std.String in scope builds as a call of formatArgs over stringified arguments (D885)" {
+  val r = buildFormatFn(true)
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> assertEqual(firstValInitCallee(b), "direct", "the stdlib function")
+    case None -> assertTrue(false, "built")
+  }
+}
+
+test "format1 without Std.String in scope stays the built-in (D885)" {
+  val r = buildFormatFn(false)
+  match r.body {
+    case Some(b) -> assertEqual(firstValInitCallee(b), "builtin:format1", "no stdlib function to call")
+    case None -> assertTrue(false, "built")
+  }
+}
+
 test "s.split(sep) with Std.String in scope builds as a direct call of its function (D884)" {
   val r = buildSplitFn(true)
   assertEqualInt(r.diagnostics, 0, "checks clean")

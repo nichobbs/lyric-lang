@@ -8946,6 +8946,12 @@ func buildBuiltinCall(
               }
             }
           }
+          if (name == "format1" or name == "format2" or name == "format3" or name == "format4") and res.count >= 2 {
+            match buildStdFormatCall(env, e, ty, res) {
+              case Some(c) -> return Some(value = c)
+              case None -> ()
+            }
+          }
           if name == "String.split" and res.count == 2 {
             match buildStdSplitCall(env, e, ty, res) {
               case Some(c) -> return Some(value = c)
@@ -8956,6 +8962,57 @@ func buildBuiltinCall(
         }
       }
     }
+  }
+}
+
+/// `formatN(template, a1, ..., aN)` where `Std.String.formatArgs` is visible: the call the AST pipeline rewrites it to,
+/// `Std.String.formatArgs(template, [toString(a1), ..., toString(aN)])` (`lowerFormatBuiltin`, #7840), so every target
+/// stringifies the arguments as `toString` does and the placeholder grammar lives in one Lyric function.  None when the
+/// function is not in scope, which keeps the built-in.
+func buildStdFormatCall(env: in BuildEnv, e: in Expr, ty: in Ty, args: in List[TExpr]): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  if not tyEq(ty, tyString()) {
+    return None
+  }
+  val sliceTy = TirT.TSlice(element = tyString())
+  match symTableTryFindInPackage(tbl, "Std.String", "formatArgs") {
+    case Some(s) -> match s.kind {
+      case DKFunc(decl) -> match symTableFuncSymOf(tbl, decl) {
+        case Some(id) -> {
+          if not env.syms.containsKey(id.id) {
+            val ps: List[TParamTy] = newList()
+            ps.add(TParamTy(mode = TMIn, ty = tyString()))
+            ps.add(TParamTy(mode = TMIn, ty = sliceTy))
+            env.syms.add(
+              id.id,
+              TSymEntry(
+                sym = id,
+                kind = TSkFunc,
+                typeParamCount = 0,
+                sig = Some(value = TSig(typeParamCount = 0, params = ps, ret = tyString(), isAsync = false)),
+                fields = newList(),
+                ty = None,
+                mutable = false
+              )
+            )
+          }
+          val parts: List[TExpr] = newList()
+          var i = 1
+          while i < args.count {
+            parts.add(stringPart(env, args[i]))
+            i = i + 1
+          }
+          val lit = TExpr(id = freshNodeId(env), ty = sliceTy, span = e.span, kind = XListLit(elems = parts))
+          val call: List[TExpr] = newList()
+          call.add(args[0])
+          call.add(lit)
+          Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = id, typeArgs = newList()), args = inArgs(call))))
+        }
+        case None -> None
+      }
+      case _ -> None
+    }
+    case None -> None
   }
 }
 
