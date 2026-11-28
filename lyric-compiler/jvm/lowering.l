@@ -4783,6 +4783,10 @@ pub record LSealedUnion {
   baseName: String
   // sealed interface JVM internal name
   cases: List[LSealedCase]
+  // The interfaces an `impl` for the union implements, which the sealed interface extends, and the impl's methods,
+  // emitted as default methods of the sealed interface so every case inherits them (#9470).
+  implementsIfaces: List[String] = newList()
+  implMethods: List[LFunc] = newList()
 }
 
 // `equals(Object)` / `hashCode()` for a union case class (#6835/#6120):
@@ -5061,8 +5065,12 @@ pub func lowerSealedUnion(u: in LSealedUnion, pool: in Pool): List[ClassFile] {
   val tagMethod = makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "$tag", buildDescriptor(tagPs, JInt), tagAttrs)
   val ifaceMethods: List[MethodInfo] = newList()
   ifaceMethods.add(tagMethod)
+  for fn in u.implMethods.toArray() {
+    ifaceMethods.add(lowerFunc(fn, pool))
+  }
 
-  result.add(makeSealedInterfaceWithMethods(u.baseName, caseNames, ifaceMethods, pool))
+  val sealedIface = makeSealedInterfaceWithMethods(u.baseName, caseNames, ifaceMethods, pool)
+  result.add(sealedIface.copy(interfaces = u.implementsIfaces))
 
   var ordinal = 0
   for c in u.cases.toArray() {

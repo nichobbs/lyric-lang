@@ -10058,7 +10058,21 @@ pub func codegenPackageWithSigsSeeded(
       }
       case IUnion(decl) -> {
         markKeyEqHelpers(usedRuntimeHelpers)
-        items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets, localTypeNames)))
+        // An `impl` whose target is this union: the sealed interface extends the implemented interface and holds
+        // the impl's methods as default methods, which every case class inherits (#9470).
+        val unionClass = pkgName + "/" + decl.name
+        val unionIfaces: List[String] = newList()
+        val unionImplFuncs: List[LFunc] = newList()
+        for ie in implEntries.toArray() {
+          if ie.targetClass == unionClass {
+            unionIfaces.add(ie.ifaceClass)
+            for m in ie.methods.toArray() {
+              unionImplFuncs.add(m)
+            }
+          }
+        }
+        val baseUnion = lowerUnion(decl, pkgName, externTypes, aliasTargets, localTypeNames)
+        items.add(LPSealedUnion(su = baseUnion.copy(implementsIfaces = unionIfaces, implMethods = unionImplFuncs)))
       }
       case IConst(_) -> {
       }
