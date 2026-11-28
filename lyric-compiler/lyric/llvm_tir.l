@@ -1947,7 +1947,19 @@ func lowerAggregateEquality(
         val y = tmp(c)
         c.insns.add(NExtractValue(dest = y, aggTy = nty, agg = b, index = i))
         val r = lowerBinary(c, IoEq, elemTy, el, NLocal(name = x), NLocal(name = y), line)
-        acc = andV(c, acc, r)
+        // Structural equality: a NaN element equals a NaN element, so a float pair is equal when ordered-equal
+        // or when both are NaN (`une x, x` holds exactly for a NaN).
+        val same = if isFloatTy(elemTy) {
+          val xn = tmp(c)
+          c.insns.add(NFCmp(dest = xn, pred = FUne, ty = el, a = NLocal(name = x), b = NLocal(name = x)))
+          val yn = tmp(c)
+          c.insns.add(NFCmp(dest = yn, pred = FUne, ty = el, a = NLocal(name = y), b = NLocal(name = y)))
+          val bothNan = andV(c, Val(ty = NI1, value = NLocal(name = xn)), Val(ty = NI1, value = NLocal(name = yn)))
+          orV(c, r, bothNan)
+        } else {
+          r
+        }
+        acc = andV(c, acc, same)
         i = i + 1
       }
       if isEq {

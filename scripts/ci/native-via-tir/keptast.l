@@ -25,6 +25,10 @@ func differs(a: in array[3, Int], b: in array[3, Int]): Bool {
   a != b
 }
 
+func sameFloats(a: in array[2, Double], b: in array[2, Double]): Bool {
+  a == b
+}
+
 func blank(): String {
   val s: String = default()
   s
@@ -59,6 +63,9 @@ func main(): Unit {
   val w: array[3, Int] = [1, 2, 4]
   println(toString(same(x, w)))
   println(toString(differs(x, w)))
+  val f1: array[2, Double] = [0.0, 1.0]
+  val f2: array[2, Double] = [-0.0, 1.0]
+  println(toString(sameFloats(f1, f2)))
   println("[" + blank() + "]")
   val z = zeroPair()
   println(toString(z.a) + "," + toString(z.b))
