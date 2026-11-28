@@ -846,13 +846,17 @@ cat "$work/k_census.txt"
 "$work/k_ast" > "$work/k_ast.out"
 "$work/k_tir" > "$work/k_tir.out"
 diff -u "$work/k_ast.out" "$work/k_tir.out"
-printf 'Green\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
-for reason in 'toString of an enum' 'an operator on the aggregate array' 'the zero value of String'; do
+printf 'Green\nBlue\ntrue\n[]\n5\n' | diff -u - "$work/k_tir.out"
+for reason in 'an operator on the aggregate array' 'the zero value of String'; do
   grep -q "^  fallback: $reason" "$work/k_census.txt" || {
     echo "::error::keptast.l: expected the fallback '$reason' in the census"
     exit 1
   }
 done
+grep -q '^  fallback: toString of an enum' "$work/k_census.txt" && {
+  echo "::error::keptast.l: toString of an enum fell back to the AST path"
+  exit 1
+}
 echo "kept on the AST path: ok"
 
 # A case pattern under another case pattern (`Err(Malformed(at, why))`): the inner union is opened on the payload
@@ -917,8 +921,8 @@ cat "$work/gi_census.txt"
 "$work/gi_ast" > "$work/gi_ast.out"
 "$work/gi_tir" > "$work/gi_tir.out"
 diff -u "$work/gi_ast.out" "$work/gi_tir.out"
-printf '19\nab!\n7x\n4\n9\nw\n' | diff -u - "$work/gi_tir.out"
-grep -q '^native via-TIR: 11 of 11 functions lowered from TIR' "$work/gi_census.txt" || {
+printf '19\nab!\n7x\n4\n9\nw\nabab\n' | diff -u - "$work/gi_tir.out"
+grep -q '^native via-TIR: 12 of 12 functions lowered from TIR' "$work/gi_census.txt" || {
   echo "::error::expected every function of genericifaces.l to be lowered from TIR"
   exit 1
 }

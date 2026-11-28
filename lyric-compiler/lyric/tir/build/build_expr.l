@@ -1222,7 +1222,8 @@ func literalAtType(t: in TExpr, ty: in Ty): TExpr {
   match t.kind {
     case XLit(l) -> {
       val numeric = match l { case TLFloat(_) -> true; case TLInt(_) -> true; case _ -> false }
-      if numeric and isPrimTy(ty) and not tyEq(t.ty, ty) {
+      val numericTarget = match ty { case TPrim(k) -> isNumericPrimKind(k); case _ -> false }
+      if numeric and numericTarget and not tyEq(t.ty, ty) {
         TExpr(id = t.id, ty = ty, span = t.span, kind = t.kind)
       } else {
         t
