@@ -581,7 +581,9 @@ func crossResolveIface(file: in SourceFile, decl: in ImplDecl, ifaces: in Map[St
 func crossTrampoline(
   decl: in ImplDecl, ifaceDecl: in InterfaceDecl, fn: in FunctionDecl, calleeSegs: in List[String]
 ): FunctionDecl {
-  val sp = fn.span
+  // A span of its own, as an inherited copy has (#9454): member lookups match a signature by span, and the
+  // interface member's span is not this member's.
+  val sp = Span(startPos = decl.span.startPos, endPos = fn.span.endPos)
   val inherited = inheritedCopy(decl, ifaceDecl, fn)
   val params: List[Param] = newList()
   params.add(
